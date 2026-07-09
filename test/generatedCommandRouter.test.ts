@@ -71,6 +71,38 @@ describe("generated command router", () => {
     });
   });
 
+  it("rejects bare string flags before server calls", async () => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+    process.env.AINECTO_TOKEN = "redacted";
+    const io = createIo();
+
+    await expect(runAinectoCli(["task", "list-tasks", "--env", "dev", "--document-uuid", "--json"], io)).resolves.toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(JSON.parse(io.stderrText())).toMatchObject({
+      ok: false,
+      error: {
+        code: "FLAG_REQUIRES_VALUE",
+      },
+    });
+  });
+
+  it("rejects array/object schema fields as scalar flags", async () => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+    process.env.AINECTO_TOKEN = "redacted";
+    const io = createIo();
+
+    await expect(runAinectoCli(["attachments", "delete", "--env", "dev", "--uuids", "att-1", "--yes", "--json"], io)).resolves.toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(JSON.parse(io.stderrText())).toMatchObject({
+      ok: false,
+      error: {
+        code: "UNSUPPORTED_FLAG_PAYLOAD",
+      },
+    });
+  });
+
   it("requires --yes for destructive commands in json mode", async () => {
     const io = createIo();
 

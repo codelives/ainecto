@@ -148,22 +148,30 @@ function coerceFlagValue(value: string | boolean, schema: JsonSchema | undefined
     if (value === "false") return false;
     throw new CliCommandError("INVALID_FLAG_VALUE", `Flag "${key}" must be a boolean.`, { key, value });
   }
+  if (type === "string") {
+    if (typeof value === "boolean") {
+      throw new CliCommandError("FLAG_REQUIRES_VALUE", `--${camelToKebab(key)} requires a value.`, { key });
+    }
+    return value;
+  }
   if (type === "integer") {
     if (typeof value === "boolean" || !/^-?\d+$/.test(value)) {
-      throw new CliCommandError("INVALID_FLAG_VALUE", `Flag "${key}" must be an integer.`, { key, value });
+      const code = typeof value === "boolean" ? "FLAG_REQUIRES_VALUE" : "INVALID_FLAG_VALUE";
+      throw new CliCommandError(code, `Flag "${key}" must be an integer.`, { key, value });
     }
     return Number.parseInt(value, 10);
   }
   if (type === "number") {
     if (typeof value === "boolean" || Number.isNaN(Number(value))) {
-      throw new CliCommandError("INVALID_FLAG_VALUE", `Flag "${key}" must be a number.`, { key, value });
+      const code = typeof value === "boolean" ? "FLAG_REQUIRES_VALUE" : "INVALID_FLAG_VALUE";
+      throw new CliCommandError(code, `Flag "${key}" must be a number.`, { key, value });
     }
     return Number(value);
   }
-  if (typeof value === "boolean") {
-    return value ? "true" : "false";
-  }
-  return value;
+  throw new CliCommandError("UNSUPPORTED_FLAG_PAYLOAD", `Flag "${key}" is not a scalar field; provide it through --file, stdin, or inline JSON.`, {
+    key,
+    type,
+  });
 }
 
 function getSchemaProperties(schema: JsonSchema): Record<string, JsonSchema> {
