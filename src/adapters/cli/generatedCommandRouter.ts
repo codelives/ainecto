@@ -7,7 +7,7 @@ import { renderSuccess } from "../../core/output/render";
 import { renderTable } from "../../core/output/table";
 import { parseGeneratedCommandArgs } from "./flagParser";
 import { confirmDestructiveCommand, type ConfirmationIO } from "./destructiveConfirmation";
-import { CliCommandError } from "./errors";
+import { BESPOKE_COMMAND_PATHS } from "./bespokeCommands";
 
 export interface GeneratedCommandRoute {
   tool: GeneratedToolDefinition;
@@ -25,10 +25,6 @@ export interface GeneratedCommandExecutionOptions {
   io: ConfirmationIO & { stdout: NodeJS.WriteStream };
 }
 
-const RESERVED_BESPOKE_COMMANDS = new Map<string, string>([
-  ["attachments upload", "attachments upload is waiting for the attachment upload-token contract and is not implemented in this cycle."],
-]);
-
 export function matchGeneratedCommand(env: AinectoEnv, argv: string[]): GeneratedCommandRoute | undefined {
   const commandTokens = argv.filter((arg) => !arg.startsWith("-"));
   const tools = getGeneratedTools(env);
@@ -38,10 +34,6 @@ export function matchGeneratedCommand(env: AinectoEnv, argv: string[]): Generate
     .sort((a, b) => b.path.length - a.path.length)[0];
 
   if (!match) {
-    const bespoke = [...RESERVED_BESPOKE_COMMANDS.entries()].find(([path]) => isPrefix(path.split(" "), commandTokens));
-    if (bespoke) {
-      throw new CliCommandError("COMMAND_NOT_IMPLEMENTED", bespoke[1], { command: bespoke[0] });
-    }
     return undefined;
   }
 
@@ -92,10 +84,11 @@ export function assertNoCommandCollisions(env: AinectoEnv): void {
     }
     seen.set(key, entry.tool.mcpName);
   }
-  for (const [command] of RESERVED_BESPOKE_COMMANDS) {
+  for (const commandPath of BESPOKE_COMMAND_PATHS) {
+    const command = commandPath.join(" ");
     const existing = seen.get(command);
     if (existing) {
-      throw new Error(`Reserved bespoke command "${command}" collides with ${existing}.`);
+      throw new Error(`Bespoke command "${command}" collides with ${existing}.`);
     }
   }
 }

@@ -84,7 +84,13 @@ cat task-ops.json | ainecto task apply-changes --env dev --json
 
 Destructive generated commands prompt in human mode unless `--yes` is supplied. In `--json` mode they fail with a structured error unless `--yes` is present.
 
-Attachment file upload is intentionally not implemented in this cycle. Until the upload-token contract is confirmed, generated `request_upload_token` and `upload_attachments` paths use only the raw MCP argument contract and do not read local files.
+Attachment file upload is available through a bespoke command that performs the upload-token, raw PUT, and attachment registration flow:
+
+```bash
+ainecto attachments upload --env dev --document-uuid <documentUuid> ./diagram.png ./notes.pdf
+```
+
+The generated `request_upload_token` and `upload_attachments` paths remain raw MCP argument-contract commands and do not read local files.
 
 ## Local Tarball Smoke
 

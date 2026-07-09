@@ -7,6 +7,7 @@ import { renderError, renderSuccess } from "../../core/output/render";
 import { getGeneratedTools } from "../../core/catalog";
 import { runConnector } from "../mcp/connector";
 import { executeGeneratedCommand } from "./generatedCommandRouter";
+import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
 
 export interface CliIO {
   stdout: NodeJS.WriteStream;
@@ -41,6 +42,15 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
 
     if (domain === "auth") {
       return handleAuth(action, auth, resolved.endpoint, parsed.json, io);
+    }
+
+    if (isAttachmentsUploadCommand(domain, action)) {
+      return await executeAttachmentsUploadCommand({
+        argv: rest,
+        client,
+        json: parsed.json,
+        io,
+      });
     }
 
     const generatedResult = await executeGeneratedCommand({
@@ -199,6 +209,7 @@ function helpText(): string {
     "  ainecto auth login|status|logout [--env prod|dev] [--endpoint URL] [--json]",
     "  ainecto tools list [--env prod|dev] [--endpoint URL] [--json]",
     "  ainecto tools call <mcpName> [-f payload.json|@-] [inline-json] [--json]",
+    "  ainecto attachments upload --document-uuid <uuid> <file...> [--json]",
     "  ainecto <generated-command> [flags] [-f payload.json] [--yes] [--json]",
     "  ainecto mcp [--env prod|dev] [--endpoint URL]",
     "",

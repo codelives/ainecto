@@ -160,16 +160,8 @@ describe("generated command router", () => {
     expect(JSON.parse(io.stdoutText()).warnings.join("\n")).toContain("raw MCP argument contract only");
   });
 
-  it("does not implement the bespoke attachments upload command before contract confirmation", async () => {
-    const io = createIo();
-
-    await expect(runAinectoCli(["attachments", "upload", "--env", "dev", "./file.png", "--json"], io)).resolves.toBe(1);
-    expect(JSON.parse(io.stderrText())).toMatchObject({
-      ok: false,
-      error: {
-        code: "COMMAND_NOT_IMPLEMENTED",
-      },
-    });
+  it("leaves bespoke attachments upload outside generated routing", () => {
+    expect(matchGeneratedCommand("dev", ["attachments", "upload"])).toBeUndefined();
   });
 
   it("renders enriched table output for human mode", async () => {
