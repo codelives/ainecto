@@ -1,0 +1,44 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Check catalog sync auth
+        run: |
+          if [ -z "${AINECTO_CATALOG_SYNC_TOKEN:-}" ]; then
+            echo "AINECTO_CATALOG_SYNC_TOKEN is required for automatic public publish."
+            echo "Until CI catalog auth or unauthenticated tools/list exists, use manual-only prerelease verification."
+            exit 1
+          fi
+        env:
+          AINECTO_CATALOG_SYNC_TOKEN: ${{ secrets.AINECTO_CATALOG_SYNC_TOKEN }}
+      - name: Check prod MCP catalog drift
+        run: npm run sync:tools -- --env prod --check
+        env:
+          AINECTO_CATALOG_SYNC_TOKEN: ${{ secrets.AINECTO_CATALOG_SYNC_TOKEN }}
+      - name: Check dev MCP catalog drift
+        run: npm run sync:tools -- --env dev --check
+        env:
+          AINECTO_CATALOG_SYNC_TOKEN: ${{ secrets.AINECTO_CATALOG_SYNC_TOKEN }}
+      - run: npm run build
+      - run: npm pack --dry-run
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

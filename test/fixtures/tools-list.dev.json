@@ -1,0 +1,12 @@
+{
+  "tools": [
+    {
+      "name": "mcp__ainecto__list_projects",
+      "description": "List projects visible to the authenticated user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}
