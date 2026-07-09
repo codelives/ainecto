@@ -29,6 +29,7 @@ export interface GeneratedToolDefinition {
 export interface ToolPresentationEnrichment {
   mcpName: string;
   outputHint?: "table" | "tree" | "json" | "text";
+  tableColumns?: string[];
   aliases?: string[];
   displayName?: string;
   examples?: string[];

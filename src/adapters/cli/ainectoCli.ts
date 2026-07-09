@@ -6,6 +6,7 @@ import { McpRpcClient } from "../../core/mcp/rpcClient";
 import { renderError, renderSuccess } from "../../core/output/render";
 import { getGeneratedTools } from "../../core/catalog";
 import { runConnector } from "../mcp/connector";
+import { executeGeneratedCommand } from "./generatedCommandRouter";
 
 export interface CliIO {
   stdout: NodeJS.WriteStream;
@@ -40,6 +41,17 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
 
     if (domain === "auth") {
       return handleAuth(action, auth, resolved.endpoint, parsed.json, io);
+    }
+
+    const generatedResult = await executeGeneratedCommand({
+      env: parsed.env ?? "prod",
+      argv: parsed.positionals,
+      client,
+      json: parsed.json,
+      io,
+    });
+    if (generatedResult !== 2) {
+      return generatedResult;
     }
 
     if (domain === "tools") {
@@ -187,6 +199,7 @@ function helpText(): string {
     "  ainecto auth login|status|logout [--env prod|dev] [--endpoint URL] [--json]",
     "  ainecto tools list [--env prod|dev] [--endpoint URL] [--json]",
     "  ainecto tools call <mcpName> [-f payload.json|@-] [inline-json] [--json]",
+    "  ainecto <generated-command> [flags] [-f payload.json] [--yes] [--json]",
     "  ainecto mcp [--env prod|dev] [--endpoint URL]",
     "",
   ].join("\n");

@@ -30,6 +30,10 @@ ainecto tools list --env dev
 ainecto tools call mcp__ainecto__list_projects --env dev --json
 ainecto tools call mcp__ainecto__erd_apply_changes -f changes.json --json
 cat payload.json | ainecto tools call mcp__ainecto__erd_apply_changes --json
+
+ainecto projects list --env dev
+ainecto task list-tasks --env dev --document-uuid <documentUuid> --json
+ainecto erd apply-changes --env dev -f erd-operations.json --yes
 ```
 
 Endpoint resolution priority:
@@ -61,6 +65,26 @@ AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env dev --check
 The checked-in generated catalogs are deterministic output from `tools/list`. The dev catalog has been live-synced from `https://dev.ainecto.com/mcp`; the prod catalog remains a seed fixture until prod auth is available. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
 
 `ainecto tools catalog` prints the local generated catalog. Prod output is fixture-only until authenticated prod live sync updates `generated.prod.ts` and `tools-list.prod.json`.
+
+## Generated Friendly Commands
+
+Every checked-in generated catalog tool is reachable through its deterministic command path. Scalar schema fields are exposed as flags, with both kebab-case and schema-case accepted:
+
+```bash
+ainecto task list-tasks --env dev --document-uuid <documentUuid>
+ainecto task list-tasks --env dev --documentUuid <documentUuid>
+```
+
+Array or object payloads use the existing first-party CLI JSON payload reader:
+
+```bash
+ainecto documents create --env dev -f create-documents.json
+cat task-ops.json | ainecto task apply-changes --env dev --json
+```
+
+Destructive generated commands prompt in human mode unless `--yes` is supplied. In `--json` mode they fail with a structured error unless `--yes` is present.
+
+Attachment file upload is intentionally not implemented in this cycle. Until the upload-token contract is confirmed, generated `request_upload_token` and `upload_attachments` paths use only the raw MCP argument contract and do not read local files.
 
 ## Local Tarball Smoke
 

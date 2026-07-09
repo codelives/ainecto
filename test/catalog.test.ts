@@ -31,7 +31,7 @@ describe("catalog generation", () => {
   });
 
   it("requires enrichments to refer to generated tools and stay presentation-only", () => {
-    const names = new Set(prodGenerated.map((tool) => tool.mcpName));
+    const names = new Set([...prodGenerated, ...devGenerated].map((tool) => tool.mcpName));
     for (const enrichment of enrichments) {
       expect(names.has(enrichment.mcpName)).toBe(true);
       expect(enrichment).not.toHaveProperty("inputSchema");
