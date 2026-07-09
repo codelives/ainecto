@@ -1,5 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { OAuthClient } from "../src/core/auth/oauth";
+import { FileTokenStore } from "../src/core/auth/tokenStore";
 import { resolveEndpoint, type AinectoEnv } from "../src/core/config/endpoints";
 import { McpRpcClient } from "../src/core/mcp/rpcClient";
 import { generateCatalog, serializeGeneratedCatalog, stableStringify } from "../src/core/catalog/generator";
@@ -36,19 +38,21 @@ async function main(): Promise<void> {
 }
 
 async function fetchLiveTools(env: AinectoEnv, check: boolean): Promise<McpToolListItem[]> {
-  const token = process.env.AINECTO_CATALOG_SYNC_TOKEN;
-  if (!token) {
-    const code = check ? "CATALOG_SYNC_AUTH_MISSING" : "CATALOG_SYNC_AUTH_MISSING";
-    throw new Error(`${code}: AINECTO_CATALOG_SYNC_TOKEN is required for live catalog sync.`);
-  }
   const resolved = resolveEndpoint({ env });
-  const client = new McpRpcClient({
-    endpoint: resolved.endpoint,
-    tokenProvider: {
-      getAccessToken: async () => token,
+  const tokenProvider = process.env.AINECTO_CATALOG_SYNC_TOKEN
+    ? {
+      getAccessToken: async () => process.env.AINECTO_CATALOG_SYNC_TOKEN,
       refreshAfterUnauthorized: async () => undefined,
-    },
-  });
+    }
+    : new OAuthClient({
+      endpoint: resolved.endpoint,
+      tokenStore: new FileTokenStore(),
+    });
+  const token = await tokenProvider.getAccessToken();
+  if (!token) {
+    throw new Error("CATALOG_SYNC_AUTH_MISSING: AINECTO_CATALOG_SYNC_TOKEN or local `ainecto auth login --env <env>` credentials are required for live catalog sync.");
+  }
+  const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider });
   await client.initialize();
   const tools = await client.toolsList();
   return tools.map(assertMcpToolListItem);

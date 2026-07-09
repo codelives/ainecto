@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -41,10 +42,11 @@ describe("catalog generation", () => {
   });
 
   it("does not let sync:tools --check pass through fixture fallback when auth is missing", () => {
+    const emptyHome = mkdtempSync(join(tmpdir(), "ainecto-empty-home-"));
     const result = spawnSync("npm", ["run", "sync:tools", "--", "--env", "prod", "--check"], {
       cwd: repoRoot,
       encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "" },
+      env: { HOME: emptyHome, PATH: process.env.PATH ?? "" },
     });
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toContain("CATALOG_SYNC_AUTH_MISSING");

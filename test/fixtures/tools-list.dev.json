@@ -1,11 +1,4391 @@
 {
   "tools": [
     {
+      "name": "mcp__ainecto__erd_arrange_tables",
+      "description": "Arrange ERD tables after edits. Default incremental mode places newly-created tables while preserving existing positions; full=true re-layouts the entire diagram. Use after several separate table edits to tidy the canvas.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          },
+          "full": {
+            "type": "boolean",
+            "description": "Re-layout the ENTIRE diagram (overwrites existing positions). Default false = arrange only newly-added (uncoordinated) tables to the top-right while preserving existing table positions. Call this after creating several tables to tidy them up."
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_apply_changes",
+      "description": "Required single-call mutation path for ERD create/update/delete changes. Put tables, columns, indexes, refs, enums, enum_values, and table groups in one operations array and call this once.\nRules: (1) all data field names are snake_case; (2) for create, generate your own UUIDs and put them in data.uuid, then later operations in the same batch may reference those UUIDs without read-back calls; (3) enum values are separate enum_value operations, not inline on enum; (4) ref.relationship uses short dbdiagram-style symbols: >, <, or -; (5) ref_column operations map FK columns explicitly, never automatically.\nDo not look for type-specific ERD CUD tools; this tool is the only ERD CUD entry point. If operations is very large, use mcp__ainecto__request_upload_token with purpose=mcp.call and send the tools/call payload with curl to save LLM tokens.\nOne-call worked example:\n{\n  \"documentUuid\": \"erd-doc-uuid\",\n  \"description\": \"create users/posts ERD\",\n  \"operations\": [\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_users\",\"name\":\"users\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_id\",\"table_uuid\":\"tbl_users\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_email\",\"table_uuid\":\"tbl_users\",\"name\":\"email\",\"type\":\"varchar(255)\",\"is_unique\":true,\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_posts\",\"name\":\"posts\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_author_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"author_id\",\"type\":\"bigint\",\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_status\",\"table_uuid\":\"tbl_posts\",\"name\":\"status\",\"type\":\"post_status\",\"is_not_null\":true,\"display_order\":3}},\n    {\"op\":\"create\",\"type\":\"enum\",\"data\":{\"uuid\":\"enum_post_status\",\"name\":\"post_status\"}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_draft\",\"enum_uuid\":\"enum_post_status\",\"value\":\"draft\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_published\",\"enum_uuid\":\"enum_post_status\",\"value\":\"published\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"ref\",\"data\":{\"uuid\":\"ref_posts_author\",\"name\":\"fk_posts_author\",\"from_table_uuid\":\"tbl_posts\",\"to_table_uuid\":\"tbl_users\",\"relationship\":\">\",\"on_delete\":\"cascade\"}},\n    {\"op\":\"create\",\"type\":\"ref_column\",\"data\":{\"uuid\":\"refcol_posts_author\",\"ref_uuid\":\"ref_posts_author\",\"from_column_uuid\":\"col_posts_author_id\",\"to_column_uuid\":\"col_users_id\",\"display_order\":1}}\n  ]\n}",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          },
+          "description": {
+            "type": "string",
+            "description": "Reason for batch (audit)"
+          },
+          "operations": {
+            "type": "array",
+            "description": "Atomic create/update/delete operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "description": "Operation. For create, put any new UUID in data.uuid; for update/delete, put target UUID in operation.uuid.",
+                  "enum": [
+                    "create",
+                    "update",
+                    "delete"
+                  ]
+                },
+                "type": {
+                  "type": "string",
+                  "description": "ERD entity type. This selects the operation.data shape.",
+                  "enum": [
+                    "table",
+                    "column",
+                    "index",
+                    "index_column",
+                    "ref",
+                    "ref_column",
+                    "enum",
+                    "enum_value",
+                    "table_group",
+                    "table_group_table",
+                    "table_group_note",
+                    "filter",
+                    "note"
+                  ]
+                },
+                "uuid": {
+                  "type": "string",
+                  "description": "Target UUID for update/delete. Do not use this for create; use data.uuid instead."
+                },
+                "data": {
+                  "type": "object",
+                  "description": "Type-specific payload. All field names are snake_case. For create, data.uuid may be client-supplied and referenced by later operations in the same batch.",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Table name. Required for create."
+                        },
+                        "schema_name": {
+                          "type": "string",
+                          "description": "Schema name."
+                        },
+                        "alias": {
+                          "type": "string",
+                          "description": "Display alias."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Table note."
+                        },
+                        "header_color": {
+                          "type": "string",
+                          "description": "Header color."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "table data",
+                      "description": "Payload for operation.type='table'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "table_uuid": {
+                          "type": "string",
+                          "description": "Parent table UUID. Required for create; may be a data.uuid from an earlier table operation in this batch."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Column name."
+                        },
+                        "type": {
+                          "type": "string",
+                          "description": "SQL data type. Use this exact field name; do not send data_type."
+                        },
+                        "is_pk": {
+                          "type": "boolean",
+                          "description": "Primary key flag."
+                        },
+                        "is_unique": {
+                          "type": "boolean",
+                          "description": "Unique flag."
+                        },
+                        "is_not_null": {
+                          "type": "boolean",
+                          "description": "Not-null flag."
+                        },
+                        "is_increment": {
+                          "type": "boolean",
+                          "description": "Auto-increment flag."
+                        },
+                        "default_value": {
+                          "type": "string",
+                          "description": "Default value."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Column note."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "column data",
+                      "description": "Payload for operation.type='column'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "table_uuid": {
+                          "type": "string",
+                          "description": "Parent table UUID. Required for create."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Index name."
+                        },
+                        "is_pk": {
+                          "type": "boolean",
+                          "description": "Primary key index flag."
+                        },
+                        "is_unique": {
+                          "type": "boolean",
+                          "description": "Unique index flag."
+                        },
+                        "type": {
+                          "type": "string",
+                          "description": "Index type."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Index note."
+                        }
+                      },
+                      "title": "index data",
+                      "description": "Payload for operation.type='index'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "index_uuid": {
+                          "type": "string",
+                          "description": "Index UUID. Required for create."
+                        },
+                        "column_uuid": {
+                          "type": "string",
+                          "description": "Column UUID. Required for create."
+                        },
+                        "sort_order": {
+                          "type": "string",
+                          "description": "Sort order, for example ASC or DESC."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "index_column data",
+                      "description": "Payload for operation.type='index_column'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Reference name."
+                        },
+                        "from_table_uuid": {
+                          "type": "string",
+                          "description": "Source table UUID. Required for create."
+                        },
+                        "to_table_uuid": {
+                          "type": "string",
+                          "description": "Target table UUID. Required for create."
+                        },
+                        "relationship": {
+                          "type": "string",
+                          "description": "Required for create. Use short dbdiagram-style relationship symbols.",
+                          "enum": [
+                            ">",
+                            "<",
+                            "-"
+                          ]
+                        },
+                        "on_delete": {
+                          "type": "string",
+                          "description": "ON DELETE action."
+                        },
+                        "on_update": {
+                          "type": "string",
+                          "description": "ON UPDATE action."
+                        }
+                      },
+                      "title": "ref data",
+                      "description": "Payload for operation.type='ref'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "ref_uuid": {
+                          "type": "string",
+                          "description": "Reference UUID. Required for create; may be a data.uuid from an earlier ref operation."
+                        },
+                        "from_column_uuid": {
+                          "type": "string",
+                          "description": "Source column UUID. Required for create."
+                        },
+                        "to_column_uuid": {
+                          "type": "string",
+                          "description": "Target column UUID. Required for create."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "ref_column data",
+                      "description": "Payload for operation.type='ref_column'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Enum name."
+                        },
+                        "schema_name": {
+                          "type": "string",
+                          "description": "Schema name."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Enum note."
+                        }
+                      },
+                      "title": "enum data",
+                      "description": "Payload for operation.type='enum'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "enum_uuid": {
+                          "type": "string",
+                          "description": "Parent enum UUID. Required for create; may be a data.uuid from an earlier enum operation."
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "Enum value. Inline enum values on enum are not persisted; create enum_value operations."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Enum value note."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "enum_value data",
+                      "description": "Payload for operation.type='enum_value'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Table group name."
+                        },
+                        "color": {
+                          "type": "string",
+                          "description": "Group color."
+                        }
+                      },
+                      "title": "table_group data",
+                      "description": "Payload for operation.type='table_group'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "group_uuid": {
+                          "type": "string",
+                          "description": "Table group UUID. Required for create."
+                        },
+                        "schema_name": {
+                          "type": "string",
+                          "description": "Table schema name."
+                        },
+                        "table_name": {
+                          "type": "string",
+                          "description": "Table name. Required for create."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "table_group_table data",
+                      "description": "Payload for operation.type='table_group_table'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "group_uuid": {
+                          "type": "string",
+                          "description": "Table group UUID. Required for create."
+                        },
+                        "note_uuid": {
+                          "type": "string",
+                          "description": "Note UUID. Required for create."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "table_group_note data",
+                      "description": "Payload for operation.type='table_group_note'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Filter name."
+                        },
+                        "is_default": {
+                          "type": "boolean",
+                          "description": "Default filter flag."
+                        },
+                        "included_tables": {
+                          "type": "string",
+                          "description": "JSON string/list of included tables."
+                        },
+                        "table_positions": {
+                          "type": "string",
+                          "description": "JSON string/object of table positions."
+                        },
+                        "table_groups": {
+                          "type": "string",
+                          "description": "JSON string/object of table groups."
+                        }
+                      },
+                      "title": "filter data",
+                      "description": "Payload for operation.type='filter'."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "title": {
+                          "type": "string",
+                          "description": "Note title."
+                        },
+                        "content": {
+                          "type": "string",
+                          "description": "Note content."
+                        },
+                        "color": {
+                          "type": "string",
+                          "description": "Note color."
+                        },
+                        "position_x": {
+                          "type": "integer",
+                          "description": "X position."
+                        },
+                        "position_y": {
+                          "type": "integer",
+                          "description": "Y position."
+                        },
+                        "width": {
+                          "type": "integer",
+                          "description": "Width."
+                        },
+                        "height": {
+                          "type": "integer",
+                          "description": "Height."
+                        },
+                        "icon_name": {
+                          "type": "string",
+                          "description": "Icon name."
+                        }
+                      },
+                      "title": "note data",
+                      "description": "Payload for operation.type='note'."
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "type"
+              ],
+              "description": "One ERD mutation. Use a single operations array with client-generated data.uuid values to create cross-referenced tables, columns, enums, refs, and ref_columns without read-back calls.",
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'table' for this payload.",
+                      "const": "table"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Table name. Required for create."
+                        },
+                        "schema_name": {
+                          "type": "string",
+                          "description": "Schema name."
+                        },
+                        "alias": {
+                          "type": "string",
+                          "description": "Display alias."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Table note."
+                        },
+                        "header_color": {
+                          "type": "string",
+                          "description": "Header color."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "table data",
+                      "description": "Payload for operation.type='table'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "table operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Table name. Required for create."
+                              },
+                              "schema_name": {
+                                "type": "string",
+                                "description": "Schema name."
+                              },
+                              "alias": {
+                                "type": "string",
+                                "description": "Display alias."
+                              },
+                              "note": {
+                                "type": "string",
+                                "description": "Table note."
+                              },
+                              "header_color": {
+                                "type": "string",
+                                "description": "Header color."
+                              },
+                              "display_order": {
+                                "type": "integer",
+                                "description": "Display order."
+                              }
+                            },
+                            "required": [
+                              "name"
+                            ],
+                            "title": "table data",
+                            "description": "Payload for operation.type='table'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'column' for this payload.",
+                      "const": "column"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "table_uuid": {
+                          "type": "string",
+                          "description": "Parent table UUID. Required for create; may be a data.uuid from an earlier table operation in this batch."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Column name."
+                        },
+                        "type": {
+                          "type": "string",
+                          "description": "SQL data type. Use this exact field name; do not send data_type."
+                        },
+                        "is_pk": {
+                          "type": "boolean",
+                          "description": "Primary key flag."
+                        },
+                        "is_unique": {
+                          "type": "boolean",
+                          "description": "Unique flag."
+                        },
+                        "is_not_null": {
+                          "type": "boolean",
+                          "description": "Not-null flag."
+                        },
+                        "is_increment": {
+                          "type": "boolean",
+                          "description": "Auto-increment flag."
+                        },
+                        "default_value": {
+                          "type": "string",
+                          "description": "Default value."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Column note."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "column data",
+                      "description": "Payload for operation.type='column'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "column operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "table_uuid": {
+                                "type": "string",
+                                "description": "Parent table UUID. Required for create; may be a data.uuid from an earlier table operation in this batch."
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Column name."
+                              },
+                              "type": {
+                                "type": "string",
+                                "description": "SQL data type. Use this exact field name; do not send data_type."
+                              },
+                              "is_pk": {
+                                "type": "boolean",
+                                "description": "Primary key flag."
+                              },
+                              "is_unique": {
+                                "type": "boolean",
+                                "description": "Unique flag."
+                              },
+                              "is_not_null": {
+                                "type": "boolean",
+                                "description": "Not-null flag."
+                              },
+                              "is_increment": {
+                                "type": "boolean",
+                                "description": "Auto-increment flag."
+                              },
+                              "default_value": {
+                                "type": "string",
+                                "description": "Default value."
+                              },
+                              "note": {
+                                "type": "string",
+                                "description": "Column note."
+                              },
+                              "display_order": {
+                                "type": "integer",
+                                "description": "Display order."
+                              }
+                            },
+                            "required": [
+                              "table_uuid"
+                            ],
+                            "title": "column data",
+                            "description": "Payload for operation.type='column'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'index' for this payload.",
+                      "const": "index"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "table_uuid": {
+                          "type": "string",
+                          "description": "Parent table UUID. Required for create."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Index name."
+                        },
+                        "is_pk": {
+                          "type": "boolean",
+                          "description": "Primary key index flag."
+                        },
+                        "is_unique": {
+                          "type": "boolean",
+                          "description": "Unique index flag."
+                        },
+                        "type": {
+                          "type": "string",
+                          "description": "Index type."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Index note."
+                        }
+                      },
+                      "title": "index data",
+                      "description": "Payload for operation.type='index'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "index operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "table_uuid": {
+                                "type": "string",
+                                "description": "Parent table UUID. Required for create."
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Index name."
+                              },
+                              "is_pk": {
+                                "type": "boolean",
+                                "description": "Primary key index flag."
+                              },
+                              "is_unique": {
+                                "type": "boolean",
+                                "description": "Unique index flag."
+                              },
+                              "type": {
+                                "type": "string",
+                                "description": "Index type."
+                              },
+                              "note": {
+                                "type": "string",
+                                "description": "Index note."
+                              }
+                            },
+                            "required": [
+                              "table_uuid"
+                            ],
+                            "title": "index data",
+                            "description": "Payload for operation.type='index'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'index_column' for this payload.",
+                      "const": "index_column"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "index_uuid": {
+                          "type": "string",
+                          "description": "Index UUID. Required for create."
+                        },
+                        "column_uuid": {
+                          "type": "string",
+                          "description": "Column UUID. Required for create."
+                        },
+                        "sort_order": {
+                          "type": "string",
+                          "description": "Sort order, for example ASC or DESC."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "index_column data",
+                      "description": "Payload for operation.type='index_column'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "index_column operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "index_uuid": {
+                                "type": "string",
+                                "description": "Index UUID. Required for create."
+                              },
+                              "column_uuid": {
+                                "type": "string",
+                                "description": "Column UUID. Required for create."
+                              },
+                              "sort_order": {
+                                "type": "string",
+                                "description": "Sort order, for example ASC or DESC."
+                              },
+                              "display_order": {
+                                "type": "integer",
+                                "description": "Display order."
+                              }
+                            },
+                            "required": [
+                              "index_uuid",
+                              "column_uuid"
+                            ],
+                            "title": "index_column data",
+                            "description": "Payload for operation.type='index_column'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'ref' for this payload.",
+                      "const": "ref"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Reference name."
+                        },
+                        "from_table_uuid": {
+                          "type": "string",
+                          "description": "Source table UUID. Required for create."
+                        },
+                        "to_table_uuid": {
+                          "type": "string",
+                          "description": "Target table UUID. Required for create."
+                        },
+                        "relationship": {
+                          "type": "string",
+                          "description": "Required for create. Use short dbdiagram-style relationship symbols.",
+                          "enum": [
+                            ">",
+                            "<",
+                            "-"
+                          ]
+                        },
+                        "on_delete": {
+                          "type": "string",
+                          "description": "ON DELETE action."
+                        },
+                        "on_update": {
+                          "type": "string",
+                          "description": "ON UPDATE action."
+                        }
+                      },
+                      "title": "ref data",
+                      "description": "Payload for operation.type='ref'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "ref operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Reference name."
+                              },
+                              "from_table_uuid": {
+                                "type": "string",
+                                "description": "Source table UUID. Required for create."
+                              },
+                              "to_table_uuid": {
+                                "type": "string",
+                                "description": "Target table UUID. Required for create."
+                              },
+                              "relationship": {
+                                "type": "string",
+                                "description": "Required for create. Use short dbdiagram-style relationship symbols.",
+                                "enum": [
+                                  ">",
+                                  "<",
+                                  "-"
+                                ]
+                              },
+                              "on_delete": {
+                                "type": "string",
+                                "description": "ON DELETE action."
+                              },
+                              "on_update": {
+                                "type": "string",
+                                "description": "ON UPDATE action."
+                              }
+                            },
+                            "required": [
+                              "from_table_uuid",
+                              "to_table_uuid",
+                              "relationship"
+                            ],
+                            "title": "ref data",
+                            "description": "Payload for operation.type='ref'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'ref_column' for this payload.",
+                      "const": "ref_column"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "ref_uuid": {
+                          "type": "string",
+                          "description": "Reference UUID. Required for create; may be a data.uuid from an earlier ref operation."
+                        },
+                        "from_column_uuid": {
+                          "type": "string",
+                          "description": "Source column UUID. Required for create."
+                        },
+                        "to_column_uuid": {
+                          "type": "string",
+                          "description": "Target column UUID. Required for create."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "ref_column data",
+                      "description": "Payload for operation.type='ref_column'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "ref_column operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "ref_uuid": {
+                                "type": "string",
+                                "description": "Reference UUID. Required for create; may be a data.uuid from an earlier ref operation."
+                              },
+                              "from_column_uuid": {
+                                "type": "string",
+                                "description": "Source column UUID. Required for create."
+                              },
+                              "to_column_uuid": {
+                                "type": "string",
+                                "description": "Target column UUID. Required for create."
+                              },
+                              "display_order": {
+                                "type": "integer",
+                                "description": "Display order."
+                              }
+                            },
+                            "required": [
+                              "ref_uuid",
+                              "from_column_uuid",
+                              "to_column_uuid"
+                            ],
+                            "title": "ref_column data",
+                            "description": "Payload for operation.type='ref_column'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'enum' for this payload.",
+                      "const": "enum"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Enum name."
+                        },
+                        "schema_name": {
+                          "type": "string",
+                          "description": "Schema name."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Enum note."
+                        }
+                      },
+                      "title": "enum data",
+                      "description": "Payload for operation.type='enum'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "enum operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Enum name."
+                              },
+                              "schema_name": {
+                                "type": "string",
+                                "description": "Schema name."
+                              },
+                              "note": {
+                                "type": "string",
+                                "description": "Enum note."
+                              }
+                            },
+                            "title": "enum data",
+                            "description": "Payload for operation.type='enum'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'enum_value' for this payload.",
+                      "const": "enum_value"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "enum_uuid": {
+                          "type": "string",
+                          "description": "Parent enum UUID. Required for create; may be a data.uuid from an earlier enum operation."
+                        },
+                        "value": {
+                          "type": "string",
+                          "description": "Enum value. Inline enum values on enum are not persisted; create enum_value operations."
+                        },
+                        "note": {
+                          "type": "string",
+                          "description": "Enum value note."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "enum_value data",
+                      "description": "Payload for operation.type='enum_value'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "enum_value operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "enum_uuid": {
+                                "type": "string",
+                                "description": "Parent enum UUID. Required for create; may be a data.uuid from an earlier enum operation."
+                              },
+                              "value": {
+                                "type": "string",
+                                "description": "Enum value. Inline enum values on enum are not persisted; create enum_value operations."
+                              },
+                              "note": {
+                                "type": "string",
+                                "description": "Enum value note."
+                              },
+                              "display_order": {
+                                "type": "integer",
+                                "description": "Display order."
+                              }
+                            },
+                            "required": [
+                              "enum_uuid"
+                            ],
+                            "title": "enum_value data",
+                            "description": "Payload for operation.type='enum_value'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'table_group' for this payload.",
+                      "const": "table_group"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Table group name."
+                        },
+                        "color": {
+                          "type": "string",
+                          "description": "Group color."
+                        }
+                      },
+                      "title": "table_group data",
+                      "description": "Payload for operation.type='table_group'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "table_group operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Table group name."
+                              },
+                              "color": {
+                                "type": "string",
+                                "description": "Group color."
+                              }
+                            },
+                            "title": "table_group data",
+                            "description": "Payload for operation.type='table_group'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'table_group_table' for this payload.",
+                      "const": "table_group_table"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "group_uuid": {
+                          "type": "string",
+                          "description": "Table group UUID. Required for create."
+                        },
+                        "schema_name": {
+                          "type": "string",
+                          "description": "Table schema name."
+                        },
+                        "table_name": {
+                          "type": "string",
+                          "description": "Table name. Required for create."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "table_group_table data",
+                      "description": "Payload for operation.type='table_group_table'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "table_group_table operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "group_uuid": {
+                                "type": "string",
+                                "description": "Table group UUID. Required for create."
+                              },
+                              "schema_name": {
+                                "type": "string",
+                                "description": "Table schema name."
+                              },
+                              "table_name": {
+                                "type": "string",
+                                "description": "Table name. Required for create."
+                              },
+                              "display_order": {
+                                "type": "integer",
+                                "description": "Display order."
+                              }
+                            },
+                            "required": [
+                              "group_uuid",
+                              "table_name"
+                            ],
+                            "title": "table_group_table data",
+                            "description": "Payload for operation.type='table_group_table'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'table_group_note' for this payload.",
+                      "const": "table_group_note"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "group_uuid": {
+                          "type": "string",
+                          "description": "Table group UUID. Required for create."
+                        },
+                        "note_uuid": {
+                          "type": "string",
+                          "description": "Note UUID. Required for create."
+                        },
+                        "display_order": {
+                          "type": "integer",
+                          "description": "Display order."
+                        }
+                      },
+                      "title": "table_group_note data",
+                      "description": "Payload for operation.type='table_group_note'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "table_group_note operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "group_uuid": {
+                                "type": "string",
+                                "description": "Table group UUID. Required for create."
+                              },
+                              "note_uuid": {
+                                "type": "string",
+                                "description": "Note UUID. Required for create."
+                              },
+                              "display_order": {
+                                "type": "integer",
+                                "description": "Display order."
+                              }
+                            },
+                            "required": [
+                              "group_uuid",
+                              "note_uuid"
+                            ],
+                            "title": "table_group_note data",
+                            "description": "Payload for operation.type='table_group_note'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'filter' for this payload.",
+                      "const": "filter"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "Filter name."
+                        },
+                        "is_default": {
+                          "type": "boolean",
+                          "description": "Default filter flag."
+                        },
+                        "included_tables": {
+                          "type": "string",
+                          "description": "JSON string/list of included tables."
+                        },
+                        "table_positions": {
+                          "type": "string",
+                          "description": "JSON string/object of table positions."
+                        },
+                        "table_groups": {
+                          "type": "string",
+                          "description": "JSON string/object of table groups."
+                        }
+                      },
+                      "title": "filter data",
+                      "description": "Payload for operation.type='filter'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "filter operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Filter name."
+                              },
+                              "is_default": {
+                                "type": "boolean",
+                                "description": "Default filter flag."
+                              },
+                              "included_tables": {
+                                "type": "string",
+                                "description": "JSON string/list of included tables."
+                              },
+                              "table_positions": {
+                                "type": "string",
+                                "description": "JSON string/object of table positions."
+                              },
+                              "table_groups": {
+                                "type": "string",
+                                "description": "JSON string/object of table groups."
+                              }
+                            },
+                            "title": "filter data",
+                            "description": "Payload for operation.type='filter'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "type": "string",
+                      "description": "Operation",
+                      "enum": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Must be 'note' for this payload.",
+                      "const": "note"
+                    },
+                    "uuid": {
+                      "type": "string",
+                      "description": "Target UUID for update/delete."
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "uuid": {
+                          "type": "string",
+                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                        },
+                        "title": {
+                          "type": "string",
+                          "description": "Note title."
+                        },
+                        "content": {
+                          "type": "string",
+                          "description": "Note content."
+                        },
+                        "color": {
+                          "type": "string",
+                          "description": "Note color."
+                        },
+                        "position_x": {
+                          "type": "integer",
+                          "description": "X position."
+                        },
+                        "position_y": {
+                          "type": "integer",
+                          "description": "Y position."
+                        },
+                        "width": {
+                          "type": "integer",
+                          "description": "Width."
+                        },
+                        "height": {
+                          "type": "integer",
+                          "description": "Height."
+                        },
+                        "icon_name": {
+                          "type": "string",
+                          "description": "Icon name."
+                        }
+                      },
+                      "title": "note data",
+                      "description": "Payload for operation.type='note'."
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "type"
+                  ],
+                  "title": "note operation",
+                  "allOf": [
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "const": "create"
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "uuid": {
+                                "type": "string",
+                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                              },
+                              "title": {
+                                "type": "string",
+                                "description": "Note title."
+                              },
+                              "content": {
+                                "type": "string",
+                                "description": "Note content."
+                              },
+                              "color": {
+                                "type": "string",
+                                "description": "Note color."
+                              },
+                              "position_x": {
+                                "type": "integer",
+                                "description": "X position."
+                              },
+                              "position_y": {
+                                "type": "integer",
+                                "description": "Y position."
+                              },
+                              "width": {
+                                "type": "integer",
+                                "description": "Width."
+                              },
+                              "height": {
+                                "type": "integer",
+                                "description": "Height."
+                              },
+                              "icon_name": {
+                                "type": "string",
+                                "description": "Icon name."
+                              }
+                            },
+                            "title": "note data",
+                            "description": "Payload for operation.type='note'."
+                          }
+                        },
+                        "required": [
+                          "data"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "op"
+                        ]
+                      },
+                      "then": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [
+                          "uuid"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ],
+              "discriminator": {
+                "propertyName": "type"
+              }
+            }
+          },
+          "arrangeNewTables": {
+            "type": "boolean",
+            "description": "Whether to auto-place newly-created tables after the batch; defaults to true"
+          }
+        },
+        "required": [
+          "documentUuid",
+          "description",
+          "operations"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_get_enum",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          },
+          "enumUuid": {
+            "type": "string",
+            "description": "Enum UUID"
+          }
+        },
+        "required": [
+          "documentUuid",
+          "enumUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_get_ref",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          },
+          "refUuid": {
+            "type": "string",
+            "description": "Relationship UUID"
+          }
+        },
+        "required": [
+          "documentUuid",
+          "refUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_get_table_group",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          },
+          "tableGroupUuid": {
+            "type": "string",
+            "description": "Table group UUID"
+          }
+        },
+        "required": [
+          "documentUuid",
+          "tableGroupUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_get_table",
+      "description": "Get one ERD table with nested columns and indexes. Returns persistent table/column/index UUIDs usable directly as mcp__ainecto__erd_apply_changes update/delete targets and ref_column column references. Column fields use apply_changes snake_case names: uuid, table_uuid, name, type, is_pk, is_unique, is_not_null, is_increment, default_value, note, display_order. Index fields include uuid, name, columns (column UUIDs), is_unique, is_pk, type.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          },
+          "tableUuid": {
+            "type": "string",
+            "description": "Table UUID. Response includes columns[] and indexes[] with persistent UUIDs for apply_changes."
+          }
+        },
+        "required": [
+          "documentUuid",
+          "tableUuid"
+        ],
+        "description": "Get one ERD table with nested columns and indexes. Returns persistent table/column/index UUIDs usable directly as mcp__ainecto__erd_apply_changes update/delete targets and ref_column column references. Column fields use apply_changes snake_case names: uuid, table_uuid, name, type, is_pk, is_unique, is_not_null, is_increment, default_value, note, display_order. Index fields include uuid, name, columns (column UUIDs), is_unique, is_pk, type."
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_list_enums",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_list_refs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_list_table_groups",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__erd_list_tables",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "ERD document UUID"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__readme_append_document",
+      "description": "Append to README documents. If the appended body is tens of KB or more, prefer request_upload_token (purpose=document.append) and upload the body with curl.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Appends",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Document UUID"
+                },
+                "addition": {
+                  "type": "string",
+                  "description": "Body addition. 추가할 내용이 크면 (수십 KB 이상) LLM 토큰 절약을 위해 `request_upload_token (purpose=document.append, scopeJson={documentUuid, separator})` 로 uploadUrl 을 받고 curl 로 PUT 으로 보낼 것."
+                },
+                "separator": {
+                  "type": "string",
+                  "description": "Separator between existing body and addition"
+                }
+              },
+              "required": [
+                "uuid",
+                "addition"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__create_documents",
+      "description": "Create documents. If a document body is tens of KB or more, prefer request_upload_token (purpose=document.create) and upload the body with curl.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Documents",
+            "items": {
+              "type": "object",
+              "properties": {
+                "projectUuid": {
+                  "type": "string",
+                  "description": "Project UUID"
+                },
+                "folderUuid": {
+                  "type": "string",
+                  "description": "Optional folder UUID"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Document type. Enabled values: erd, readme, testcase, task.",
+                  "enum": [
+                    "erd",
+                    "readme",
+                    "testcase",
+                    "task"
+                  ]
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Document title"
+                },
+                "typePayload": {
+                  "type": "object",
+                  "description": "Type-specific payload for enabled document types. readme: {body}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
+                },
+                "body": {
+                  "type": "string",
+                  "description": "Deprecated compatibility alias for typePayload.body when document type is readme. 본문이 수십 KB 이상으로 크면 LLM 토큰 절약을 위해 `request_upload_token (purpose=document.create)` 를 호출해 uploadUrl 을 받고 curl 로 직접 PUT 으로 보낼 것."
+                }
+              },
+              "required": [
+                "projectUuid",
+                "type",
+                "title"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__create_folders",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Folders",
+            "items": {
+              "type": "object",
+              "properties": {
+                "projectUuid": {
+                  "type": "string",
+                  "description": "Project UUID"
+                },
+                "parentFolderUuid": {
+                  "type": "string",
+                  "description": "Parent folder UUID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Folder name"
+                }
+              },
+              "required": [
+                "projectUuid",
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__create_projects",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Projects",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workspaceUuid": {
+                  "type": "string",
+                  "description": "Workspace UUID — null uses user's default workspace"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Project name"
+                },
+                "projectKey": {
+                  "type": "string",
+                  "description": "Unique project key"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Description"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__create_workspaces",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Workspaces",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Workspace name"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Description"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__delete_attachments",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Attachment UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__delete_documents",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Document UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__delete_folders",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Folder UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__delete_projects",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Project UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__delete_workspaces",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Workspace UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__disable_shares",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "targetType": {
+            "type": "string",
+            "description": "Share target type",
+            "enum": [
+              "project",
+              "folder",
+              "document"
+            ]
+          },
+          "targetUuids": {
+            "type": "array",
+            "description": "Target UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "targetType",
+          "targetUuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__enable_shares",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "targetType": {
+            "type": "string",
+            "description": "Share target type",
+            "enum": [
+              "project",
+              "folder",
+              "document"
+            ]
+          },
+          "targetUuids": {
+            "type": "array",
+            "description": "Target UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "targetType",
+          "targetUuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__readme_generate_document",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Generation requests",
+            "items": {
+              "type": "object",
+              "properties": {
+                "documentUuid": {
+                  "type": "string",
+                  "description": "Target document UUID"
+                },
+                "prompt": {
+                  "type": "string",
+                  "description": "Generation prompt"
+                },
+                "context": {
+                  "type": "string",
+                  "description": "Optional JSON context"
+                }
+              },
+              "required": [
+                "documentUuid",
+                "prompt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__get_attachment",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "description": "Attachment UUID"
+          }
+        },
+        "required": [
+          "uuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__get_document",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "description": "Document UUID"
+          }
+        },
+        "required": [
+          "uuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__get_project",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "description": "Project UUID"
+          }
+        },
+        "required": [
+          "uuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__get_version",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID"
+          },
+          "versionNumber": {
+            "type": "integer",
+            "description": "Version number"
+          }
+        },
+        "required": [
+          "documentUuid",
+          "versionNumber"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__get_workspace",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "description": "Workspace UUID"
+          }
+        },
+        "required": [
+          "uuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__list_attachments",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectUuid": {
+            "type": "string",
+            "description": "Project UUID"
+          }
+        },
+        "required": [
+          "projectUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__list_documents",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectUuid": {
+            "type": "string",
+            "description": "Project UUID"
+          },
+          "folderUuid": {
+            "type": "string",
+            "description": "Optional folder UUID"
+          },
+          "type": {
+            "type": "string",
+            "description": "Optional document type filter. Enabled values: erd, readme, testcase, task.",
+            "enum": [
+              "erd",
+              "readme",
+              "testcase",
+              "task"
+            ]
+          },
+          "q": {
+            "type": "string",
+            "description": "Optional full-text query. When provided, results come from the search index instead of folder listing."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Result cap when q is set (default 50)"
+          }
+        }
+      }
+    },
+    {
+      "name": "mcp__ainecto__list_folders",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectUuid": {
+            "type": "string",
+            "description": "Project UUID"
+          }
+        },
+        "required": [
+          "projectUuid"
+        ]
+      }
+    },
+    {
       "name": "mcp__ainecto__list_projects",
-      "description": "List projects visible to the authenticated user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workspaceUuid": {
+            "type": "string",
+            "description": "Optional Workspace UUID"
+          },
+          "q": {
+            "type": "string",
+            "description": "Optional full-text query"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Result cap when q is set (default 50)"
+          }
+        }
+      }
+    },
+    {
+      "name": "mcp__ainecto__list_trash",
       "inputSchema": {
         "type": "object",
         "properties": {}
+      }
+    },
+    {
+      "name": "mcp__ainecto__list_versions",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__list_workspaces",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "mcp__ainecto__move_documents",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Moves",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Document UUID"
+                },
+                "newFolderUuid": {
+                  "type": "string",
+                  "description": "New folder UUID — null/empty for root"
+                }
+              },
+              "required": [
+                "uuid"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__move_folders",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Moves",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Folder UUID"
+                },
+                "newParentFolderUuid": {
+                  "type": "string",
+                  "description": "New parent UUID — null/empty for root"
+                }
+              },
+              "required": [
+                "uuid"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__request_upload_token",
+      "description": "Use this for large payloads of tens of KB or more to save LLM tokens. purpose=mcp.call returns a short-lived bearer token that can call any MCP tool, including mcp__ainecto__erd_apply_changes, via curl. purpose=document.create/update/append uploads document bodies directly to the upload endpoint with PUT/curl. Tokens are reusable for 5 minutes by default.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "description": "Token 용도. `mcp.call` 은 curl 로 /mcp 호출, `document.create/update/append` 는 PUT body 로 본문 업로드. 콘텐츠가 크면 (수십 KB 이상) LLM 토큰 절약을 위해 이 도구로 5분 재사용 토큰을 받고 curl 로 보내는 것을 강력 권장.",
+            "enum": [
+              "mcp.call",
+              "document.create",
+              "document.update",
+              "document.append"
+            ]
+          },
+          "scopeJson": {
+            "type": "string",
+            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 enabled type values 는 erd, readme, testcase, task. document.update/document.append 는 documentUuid 를 포함."
+          },
+          "maxBytes": {
+            "type": "integer",
+            "description": "최대 업로드 byte (서버 측 한도)"
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "description": "TTL (초). 기본 300 (5분)"
+          }
+        },
+        "required": [
+          "purpose"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__restore_versions",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Restores",
+            "items": {
+              "type": "object",
+              "properties": {
+                "documentUuid": {
+                  "type": "string",
+                  "description": "Document UUID"
+                },
+                "versionNumber": {
+                  "type": "integer",
+                  "description": "Version number to restore"
+                }
+              },
+              "required": [
+                "documentUuid",
+                "versionNumber"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__unarchive_documents",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Document UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__unarchive_folders",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Folder UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__unarchive_projects",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Project UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__unarchive_workspaces",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Workspace UUIDs",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "uuids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__update_documents",
+      "description": "Update documents. If a replacement body is tens of KB or more, prefer request_upload_token (purpose=document.update) and upload the body with curl.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Updates",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Document UUID"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "New title"
+                },
+                "typePayload": {
+                  "type": "object",
+                  "description": "Type-specific payload for enabled document types. readme: {body}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
+                },
+                "body": {
+                  "type": "string",
+                  "description": "Deprecated compatibility alias for typePayload.body when document type is readme. 본문이 수십 KB 이상으로 크면 LLM 토큰 절약을 위해 `request_upload_token (purpose=document.update)` 를 호출해 uploadUrl 을 받고 curl 로 직접 PUT 으로 보낼 것."
+                }
+              },
+              "required": [
+                "uuid"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__update_folders",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Updates",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Folder UUID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "New name"
+                }
+              },
+              "required": [
+                "uuid",
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__update_projects",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Updates",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Project UUID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "New name"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "New description"
+                }
+              },
+              "required": [
+                "uuid"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__update_workspaces",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Updates",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Workspace UUID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "New name"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "New description"
+                }
+              },
+              "required": [
+                "uuid"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__upload_attachments",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Attachments to register",
+            "items": {
+              "type": "object",
+              "properties": {
+                "documentUuid": {
+                  "type": "string",
+                  "description": "Parent document UUID"
+                },
+                "filename": {
+                  "type": "string",
+                  "description": "Original file name"
+                },
+                "storageKey": {
+                  "type": "string",
+                  "description": "Storage key (returned by request_upload_token)"
+                },
+                "contentType": {
+                  "type": "string",
+                  "description": "MIME type"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "description": "Size in bytes"
+                }
+              },
+              "required": [
+                "documentUuid",
+                "filename",
+                "storageKey"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__search_documents",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "description": "검색 키워드"
+          },
+          "type": {
+            "type": "string",
+            "description": "Optional document type filter. Enabled values: erd, readme, testcase, task.",
+            "enum": [
+              "erd",
+              "readme",
+              "testcase",
+              "task"
+            ]
+          },
+          "projectUuid": {
+            "type": "string",
+            "description": "특정 프로젝트로 한정 (선택)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "결과 개수 (기본 20, 최대 50)"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "페이지네이션 offset (기본 0)"
+          }
+        },
+        "required": [
+          "q"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__task_apply_changes",
+      "description": "Task CUD entry point. Applies one atomic batch using operation objects shaped exactly as {op, uuid, data}. There is no partial success mode; any validation failure aborts the whole batch.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Task document UUID"
+          },
+          "baseRevision": {
+            "type": "integer",
+            "description": "Current board revision from task_get_snapshot"
+          },
+          "clientMutationId": {
+            "type": "string",
+            "description": "Optional idempotency key. Visible ASCII, 1-128 chars; will become required in a later phase.",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$"
+          },
+          "operations": {
+            "type": "array",
+            "description": "Atomic batch. No partial success mode; validation failure aborts all operations.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "description": "Operation type",
+                  "enum": [
+                    "create_task",
+                    "update_task",
+                    "archive_task",
+                    "restore_task",
+                    "move_task",
+                    "transition_task",
+                    "assign_task",
+                    "schedule_task",
+                    "set_progress"
+                  ]
+                },
+                "uuid": {
+                  "type": "string",
+                  "description": "Task UUID. For create_task this is the client-generated UUID."
+                },
+                "data": {
+                  "type": "object",
+                  "description": "Operation payload. Keep all operation-specific fields inside data."
+                }
+              },
+              "required": [
+                "op",
+                "uuid",
+                "data"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "documentUuid",
+          "baseRevision",
+          "operations"
+        ],
+        "examples": [
+          {
+            "documentUuid": "task-document-uuid",
+            "baseRevision": 1,
+            "clientMutationId": "task-mutation-1",
+            "operations": [
+              {
+                "op": "create_task",
+                "uuid": "client-task-uuid",
+                "data": {
+                  "title": "Task title",
+                  "parentTaskUuid": null
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__task_get_snapshot",
+      "description": "Get one Task document snapshot. Returns board revision, statuses, tasks, member summaries, and permissions. Use before mutations to obtain baseRevision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Task document UUID"
+          },
+          "includeArchived": {
+            "type": "boolean",
+            "description": "Whether to include archived tasks"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum tasks to return; defaults to server snapshot cap"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__task_get_task",
+      "description": "Get one task by UUID from a Task document.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Task document UUID"
+          },
+          "taskUuid": {
+            "type": "string",
+            "description": "Task UUID"
+          }
+        },
+        "required": [
+          "documentUuid",
+          "taskUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__task_list_statuses",
+      "description": "List statuses for a Task document. Status slug is intentionally not returned.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Task document UUID"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__task_list_tasks",
+      "description": "List tasks in a Task document with optional parent/status/assignee filters.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Task document UUID"
+          },
+          "parentTaskUuid": {
+            "type": "string",
+            "description": "Optional parent filter"
+          },
+          "statusUuid": {
+            "type": "string",
+            "description": "Optional status filter"
+          },
+          "assigneeUserId": {
+            "type": "string",
+            "description": "Optional assignee user id filter"
+          },
+          "includeArchived": {
+            "type": "boolean",
+            "description": "Whether to include archived tasks"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum tasks to return"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_archive_scenarios",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "description": "Scenario ids",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_complete_runs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "description": "Run ids",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_create_runs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Runs",
+            "items": {
+              "type": "object",
+              "properties": {
+                "projectId": {
+                  "type": "integer",
+                  "description": "Project id"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Run name"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Description"
+                },
+                "environment": {
+                  "type": "string",
+                  "description": "Environment"
+                },
+                "buildVersion": {
+                  "type": "string",
+                  "description": "Build version"
+                },
+                "testAccount": {
+                  "type": "string",
+                  "description": "SUT test account"
+                },
+                "testCaseIds": {
+                  "type": "array",
+                  "description": "Test case ids to attach",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "required": [
+                "projectId",
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_create_scenarios",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Scenarios",
+            "items": {
+              "type": "object",
+              "properties": {
+                "documentUuid": {
+                  "type": "string",
+                  "description": "Parent testcase document UUID"
+                },
+                "parentId": {
+                  "type": "integer",
+                  "description": "Parent scenario id"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Scenario name"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Description"
+                }
+              },
+              "required": [
+                "documentUuid",
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_create_testcases",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Testcases",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scenarioId": {
+                  "type": "integer",
+                  "description": "Scenario id (required)"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Title"
+                },
+                "precondition": {
+                  "type": "string",
+                  "description": "Precondition"
+                },
+                "expectedResult": {
+                  "type": "string",
+                  "description": "Expected result"
+                },
+                "priority": {
+                  "type": "string",
+                  "description": "Priority",
+                  "enum": [
+                    "LOW",
+                    "MEDIUM",
+                    "HIGH",
+                    "CRITICAL"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Status",
+                  "enum": [
+                    "DRAFT",
+                    "READY",
+                    "DEPRECATED"
+                  ]
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Type",
+                  "enum": [
+                    "FUNCTIONAL",
+                    "REGRESSION",
+                    "SMOKE",
+                    "PERFORMANCE",
+                    "SECURITY",
+                    "E2E",
+                    "UNIT",
+                    "INTEGRATION"
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "description": "Source",
+                  "enum": [
+                    "MANUAL",
+                    "AI",
+                    "IMPORT",
+                    "MCP"
+                  ]
+                },
+                "tags": {
+                  "type": "string",
+                  "description": "Tags"
+                },
+                "assigneeId": {
+                  "type": "string",
+                  "description": "Assignee user id"
+                },
+                "testAccount": {
+                  "type": "string",
+                  "description": "SUT test account"
+                }
+              },
+              "required": [
+                "scenarioId",
+                "title"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_delete_runs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "description": "Run ids",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_delete_testcases",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "description": "Testcase ids",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_get_run",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Run id"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_get_testcase",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Testcase id"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_list_executions",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "integer",
+            "description": "Run id"
+          }
+        },
+        "required": [
+          "runId"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_list_runs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "integer",
+            "description": "Project id"
+          }
+        },
+        "required": [
+          "projectId"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_list_scenarios",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Parent testcase document UUID"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_list_step_checks",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "integer",
+            "description": "Run id"
+          },
+          "caseId": {
+            "type": "integer",
+            "description": "Testcase id"
+          }
+        },
+        "required": [
+          "runId",
+          "caseId"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_list_testcases",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Parent testcase document UUID"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_record_executions",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Executions",
+            "items": {
+              "type": "object",
+              "properties": {
+                "runId": {
+                  "type": "integer",
+                  "description": "Run id"
+                },
+                "testCaseId": {
+                  "type": "integer",
+                  "description": "Testcase id"
+                },
+                "result": {
+                  "type": "string",
+                  "description": "Result",
+                  "enum": [
+                    "PASSED",
+                    "FAILED",
+                    "BLOCKED",
+                    "SKIPPED",
+                    "UNTESTED",
+                    "IN_PROGRESS"
+                  ]
+                },
+                "comment": {
+                  "type": "string",
+                  "description": "Comment"
+                },
+                "defectLinks": {
+                  "type": "string",
+                  "description": "Defect URLs"
+                },
+                "durationSeconds": {
+                  "type": "integer",
+                  "description": "Duration in seconds"
+                },
+                "testAccount": {
+                  "type": "string",
+                  "description": "SUT account"
+                }
+              },
+              "required": [
+                "runId",
+                "testCaseId",
+                "result"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_remove_run_cases",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "integer",
+            "description": "Run id"
+          },
+          "testCaseIds": {
+            "type": "array",
+            "description": "Testcase ids to remove",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "runId",
+          "testCaseIds"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_reorder_scenarios",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "description": "Scenario ids in new order",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_reorder_testcases",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "description": "Testcase ids in new order",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_update_runs",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Updates",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "description": "Run id"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "New name"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "New description"
+                },
+                "environment": {
+                  "type": "string",
+                  "description": "New environment"
+                },
+                "buildVersion": {
+                  "type": "string",
+                  "description": "New build version"
+                },
+                "testAccount": {
+                  "type": "string",
+                  "description": "New SUT account"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "New status",
+                  "enum": [
+                    "DRAFT",
+                    "IN_PROGRESS",
+                    "COMPLETED",
+                    "CANCELLED"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_update_scenarios",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Updates",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "description": "Scenario id"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "New name"
+                },
+                "parentId": {
+                  "type": "integer",
+                  "description": "New parent id"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_update_testcases",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Updates",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "description": "Testcase id"
+                },
+                "scenarioId": {
+                  "type": "integer",
+                  "description": "New scenario id"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "New title"
+                },
+                "precondition": {
+                  "type": "string",
+                  "description": "New precondition"
+                },
+                "expectedResult": {
+                  "type": "string",
+                  "description": "New expected result"
+                },
+                "priority": {
+                  "type": "string",
+                  "description": "Priority",
+                  "enum": [
+                    "LOW",
+                    "MEDIUM",
+                    "HIGH",
+                    "CRITICAL"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Status",
+                  "enum": [
+                    "DRAFT",
+                    "READY",
+                    "DEPRECATED"
+                  ]
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Type",
+                  "enum": [
+                    "FUNCTIONAL",
+                    "REGRESSION",
+                    "SMOKE",
+                    "PERFORMANCE",
+                    "SECURITY",
+                    "E2E",
+                    "UNIT",
+                    "INTEGRATION"
+                  ]
+                },
+                "tags": {
+                  "type": "string",
+                  "description": "Tags"
+                },
+                "assigneeId": {
+                  "type": "string",
+                  "description": "Assignee"
+                },
+                "testAccount": {
+                  "type": "string",
+                  "description": "SUT account"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__testcase_upsert_step_checks",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "integer",
+            "description": "Run id"
+          },
+          "caseId": {
+            "type": "integer",
+            "description": "Testcase id"
+          },
+          "items": {
+            "type": "array",
+            "description": "Step checks",
+            "items": {
+              "type": "object",
+              "properties": {
+                "stepId": {
+                  "type": "integer",
+                  "description": "TestStep id"
+                },
+                "checked": {
+                  "type": "boolean",
+                  "description": "Checked state"
+                },
+                "comment": {
+                  "type": "string",
+                  "description": "Per-step note"
+                }
+              },
+              "required": [
+                "stepId",
+                "checked"
+              ]
+            }
+          }
+        },
+        "required": [
+          "runId",
+          "caseId",
+          "items"
+        ]
       }
     }
   ]

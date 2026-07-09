@@ -51,15 +51,16 @@ The connector proxies `initialize`, `tools/list`, and `tools/call` to the resolv
 ## Catalog Sync
 
 `sync:tools --check` is intended for publish-time live drift checks. It fails fast when `AINECTO_CATALOG_SYNC_TOKEN` is missing, so automatic publish cannot silently fall back to fixtures.
+For local development, `sync:tools` can also use credentials from `ainecto auth login --env <env>`.
 
 ```bash
 AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env prod --check
 AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env dev --check
 ```
 
-The checked-in generated catalogs are deterministic output from `tools/list` fixtures. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
+The checked-in generated catalogs are deterministic output from `tools/list`. The dev catalog has been live-synced from `https://dev.ainecto.com/mcp`; the prod catalog remains a seed fixture until prod auth is available. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
 
-`ainecto tools catalog` prints the local generated catalog. In the Phase 1 seed state, that output is fixture-only until authenticated live sync updates the generated prod/dev catalogs.
+`ainecto tools catalog` prints the local generated catalog. Prod output is fixture-only until authenticated prod live sync updates `generated.prod.ts` and `tools-list.prod.json`.
 
 ## Local Tarball Smoke
 

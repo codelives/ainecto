@@ -109,9 +109,12 @@ async function handleTools(
   }
 
   if (action === "catalog") {
+    const catalogEnv = parsed.env ?? "prod";
     io.stdout.write(renderSuccess(getGeneratedTools(parsed.env ?? "prod"), {
       json: parsed.json,
-      warnings: ["Local generated catalog is seed fixture only until live sync updates generated catalogs."],
+      warnings: [catalogEnv === "dev"
+        ? "Local dev catalog is a checked-in live sync snapshot; rerun sync:tools --env dev to refresh it."
+        : "Local prod catalog is seed fixture only until authenticated prod live sync updates generated catalogs."],
     }));
     return 0;
   }
