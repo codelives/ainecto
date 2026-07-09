@@ -18,6 +18,7 @@ export interface OAuthMetadata {
   tokenEndpoint: string;
   registrationEndpoint?: string;
   issuer?: string;
+  codeChallengeMethodsSupported: string[];
 }
 
 export interface TokenProvider {
@@ -64,7 +65,8 @@ export class OAuthClient implements TokenProvider {
 
   async login(): Promise<StoredTokenSet> {
     const pkce = generatePkcePair();
-    const loopback = await createLoopbackReceiver();
+    const state = generateOAuthState();
+    const loopback = await createLoopbackReceiver(state);
 
     try {
       const metadata = await discoverOAuthMetadata(this.options.endpoint, this.fetchImpl);
@@ -78,6 +80,7 @@ export class OAuthClient implements TokenProvider {
       authorizeUrl.searchParams.set("code_challenge", pkce.codeChallenge);
       authorizeUrl.searchParams.set("code_challenge_method", "S256");
       authorizeUrl.searchParams.set("resource", this.options.endpoint);
+      authorizeUrl.searchParams.set("state", state);
 
       await this.openBrowserImpl(authorizeUrl.toString());
       const code = await loopback.waitForCode();
@@ -127,6 +130,10 @@ export function generatePkcePair(): { codeVerifier: string; codeChallenge: strin
   return { codeVerifier, codeChallenge };
 }
 
+export function generateOAuthState(): string {
+  return randomBytes(32).toString("base64url");
+}
+
 export function shouldRefresh(token: Pick<StoredTokenSet, "expiresAt">, now = Date.now()): boolean {
   if (!token.expiresAt) {
     return false;
@@ -149,11 +156,16 @@ export async function discoverOAuthMetadata(endpoint: string, fetchImpl: typeof 
   if (typeof metadata.authorization_endpoint !== "string" || typeof metadata.token_endpoint !== "string") {
     throw new Error("OAuth authorization server metadata is missing authorization_endpoint or token_endpoint.");
   }
+  const codeChallengeMethodsSupported = parseStringArray(metadata.code_challenge_methods_supported);
+  if (!codeChallengeMethodsSupported.includes("S256")) {
+    throw new Error("OAuth authorization server metadata must support PKCE S256.");
+  }
   return {
     authorizationEndpoint: metadata.authorization_endpoint,
     tokenEndpoint: metadata.token_endpoint,
     registrationEndpoint: typeof metadata.registration_endpoint === "string" ? metadata.registration_endpoint : undefined,
     issuer: typeof metadata.issuer === "string" ? metadata.issuer : undefined,
+    codeChallengeMethodsSupported,
   };
 }
 
@@ -217,7 +229,7 @@ function toStoredToken(
   };
 }
 
-async function createLoopbackReceiver(): Promise<{
+async function createLoopbackReceiver(expectedState: string): Promise<{
   redirectUri: string;
   waitForCode(): Promise<string>;
   close(): Promise<void>;
@@ -228,15 +240,23 @@ async function createLoopbackReceiver(): Promise<{
     resolveCode = resolve;
     rejectCode = reject;
   });
+  codePromise.catch(() => undefined);
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const error = url.searchParams.get("error");
     const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
     if (error) {
       res.writeHead(400, { "content-type": "text/plain" });
       res.end("Ainecto CLI authorization failed. You can close this tab.");
       rejectCode(new Error(`OAuth authorization failed: ${error}`));
+      return;
+    }
+    if (!state || state !== expectedState) {
+      res.writeHead(400, { "content-type": "text/plain" });
+      res.end("Ainecto CLI authorization state mismatch. You can close this tab.");
+      rejectCode(new Error("OAuth state mismatch."));
       return;
     }
     if (!code) {
@@ -260,6 +280,10 @@ async function createLoopbackReceiver(): Promise<{
     waitForCode: () => codePromise,
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
+}
+
+function parseStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 async function fetchJson<T>(url: string, fetchImpl: typeof fetch): Promise<T> {

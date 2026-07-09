@@ -14,8 +14,9 @@ export interface CliIO {
 }
 
 export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> {
-  const parsed = parseGlobalArgs(argv);
+  let parsed: GlobalArgs = { json: argv.includes("--json"), help: false, positionals: [] };
   try {
+    parsed = parseGlobalArgs(argv);
     if (parsed.help || parsed.positionals.length === 0) {
       io.stdout.write(helpText());
       return 0;
@@ -108,7 +109,10 @@ async function handleTools(
   }
 
   if (action === "catalog") {
-    io.stdout.write(renderSuccess(getGeneratedTools(parsed.env ?? "prod"), { json: parsed.json }));
+    io.stdout.write(renderSuccess(getGeneratedTools(parsed.env ?? "prod"), {
+      json: parsed.json,
+      warnings: ["Local generated catalog is seed fixture only until live sync updates generated catalogs."],
+    }));
     return 0;
   }
 
@@ -131,7 +135,7 @@ function parseGlobalArgs(argv: string[]): GlobalArgs {
       continue;
     }
     if (arg === "--env") {
-      result.env = assertEnv(argv[++index]);
+      result.env = assertEnv(requireValue(arg, argv[++index]));
     } else if (arg === "--endpoint") {
       result.endpoint = requireValue(arg, argv[++index]);
     } else if (arg === "--json") {
@@ -166,7 +170,7 @@ function parsePayloadArgs(argv: string[]): { file?: string; inline?: string } {
 }
 
 function requireValue(flag: string, value: string | undefined): string {
-  if (!value) {
+  if (!value || value.startsWith("--")) {
     throw new Error(`${flag} requires a value.`);
   }
   return value;
