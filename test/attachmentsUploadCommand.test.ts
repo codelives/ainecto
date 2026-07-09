@@ -37,11 +37,11 @@ describe("attachments upload command", () => {
       const body = parseJsonRpcBody(init);
       calls.push(body);
       if (body.params.name === "mcp__ainecto__request_upload_token") {
-        return jsonRpcResult(body.id, {
+        return jsonRpcResult(body.id, toolContent({
           token: "upload-token-redacted",
           uploadUrl: "https://uploads.example.test/put",
           storageKey: "server-storage-key",
-        });
+        }));
       }
       if (body.params.name === "mcp__ainecto__upload_attachments") {
         return jsonRpcResult(body.id, {
@@ -423,6 +423,15 @@ function parseJsonRpcBody(init: RequestInit | undefined): JsonRpcCall {
 
 function jsonRpcResult(id: string | number, result: unknown): Response {
   return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }));
+}
+
+function toolContent(value: unknown): unknown {
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify(value),
+    }],
+  };
 }
 
 function createIo(stdinText = "") {

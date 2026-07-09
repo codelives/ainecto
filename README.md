@@ -110,6 +110,17 @@ npm run smoke:mcp -- --env dev
 
 The smoke initializes MCP, reads `tools/list`, calls `mcp__ainecto__list_projects`, and prints only aggregate metadata such as tool count and Task tool exposure.
 
+## Local Attachment Upload Smoke
+
+This exercises the full `attachments upload` flow against a local `ainecto-api` dev server:
+OAuth MCP token issue, REST fixture document creation, CLI upload, `list_attachments`, and server filesystem byte verification.
+
+```bash
+npm run smoke:attachments -- --base-url http://localhost:8080 --endpoint http://localhost:8080/mcp --api-root /Users/ryan/project/workspace/codelive/ainecto-api
+```
+
+The smoke creates a temporary user/workspace/project/document and removes the fixture account, local temp file, and stored upload file unless `--keep` is supplied.
+
 ## Known Limitations
 
 - The MCP connector currently implements newline-delimited stdio JSON-RPC to HTTP JSON-RPC. Streamable HTTP SSE responses and `MCP-Session-Id` session handling are not implemented in Phase 1.

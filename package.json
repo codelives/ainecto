@@ -21,6 +21,7 @@
     "test": "vitest run",
     "sync:tools": "tsx scripts/sync-tools.ts",
     "smoke:mcp": "tsx scripts/smoke-mcp.ts",
+    "smoke:attachments": "tsx scripts/smoke-attachment-upload.ts",
     "catalog:fixture": "vitest run test/catalog.test.ts",
     "prepack": "npm run typecheck && npm test && npm run build"
   },
