@@ -240,6 +240,51 @@ describe("attachments upload command", () => {
     expect((calls[3] as JsonRpcCall).params.name).toBe("mcp__ainecto__upload_attachments");
   });
 
+  it("wraps repeated PUT network failures in an upload-specific error", async () => {
+    const filePath = createTempFile("notes.txt", "hello");
+    let putAttempts = 0;
+    const calls: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putAttempts += 1;
+        throw new Error("network down");
+      }
+
+      const body = parseJsonRpcBody(init);
+      calls.push(body);
+      return jsonRpcResult(body.id, {
+        token: "upload-token-redacted",
+        uploadUrl: "https://uploads.example.test/put",
+        storageKey: "server-storage-key",
+      });
+    }));
+    process.env.AINECTO_TOKEN = "redacted";
+    const io = createIo();
+
+    await expect(runAinectoCli([
+      "attachments",
+      "upload",
+      "--env",
+      "dev",
+      "--document-uuid",
+      "doc-1",
+      filePath,
+      "--json",
+    ], io)).resolves.toBe(1);
+
+    expect(putAttempts).toBe(3);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(io.stderrText())).toMatchObject({
+      ok: false,
+      error: {
+        code: "ATTACHMENT_UPLOAD_FAILED",
+        details: {
+          cause: "network down",
+        },
+      },
+    });
+  });
+
   it("writes progress to stderr in human mode", async () => {
     const filePath = createTempFile("notes.txt", "hello");
     vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

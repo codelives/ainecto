@@ -236,10 +236,13 @@ async function putAttachmentBytes(
       }
       return parsePutResponse(await response.text());
     } catch (error) {
-      if (error instanceof AttachmentUploadError || attempt === maxAttempts) {
+      if (error instanceof AttachmentUploadError) {
         throw error;
       }
       lastRetryableError = error;
+      if (attempt === maxAttempts) {
+        break;
+      }
     }
   }
   throw new AttachmentUploadError("ATTACHMENT_UPLOAD_FAILED", "Attachment upload failed.", {
