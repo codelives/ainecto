@@ -72,9 +72,9 @@ Recommended Phase 2 MVP includes:
   - `erd list-tables|get-table|list-refs|get-ref|list-enums|get-enum|list-table-groups|get-table-group|arrange-tables|apply-changes`
 - Task:
   - `task list-tasks|get-task|list-statuses|get-snapshot|apply-changes`
-- Readme:
-  - `readme generate-document`
-  - `readme append-document`
+- Markdown:
+  - `markdown generate-document`
+  - `markdown append-document`
 - Attachment:
   - `attachments list|get|delete`
   - bespoke `attachments upload`
@@ -294,7 +294,7 @@ Reviewer/tester handoff after implementation:
 ## User Decisions Needed
 
 1. Phase 2 MVP breadth:
-   - Recommended: universal generated router for all 76 tools, polished UX for backbone/ERD/Task/Readme/Attachment, testcase polish deferred.
+   - Recommended: universal generated router for all 76 tools, polished UX for backbone/ERD/Task/Markdown/Attachment, testcase polish deferred.
    - Alternative: only implement backbone + attachment now, leaving all other friendly command paths for later.
 2. Attachment upload token contract:
    - Confirm existing `request_upload_token` purpose/scope for attachments, or approve backend/API follow-up for `attachment.upload`.

@@ -50,7 +50,7 @@ export function inferGroup(strippedName: string): ToolGroup {
   if (strippedName.startsWith("erd_")) return "erd";
   if (strippedName.startsWith("flow_")) return "flow";
   if (strippedName.startsWith("testcase_")) return "testcase";
-  if (strippedName.startsWith("readme_")) return "readme";
+  if (strippedName.startsWith("markdown_")) return "markdown";
   if (strippedName.includes("attachment") || strippedName.includes("upload")) return "attachment";
   if (strippedName.startsWith("task_")) return "task";
   if (strippedName.includes("workspace")) return "workspace";

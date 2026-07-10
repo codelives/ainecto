@@ -2492,8 +2492,8 @@
       }
     },
     {
-      "name": "mcp__ainecto__readme_append_document",
-      "description": "Append to README documents. If the appended body is tens of KB or more, prefer request_upload_token (purpose=document.append) and upload the body with curl.",
+      "name": "mcp__ainecto__markdown_append_document",
+      "description": "Append to Markdown documents. If the appended body is tens of KB or more, prefer request_upload_token (purpose=document.append) and upload the body with curl.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2550,10 +2550,10 @@
                 },
                 "type": {
                   "type": "string",
-                  "description": "Document type. Enabled values: erd, readme, testcase, task.",
+                  "description": "Document type. Enabled values: erd, markdown, testcase, task.",
                   "enum": [
                     "erd",
-                    "readme",
+                    "markdown",
                     "testcase",
                     "task"
                   ]
@@ -2564,11 +2564,11 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. readme: {body}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
                 },
                 "body": {
                   "type": "string",
-                  "description": "Deprecated compatibility alias for typePayload.body when document type is readme. 본문이 수십 KB 이상으로 크면 LLM 토큰 절약을 위해 `request_upload_token (purpose=document.create)` 를 호출해 uploadUrl 을 받고 curl 로 직접 PUT 으로 보낼 것."
+                  "description": "Deprecated compatibility alias for typePayload.body when document type is markdown. 본문이 수십 KB 이상으로 크면 LLM 토큰 절약을 위해 `request_upload_token (purpose=document.create)` 를 호출해 uploadUrl 을 받고 curl 로 직접 PUT 으로 보낼 것."
                 }
               },
               "required": [
@@ -2837,7 +2837,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__readme_generate_document",
+      "name": "mcp__ainecto__markdown_generate_document",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2982,10 +2982,10 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Enabled values: erd, readme, testcase, task.",
+            "description": "Optional document type filter. Enabled values: erd, markdown, testcase, task.",
             "enum": [
               "erd",
-              "readme",
+              "markdown",
               "testcase",
               "task"
             ]
@@ -3145,7 +3145,7 @@
           },
           "scopeJson": {
             "type": "string",
-            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 enabled type values 는 erd, readme, testcase, task. document.update/document.append 는 documentUuid 를 포함."
+            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 enabled type values 는 erd, markdown, testcase, task. document.update/document.append 는 documentUuid 를 포함."
           },
           "maxBytes": {
             "type": "integer",
@@ -3287,11 +3287,11 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. readme: {body}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
                 },
                 "body": {
                   "type": "string",
-                  "description": "Deprecated compatibility alias for typePayload.body when document type is readme. 본문이 수십 KB 이상으로 크면 LLM 토큰 절약을 위해 `request_upload_token (purpose=document.update)` 를 호출해 uploadUrl 을 받고 curl 로 직접 PUT 으로 보낼 것."
+                  "description": "Deprecated compatibility alias for typePayload.body when document type is markdown. 본문이 수십 KB 이상으로 크면 LLM 토큰 절약을 위해 `request_upload_token (purpose=document.update)` 를 호출해 uploadUrl 을 받고 curl 로 직접 PUT 으로 보낼 것."
                 }
               },
               "required": [
@@ -3463,10 +3463,10 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Enabled values: erd, readme, testcase, task.",
+            "description": "Optional document type filter. Enabled values: erd, markdown, testcase, task.",
             "enum": [
               "erd",
-              "readme",
+              "markdown",
               "testcase",
               "task"
             ]

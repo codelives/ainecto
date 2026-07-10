@@ -8,7 +8,7 @@ export type ToolGroup =
   | "flow"
   | "task"
   | "testcase"
-  | "readme"
+  | "markdown"
   | "attachment";
 
 export type PayloadMode = "flags" | "json" | "file-json" | "binary-upload";
