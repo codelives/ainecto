@@ -8,7 +8,7 @@ Status: prepared, not submitted
 - Registry name: `io.github.codelives/ainecto`
 - Namespace auth path: GitHub organization namespace `io.github.codelives/*`
 - npm package: `@ainecto/mcp`
-- Package version: `0.1.0`
+- Package version: `0.1.2`
 - Execution: `npx -y @ainecto/mcp`
 - Transport: stdio
 - Homepage: `https://ainecto.com`
@@ -75,13 +75,13 @@ mcp-publisher publish
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.codelives/ainecto"
 ```
 
-Current blocker: the already-published npm `@ainecto/mcp@0.1.0` artifact does not include `mcpName`. Publish a new npm artifact that contains `mcpName: "io.github.codelives/ainecto"` before attempting Registry publish.
+Current npm readiness: `@ainecto/mcp@0.1.2` is published and contains `mcpName: "io.github.codelives/ainecto"`. Registry publication still requires GitHub namespace authentication and `mcp-publisher publish`.
 
 ## Community Directory Mapping
 
 | Directory | Current path | Intake model | Action |
 | --- | --- | --- | --- |
-| Official MCP Registry | https://registry.modelcontextprotocol.io/ | `mcp-publisher` metadata publish after package verification | User/auth owner must publish after npm artifact includes `mcpName`. |
+| Official MCP Registry | https://registry.modelcontextprotocol.io/ | `mcp-publisher` metadata publish after package verification | User/auth owner must authenticate and publish the prepared metadata. |
 | PulseMCP | https://www.pulsemcp.com/submit | Ingests the official Registry daily and processes weekly; manual URL/email path for adjustments | Prefer official Registry first; email PulseMCP if a week passes or listing edits are needed. |
 | Glama | https://glama.ai/mcp/faq | Submit GitHub repo from the servers page; automated quality checks; optional `glama.json` metadata | User or maintainer can submit the public GitHub repo after Registry/npm readiness. |
 | MCP.so | https://mcp.so/submit | Public GitHub server submit form; draft completion publishes automatically | User or maintainer signs in and submits GitHub repository URL. |
@@ -92,7 +92,7 @@ Current blocker: the already-published npm `@ainecto/mcp@0.1.0` artifact does no
 ## User-Only Actions
 
 - Authenticate as a GitHub user or org member allowed to publish under `io.github.codelives/*`.
-- Publish an npm package version that includes `mcpName`. The existing `0.1.0` npm artifact lacks it.
+- Confirm the published npm package version referenced by `server.json` still contains the matching `mcpName`.
 - Run `mcp-publisher login github` and `mcp-publisher publish`.
 - Submit or claim listings in community directories that require account login, email, or ownership proof.
 

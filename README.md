@@ -80,7 +80,7 @@ For a non-production endpoint, pass CLI flags through the package args:
 }
 ```
 
-The planned official Registry server name is `io.github.codelives/ainecto`, backed by the public npm package `@ainecto/mcp`. Registry publication requires the npm package version to include a matching `mcpName` field in `package.json`; do not run `mcp-publisher publish` until the npm artifact contains that field.
+The planned official Registry server name is `io.github.codelives/ainecto`, backed by the public npm package `@ainecto/mcp`. Registry publication requires the npm package version referenced by `server.json` to include a matching `mcpName` field in `package.json`.
 
 ## Catalog Sync
 
@@ -126,8 +126,8 @@ The generated `request_upload_token` and `upload_attachments` paths remain raw M
 
 ```bash
 npm pack
-npx -y ./ainecto-mcp-0.1.0.tgz --help
-npm exec --package ./ainecto-mcp-0.1.0.tgz -- ainecto --help
+npx -y ./ainecto-mcp-0.1.2.tgz --help
+npm exec --package ./ainecto-mcp-0.1.2.tgz -- ainecto --help
 ```
 
 ## Live Dev MCP Smoke
@@ -155,4 +155,4 @@ The smoke creates a temporary user/workspace/project/document and removes the fi
 
 - The MCP connector currently implements newline-delimited stdio JSON-RPC to HTTP JSON-RPC. Streamable HTTP SSE responses and `MCP-Session-Id` session handling are not implemented in Phase 1.
 
-Official MCP Registry publish is blocked until a public npm artifact includes the matching `mcpName`, the GitHub namespace owner authenticates with `mcp-publisher`, and the server metadata is submitted.
+Official MCP Registry publish is pending GitHub namespace owner authentication with `mcp-publisher` and metadata submission.
