@@ -52,6 +52,36 @@ ainecto mcp --env dev
 
 The connector proxies `initialize`, `tools/list`, and `tools/call` to the resolved `/mcp` endpoint. It does not rewrite remote schemas or interpret local file references.
 
+## MCP Client Installation
+
+Use the direct package configuration until the server is published to the official MCP Registry.
+
+```json
+{
+  "mcpServers": {
+    "ainecto": {
+      "command": "npx",
+      "args": ["-y", "@ainecto/mcp"]
+    }
+  }
+}
+```
+
+For a non-production endpoint, pass CLI flags through the package args:
+
+```json
+{
+  "mcpServers": {
+    "ainecto-dev": {
+      "command": "npx",
+      "args": ["-y", "@ainecto/mcp", "--env", "dev"]
+    }
+  }
+}
+```
+
+The planned official Registry server name is `io.github.codelives/ainecto`, backed by the public npm package `@ainecto/mcp`. Registry publication requires the npm package version to include a matching `mcpName` field in `package.json`; do not run `mcp-publisher publish` until the npm artifact contains that field.
+
 ## Catalog Sync
 
 `sync:tools --check` is intended for publish-time live drift checks. It fails fast when `AINECTO_CATALOG_SYNC_TOKEN` is missing, so automatic publish cannot silently fall back to fixtures.
@@ -125,4 +155,4 @@ The smoke creates a temporary user/workspace/project/document and removes the fi
 
 - The MCP connector currently implements newline-delimited stdio JSON-RPC to HTTP JSON-RPC. Streamable HTTP SSE responses and `MCP-Session-Id` session handling are not implemented in Phase 1.
 
-Public publish is blocked until the npm `@ainecto` org and publish secrets are ready.
+Official MCP Registry publish is blocked until a public npm artifact includes the matching `mcpName`, the GitHub namespace owner authenticates with `mcp-publisher`, and the server metadata is submitted.

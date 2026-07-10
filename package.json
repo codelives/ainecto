@@ -2,8 +2,15 @@
   "name": "@ainecto/mcp",
   "version": "0.1.0",
   "description": "Ainecto MCP connector and first-party CLI.",
+  "mcpName": "io.github.codelives/ainecto",
   "type": "module",
   "private": false,
+  "license": "UNLICENSED",
+  "homepage": "https://ainecto.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codelives/ainecto.git"
+  },
   "engines": {
     "node": ">=18"
   },
