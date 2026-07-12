@@ -126,8 +126,8 @@ The generated `request_upload_token` and `upload_attachments` paths remain raw M
 
 ```bash
 npm pack
-npx -y ./ainecto-mcp-0.1.2.tgz --help
-npm exec --package ./ainecto-mcp-0.1.2.tgz -- ainecto --help
+npx -y ./ainecto-mcp-0.1.3.tgz --help
+npm exec --package ./ainecto-mcp-0.1.3.tgz -- ainecto --help
 ```
 
 ## Live Dev MCP Smoke

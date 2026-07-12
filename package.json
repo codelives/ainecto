@@ -1,6 +1,6 @@
 {
   "name": "@ainecto/mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Ainecto MCP connector and first-party CLI.",
   "mcpName": "io.github.codelives/ainecto",
   "type": "module",

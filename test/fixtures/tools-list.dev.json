@@ -1,6 +1,373 @@
 {
   "tools": [
     {
+      "name": "mcp__ainecto__diagram_apply_changes",
+      "description": "Required single-call mutation path for diagram node/edge/group create/update/delete changes. Put nodes, edges, and groups in one request and call this once. Do not look for type-specific diagram CUD tools; this tool is the only diagram CUD entry point.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "diagramUuid": {
+            "type": "string",
+            "description": "Diagram UUID"
+          },
+          "description": {
+            "type": "string",
+            "description": "Reason for batch (audit)"
+          },
+          "nodes": {
+            "type": "array",
+            "description": "Node operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Operation kind",
+                  "enum": [
+                    "create",
+                    "update",
+                    "delete"
+                  ]
+                },
+                "uuid": {
+                  "type": "string",
+                  "description": "Required for update/delete; optional for create"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Node type"
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 4000,
+                  "description": "Node text/label. Supports newlines (\\n) for multi-line display."
+                },
+                "shape": {
+                  "type": "string",
+                  "description": "Node shape (start/end/diamond/cylinder/parallelogram/stadium/hexagon/rect/roundRect/...)",
+                  "enum": [
+                    "rect",
+                    "roundRect",
+                    "stadium",
+                    "diamond",
+                    "decision",
+                    "circle",
+                    "start",
+                    "doubleCircle",
+                    "end",
+                    "hexagon",
+                    "cylinder",
+                    "parallelogram"
+                  ]
+                },
+                "x": {
+                  "type": "number",
+                  "description": "X"
+                },
+                "y": {
+                  "type": "number",
+                  "description": "Y"
+                },
+                "width": {
+                  "type": "number",
+                  "description": "Width"
+                },
+                "height": {
+                  "type": "number",
+                  "description": "Height"
+                },
+                "groupUuid": {
+                  "type": "string",
+                  "description": "Group UUID; empty string clears membership"
+                },
+                "fillColor": {
+                  "type": "string",
+                  "description": "Fill color"
+                },
+                "strokeColor": {
+                  "type": "string",
+                  "description": "Stroke color"
+                },
+                "textColor": {
+                  "type": "string",
+                  "description": "Text color"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          },
+          "edges": {
+            "type": "array",
+            "description": "Edge operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Operation kind",
+                  "enum": [
+                    "create",
+                    "update",
+                    "delete"
+                  ]
+                },
+                "uuid": {
+                  "type": "string",
+                  "description": "Required for update/delete"
+                },
+                "fromUuid": {
+                  "type": "string",
+                  "description": "Source"
+                },
+                "toUuid": {
+                  "type": "string",
+                  "description": "Target"
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Edge label"
+                },
+                "bridgeType": {
+                  "type": "string",
+                  "description": "Bridge type"
+                },
+                "strokeColor": {
+                  "type": "string",
+                  "description": "Stroke color"
+                },
+                "lineStyle": {
+                  "type": "string",
+                  "description": "Line style"
+                },
+                "strokeWidth": {
+                  "type": "integer",
+                  "description": "Stroke width"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          },
+          "groups": {
+            "type": "array",
+            "description": "Group operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Operation kind",
+                  "enum": [
+                    "create",
+                    "update",
+                    "delete"
+                  ]
+                },
+                "uuid": {
+                  "type": "string",
+                  "description": "Required for update/delete"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Group name"
+                },
+                "color": {
+                  "type": "string",
+                  "description": "Group color"
+                },
+                "parentGroupUuid": {
+                  "type": "string",
+                  "description": "Parent group UUID"
+                },
+                "collapsed": {
+                  "type": "boolean",
+                  "description": "Collapsed state"
+                },
+                "sortOrder": {
+                  "type": "integer",
+                  "description": "Sort order"
+                },
+                "linkedDiagramUuid": {
+                  "type": "string",
+                  "description": "Linked diagram UUID"
+                },
+                "linkMode": {
+                  "type": "string",
+                  "description": "Link mode"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          }
+        },
+        "required": [
+          "diagramUuid",
+          "description"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_get_edge",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "edgeUuid": {
+            "type": "string",
+            "description": "Edge UUID"
+          }
+        },
+        "required": [
+          "edgeUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_get_group",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "groupUuid": {
+            "type": "string",
+            "description": "Group UUID"
+          }
+        },
+        "required": [
+          "groupUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_get_node",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "nodeUuid": {
+            "type": "string",
+            "description": "Node UUID"
+          }
+        },
+        "required": [
+          "nodeUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_get_pending_llm_requests",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_list_edges",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "diagramUuid": {
+            "type": "string",
+            "description": "Diagram document UUID"
+          }
+        },
+        "required": [
+          "diagramUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_list_groups",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "diagramUuid": {
+            "type": "string",
+            "description": "Diagram document UUID"
+          }
+        },
+        "required": [
+          "diagramUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_list_nodes",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "diagramUuid": {
+            "type": "string",
+            "description": "Diagram document UUID"
+          }
+        },
+        "required": [
+          "diagramUuid"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_submit_llm_result",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "description": "LLM request UUID"
+          },
+          "result": {
+            "type": "string",
+            "description": "LLM result text"
+          },
+          "inputTokens": {
+            "type": "integer",
+            "description": "Input token count"
+          },
+          "outputTokens": {
+            "type": "integer",
+            "description": "Output token count"
+          },
+          "creditsCharged": {
+            "type": "integer",
+            "description": "Deprecated; ignored. Credits are calculated server-side from tokens."
+          }
+        },
+        "required": [
+          "uuid",
+          "result"
+        ]
+      }
+    },
+    {
+      "name": "mcp__ainecto__diagram_update_llm_request_status",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "description": "LLM request UUID"
+          },
+          "status": {
+            "type": "string",
+            "description": "Target status — currently only FAILED is mutable from caller side",
+            "enum": [
+              "FAILED"
+            ]
+          },
+          "errorMessage": {
+            "type": "string",
+            "description": "Error message (when status=FAILED)"
+          }
+        },
+        "required": [
+          "uuid",
+          "status"
+        ]
+      }
+    },
+    {
       "name": "mcp__ainecto__erd_arrange_tables",
       "description": "Arrange ERD tables after edits. Default incremental mode places newly-created tables while preserving existing positions; full=true re-layouts the entire diagram. Use after several separate table edits to tidy the canvas.",
       "inputSchema": {
@@ -2550,9 +2917,10 @@
                 },
                 "type": {
                   "type": "string",
-                  "description": "Document type. Enabled values: erd, markdown, testcase, task.",
+                  "description": "Document type. Enabled values: erd, diagram, markdown, testcase, task.",
                   "enum": [
                     "erd",
+                    "diagram",
                     "markdown",
                     "testcase",
                     "task"
@@ -2564,7 +2932,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
                 },
                 "body": {
                   "type": "string",
@@ -2982,9 +3350,10 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Enabled values: erd, markdown, testcase, task.",
+            "description": "Optional document type filter. Enabled values: erd, diagram, markdown, testcase, task.",
             "enum": [
               "erd",
+              "diagram",
               "markdown",
               "testcase",
               "task"
@@ -3083,12 +3452,27 @@
                 "newFolderUuid": {
                   "type": "string",
                   "description": "New folder UUID — null/empty for root"
+                },
+                "targetProjectUuid": {
+                  "type": "string",
+                  "description": "Target project UUID — omit to stay in current project"
+                },
+                "targetWorkspaceUuid": {
+                  "type": "string",
+                  "description": "Guard only: must match targetProjectUuid workspace"
                 }
               },
               "required": [
                 "uuid"
               ]
             }
+          },
+          "clientMutationId": {
+            "type": "string",
+            "description": "Optional mutation identifier for client retry tracing",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$"
           }
         },
         "required": [
@@ -3135,17 +3519,18 @@
         "properties": {
           "purpose": {
             "type": "string",
-            "description": "Token 용도. `mcp.call` 은 curl 로 /mcp 호출, `document.create/update/append` 는 PUT body 로 본문 업로드. 콘텐츠가 크면 (수십 KB 이상) LLM 토큰 절약을 위해 이 도구로 5분 재사용 토큰을 받고 curl 로 보내는 것을 강력 권장.",
+            "description": "Token 용도. `mcp.call` 은 curl 로 /mcp 호출, `document.create/update/append` 는 PUT body 로 본문 업로드, `attachment.upload` 는 파일 bytes 업로드. 콘텐츠가 크면 (수십 KB 이상) LLM 토큰 절약을 위해 이 도구로 5분 재사용 토큰을 받고 curl 로 보내는 것을 강력 권장.",
             "enum": [
               "mcp.call",
               "document.create",
               "document.update",
-              "document.append"
+              "document.append",
+              "attachment.upload"
             ]
           },
           "scopeJson": {
             "type": "string",
-            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 enabled type values 는 erd, markdown, testcase, task. document.update/document.append 는 documentUuid 를 포함."
+            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 enabled type values 는 erd, diagram, markdown, testcase, task. document.update/document.append 는 documentUuid 를 포함. attachment.upload: {documentUuid, filename, contentType?, sizeBytes?}; storageKey 는 서버가 발급 scope 에 추가."
           },
           "maxBytes": {
             "type": "integer",
@@ -3287,7 +3672,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; testcase: {defaultEnvironment (max 50 chars), defaultTestAccount (max 100 chars)}; task: no typePayload; board and default statuses are seeded automatically."
                 },
                 "body": {
                   "type": "string",
@@ -3428,7 +3813,7 @@
                 },
                 "storageKey": {
                   "type": "string",
-                  "description": "Storage key (returned by request_upload_token)"
+                  "description": "Storage key returned by request_upload_token purpose=attachment.upload"
                 },
                 "contentType": {
                   "type": "string",
@@ -3463,9 +3848,10 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Enabled values: erd, markdown, testcase, task.",
+            "description": "Optional document type filter. Enabled values: erd, diagram, markdown, testcase, task.",
             "enum": [
               "erd",
+              "diagram",
               "markdown",
               "testcase",
               "task"

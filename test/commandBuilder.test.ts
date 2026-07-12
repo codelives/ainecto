@@ -5,11 +5,11 @@ import { enrichments } from "../src/core/catalog/enrichments";
 
 describe("commandBuilder", () => {
   it("builds generated command descriptors without requiring enrichment", () => {
-    expect(buildCommandDescriptors(generatedTools, enrichments)).toEqual([
+    expect(buildCommandDescriptors(generatedTools, enrichments)).toContainEqual(
       expect.objectContaining({
         mcpName: "mcp__ainecto__list_projects",
         commandPath: ["projects", "list"],
       }),
-    ]);
+    );
   });
 });
