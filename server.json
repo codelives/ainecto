@@ -3,7 +3,7 @@
   "name": "io.github.codelives/ainecto",
   "title": "Ainecto",
   "description": "Ainecto MCP connector for workspace, document, ERD, diagram, task, and attachment workflows.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "websiteUrl": "https://ainecto.com",
   "repository": {
     "url": "https://github.com/codelives/ainecto",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@ainecto/mcp",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {

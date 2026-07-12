@@ -50,6 +50,7 @@ export class FileTokenStore implements TokenStore {
 
   private async readFile(): Promise<TokenFile> {
     try {
+      await this.hardenExistingPermissions();
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -73,6 +74,12 @@ export class FileTokenStore implements TokenStore {
     await rename(tmpPath, this.filePath);
     await chmod(this.filePath, 0o600);
   }
+
+  private async hardenExistingPermissions(): Promise<void> {
+    const dirPath = dirname(this.filePath);
+    await chmodIfPermissive(dirPath, 0o700);
+    await chmodIfPermissive(this.filePath, 0o600);
+  }
 }
 
 export function tokenKey(endpoint: string): string {
@@ -91,10 +98,28 @@ export async function tokenStorePermissions(path: string): Promise<{ mode: numbe
   }
 }
 
+export async function tokenStoreDirectoryPermissions(path: string): Promise<{ mode: number } | undefined> {
+  return tokenStorePermissions(dirname(path));
+}
+
 export async function removeTokenStoreForTests(path: string): Promise<void> {
   await rm(dirname(path), { recursive: true, force: true });
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === code;
+}
+
+async function chmodIfPermissive(path: string, mode: number): Promise<void> {
+  try {
+    const result = await stat(path);
+    if ((result.mode & 0o077) !== 0) {
+      await chmod(path, mode);
+    }
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      return;
+    }
+    throw error;
+  }
 }

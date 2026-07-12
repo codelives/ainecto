@@ -41,11 +41,15 @@ export function toErrorShape(error: unknown): CliErrorShape {
       error: {
         code: maybe.code ?? "CLI_ERROR",
         message: error.message,
-        details: maybe.details,
+        details: redactSecrets(maybe.details),
       },
     };
   }
   return { ok: false, error: { code: "CLI_ERROR", message: String(error) } };
+}
+
+export function redactSecrets(value: unknown): unknown {
+  return redactSecretsInner(value, new WeakSet<object>());
 }
 
 function renderHuman(data: unknown): string {
@@ -56,4 +60,42 @@ function renderHuman(data: unknown): string {
     return data;
   }
   return JSON.stringify(data, null, 2);
+}
+
+function redactSecretsInner(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === "string") {
+    return redactSecretString(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecretsInner(item, seen));
+  }
+  if (value && typeof value === "object") {
+    if (seen.has(value)) {
+      return "[circular]";
+    }
+    seen.add(value);
+    const output: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      output[key] = isSecretKey(key) ? "[redacted]" : redactSecretsInner(child, seen);
+    }
+    return output;
+  }
+  return value;
+}
+
+function isSecretKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/-/g, "_");
+  return normalized === "authorization"
+    || normalized.includes("access_token")
+    || normalized.includes("refresh_token")
+    || normalized.includes("client_secret")
+    || normalized.includes("token");
+}
+
+function redactSecretString(value: string): string {
+  return value
+    .replace(/("(?:authorization|access_token|refresh_token|client_secret|token)"\s*:\s*")([^"]*)(")/gi, "$1[redacted]$3")
+    .replace(/((?:authorization|access_token|refresh_token|client_secret|token)=)([^&\s"']+)/gi, "$1[redacted]")
+    .replace(/(authorization:\s*bearer\s+)([^\s,}]+)/gi, "$1[redacted]")
+    .replace(/(bearer\s+)(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/gi, "$1[redacted]");
 }

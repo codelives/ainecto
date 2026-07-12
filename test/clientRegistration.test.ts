@@ -17,4 +17,26 @@ describe("client registration", () => {
       fetchImpl,
     )).resolves.toEqual({ clientId: "registered-client" });
   });
+
+  it("rejects non-https registration endpoints", async () => {
+    const fetchImpl = vi.fn();
+
+    await expect(registerPublicClient(
+      "http://auth.example/register",
+      "http://127.0.0.1:1234/callback",
+      fetchImpl,
+    )).rejects.toThrow("must use https");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-loopback redirect URIs", async () => {
+    const fetchImpl = vi.fn();
+
+    await expect(registerPublicClient(
+      "https://auth.example/register",
+      "https://example.com/callback",
+      fetchImpl,
+    )).rejects.toThrow("loopback");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });

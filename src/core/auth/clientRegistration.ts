@@ -1,3 +1,5 @@
+import { assertLoopbackRedirectUrl, assertTrustedEndpointUrl } from "../config/endpoints";
+
 export interface ClientRegistrationResult {
   clientId: string;
   clientSecret?: string;
@@ -8,6 +10,8 @@ export async function registerPublicClient(
   redirectUri: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ClientRegistrationResult> {
+  assertTrustedEndpointUrl(registrationEndpoint, "OAuth client registration endpoint");
+  assertLoopbackRedirectUrl(redirectUri);
   const response = await fetchImpl(registrationEndpoint, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },

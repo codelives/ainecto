@@ -8,7 +8,7 @@ Status: prepared, not submitted
 - Registry name: `io.github.codelives/ainecto`
 - Namespace auth path: GitHub organization namespace `io.github.codelives/*`
 - npm package: `@ainecto/mcp`
-- Package version: `0.1.3`
+- Package version: `0.1.4`
 - Execution: `npx -y @ainecto/mcp`
 - Transport: stdio
 - Homepage: `https://ainecto.com`
@@ -75,7 +75,7 @@ mcp-publisher publish
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.codelives/ainecto"
 ```
 
-Current patch readiness: `@ainecto/mcp@0.1.3` is prepared locally and contains `mcpName: "io.github.codelives/ainecto"`. npm publish is pending user approval before Registry publication.
+Current patch readiness: `@ainecto/mcp@0.1.4` is prepared locally and contains `mcpName: "io.github.codelives/ainecto"`. npm publish is pending user approval before Registry publication.
 
 ## Community Directory Mapping
 

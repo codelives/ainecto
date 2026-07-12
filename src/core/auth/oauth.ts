@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { URLSearchParams } from "node:url";
 import type { StoredTokenSet, TokenStore } from "./tokenStore";
 import { registerPublicClient, type ClientRegistrationResult } from "./clientRegistration";
+import { assertTrustedEndpointUrl, isDefaultEndpoint } from "../config/endpoints";
 
 export interface OAuthClientOptions {
   endpoint: string;
@@ -40,6 +41,7 @@ export class OAuthClient implements TokenProvider {
   async getAccessToken(): Promise<string | undefined> {
     const envToken = this.envVars.AINECTO_TOKEN;
     if (envToken) {
+      assertEnvTokenEndpointAllowed(this.options.endpoint, this.envVars);
       return envToken;
     }
 
@@ -82,6 +84,7 @@ export class OAuthClient implements TokenProvider {
       authorizeUrl.searchParams.set("resource", this.options.endpoint);
       authorizeUrl.searchParams.set("state", state);
 
+      assertTrustedEndpointUrl(authorizeUrl, "OAuth authorization URL");
       await this.openBrowserImpl(authorizeUrl.toString());
       const code = await loopback.waitForCode();
       const token = await exchangeToken(metadata.tokenEndpoint, {
@@ -142,19 +145,31 @@ export function shouldRefresh(token: Pick<StoredTokenSet, "expiresAt">, now = Da
 }
 
 export async function discoverOAuthMetadata(endpoint: string, fetchImpl: typeof fetch = fetch): Promise<OAuthMetadata> {
+  assertTrustedEndpointUrl(endpoint, "MCP endpoint");
   const resourceMetadataUrl = await discoverResourceMetadataUrl(endpoint, fetchImpl);
+  assertTrustedEndpointUrl(resourceMetadataUrl, "OAuth protected resource metadata URL");
   const resourceMetadata = await fetchJson<Record<string, unknown>>(resourceMetadataUrl, fetchImpl);
   const authorizationServers = resourceMetadata.authorization_servers;
   if (!Array.isArray(authorizationServers) || typeof authorizationServers[0] !== "string") {
     throw new Error("OAuth protected resource metadata did not include authorization_servers.");
   }
   const authServer = authorizationServers[0];
+  assertTrustedEndpointUrl(authServer, "OAuth authorization server");
   const metadataUrl = authServer.includes("/.well-known/")
     ? authServer
     : `${authServer.replace(/\/$/, "")}/.well-known/oauth-authorization-server`;
+  assertTrustedEndpointUrl(metadataUrl, "OAuth authorization server metadata URL");
   const metadata = await fetchJson<Record<string, unknown>>(metadataUrl, fetchImpl);
   if (typeof metadata.authorization_endpoint !== "string" || typeof metadata.token_endpoint !== "string") {
     throw new Error("OAuth authorization server metadata is missing authorization_endpoint or token_endpoint.");
+  }
+  assertTrustedEndpointUrl(metadata.authorization_endpoint, "OAuth authorization endpoint");
+  assertTrustedEndpointUrl(metadata.token_endpoint, "OAuth token endpoint");
+  if (typeof metadata.registration_endpoint === "string") {
+    assertTrustedEndpointUrl(metadata.registration_endpoint, "OAuth client registration endpoint");
+  }
+  if (typeof metadata.issuer === "string") {
+    assertTrustedEndpointUrl(metadata.issuer, "OAuth issuer");
   }
   const codeChallengeMethodsSupported = parseStringArray(metadata.code_challenge_methods_supported);
   if (!codeChallengeMethodsSupported.includes("S256")) {
@@ -171,14 +186,18 @@ export async function discoverOAuthMetadata(endpoint: string, fetchImpl: typeof 
 
 async function discoverResourceMetadataUrl(endpoint: string, fetchImpl: typeof fetch): Promise<string> {
   const challengeUrl = new URL(endpoint);
+  assertTrustedEndpointUrl(challengeUrl, "MCP endpoint");
   const response = await fetchImpl(challengeUrl, { method: "GET" });
   const challenge = response.headers.get("www-authenticate");
   const fromChallenge = challenge ? parseBearerChallengeParam(challenge, "resource_metadata") : undefined;
   if (fromChallenge) {
+    assertTrustedEndpointUrl(fromChallenge, "OAuth protected resource metadata URL");
     return fromChallenge;
   }
   const origin = new URL(endpoint).origin;
-  return `${origin}/.well-known/oauth-protected-resource`;
+  const fallback = `${origin}/.well-known/oauth-protected-resource`;
+  assertTrustedEndpointUrl(fallback, "OAuth protected resource metadata URL");
+  return fallback;
 }
 
 export function parseBearerChallengeParam(header: string, name: string): string | undefined {
@@ -191,6 +210,7 @@ async function exchangeToken(
   params: Record<string, string>,
   fetchImpl: typeof fetch,
 ): Promise<Record<string, unknown>> {
+  assertTrustedEndpointUrl(tokenEndpoint, "OAuth token endpoint");
   const response = await fetchImpl(tokenEndpoint, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -287,6 +307,7 @@ function parseStringArray(value: unknown): string[] {
 }
 
 async function fetchJson<T>(url: string, fetchImpl: typeof fetch): Promise<T> {
+  assertTrustedEndpointUrl(url, "OAuth metadata URL");
   const response = await fetchImpl(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch OAuth metadata from ${url}: HTTP ${response.status}.`);
@@ -294,9 +315,32 @@ async function fetchJson<T>(url: string, fetchImpl: typeof fetch): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export function getBrowserOpenCommand(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } {
+  assertTrustedEndpointUrl(url, "OAuth authorization URL");
+  if (platform === "darwin") {
+    return { command: "open", args: [url] };
+  }
+  if (platform === "win32") {
+    return { command: "explorer.exe", args: [url] };
+  }
+  return { command: "xdg-open", args: [url] };
+}
+
 async function openBrowser(url: string): Promise<void> {
-  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const { command, args } = getBrowserOpenCommand(url);
   const child = spawn(command, args, { stdio: "ignore", detached: true });
   child.unref();
+}
+
+function assertEnvTokenEndpointAllowed(endpoint: string, envVars: NodeJS.ProcessEnv): void {
+  if (envVars.AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN === "1") {
+    return;
+  }
+  if (isDefaultEndpoint(endpoint)) {
+    return;
+  }
+  throw new Error("AINECTO_TOKEN can only be used with the default prod/dev endpoints. Set AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN=1 only when you intentionally trust the custom endpoint.");
 }

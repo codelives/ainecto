@@ -29,6 +29,7 @@ export interface McpRpcClientOptions {
   endpoint: string;
   tokenProvider?: TokenProvider;
   fetchImpl?: typeof fetch;
+  envVars?: NodeJS.ProcessEnv;
 }
 
 export class McpRpcError extends Error {
@@ -100,10 +101,11 @@ export class McpRpcClient {
     }
     const text = await response.text();
     if (!response.ok) {
-      throw new McpRpcError(`MCP HTTP request failed with HTTP ${response.status}.`, "MCP_HTTP_ERROR", {
-        status: response.status,
-        body: safeBodyPreview(text),
-      });
+      throw new McpRpcError(
+        `MCP HTTP request failed with HTTP ${response.status}.`,
+        "MCP_HTTP_ERROR",
+        httpErrorDetails(response.status, text, this.options.envVars ?? process.env),
+      );
     }
     if (!text.trim()) {
       return undefined;
@@ -141,6 +143,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function safeBodyPreview(body: string): string {
+function httpErrorDetails(status: number, body: string, envVars: NodeJS.ProcessEnv): Record<string, unknown> {
+  const details: Record<string, unknown> = { status };
+  if (envVars.AINECTO_CLI_DEBUG === "1" || envVars.AINECTO_DEBUG === "1") {
+    details.body = safeBodyPreview(body);
+  }
+  return details;
+}
+
+export function safeBodyPreview(body: string): string {
   return body.length > 500 ? `${body.slice(0, 500)}...` : body;
 }

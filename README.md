@@ -43,6 +43,8 @@ Endpoint resolution priority:
 3. `--env dev`
 4. production default, `https://ainecto.com/mcp`
 
+Endpoint URLs must use `https:`. Plain `http:` is accepted only for localhost loopback targets such as `127.0.0.1`. When `AINECTO_TOKEN` is set, the CLI only sends it to the default prod/dev endpoints unless `AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN=1` is set for an explicitly trusted custom endpoint.
+
 ## Connector Mode
 
 ```bash
@@ -92,9 +94,9 @@ AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env prod --check
 AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env dev --check
 ```
 
-The checked-in generated catalogs are deterministic output from `tools/list`. The dev catalog has been live-synced from `https://dev.ainecto.com/mcp`; the prod catalog remains a seed fixture until prod auth is available. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
+The checked-in generated catalogs are deterministic output from `tools/list`. The prod and dev catalogs are live-synced snapshots from `https://ainecto.com/mcp` and `https://dev.ainecto.com/mcp`. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
 
-`ainecto tools catalog` prints the local generated catalog. Prod output is fixture-only until authenticated prod live sync updates `generated.prod.ts` and `tools-list.prod.json`.
+`ainecto tools catalog` prints the local generated catalog. Rerun authenticated `sync:tools` when prod or dev `tools/list` changes.
 
 ## Generated Friendly Commands
 
@@ -126,8 +128,8 @@ The generated `request_upload_token` and `upload_attachments` paths remain raw M
 
 ```bash
 npm pack
-npx -y ./ainecto-mcp-0.1.3.tgz --help
-npm exec --package ./ainecto-mcp-0.1.3.tgz -- ainecto --help
+npx -y ./ainecto-mcp-0.1.4.tgz --help
+npm exec --package ./ainecto-mcp-0.1.4.tgz -- ainecto --help
 ```
 
 ## Live Dev MCP Smoke

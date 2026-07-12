@@ -48,4 +48,33 @@ describe("McpRpcClient", () => {
       headers: expect.objectContaining({ authorization: "Bearer fresh-token" }),
     }));
   });
+
+  it("omits HTTP error body previews unless debug is enabled", async () => {
+    const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
+    const client = new McpRpcClient({
+      endpoint: "https://dev.ainecto.com/mcp",
+      fetchImpl,
+      envVars: {},
+    });
+
+    await expect(client.request("initialize", {})).rejects.toMatchObject({
+      code: "MCP_HTTP_ERROR",
+      details: { status: 500 },
+    });
+    await expect(client.request("initialize", {}).catch((error) => error.details)).resolves.not.toHaveProperty("body");
+  });
+
+  it("keeps debug HTTP body previews for explicit diagnostics", async () => {
+    const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
+    const client = new McpRpcClient({
+      endpoint: "https://dev.ainecto.com/mcp",
+      fetchImpl,
+      envVars: { AINECTO_CLI_DEBUG: "1" },
+    });
+
+    await expect(client.request("initialize", {}).catch((error) => error.details)).resolves.toMatchObject({
+      status: 500,
+      body: "access_token=leaked",
+    });
+  });
 });

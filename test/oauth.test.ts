@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { OAuthClient, discoverOAuthMetadata } from "../src/core/auth/oauth";
+import { OAuthClient, discoverOAuthMetadata, getBrowserOpenCommand } from "../src/core/auth/oauth";
 import type { StoredTokenSet, TokenStore } from "../src/core/auth/tokenStore";
 
 class MemoryTokenStore implements TokenStore {
@@ -86,37 +86,84 @@ describe("OAuth PKCE login", () => {
     await expect(client.login()).rejects.toThrow("PKCE S256");
     expect(openBrowser).not.toHaveBeenCalled();
   });
+
+  it("refuses to use AINECTO_TOKEN with custom endpoints unless explicitly allowed", async () => {
+    const blocked = new OAuthClient({
+      endpoint: "https://evil.example/mcp",
+      tokenStore: new MemoryTokenStore(),
+      envVars: { AINECTO_TOKEN: "env-token" },
+    });
+    await expect(blocked.getAccessToken()).rejects.toThrow("AINECTO_TOKEN can only be used");
+
+    const allowed = new OAuthClient({
+      endpoint: "https://evil.example/mcp",
+      tokenStore: new MemoryTokenStore(),
+      envVars: {
+        AINECTO_TOKEN: "env-token",
+        AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN: "1",
+      },
+    });
+    await expect(allowed.getAccessToken()).resolves.toBe("env-token");
+  });
+
+  it("rejects non-https OAuth metadata endpoints unless they are loopback", async () => {
+    await expect(discoverOAuthMetadata("https://dev.ainecto.com/mcp", buildOAuthFetch({
+      resourceMetadataUrl: "http://auth.example/resource",
+    }))).rejects.toThrow("must use https");
+
+    await expect(discoverOAuthMetadata("https://dev.ainecto.com/mcp", buildOAuthFetch({
+      authorizationServer: "http://127.0.0.1:9000",
+      metadataBaseUrl: "http://127.0.0.1:9000",
+    }))).resolves.toMatchObject({
+      authorizationEndpoint: "http://127.0.0.1:9000/authorize",
+      tokenEndpoint: "http://127.0.0.1:9000/token",
+    });
+  });
+
+  it("builds a Windows browser opener without cmd shell mediation", () => {
+    expect(getBrowserOpenCommand("https://auth.example/authorize", "win32")).toEqual({
+      command: "explorer.exe",
+      args: ["https://auth.example/authorize"],
+    });
+    expect(() => getBrowserOpenCommand("http://auth.example/authorize", "win32")).toThrow("must use https");
+  });
 });
 
 function buildOAuthFetch(options: {
   codeChallengeMethodsSupported?: string[];
   onTokenRequest?: (body: string) => void;
+  resourceMetadataUrl?: string;
+  authorizationServer?: string;
+  metadataBaseUrl?: string;
 } = {}): typeof fetch {
   const methods = options.codeChallengeMethodsSupported ?? ["S256"];
+  const resourceMetadataUrl = options.resourceMetadataUrl ?? "https://auth.example/resource";
+  const authorizationServer = options.authorizationServer ?? "https://auth.example";
+  const metadataBaseUrl = options.metadataBaseUrl ?? "https://auth.example";
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url === "https://dev.ainecto.com/mcp") {
       return new Response("", {
         status: 401,
         headers: {
-          "www-authenticate": "Bearer resource_metadata=\"https://auth.example/resource\"",
+          "www-authenticate": `Bearer resource_metadata="${resourceMetadataUrl}"`,
         },
       });
     }
-    if (url === "https://auth.example/resource") {
+    if (url === resourceMetadataUrl) {
       return new Response(JSON.stringify({
-        authorization_servers: ["https://auth.example"],
+        authorization_servers: [authorizationServer],
       }));
     }
-    if (url === "https://auth.example/.well-known/oauth-authorization-server") {
+    if (url === `${metadataBaseUrl}/.well-known/oauth-authorization-server`) {
       return new Response(JSON.stringify({
-        issuer: "https://auth.example",
-        authorization_endpoint: "https://auth.example/authorize",
-        token_endpoint: "https://auth.example/token",
+        issuer: metadataBaseUrl,
+        authorization_endpoint: `${metadataBaseUrl}/authorize`,
+        token_endpoint: `${metadataBaseUrl}/token`,
         code_challenge_methods_supported: methods,
       }));
     }
-    if (url === "https://auth.example/token") {
+    if (url === `${metadataBaseUrl}/token`) {
       options.onTokenRequest?.(String(init?.body));
       return new Response(JSON.stringify({
         access_token: "access-token",
