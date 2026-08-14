@@ -8,6 +8,9 @@ import { getGeneratedTools } from "../../core/catalog";
 import { runConnector } from "../mcp/connector";
 import { executeGeneratedCommand } from "./generatedCommandRouter";
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
+import { runAgentHost } from "../agent/nativeHost";
+import { runRegister } from "../agent/register";
+import { runSetup } from "../agent/setup";
 
 export interface CliIO {
   stdout: NodeJS.WriteStream;
@@ -22,6 +25,18 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     if (parsed.help || parsed.positionals.length === 0) {
       io.stdout.write(helpText());
       return 0;
+    }
+
+    // Local agent commands — no MCP endpoint/auth needed, handle before RPC setup.
+    const command = parsed.positionals[0];
+    if (command === "agent-host") {
+      return runAgentHost({ stdin: io.stdin, stdout: io.stdout, stderr: io.stderr });
+    }
+    if (command === "register") {
+      return runRegister(parsed.positionals.slice(1), io);
+    }
+    if (command === "setup") {
+      return runSetup(io, parsed.env);
     }
 
     const resolved = resolveEndpoint({ env: parsed.env, endpoint: parsed.endpoint });
@@ -212,6 +227,10 @@ function helpText(): string {
     "  ainecto attachments upload --document-uuid <uuid> <file...> [--json]",
     "  ainecto <generated-command> [flags] [-f payload.json] [--yes] [--json]",
     "  ainecto mcp [--env prod|dev] [--endpoint URL]",
+    "",
+    "  ainecto setup [--env prod|dev]           onboard: check claude, connect MCP, register host",
+    "  ainecto register <EXTENSION_ID>          register Chrome native-messaging manifest",
+    "  ainecto agent-host                       Chrome native-messaging host (launched by Chrome)",
     "",
   ].join("\n");
 }
