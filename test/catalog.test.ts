@@ -21,6 +21,26 @@ describe("catalog generation", () => {
     expect(stableStringify(generateCatalog(devFixture.tools, "dev"))).toBe(stableStringify(devGenerated));
   });
 
+  /**
+   * ★서버가 2026-09-22 부터 도구 이름을 «짧게» 내보낸다.
+   *
+   * 예전 generator 는 `mcp__ainecto__` prefix 가 없으면 throw 했다 — 다음 sync:tools 에서
+   * 곧바로 터졌을 자리다. 두 형태가 같은 명령으로 떨어지는지 고정한다.
+   */
+  it("accepts both the short server name and the legacy prefixed one", () => {
+    const schema = { type: "object", properties: {} };
+    const [shortForm] = generateCatalog([{ name: "list_projects", description: "", inputSchema: schema }], "prod");
+    const [legacyForm] = generateCatalog(
+      [{ name: "mcp__ainecto__list_projects", description: "", inputSchema: schema }],
+      "prod",
+    );
+
+    expect(shortForm.commandPath).toEqual(legacyForm.commandPath);
+    // mcpName 은 «서버가 준 이름»을 그대로 들고 간다 — 서버는 둘 다 받는다
+    expect(shortForm.mcpName).toBe("list_projects");
+    expect(legacyForm.mcpName).toBe("mcp__ainecto__list_projects");
+  });
+
   it("keeps generated commands reachable and unique", () => {
     for (const tool of [...prodGenerated, ...devGenerated]) {
       expect(tool.commandPath.length).toBeGreaterThan(0);
