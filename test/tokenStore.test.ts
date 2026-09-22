@@ -8,13 +8,13 @@ describe("FileTokenStore", () => {
   it("stores endpoint-scoped tokens with 0600 file permissions", async () => {
     const root = await mkdtemp(join(tmpdir(), "ainecto-token-store-"));
     const store = new FileTokenStore(root);
-    await store.save("https://dev.ainecto.com/mcp", {
-      endpoint: "https://dev.ainecto.com/mcp",
+    await store.save("https://dev.ai-erd.com/mcp", {
+      endpoint: "https://dev.ai-erd.com/mcp",
       accessToken: "redacted",
       updatedAt: new Date().toISOString(),
     });
 
-    await expect(store.load("https://dev.ainecto.com/mcp")).resolves.toMatchObject({
+    await expect(store.load("https://dev.ai-erd.com/mcp")).resolves.toMatchObject({
       accessToken: "redacted",
     });
     await expect(tokenStorePermissions(store.filePath)).resolves.toEqual({ mode: 0o600 });
@@ -23,15 +23,15 @@ describe("FileTokenStore", () => {
   it("hardens permissive existing token store permissions on load", async () => {
     const root = await mkdtemp(join(tmpdir(), "ainecto-token-store-"));
     const store = new FileTokenStore(root);
-    await store.save("https://dev.ainecto.com/mcp", {
-      endpoint: "https://dev.ainecto.com/mcp",
+    await store.save("https://dev.ai-erd.com/mcp", {
+      endpoint: "https://dev.ai-erd.com/mcp",
       accessToken: "redacted",
       updatedAt: new Date().toISOString(),
     });
     await chmod(root, 0o755);
     await chmod(store.filePath, 0o644);
 
-    await expect(store.load("https://dev.ainecto.com/mcp")).resolves.toMatchObject({
+    await expect(store.load("https://dev.ai-erd.com/mcp")).resolves.toMatchObject({
       accessToken: "redacted",
     });
     await expect(tokenStoreDirectoryPermissions(store.filePath)).resolves.toEqual({ mode: 0o700 });

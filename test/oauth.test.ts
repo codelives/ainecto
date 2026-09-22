@@ -37,7 +37,7 @@ describe("OAuth PKCE login", () => {
       await fetch(`${redirectUri}?code=auth-code&state=${state}`);
     });
     const client = new OAuthClient({
-      endpoint: "https://dev.ainecto.com/mcp",
+      endpoint: "https://dev.ai-erd.com/mcp",
       tokenStore: store,
       fetchImpl,
       openBrowser,
@@ -52,7 +52,7 @@ describe("OAuth PKCE login", () => {
   it("rejects loopback callbacks with missing or mismatched state", async () => {
     const tokenEndpointCalls: string[] = [];
     const client = new OAuthClient({
-      endpoint: "https://dev.ainecto.com/mcp",
+      endpoint: "https://dev.ai-erd.com/mcp",
       tokenStore: new MemoryTokenStore(),
       fetchImpl: buildOAuthFetch({
         onTokenRequest: (body) => tokenEndpointCalls.push(body),
@@ -69,7 +69,7 @@ describe("OAuth PKCE login", () => {
   });
 
   it("fails discovery when authorization metadata does not advertise PKCE S256", async () => {
-    await expect(discoverOAuthMetadata("https://dev.ainecto.com/mcp", buildOAuthFetch({
+    await expect(discoverOAuthMetadata("https://dev.ai-erd.com/mcp", buildOAuthFetch({
       codeChallengeMethodsSupported: ["plain"],
     }))).rejects.toThrow("PKCE S256");
   });
@@ -77,7 +77,7 @@ describe("OAuth PKCE login", () => {
   it("does not open the browser when S256 support is missing", async () => {
     const openBrowser = vi.fn();
     const client = new OAuthClient({
-      endpoint: "https://dev.ainecto.com/mcp",
+      endpoint: "https://dev.ai-erd.com/mcp",
       tokenStore: new MemoryTokenStore(),
       fetchImpl: buildOAuthFetch({ codeChallengeMethodsSupported: [] }),
       openBrowser,
@@ -107,11 +107,11 @@ describe("OAuth PKCE login", () => {
   });
 
   it("rejects non-https OAuth metadata endpoints unless they are loopback", async () => {
-    await expect(discoverOAuthMetadata("https://dev.ainecto.com/mcp", buildOAuthFetch({
+    await expect(discoverOAuthMetadata("https://dev.ai-erd.com/mcp", buildOAuthFetch({
       resourceMetadataUrl: "http://auth.example/resource",
     }))).rejects.toThrow("must use https");
 
-    await expect(discoverOAuthMetadata("https://dev.ainecto.com/mcp", buildOAuthFetch({
+    await expect(discoverOAuthMetadata("https://dev.ai-erd.com/mcp", buildOAuthFetch({
       authorizationServer: "http://127.0.0.1:9000",
       metadataBaseUrl: "http://127.0.0.1:9000",
     }))).resolves.toMatchObject({
@@ -142,7 +142,7 @@ function buildOAuthFetch(options: {
   const metadataBaseUrl = options.metadataBaseUrl ?? "https://auth.example";
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    if (url === "https://dev.ainecto.com/mcp") {
+    if (url === "https://dev.ai-erd.com/mcp") {
       return new Response("", {
         status: 401,
         headers: {

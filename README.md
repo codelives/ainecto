@@ -94,7 +94,7 @@ AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env prod --check
 AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env dev --check
 ```
 
-The checked-in generated catalogs are deterministic output from `tools/list`. The prod and dev catalogs are live-synced snapshots from `https://ai-erd.com/mcp` and `https://dev.ainecto.com/mcp`. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
+The checked-in generated catalogs are deterministic output from `tools/list`. The prod and dev catalogs are live-synced snapshots from `https://ai-erd.com/mcp` and `https://dev.ai-erd.com/mcp`. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
 
 `ainecto tools catalog` prints the local generated catalog. Rerun authenticated `sync:tools` when prod or dev `tools/list` changes.
 

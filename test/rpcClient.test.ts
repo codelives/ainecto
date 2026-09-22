@@ -9,7 +9,7 @@ describe("McpRpcClient", () => {
       result: { tools: [] },
     })));
     const client = new McpRpcClient({
-      endpoint: "https://dev.ainecto.com/mcp",
+      endpoint: "https://dev.ai-erd.com/mcp",
       fetchImpl,
       tokenProvider: {
         getAccessToken: async () => "redacted-token",
@@ -18,7 +18,7 @@ describe("McpRpcClient", () => {
     });
 
     await expect(client.toolsList()).resolves.toEqual([]);
-    expect(fetchImpl).toHaveBeenCalledWith("https://dev.ainecto.com/mcp", expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith("https://dev.ai-erd.com/mcp", expect.objectContaining({
       method: "POST",
       headers: expect.objectContaining({ authorization: "Bearer redacted-token" }),
     }));
@@ -34,7 +34,7 @@ describe("McpRpcClient", () => {
       })));
     const refreshAfterUnauthorized = vi.fn(async () => "fresh-token");
     const client = new McpRpcClient({
-      endpoint: "https://dev.ainecto.com/mcp",
+      endpoint: "https://dev.ai-erd.com/mcp",
       fetchImpl,
       tokenProvider: {
         getAccessToken: async () => "old-token",
@@ -44,7 +44,7 @@ describe("McpRpcClient", () => {
 
     await expect(client.request("initialize", {})).resolves.toEqual({ ok: true });
     expect(refreshAfterUnauthorized).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenLastCalledWith("https://dev.ainecto.com/mcp", expect.objectContaining({
+    expect(fetchImpl).toHaveBeenLastCalledWith("https://dev.ai-erd.com/mcp", expect.objectContaining({
       headers: expect.objectContaining({ authorization: "Bearer fresh-token" }),
     }));
   });
@@ -52,7 +52,7 @@ describe("McpRpcClient", () => {
   it("omits HTTP error body previews unless debug is enabled", async () => {
     const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
     const client = new McpRpcClient({
-      endpoint: "https://dev.ainecto.com/mcp",
+      endpoint: "https://dev.ai-erd.com/mcp",
       fetchImpl,
       envVars: {},
     });
@@ -67,7 +67,7 @@ describe("McpRpcClient", () => {
   it("keeps debug HTTP body previews for explicit diagnostics", async () => {
     const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
     const client = new McpRpcClient({
-      endpoint: "https://dev.ainecto.com/mcp",
+      endpoint: "https://dev.ai-erd.com/mcp",
       fetchImpl,
       envVars: { AINECTO_CLI_DEBUG: "1" },
     });
