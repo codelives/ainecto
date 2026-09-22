@@ -1,7 +1,7 @@
 {
-  "name": "@ainecto/mcp",
+  "name": "@ai-erd/mcp",
   "version": "0.1.4",
-  "description": "Ainecto MCP connector and first-party CLI.",
+  "description": "AI-ERD MCP connector and first-party CLI.",
   "mcpName": "io.github.codelives/ainecto",
   "type": "module",
   "private": false,
@@ -17,7 +17,9 @@
   "bin": {
     "mcp": "dist/bin/mcp.js",
     "ainecto-mcp": "dist/bin/mcp.js",
-    "ainecto": "dist/bin/ainecto.js"
+    "ainecto": "dist/bin/ainecto.js",
+    "ai-erd": "dist/bin/ainecto.js",
+    "ai-erd-mcp": "dist/bin/mcp.js"
   },
   "files": [
     "dist"
@@ -30,7 +32,8 @@
     "smoke:mcp": "tsx scripts/smoke-mcp.ts",
     "smoke:attachments": "tsx scripts/smoke-attachment-upload.ts",
     "catalog:fixture": "vitest run test/catalog.test.ts",
-    "prepack": "npm run typecheck && npm test && npm run build"
+    "prepack": "npm run typecheck && npm test && npm run build",
+    "publish:both": "node scripts/publish-both.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.8",

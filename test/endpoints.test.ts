@@ -1,13 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { resolveEndpoint } from "../src/core/config/endpoints";
+import { isDefaultEndpoint, resolveEndpoint } from "../src/core/config/endpoints";
 
 describe("endpoint resolution", () => {
   it("uses production by default", () => {
-    expect(resolveEndpoint({ envVars: {} }).endpoint).toBe("https://ainecto.com/mcp");
+    expect(resolveEndpoint({ envVars: {} }).endpoint).toBe("https://ai-erd.com/mcp");
   });
 
   it("uses dev endpoint for --env dev", () => {
-    expect(resolveEndpoint({ env: "dev", envVars: {} }).endpoint).toBe("https://dev.ainecto.com/mcp");
+    expect(resolveEndpoint({ env: "dev", envVars: {} }).endpoint).toBe("https://dev.ai-erd.com/mcp");
+  });
+
+  /**
+   * ★옛 기본값도 «기본»으로 인정해야 한다.
+   *
+   * 2026-09-21 에 기본 엔드포인트를 ainecto.com → ai-erd.com 으로 옮겼는데, 이미 설정 파일에
+   * 옛 주소를 적어둔 사용자가 있다. isDefaultEndpoint 가 그걸 «사용자 지정»으로 보면
+   * 호출처가 불필요한 경고나 분기를 태우게 된다. 옛 주소는 계속 동작하므로 여기서도 기본이다.
+   */
+  it.each([
+    "https://ai-erd.com/mcp",
+    "https://dev.ai-erd.com/mcp",
+    "https://ainecto.com/mcp",
+    "https://dev.ainecto.com/mcp",
+  ])("%s 는 기본 엔드포인트로 인정한다", (endpoint) => {
+    expect(isDefaultEndpoint(endpoint)).toBe(true);
+  });
+
+  it("관계없는 주소는 기본이 아니다", () => {
+    expect(isDefaultEndpoint("https://example.com/mcp")).toBe(false);
   });
 
   it("prefers explicit endpoint over env var", () => {

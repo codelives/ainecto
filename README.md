@@ -1,10 +1,10 @@
-# @ainecto/mcp
+# @ai-erd/mcp
 
-Ainecto MCP connector and first-party CLI.
+AI-ERD MCP connector and first-party CLI.
 
 This package exposes two entry points:
 
-- `npx -y @ainecto/mcp` or `ainecto mcp`: raw stdio-to-HTTP JSON-RPC proxy for Ainecto MCP.
+- `npx -y @ai-erd/mcp` or `ainecto mcp`: raw stdio-to-HTTP JSON-RPC proxy for AI-ERD MCP.
 - `ainecto <command>`: human CLI for auth and low-level tool calls.
 
 Phase 1 keeps the connector as a raw proxy. File, stdin, and inline JSON parsing are only available in first-party CLI commands.
@@ -41,14 +41,14 @@ Endpoint resolution priority:
 1. `--endpoint <url>`
 2. `AINECTO_MCP_ENDPOINT`
 3. `--env dev`
-4. production default, `https://ainecto.com/mcp`
+4. production default, `https://ai-erd.com/mcp`
 
 Endpoint URLs must use `https:`. Plain `http:` is accepted only for localhost loopback targets such as `127.0.0.1`. When `AINECTO_TOKEN` is set, the CLI only sends it to the default prod/dev endpoints unless `AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN=1` is set for an explicitly trusted custom endpoint.
 
 ## Connector Mode
 
 ```bash
-npx -y @ainecto/mcp
+npx -y @ai-erd/mcp
 ainecto mcp --env dev
 ```
 
@@ -63,7 +63,7 @@ Use the direct package configuration until the server is published to the offici
   "mcpServers": {
     "ainecto": {
       "command": "npx",
-      "args": ["-y", "@ainecto/mcp"]
+      "args": ["-y", "@ai-erd/mcp"]
     }
   }
 }
@@ -76,13 +76,13 @@ For a non-production endpoint, pass CLI flags through the package args:
   "mcpServers": {
     "ainecto-dev": {
       "command": "npx",
-      "args": ["-y", "@ainecto/mcp", "--env", "dev"]
+      "args": ["-y", "@ai-erd/mcp", "--env", "dev"]
     }
   }
 }
 ```
 
-The planned official Registry server name is `io.github.codelives/ainecto`, backed by the public npm package `@ainecto/mcp`. Registry publication requires the npm package version referenced by `server.json` to include a matching `mcpName` field in `package.json`.
+The planned official Registry server name is `io.github.codelives/ainecto`, backed by the public npm package `@ai-erd/mcp`. Registry publication requires the npm package version referenced by `server.json` to include a matching `mcpName` field in `package.json`.
 
 ## Catalog Sync
 
@@ -94,7 +94,7 @@ AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env prod --check
 AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env dev --check
 ```
 
-The checked-in generated catalogs are deterministic output from `tools/list`. The prod and dev catalogs are live-synced snapshots from `https://ainecto.com/mcp` and `https://dev.ainecto.com/mcp`. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
+The checked-in generated catalogs are deterministic output from `tools/list`. The prod and dev catalogs are live-synced snapshots from `https://ai-erd.com/mcp` and `https://dev.ainecto.com/mcp`. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
 
 `ainecto tools catalog` prints the local generated catalog. Rerun authenticated `sync:tools` when prod or dev `tools/list` changes.
 

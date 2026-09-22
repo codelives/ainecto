@@ -1,10 +1,10 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.codelives/ainecto",
-  "title": "Ainecto",
-  "description": "Ainecto MCP connector for workspace, document, ERD, diagram, task, and attachment workflows.",
+  "title": "AI-ERD",
+  "description": "AI-ERD MCP connector for workspace, document, ERD, diagram, task, and attachment workflows.",
   "version": "0.1.4",
-  "websiteUrl": "https://ainecto.com",
+  "websiteUrl": "https://ai-erd.com",
   "repository": {
     "url": "https://github.com/codelives/ainecto",
     "source": "github"
@@ -12,7 +12,7 @@
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "@ainecto/mcp",
+      "identifier": "@ai-erd/mcp",
       "version": "0.1.4",
       "runtimeHint": "npx",
       "runtimeArguments": [
