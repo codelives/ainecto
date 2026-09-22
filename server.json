@@ -3,7 +3,7 @@
   "name": "io.github.codelives/ainecto",
   "title": "AI-ERD",
   "description": "AI-ERD MCP connector for workspace, document, ERD, diagram, task, and attachment workflows.",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "websiteUrl": "https://ai-erd.com",
   "repository": {
     "url": "https://github.com/codelives/ainecto",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@ai-erd/mcp",
-      "version": "0.1.4",
+      "version": "0.2.0",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {

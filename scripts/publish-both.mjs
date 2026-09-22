@@ -11,8 +11,11 @@
  *   ⛔unpublish 는 하지 않는다 — 설치가 즉시 깨진다.
  *
  * 사용:
- *   npm run publish:both              # 실제 퍼블리시 (npm 로그인 필요)
- *   npm run publish:both -- --dry-run # 무엇이 나갈지만 확인
+ *   npm run publish:both -- --otp=123456   # 실제 퍼블리시 (2FA 코드 필요)
+ *   npm run publish:both -- --dry-run      # 무엇이 나갈지만 확인
+ *
+ * ★코드가 만료돼 중간에 끊기면 «새 코드로 그냥 다시» 돌리면 된다 —
+ *   이미 올라간 이름은 건너뛴다.
  *
  * 전제: `@ai-erd` 스코프가 npm 에 존재해야 한다(조직 스코프는 계정에서 먼저 만든다).
  */
@@ -26,6 +29,8 @@ const PKG = join(ROOT, "package.json");
 const LEGACY_NAME = "@ainecto/mcp";
 
 const dryRun = process.argv.includes("--dry-run");
+/** 2FA 일회용 코드. npm 은 publish 마다 요구하고 코드는 금방 만료된다. */
+const otpArg = process.argv.find((a) => a.startsWith("--otp="));
 const original = readFileSync(PKG, "utf8");
 const parsed = JSON.parse(original);
 const primaryName = parsed.name;
@@ -73,10 +78,31 @@ function preflight() {
   }
 }
 
-function publish(label) {
+/**
+ * 이미 올라간 버전이면 건너뛴다 — ★재시도를 안전하게 만드는 장치다.
+ *
+ * 2FA 코드는 금방 만료된다. 두 이름을 연달아 올리다 두 번째에서 코드가 만료되면,
+ * 새 코드로 «다시 돌려야» 하는데 그때 첫 번째가 이미 올라가 있어 EPUBLISHCONFLICT 로
+ * 막힌다. 그러면 사람이 "어디까지 됐지"를 손으로 따져야 한다. 여기서 대신 본다.
+ */
+function alreadyPublished(name, version) {
+  try {
+    execFileSync("npm", ["view", `${name}@${version}`, "version"], { cwd: ROOT, stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function publish(name, label) {
+  if (!dryRun && alreadyPublished(name, parsed.version)) {
+    console.log(`\n▶ ${label}  — 이미 ${parsed.version} 이 올라가 있어 건너뜁니다`);
+    return;
+  }
   const args = ["publish", "--access", "public"];
   if (dryRun) args.push("--dry-run");
-  console.log(`\n▶ ${label}  (npm ${args.join(" ")})`);
+  if (otpArg) args.push(otpArg);
+  console.log(`\n▶ ${label}  (npm publish --access public${otpArg ? " --otp=******" : ""}${dryRun ? " --dry-run" : ""})`);
   execFileSync("npm", args, { cwd: ROOT, stdio: "inherit" });
 }
 
@@ -84,13 +110,13 @@ preflight();
 
 try {
   // 1) 새 이름 — prepack 이 typecheck·test·build 를 돌린다
-  publish(primaryName);
+  publish(primaryName, primaryName);
 
   // 2) 옛 이름 — 이름만 바꿔 같은 산출물을 한 번 더 올린다
   //    ★prepack 을 다시 돌리지 않도록 --ignore-scripts 는 쓰지 않는다.
   //      같은 dist 를 그대로 싸는 것이 목적이므로 재빌드돼도 결과는 같다.
   writeFileSync(PKG, JSON.stringify({ ...parsed, name: LEGACY_NAME }, null, 2) + "\n");
-  publish(`${LEGACY_NAME}  (옛 이름 — 호환용)`);
+  publish(LEGACY_NAME, `${LEGACY_NAME}  (옛 이름 — 호환용)`);
 } finally {
   // 3) 무슨 일이 있어도 package.json 을 원상복구한다.
   //    이게 없으면 실패한 퍼블리시가 저장소에 옛 이름을 남긴다.

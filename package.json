@@ -1,6 +1,6 @@
 {
   "name": "@ai-erd/mcp",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "AI-ERD MCP connector and first-party CLI.",
   "mcpName": "io.github.codelives/ainecto",
   "type": "module",
