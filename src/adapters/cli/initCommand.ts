@@ -63,7 +63,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
 
   if (args.undo) {
     const plan = planUndo({ files, managed: readManaged(files.get(HARNESS_CONFIG_PATH)) });
-    await applyPlan(root, plan, args.dryRun, files);
+    await applyPlan(root, plan, args.dryRun, files, false);
     options.io.stdout.write(renderSuccess(
       {
         action: args.dryRun ? "undo (dry-run)" : "undo",
@@ -114,6 +114,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     files,
     previous: readManaged(files.get(HARNESS_CONFIG_PATH)),
     documents,
+    missingDirectories: await missingDirectories(root),
   });
   await applyPlan(root, plan, args.dryRun, files);
 
@@ -137,7 +138,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
           // ⚠Design 은 그 변경이 «허용»된다 — 모든 역할에 같은 문장을 내보내면 거짓이 된다.
           ? "Ask it to change a table — a Design session may, and the change lands in AI-ERD."
           : `Ask it to change a table — a ${role} session will be told to stop.`,
-        `Enforce this on the server too: ai-erd auth login --role ${role}`,
+        `Enforce this on the server too: ${loginCommand(options, role)}`,
         "Undo everything with: ai-erd init --undo",
       ],
     },
@@ -160,7 +161,7 @@ export async function readRepositoryRole(cwd: string): Promise<HarnessRole | und
   const root = resolve(cwd);
   const files = new Map<string, string | undefined>();
   for (const target of AGENT_TARGETS) {
-    files.set(target.path, await readIfExists(join(root, target.path)));
+    files.set(target.path, await readManagedFile(root, target.path));
   }
   try {
     return currentRole(files);
@@ -270,17 +271,30 @@ async function callOrExplainSignIn<T>(
     if (!isUnauthorized(error)) {
       throw error;
     }
-    // ★안내하는 명령이 «같은 서버»를 가리켜야 한다. 기본 주소가 아니면 --endpoint 를 붙인다.
-    const endpointFlag = isDefaultEndpointFor(options.env, options.endpoint)
-      ? ""
-      : ` --endpoint ${options.endpoint}`;
-    const role = options.role ?? "<design|development|test|validation>";
     throw new Error(
       `Not signed in for this role, so ${options.endpoint} refused the request (HTTP 401).\n\n`
-      + `    ai-erd auth login --role ${role}${endpointFlag}\n\n`
+      + `    ${loginCommand(options, options.role)}\n\n`
       + "Then run init again. The role is carried by the access token, so each role signs in once.",
     );
   }
+}
+
+/**
+ * 이 저장소·이 서버에 맞는 로그인 명령 한 줄. ★<b>만드는 곳은 여기 하나다.</b>
+ *
+ * <p>⚠예전엔 「이 env 의 기본 주소면 인자를 생략」이라고만 하고 그 env 자체도 안 실었다.
+ * CLI 의 기본 env 는 prod 라, dev 기본 주소에서 막힌 사람이 그 명령을 그대로 치면 «운영»
+ * 슬롯에 로그인하고 같은 자리에서 또 막힌다(2026-09-23 4차 독립 리뷰 S2).
+ * 주소든 env 든 <b>하나는 반드시</b> 실린다.
+ */
+function loginCommand(
+  options: Pick<InitCommandOptions, "env" | "endpoint">,
+  role: HarnessRole | undefined,
+): string {
+  const target = isDefaultEndpointFor(options.env, options.endpoint)
+    ? (options.env === "prod" ? "" : ` --env ${options.env}`)
+    : ` --endpoint ${options.endpoint}`;
+  return `ai-erd auth login --role ${role ?? "<design|development|test|validation>"}${target}`;
 }
 
 function isUnauthorized(error: unknown): boolean {
@@ -361,10 +375,46 @@ function boundProjectUuid(config: string | undefined): string | undefined {
 async function readSnapshot(root: string): Promise<Map<string, string | undefined>> {
   const snapshot = new Map<string, string | undefined>();
   for (const path of MANAGED_PATHS) {
-    await assertInsideRepository(root, path);
-    snapshot.set(path, await readIfExists(join(root, path)));
+    snapshot.set(path, await readManagedFile(root, path));
   }
   return snapshot;
+}
+
+/**
+ * ★<b>저장소 안의 파일을 읽는 유일한 문.</b> 경계 검사가 읽기 «앞»에 붙어 있다.
+ *
+ * <p>예전엔 {@code readSnapshot} 만 검사를 했고, 나중에 붙인 역할 추론이 {@code readIfExists} 를
+ * 바로 불렀다. 그래서 저장소 밖을 가리키는 설정 파일을 <b>한 번 읽고 나서</b> 거절했다
+ * (2026-09-23 4차 독립 리뷰 I5). 검사와 읽기가 갈라지면, 새로 생긴 경로마다 검사를 잊는다.
+ */
+/**
+ * 관리 대상 파일의 부모 중 <b>지금 없는</b> 디렉터리들. 우리가 쓰면서 만들게 되는 것이다.
+ *
+ * <p>파일 스냅샷만으로는 「비어 있는 디렉터리가 이미 있었나」를 알 수 없다. 그걸 모르면
+ * 되돌리기가 남의 빈 디렉터리를 치운다(2026-09-23 4차 독립 리뷰 S3).
+ */
+async function missingDirectories(root: string): Promise<string[]> {
+  const parents = new Set<string>();
+  for (const path of MANAGED_PATHS) {
+    if (path.includes("/")) {
+      parents.add(path.slice(0, path.lastIndexOf("/")));
+    }
+  }
+  const missing: string[] = [];
+  for (const directory of parents) {
+    await assertInsideRepository(root, directory);
+    try {
+      await stat(join(root, directory));
+    } catch {
+      missing.push(directory);
+    }
+  }
+  return missing;
+}
+
+async function readManagedFile(root: string, path: string): Promise<string | undefined> {
+  await assertInsideRepository(root, path);
+  return readIfExists(join(root, path));
 }
 
 async function readIfExists(absolutePath: string): Promise<string | undefined> {
@@ -449,6 +499,7 @@ async function applyPlan(
   plan: InitPlan,
   dryRun: boolean,
   snapshot: FileSnapshotMap,
+  recordFirst = true,
 ): Promise<void> {
   // ①먼저 «전부» 본다 — 하나라도 못 쓸 상황이면 아무것도 건드리지 않고 멈추는 게 낫다.
   for (const write of plan.writes) {
@@ -467,7 +518,7 @@ async function applyPlan(
     // ★<b>복구 기록을 먼저 쓴다.</b> 예전엔 관리 기록(.ai-erd/config.json)이 «마지막» 쓰기였다.
     //   그래서 중간에 실패하면 이미 바뀐 파일이 있는데 기록이 없어 undo 가 아무것도 못 되돌렸다
     //   (2026-09-23 독립 재리뷰 I11). 되돌릴 수 있게 만드는 것이 첫 일이다.
-    for (const write of orderedWrites(plan.writes)) {
+    for (const write of orderedWrites(plan.writes, recordFirst)) {
       // ②그리고 «쓰기 직전에» 다시 본다. ①과 실제 쓰기 사이에 누가 고칠 수 있다 — 그 틈으로
       //   남의 편집이 덮여 나갔다(같은 항목). 검사와 쓰기를 붙여 놓으면 창이 작아진다.
       await assertUnchangedSinceSnapshot(root, write.path, snapshot);
@@ -485,13 +536,12 @@ async function applyPlan(
       `${message}\nAlready applied before this failure: ${applied.join(", ") || "(nothing)"}`,
     );
   }
-  // 우리 파일을 다 뺐고 디렉터리가 비었으면 그것도 치운다.
+  // 우리가 «만든» 디렉터리가 비었으면 그것도 치운다.
   // ⛔recursive 로 지우지 않는다 — 사용자가 그 안에 둔 다른 파일까지 날아간다.
   //   rmdir 는 «비어 있을 때만» 성공하므로, 비었는지는 파일시스템이 판정한다.
-  // ★예전엔 .ai-erd 만 치워서 .cursor 가 빈 껍데기로 남았다 — undo 가 「지웠다」고
-  //   말하면서 자취를 남긴 것이다(2026-09-23 실물 실행에서 발견). 지운 파일의 부모를
-  //   전부 같은 규칙으로 다룬다.
-  for (const directory of parentDirectoriesOf(plan.deletes)) {
+  // ★「비었으면 치운다」였을 때는 init 전부터 있던 빈 .cursor 까지 사라졌다
+  //   (2026-09-23 4차 독립 리뷰 S3). 비었다는 것과 우리 것이라는 것은 다른 사실이다.
+  for (const directory of plan.removableDirectories ?? []) {
     await rmdir(join(root, directory)).catch(() => undefined);
   }
 }
@@ -503,24 +553,15 @@ async function applyPlan(
  * «쓰려던 내용»의 것이라, 못 쓴 파일은 지문이 안 맞아 undo 가 「손댔다」로 보고 남긴다 —
  * 안 만든 파일을 지우려 드는 것보다 안전한 쪽이다.
  */
-function orderedWrites(writes: readonly FileWrite[]): FileWrite[] {
+function orderedWrites(writes: readonly FileWrite[], recordFirst: boolean): FileWrite[] {
   const record = writes.filter((write) => write.path === HARNESS_CONFIG_PATH);
   const rest = writes.filter((write) => write.path !== HARNESS_CONFIG_PATH);
-  return [...record, ...rest];
+  // ★undo 에서는 «마지막»이다. undo 가 config 에 쓰는 것은 기록을 남기는 일이 아니라
+  //   옛 파일로 «되돌리는» 일이라, 먼저 하면 나머지를 되돌릴 근거를 스스로 지운다
+  //   (2026-09-23 4차 독립 리뷰 I2). 같은 순서 규칙을 두 방향에 그대로 쓰면 안 된다.
+  return recordFirst ? [...record, ...rest] : [...rest, ...record];
 }
 
-/** 지운 파일들의 «저장소 안» 부모 디렉터리. 저장소 뿌리(".")는 대상이 아니다. */
-function parentDirectoriesOf(deleted: readonly string[]): string[] {
-  const directories = new Set<string>();
-  for (const path of deleted) {
-    const parent = dirname(path);
-    if (parent && parent !== "." && parent !== sep) {
-      directories.add(parent);
-    }
-  }
-  // 깊은 것부터 — .a/b 를 치워야 .a 가 비워진다.
-  return [...directories].sort((left, right) => right.length - left.length);
-}
 
 /** 파일을 읽은 뒤 우리가 네트워크를 기다리는 사이에 누가 고쳤으면, 그 변경을 덮지 않는다. */
 async function assertUnchangedSinceSnapshot(

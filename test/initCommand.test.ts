@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executeInitCommand, readRepositoryRole } from "../src/adapters/cli/initCommand";
+
 import { McpRpcError } from "../src/core/mcp/rpcClient";
 import type { McpRpcClient } from "../src/core/mcp/rpcClient";
 import type { HarnessRole } from "../src/core/harness/role";
@@ -379,6 +380,99 @@ describe("ai-erd init (files on disk)", () => {
     await executeInitCommand(options(["--role", "test"], stub));
 
     expect(await readRepositoryRole(root)).toBe("test");
+  });
+
+  it("★같은 설정으로 다시 init 해도 조각 지문을 잊지 않는다", async () => {
+    // 4차 독립 리뷰 I3 — 이전 기록을 베낄 때 lastWrittenFragment 만 빠져서, 내용이 같은
+    // 두 번째 init 뒤에 소유권 판정이 파일 전체 지문으로 후퇴했다.
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    const managed = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).managed;
+    expect(Object.keys(managed.lastWrittenFragment)).toHaveLength(3);
+
+    // 블록 «바깥»에만 쓴 글은 보존하면서 우리 블록은 정상적으로 걷어낸다.
+    const agentsPath = join(root, "AGENTS.md");
+    await writeFile(agentsPath, `${await readFile(agentsPath, "utf8")}\nOUTSIDE THE BLOCK\n`, "utf8");
+    await executeInitCommand(options(["--undo"], stub));
+
+    const after = await readFile(agentsPath, "utf8");
+    expect(after).toContain("OUTSIDE THE BLOCK");
+    expect(after).not.toContain("AI-ERD Harness");
+  });
+
+  it("★역할 추론도 저장소 경계 검사를 지난다", async () => {
+    // 4차 독립 리뷰 I5 — 나중에 붙인 읽기 경로가 assertInsideRepository 없이 파일을 «한 번 읽었다».
+    const outside = join(root, "..", `outside-${Date.now()}.json`);
+    await writeFile(outside, JSON.stringify({ mcpServers: {} }), "utf8");
+    await symlink(outside, join(root, ".mcp.json"));
+
+    await expect(readRepositoryRole(root)).rejects.toThrow();
+    await rm(outside, { force: true });
+  });
+
+  it("★칸 순서만 바뀐 것은 «편집»이 아니다", async () => {
+    // 4차 독립 리뷰 S1 — 편집기로 열었다 저장만 해도 사용자 편집으로 잡혔다.
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    const mcpPath = join(root, ".mcp.json");
+    const entry = JSON.parse(await readFile(mcpPath, "utf8")).mcpServers["ai-erd"];
+    const reordered = Object.fromEntries(Object.entries(entry).reverse());
+    await writeFile(mcpPath, `${JSON.stringify({ mcpServers: { "ai-erd": reordered } }, null, 2)}\n`, "utf8");
+
+    await executeInitCommand(options(["--undo"], stub));
+
+    expect(existsSync(mcpPath)).toBe(false);
+  });
+
+  it("★dev 기본 주소에서 막히면 안내에 env 가 실린다", async () => {
+    // 4차 독립 리뷰 S2 — 안내를 그대로 치면 «운영» 슬롯에 로그인하고 같은 자리에서 또 막혔다.
+    const stub = {
+      toolsCall: async () => {
+        throw new McpRpcError("MCP HTTP request failed with HTTP 401.", "MCP_HTTP_ERROR", { status: 401 });
+      },
+    } as unknown as McpRpcClient;
+
+    await expect(executeInitCommand({
+      ...options(["--role", "development"], stub),
+      env: "dev" as const,
+      endpoint: "https://dev.ai-erd.com/mcp",
+    })).rejects.toThrow(/--role development --env dev/);
+  });
+
+  it("★init 전부터 있던 빈 디렉터리는 undo 가 남긴다", async () => {
+    // 4차 독립 리뷰 S3 — 「비었으면 치운다」는 우리 것인지를 안 본다.
+    await mkdir(join(root, ".cursor"), { recursive: true });
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    await executeInitCommand(options(["--undo"], stub));
+
+    expect(existsSync(join(root, ".cursor"))).toBe(true);
+    expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(false);
+    // 우리가 만든 .ai-erd 는 그대로 치운다.
+    expect(existsSync(join(root, ".ai-erd"))).toBe(false);
+  });
+
+  it("★되돌리지 못한 것이 남으면 기록을 지우지 않는다", async () => {
+    // 4차 독립 리뷰 I2 — 충돌을 남긴 바로 그 실행이 «원본 백업이 든» config 를 지웠다.
+    await writeFile(join(root, ".mcp.json"),
+      `${JSON.stringify({ mcpServers: { "ai-erd": { command: "mine" } } }, null, 2)}\n`, "utf8");
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    // 사용자가 우리 항목을 손댄다 → undo 는 그것을 남긴다.
+    const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
+    mcp.mcpServers["ai-erd"].env = { MY_FLAG: "1" };
+    await writeFile(join(root, ".mcp.json"), `${JSON.stringify(mcp, null, 2)}\n`, "utf8");
+    await executeInitCommand(options(["--undo"], stub));
+
+    // 기록이 남아 있어야, 충돌을 풀고 다시 undo 할 때 원본을 되돌릴 수 있다.
+    expect(existsSync(join(root, ".ai-erd/config.json"))).toBe(true);
+    const managed = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).managed;
+    expect(managed.replacedEntries[".mcp.json"]).toEqual({ command: "mine" });
   });
 
   it("leaves a user's own file inside .ai-erd alone", async () => {

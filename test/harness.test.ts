@@ -167,30 +167,38 @@ describe("marker block", () => {
     expect(removeMarkerBlock(withBlock).content).toBe(original);
   });
 
-  it("★예제로 적어 둔 표식은 어떤 펜스 안에 있어도 우리 것이 아니다", () => {
-    // 2026-09-23 독립 재리뷰 I9 — 예전엔 줄 맨 앞 백틱 세 개만 세어서 아래 셋을 전부 놓쳤고,
-    // 남의 «예제 본문»을 우리 블록으로 오인해 갈아 끼웠다.
-    const fences = [
-      ["tilde", "~~~"],
-      ["indented", "  ```"],
-      ["longer", "````"],
-    ] as const;
+  it("★예제로 적어 둔 표식은 «우리 것이 아니다» — 건드리지 않는다", () => {
+    // 2026-09-22 I3 → 2026-09-23 3차 I9 → 4차 I6. 「예제인지 알아내서 피한다」는 계속 샜다:
+    // tilde, 들여쓴 펜스, 더 긴 펜스 안의 짧은 줄, 인용문, 네 칸 들여쓴 코드…
+    // ⇒ 판정을 뒤집었다. «우리가 쓰는 정확한 형태»만 우리 것으로 본다.
+    const examples: Array<[string, string]> = [
+      ["tilde", `~~~markdown\n${MARKER_BEGIN}\nEXAMPLE\n${MARKER_END}\n~~~`],
+      ["indented fence", `  \`\`\`\n${MARKER_BEGIN}\nEXAMPLE\n${MARKER_END}\n  \`\`\``],
+      ["longer fence", `\`\`\`\`\n\`\`\`\n${MARKER_BEGIN}\nEXAMPLE\n${MARKER_END}\n\`\`\`\n\`\`\`\``],
+      ["blockquote", `> \`\`\`\n> ${MARKER_BEGIN}\n> EXAMPLE\n> ${MARKER_END}\n> \`\`\``],
+      ["indented code", `    ${MARKER_BEGIN}\n    EXAMPLE\n    ${MARKER_END}`],
+    ];
 
-    for (const [label, open] of fences) {
-      const close = open.trimStart();
-      const file = `# Rules\n\n${open}markdown\n${MARKER_BEGIN}\nEXAMPLE TEXT (${label})\n${MARKER_END}\n${close}\n`;
-      expect(() => upsertMarkerBlock(file, renderAgentNote())).toThrow(/fenced code block/);
-      expect(() => removeMarkerBlock(file)).toThrow(/fenced code block/);
+    for (const [label, example] of examples) {
+      const file = `# Rules\n\n${example}\n`;
+      const after = upsertMarkerBlock(file, renderAgentNote());
+
+      // 예제 본문은 그대로다 — 이것이 예전에 갈아 끼워지던 것이다.
+      expect(after, label).toContain("EXAMPLE");
+      // 우리 블록은 «따로» 붙는다.
+      expect(after, label).toContain("AI-ERD Harness");
+      // 그리고 그 뒤의 되돌리기는 우리 것만 걷어낸다.
+      expect(removeMarkerBlock(after).content, label).toContain("EXAMPLE");
+      expect(removeMarkerBlock(after).content, label).not.toContain("AI-ERD Harness");
     }
   });
 
-  it("★더 긴 펜스 안의 짧은 백틱 줄은 펜스를 닫지 않는다", () => {
-    // ```` 로 연 블록 안의 ``` 는 «내용»이다. 닫힌 것으로 세면 그 뒤의 표식이 밖으로 보인다.
-    const file = [
-      "# Rules", "", "````markdown", "```", MARKER_BEGIN, "EXAMPLE", MARKER_END, "```", "````", "",
-    ].join("\n");
+  it("잘린 우리 블록은 여전히 거절한다", () => {
+    // 우리가 쓰는 형태로 여는 표식만 남은 것 = 사람이 손으로 잘랐다. 범위를 추측하지 않는다.
+    const damaged = `${MARKER_BEGIN}\nUSER TEXT MUST SURVIVE\n`;
 
-    expect(() => upsertMarkerBlock(file, renderAgentNote())).toThrow(/fenced code block/);
+    expect(() => upsertMarkerBlock(damaged, renderAgentNote())).toThrow(/unbalanced/);
+    expect(() => removeMarkerBlock(damaged)).toThrow(/unbalanced/);
   });
 
   it("펜스 밖의 진짜 블록은 그대로 다룬다", () => {
@@ -199,6 +207,17 @@ describe("marker block", () => {
 
     expect(upsertMarkerBlock(file, renderAgentNote())).toContain("AI-ERD Harness");
     expect(removeMarkerBlock(file).removed).toBe(true);
+  });
+
+  it("★채워 넣은 값 안의 자리표시자 모양은 다시 치환하지 않는다", () => {
+    // 4차 독립 리뷰 S4 — 넣은 값은 «내용»이지 템플릿이 아니다.
+    const rendered = renderHarnessDoc({
+      projectName: "The {{endpoint}} project",
+      projectUuid: "p-1",
+      endpoint: "https://ai-erd.com/mcp",
+    });
+
+    expect(rendered).toContain("The {{endpoint}} project");
   });
 
   it("never writes the role into prose — the config is the only source of truth", () => {

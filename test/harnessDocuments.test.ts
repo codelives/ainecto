@@ -82,6 +82,24 @@ describe("하네스 문서를 서버에서 받는다", () => {
     expect(result.fallbacks[AGENT_NOTE_KEY]).toContain("ai-erd:begin");
   });
 
+  it("★마커 «밖»에 글이 달린 AGENT_NOTE 는 받지 않는다", async () => {
+    // 4차 독립 리뷰 I4 — 넣는 범위(본문 전체)와 빼는 범위(마커 사이)가 달라서,
+    // 바깥 글이 init 마다 한 번씩 쌓이고 undo 로도 안 걷혔다.
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      documents: {
+        [AGENT_NOTE_KEY]: {
+          body: "Preamble.\n<!-- ai-erd:begin -->\nRead {{harnessDocPath}} on {{serverName}}\n"
+            + "<!-- ai-erd:end -->\nTrailing.",
+          version: "x",
+        },
+      },
+    })) as unknown as typeof fetch;
+
+    const result = await fetchHarnessDocuments({ endpoint: ENDPOINT, fetchImpl });
+    expect(result.agentNote).toBeUndefined();
+    expect(result.fallbacks[AGENT_NOTE_KEY]).toContain("never removed by --undo");
+  });
+
   it("서버가 말해 준 사유를 그대로 전한다", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({
       documents: { [DOC_KEY]: { body: "", version: "code", reason: "no usable registry version for HARNESS.DOC" } },

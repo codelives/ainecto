@@ -34,7 +34,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     let sessionRole = resolveRole({ role: parsed.role }).role;
     // ★init 은 저장소에 «이미 걸린» 역할을 이어받는다. 그 결정이 클라이언트보다 늦으면,
     //   파일에 쓸 역할과 서버에 보내는 역할이 서로 다른 시점에 정해진다(독립 재리뷰 I10).
-    if (parsed.positionals[0] === "init" && sessionRole === undefined) {
+    // ⚠undo 는 순수한 로컬 작업이라 역할이 필요 없다 — 추론하려고 저장소를 읽을 이유가 없다
+    //   (2026-09-23 4차 독립 리뷰 I5).
+    if (parsed.positionals[0] === "init" && sessionRole === undefined && !argv.includes("--undo")) {
       sessionRole = await readRepositoryRole(process.cwd());
     }
     const tokenStore = new FileTokenStore();

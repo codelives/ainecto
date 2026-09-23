@@ -45,11 +45,12 @@ export function renderHarnessDoc(input: HarnessDocInput, template?: string): str
  * (2026-09-23 독립 재리뷰 I2).
  */
 export function fillTemplate(template: string, values: Record<string, string>): string {
-  let out = template;
-  for (const [key, value] of Object.entries(values)) {
-    out = out.split(`{{${key}}}`).join(value);
-  }
-  return out;
+  // ★원본을 «한 번만» 훑는다. 값을 하나씩 갈아 끼우면, 먼저 넣은 값 안의 자리표시자 모양
+  //   글자가 다음 차례에 또 치환된다 — 프로젝트 이름에 {{endpoint}} 라고 적어 둔 사람의
+  //   이름 일부가 실제 주소로 바뀌었다(2026-09-23 4차 독립 리뷰 S4).
+  // ⚠모르는 이름은 그대로 둔다 — 지우면 「못 채웠다」를 아무도 못 본다.
+  return template.replace(/\{\{([a-zA-Z0-9_]+)}}/g, (whole, name: string) =>
+    Object.prototype.hasOwnProperty.call(values, name) ? values[name]! : whole);
 }
 
 export const DOC_KEY = "HARNESS.DOC";
@@ -75,14 +76,7 @@ export function documentContractProblem(key: string, body: string): string | und
     }
   }
   if (key === AGENT_NOTE_KEY) {
-    const begins = body.split(MARKER_BEGIN).length - 1;
-    const ends = body.split(MARKER_END).length - 1;
-    if (begins !== 1 || ends !== 1) {
-      return `${key} must contain exactly one ${MARKER_BEGIN} and one ${MARKER_END}`;
-    }
-    if (body.indexOf(MARKER_END) < body.indexOf(MARKER_BEGIN)) {
-      return `${key} markers are out of order`;
-    }
+    return managedBlockProblem(key, body);
   }
   return undefined;
 }
@@ -169,6 +163,31 @@ stop and report which session is required.
 ${MARKER_END}`;
 
 /**
+ * 이 본문이 <b>통째로 «관리 블록 하나»</b>인가. 아니면 그 이유.
+ *
+ * <p>★예전엔 「마커가 한 쌍 있나」만 봤다. 그래서 마커 «밖»에 머리말·꼬리말이 달린 본문이
+ * 통과했고, 그 바깥 글은 init 때마다 한 번씩 더 붙고 undo 로도 안 걷혔다 — 우리가 걷어내는
+ * 범위는 마커 «사이»뿐이기 때문이다(2026-09-23 4차 독립 리뷰 I4).
+ *
+ * <p>「넣는 범위」와 「빼는 범위」가 다르면 차이만큼 남의 파일에 쌓인다. 그래서 «넣을 것»도
+ * 뺄 수 있는 모양이어야 한다: 앞뒤 공백을 빼면 정확히 한 블록.
+ */
+export function managedBlockProblem(key: string, body: string): string | undefined {
+  const trimmed = body.trim();
+  if (!trimmed.startsWith(MARKER_BEGIN)) {
+    return `${key} must begin with ${MARKER_BEGIN} — text outside the block is never removed by --undo`;
+  }
+  if (!trimmed.endsWith(MARKER_END)) {
+    return `${key} must end with ${MARKER_END} — text outside the block is never removed by --undo`;
+  }
+  const inner = trimmed.slice(MARKER_BEGIN.length, trimmed.length - MARKER_END.length);
+  if (inner.includes(MARKER_BEGIN) || inner.includes(MARKER_END)) {
+    return `${key} must contain exactly one ${MARKER_BEGIN} and one ${MARKER_END}`;
+  }
+  return undefined;
+}
+
+/**
  * 블록이 이미 있으면 갈아 끼우고, 없으면 끝에 붙인다. 사용자의 다른 내용은 건드리지 않는다.
  *
  * @throws Error 여는 표식만 있고 닫는 표식이 없을 때. ★<b>붙이면 안 된다</b> —
@@ -189,12 +208,16 @@ export function upsertMarkerBlock(existing: string | undefined, block: string): 
 /**
  * 표식이 짝이 안 맞으면 그 파일은 «손대지 않는다».
  *
- * <p>사람이 손으로 잘랐거나 코드블록 안에 예제로 적어 둔 경우다. 어느 쪽이든 우리가 범위를
- * 추측해서 지우면 남의 글이 날아간다. 고치는 건 사람 몫이고, 우리는 무엇이 문제인지만 말한다.
+ * <p>사람이 손으로 잘랐거나 붙여 넣다 만 경우다. 우리가 범위를 추측해서 지우면 남의 글이
+ * 날아간다. 고치는 건 사람 몫이고, 우리는 무엇이 문제인지만 말한다.
+ *
+ * <p>★<b>세는 대상은 «우리 것으로 알아볼 수 있는» 표식뿐이다</b>({@link ownedMarkerIndex}).
+ * 인용문·코드펜스·들여쓴 예제 안의 표식은 애초에 우리 것이 아니므로 짝을 세지 않는다 —
+ * 예전엔 그런 예제까지 세어서 멀쩡한 파일을 「짝이 안 맞는다」고 거절했다.
  */
 export function assertNoDanglingMarker(content: string): void {
-  const begins = countOccurrences(content, MARKER_BEGIN);
-  const ends = countOccurrences(content, MARKER_END);
+  const begins = ownedMarkerCount(content, MARKER_BEGIN);
+  const ends = ownedMarkerCount(content, MARKER_END);
   if (begins !== ends || begins > 1) {
     throw new Error(
       `ai-erd markers are unbalanced (${begins} begin, ${ends} end). The file was left untouched — `
@@ -204,23 +227,23 @@ export function assertNoDanglingMarker(content: string): void {
   if (begins === 0) {
     return;
   }
-  const beginAt = content.indexOf(MARKER_BEGIN);
-  const endAt = content.indexOf(MARKER_END);
   // ★개수만 세면 «end 가 begin 보다 앞선» 한 쌍을 정상으로 본다 — 그러면 새 블록을 덧붙이고
   //   다음 실행부터 중복으로 거절된다(2026-09-23 독립 재리뷰 I3).
-  if (endAt < beginAt) {
+  if (ownedMarkerIndex(content, MARKER_END, 0) < ownedMarkerIndex(content, MARKER_BEGIN, 0)) {
     throw new Error(
       `ai-erd markers are out of order (${MARKER_END} appears before ${MARKER_BEGIN}). `
       + "The file was left untouched — fix the markers by hand and run again.",
     );
   }
-  // ★코드블록 안의 «예제» 표식을 우리 블록으로 오인해 본문을 갈아 끼우던 것도 같은 결함이다.
-  if (isInsideFencedBlock(content, beginAt)) {
-    throw new Error(
-      "ai-erd markers appear inside a fenced code block, so ownership is unclear. "
-      + "The file was left untouched — move the example out of the fence or remove the markers.",
-    );
+}
+
+function ownedMarkerCount(content: string, marker: string): number {
+  let count = 0;
+  for (let at = ownedMarkerIndex(content, marker, 0); at >= 0;
+       at = ownedMarkerIndex(content, marker, at + 1)) {
+    count += 1;
   }
+  return count;
 }
 
 /**
@@ -271,16 +294,6 @@ function fenceOf(line: string): { char: string; length: number; info: string } |
   return { char: run[0]!, length: run.length, info };
 }
 
-function countOccurrences(content: string, needle: string): number {
-  let count = 0;
-  let index = content.indexOf(needle);
-  while (index >= 0) {
-    count += 1;
-    index = content.indexOf(needle, index + needle.length);
-  }
-  return count;
-}
-
 export interface MarkerRemoval {
   content: string;
   removed: boolean;
@@ -327,13 +340,45 @@ export function existingMarkerBlock(content: string | undefined): string | undef
 
 /** 짝이 맞는 것은 {@link assertNoDanglingMarker} 가 이미 보장한다 — 여긴 범위만 잡는다. */
 function markerRange(content: string): { start: number; end: number } | undefined {
-  const start = content.indexOf(MARKER_BEGIN);
+  const start = ownedMarkerIndex(content, MARKER_BEGIN, 0);
   if (start < 0) {
     return undefined;
   }
-  const endMarker = content.indexOf(MARKER_END, start);
+  const endMarker = ownedMarkerIndex(content, MARKER_END, start);
   if (endMarker < 0) {
     return undefined;
   }
   return { start, end: endMarker + MARKER_END.length };
+}
+
+/**
+ * ★<b>판정을 뒤집었다.</b> 「예제인지 알아내서 피한다」가 아니라
+ * <b>「우리 것임을 확인할 수 있는 형태만 수락한다」</b>이다.
+ *
+ * <p>예제를 알아내려던 쪽은 계속 샜다 — tilde 펜스, 들여쓴 펜스, 더 긴 펜스 안의 짧은 줄,
+ * 인용문 안의 코드, 네 칸 들여쓴 코드 블록…(2026-09-22 I3 → 2026-09-23 3차 I9 → 4차 I6).
+ * Markdown 의 «안에 담는 문맥»은 끝이 없어서, 못 알아낸 하나가 곧 남의 본문을 지운다.
+ *
+ * <p>그래서 우리가 쓰는 <b>정확한 한 가지 형태</b>만 우리 것으로 본다:
+ * 들여쓰기 없이 줄 맨 앞에서 시작하고, 그 줄에 표식 말고는 아무것도 없으며, 코드펜스 밖일 것.
+ * ⚠이보다 느슨하게 적힌 우리 블록이 있다면 그것도 «못 알아본다» — 그 경우 덧붙이지도
+ * 지우지도 않고 표식이 없는 파일처럼 다룬다. 남의 글을 지우는 쪽보다 낫다.
+ */
+function ownedMarkerIndex(content: string, marker: string, from: number): number {
+  for (let at = content.indexOf(marker, from); at >= 0; at = content.indexOf(marker, at + 1)) {
+    const lineStart = content.lastIndexOf("\n", at - 1) + 1;
+    if (lineStart !== at) {
+      continue; // 들여썼거나 인용문(">") 뒤다 — 우리가 쓰는 형태가 아니다.
+    }
+    const lineEnd = content.indexOf("\n", at);
+    const rest = (lineEnd < 0 ? content.slice(at) : content.slice(at, lineEnd)).slice(marker.length);
+    if (rest.trim() !== "") {
+      continue; // 같은 줄에 다른 글이 있다.
+    }
+    if (isInsideFencedBlock(content, at)) {
+      continue;
+    }
+    return at;
+  }
+  return -1;
 }
