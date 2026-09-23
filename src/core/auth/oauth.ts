@@ -5,8 +5,11 @@ import { URLSearchParams } from "node:url";
 import type { StoredTokenSet, TokenStore } from "./tokenStore";
 import { registerPublicClient, type ClientRegistrationResult } from "./clientRegistration";
 import { assertTrustedEndpointUrl, isDefaultEndpoint } from "../config/endpoints";
+import { ROLE_SCOPE_PREFIX, type HarnessRole } from "../harness/role";
 
 export interface OAuthClientOptions {
+  /** 이 클라이언트가 쓰는 세션 역할. 토큰이 이 역할로 발급되고 저장된다. */
+  role?: HarnessRole;
   endpoint: string;
   tokenStore: TokenStore;
   fetchImpl?: typeof fetch;
@@ -45,7 +48,7 @@ export class OAuthClient implements TokenProvider {
       return envToken;
     }
 
-    const stored = await this.options.tokenStore.load(this.options.endpoint);
+    const stored = await this.options.tokenStore.load(this.options.endpoint, this.options.role);
     if (!stored) {
       return undefined;
     }
@@ -58,7 +61,7 @@ export class OAuthClient implements TokenProvider {
   }
 
   async refreshAfterUnauthorized(): Promise<string | undefined> {
-    const stored = await this.options.tokenStore.load(this.options.endpoint);
+    const stored = await this.options.tokenStore.load(this.options.endpoint, this.options.role);
     if (!stored?.refreshToken) {
       return undefined;
     }
@@ -83,6 +86,11 @@ export class OAuthClient implements TokenProvider {
       authorizeUrl.searchParams.set("code_challenge_method", "S256");
       authorizeUrl.searchParams.set("resource", this.options.endpoint);
       authorizeUrl.searchParams.set("state", state);
+      // ★역할을 OAuth scope 로 요구한다. 승인은 브라우저에서 사람이 한다 —
+      //   그래서 에이전트가 자기 역할을 넓힌 토큰을 혼자 만들 수 없다.
+      if (this.options.role) {
+        authorizeUrl.searchParams.set("scope", `mcp ${ROLE_SCOPE_PREFIX}${this.options.role}`);
+      }
 
       assertTrustedEndpointUrl(authorizeUrl, "OAuth authorization URL");
       await this.openBrowserImpl(authorizeUrl.toString());
@@ -98,7 +106,7 @@ export class OAuthClient implements TokenProvider {
       }, this.fetchImpl);
 
       const stored = toStoredToken(this.options.endpoint, token, metadata, registration);
-      await this.options.tokenStore.save(this.options.endpoint, stored);
+      await this.options.tokenStore.save(this.options.endpoint, stored, this.options.role);
       return stored;
     } finally {
       await loopback.close();
@@ -106,7 +114,7 @@ export class OAuthClient implements TokenProvider {
   }
 
   async logout(): Promise<void> {
-    await this.options.tokenStore.delete(this.options.endpoint);
+    await this.options.tokenStore.delete(this.options.endpoint, this.options.role);
   }
 
   private async refreshStoredToken(stored: StoredTokenSet): Promise<string | undefined> {
@@ -122,7 +130,7 @@ export class OAuthClient implements TokenProvider {
       resource: this.options.endpoint,
     }, this.fetchImpl);
     const next = toStoredToken(this.options.endpoint, token, metadata, stored);
-    await this.options.tokenStore.save(this.options.endpoint, next);
+    await this.options.tokenStore.save(this.options.endpoint, next, this.options.role);
     return next.accessToken;
   }
 }

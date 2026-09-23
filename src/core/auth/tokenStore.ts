@@ -17,9 +17,9 @@ export interface StoredTokenSet {
 }
 
 export interface TokenStore {
-  load(endpoint: string): Promise<StoredTokenSet | undefined>;
-  save(endpoint: string, token: StoredTokenSet): Promise<void>;
-  delete(endpoint: string): Promise<void>;
+  load(endpoint: string, role?: string): Promise<StoredTokenSet | undefined>;
+  save(endpoint: string, token: StoredTokenSet, role?: string): Promise<void>;
+  delete(endpoint: string, role?: string): Promise<void>;
 }
 
 type TokenFile = Record<string, StoredTokenSet>;
@@ -31,20 +31,20 @@ export class FileTokenStore implements TokenStore {
     this.filePath = join(rootDir, "tokens.json");
   }
 
-  async load(endpoint: string): Promise<StoredTokenSet | undefined> {
+  async load(endpoint: string, role?: string): Promise<StoredTokenSet | undefined> {
     const file = await this.readFile();
-    return file[tokenKey(endpoint)];
+    return file[tokenKey(endpoint, role)];
   }
 
-  async save(endpoint: string, token: StoredTokenSet): Promise<void> {
+  async save(endpoint: string, token: StoredTokenSet, role?: string): Promise<void> {
     const file = await this.readFile();
-    file[tokenKey(endpoint)] = { ...token, endpoint, updatedAt: new Date().toISOString() };
+    file[tokenKey(endpoint, role)] = { ...token, endpoint, updatedAt: new Date().toISOString() };
     await this.writeFile(file);
   }
 
-  async delete(endpoint: string): Promise<void> {
+  async delete(endpoint: string, role?: string): Promise<void> {
     const file = await this.readFile();
-    delete file[tokenKey(endpoint)];
+    delete file[tokenKey(endpoint, role)];
     await this.writeFile(file);
   }
 
@@ -82,8 +82,18 @@ export class FileTokenStore implements TokenStore {
   }
 }
 
-export function tokenKey(endpoint: string): string {
-  return createHash("sha256").update(endpoint).digest("hex");
+/**
+ * ★역할마다 토큰을 «따로» 둔다.
+ *
+ * <p>하나로 두면 design 세션으로 로그인하는 순간 development 세션의 토큰이 덮여, 돌고 있던
+ * 세션의 역할이 몰래 바뀐다. 역할이 토큰에 박히는 설계에서 토큰 저장소가 한 칸이면 그 칸이
+ * 곧 역할 전환 스위치가 된다.
+ *
+ * <p>역할이 없으면 종전 키 그대로다 — 이미 로그인해 둔 사람이 다시 로그인하지 않아도 된다.
+ */
+export function tokenKey(endpoint: string, role?: string): string {
+  const material = role && role.trim() ? `${endpoint}#role=${role.trim().toLowerCase()}` : endpoint;
+  return createHash("sha256").update(material).digest("hex");
 }
 
 export async function tokenStorePermissions(path: string): Promise<{ mode: number } | undefined> {

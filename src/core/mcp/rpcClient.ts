@@ -1,4 +1,5 @@
 import type { TokenProvider } from "../auth/oauth";
+import { ROLE_HEADER, type HarnessRole } from "../harness/role";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -30,6 +31,8 @@ export interface McpRpcClientOptions {
   tokenProvider?: TokenProvider;
   fetchImpl?: typeof fetch;
   envVars?: NodeJS.ProcessEnv;
+  /** 세션 역할. 있으면 모든 요청에 실린다 — 강제는 서버가 한다. */
+  role?: HarnessRole;
 }
 
 export class McpRpcError extends Error {
@@ -125,12 +128,24 @@ export class McpRpcClient {
     if (token) {
       headers.authorization = `Bearer ${token}`;
     }
+    if (this.options.role) {
+      headers[ROLE_HEADER.toLowerCase()] = this.options.role;
+    }
     return this.fetchImpl(this.options.endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(request),
     });
   }
+}
+
+/**
+ * ★MCP 는 «도구가 거부/실패했다»를 JSON-RPC error 가 아니라 결과 안의 {@code isError} 로
+ * 알린다(2025-06-18 규격). 그래서 최상위 error 만 보면 실패가 성공으로 보고된다 —
+ * 셸 자동화는 exit 0 을 받고 다음 단계로 간다(2026-09-22 독립 리뷰 I9).
+ */
+export function isToolError(result: unknown): boolean {
+  return isRecord(result) && result.isError === true;
 }
 
 function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {

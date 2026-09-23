@@ -63,6 +63,18 @@ export function normalizeEndpoint(endpoint: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
+/**
+ * ★<b>이 env 의 기본 주소와 «정확히» 같은가.</b>
+ *
+ * <p>{@link isDefaultEndpoint} 는 prod·dev·옛 주소를 전부 «기본»으로 보는 넓은 판정이라,
+ * 「env=prod 인데 endpoint 만 dev」 같은 입력을 기본으로 착각한다. 그 판정으로 설정에서
+ * {@code --endpoint} 를 빼면, 조회한 주소와 세션이 붙는 주소가 갈라진다
+ * (2026-09-23 독립 재리뷰 I7).
+ */
+export function isDefaultEndpointFor(env: AinectoEnv, endpoint: string): boolean {
+  return normalizeEndpoint(endpoint) === DEFAULT_ENDPOINTS[env];
+}
+
 export function isDefaultEndpoint(endpoint: string): boolean {
   const normalized = normalizeEndpoint(endpoint);
   return Object.values(DEFAULT_ENDPOINTS).includes(normalized)

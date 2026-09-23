@@ -35,10 +35,13 @@ describe("catalog generation", () => {
       "prod",
     );
 
-    expect(shortForm.commandPath).toEqual(legacyForm.commandPath);
+    // 한 항목씩 나와야 한다 — 안 나오면 아래 단정이 undefined 를 통과시킨다
+    expect(shortForm).toBeDefined();
+    expect(legacyForm).toBeDefined();
+    expect(shortForm?.commandPath).toEqual(legacyForm?.commandPath);
     // mcpName 은 «서버가 준 이름»을 그대로 들고 간다 — 서버는 둘 다 받는다
-    expect(shortForm.mcpName).toBe("list_projects");
-    expect(legacyForm.mcpName).toBe("mcp__ainecto__list_projects");
+    expect(shortForm?.mcpName).toBe("list_projects");
+    expect(legacyForm?.mcpName).toBe("mcp__ainecto__list_projects");
   });
 
   it("keeps generated commands reachable and unique", () => {

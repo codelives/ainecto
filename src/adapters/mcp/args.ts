@@ -1,8 +1,10 @@
 import { assertEnv, type AinectoEnv } from "../../core/config/endpoints";
+import { assertRole, type HarnessRole } from "../../core/harness/role";
 
 export interface McpBinArgs {
   env?: AinectoEnv;
   endpoint?: string;
+  role?: HarnessRole;
   help: boolean;
 }
 
@@ -17,6 +19,8 @@ export function parseMcpArgs(argv: string[]): McpBinArgs {
       result.env = assertEnv(requireFlagValue(arg, argv[++index]));
     } else if (arg === "--endpoint") {
       result.endpoint = requireFlagValue(arg, argv[++index]);
+    } else if (arg === "--role") {
+      result.role = assertRole(requireFlagValue(arg, argv[++index]));
     } else if (arg === "--help" || arg === "-h") {
       result.help = true;
     } else {

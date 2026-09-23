@@ -4,6 +4,7 @@ import { enrichments } from "../../core/catalog/enrichments";
 import { getGeneratedTools } from "../../core/catalog";
 import type { AinectoEnv } from "../../core/config/endpoints";
 import { renderSuccess } from "../../core/output/render";
+import { isToolError } from "../../core/mcp/rpcClient";
 import { renderTable } from "../../core/output/table";
 import { parseGeneratedCommandArgs } from "./flagParser";
 import { confirmDestructiveCommand, type ConfirmationIO } from "./destructiveConfirmation";
@@ -70,7 +71,8 @@ export async function executeGeneratedCommand(options: GeneratedCommandExecution
     warnings,
     presentation: route.presentation,
   }));
-  return 0;
+  // ★도구가 «거부»한 것을 성공으로 보고하지 않는다 — 셸 자동화는 exit 코드를 본다.
+  return isToolError(result) ? 1 : 0;
 }
 
 export function assertNoCommandCollisions(env: AinectoEnv): void {
