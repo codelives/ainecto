@@ -4,6 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createdChain, executeInitCommand, readRepositoryRole } from "../src/adapters/cli/initCommand";
+import { readRecordBody } from "../src/core/harness/initPlan";
+
+const RECORD_FILE = ".ai-erd/init-record.json";
+
+/**
+ * 되돌리기 기록. ★«기록 파일»에서 읽는다 — 7차 독립 리뷰 뒤에 기록을 config 에서 자기 파일로
+ * 내보냈다. 한 파일에 주인이 둘이라 「이 칸이 누구 것인가」를 매번 판정해야 했고, 그 판정이
+ * 네 차수 연속 샜다.
+ */
+async function recordOf(root: string) {
+  return readRecordBody(await readFile(join(root, RECORD_FILE), "utf8"));
+}
 
 import { McpRpcError } from "../src/core/mcp/rpcClient";
 import type { McpRpcClient } from "../src/core/mcp/rpcClient";
@@ -352,7 +364,7 @@ describe("ai-erd init (files on disk)", () => {
     try {
       await expect(executeInitCommand(options(["--role", "development"], stub))).rejects.toThrow();
       // ★실패했어도 기록이 먼저 디스크에 있다 — 그래야 undo 가 앞서 바꾼 것을 되돌린다.
-      expect(existsSync(join(root, ".ai-erd/config.json"))).toBe(true);
+      expect(existsSync(join(root, RECORD_FILE))).toBe(true);
     } finally {
       await chmod(join(root, ".cursor"), 0o755);
     }
@@ -389,7 +401,7 @@ describe("ai-erd init (files on disk)", () => {
     await executeInitCommand(options(["--role", "development"], stub));
     await executeInitCommand(options(["--role", "development"], stub));
 
-    const managed = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).managed;
+    const managed = (await recordOf(root))!;
     expect(Object.keys(managed.lastWrittenFragment)).toHaveLength(3);
 
     // 블록 «바깥»에만 쓴 글은 보존하면서 우리 블록은 정상적으로 걷어낸다.
@@ -470,8 +482,8 @@ describe("ai-erd init (files on disk)", () => {
     await executeInitCommand(options(["--undo"], stub));
 
     // 기록이 남아 있어야, 충돌을 풀고 다시 undo 할 때 원본을 되돌릴 수 있다.
-    expect(existsSync(join(root, ".ai-erd/config.json"))).toBe(true);
-    const managed = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).managed;
+    expect(existsSync(join(root, RECORD_FILE))).toBe(true);
+    const managed = (await recordOf(root))!;
     expect(managed.replacedEntries[".mcp.json"]).toEqual({ command: "mine" });
   });
 
@@ -506,7 +518,7 @@ describe("ai-erd init (files on disk)", () => {
       .replace("<!-- ai-erd:end -->", "MINE INSIDE\n<!-- ai-erd:end -->"), "utf8");
     await executeInitCommand(options(["--undo"], stub));
 
-    const managed = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).managed;
+    const managed = (await recordOf(root))!;
     // 끝난 MCP 항목의 백업은 사라졌고, 아직 남은 AGENTS 기록만 있다.
     expect(managed.replacedEntries[".mcp.json"]).toBeUndefined();
     expect(managed.blockAdded).toContain("AGENTS.md");
@@ -527,7 +539,7 @@ describe("ai-erd init (files on disk)", () => {
     await executeInitCommand(options(["--undo"], stub));
 
     expect(out.join("")).toContain("the backup is kept");
-    const managed = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).managed;
+    const managed = (await recordOf(root))!;
     expect(managed.replacedEntries[".mcp.json"]).toEqual({ command: "mine" });
   });
 
@@ -613,9 +625,9 @@ describe("★S1 이미 있던 빈 디렉터리는 우리 것으로 기록되지 
     });
 
     expect(code).toBe(0);
-    const config = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8"));
-    expect(config.managed.createdDirectories).toContain(".ai-erd");
-    expect(config.managed.createdDirectories).not.toContain(".cursor");
+    const managed = (await recordOf(root))!;
+    expect(managed.createdDirectories).toContain(".ai-erd");
+    expect(managed.createdDirectories).not.toContain(".cursor");
     // 그리고 되돌리기가 그 디렉터리를 치우려 들지 않는다.
     expect(existsSync(join(root, ".cursor"))).toBe(true);
   });

@@ -132,16 +132,28 @@ export interface RemoveResult {
   emptied: boolean;
 }
 
-export function removeServerEntry(existing: string | undefined, restoreEntry?: unknown): RemoveResult {
+/**
+ * 되돌릴 목표를 «감싸서» 받는다.
+ *
+ * <p>★{@code restoreEntry?: unknown} 과 {@code !== undefined} 조합은 <b>저장된 {@code null} 을
+ * 「백업 없음」으로 바꾼다.</b> 사용자가 {@code "ai-erd": null} 을 적어 두었고 우리가 그것을
+ * 백업했다면, 되돌리기는 null 을 도로 넣어야 한다(2026-09-27 7차 독립 리뷰 I5).
+ * 「값이 없다」와 「값이 null 이다」는 다른 사실이므로 그 둘을 한 자리에 담지 않는다.
+ */
+export interface RestoreEntry {
+  value: unknown;
+}
+
+export function removeServerEntry(existing: string | undefined, restore?: RestoreEntry): RemoveResult {
   if (existing === undefined) {
     return { removed: false, emptied: false };
   }
   const root = parseConfigObject(existing);
   const servers = readServers(root);
   const removed = Object.prototype.hasOwnProperty.call(servers, SERVER_NAME);
-  if (restoreEntry !== undefined) {
+  if (restore !== undefined) {
     // ★우리가 밀어낸 사용자 항목을 도로 넣는다. 지우는 것이 아니라 «되돌리는» 것이다.
-    servers[SERVER_NAME] = restoreEntry;
+    servers[SERVER_NAME] = restore.value;
     return { content: stringify({ ...root, mcpServers: servers }), removed, emptied: false };
   }
   delete servers[SERVER_NAME];

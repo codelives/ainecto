@@ -17,6 +17,26 @@ export const MARKER_END = "<!-- ai-erd:end -->";
 export const HARNESS_DOC_PATH = ".ai-erd/HARNESS.md";
 export const HARNESS_CONFIG_PATH = ".ai-erd/config.json";
 
+/**
+ * ★<b>되돌리기 기록의 자리. 이 파일은 «전부 우리 것»이다.</b>
+ *
+ * <p>예전엔 기록이 {@code config.json} 안에 살았다. 그 파일은 사용자도 칸을 더하고 고치는
+ * 파일이라, 한 파일에 주인이 둘이었다 — 그래서 되돌리기가 매번 「이 칸이 누구 것인가」를
+ * 판정해야 했고, <b>그 판정이 네 차수 연속 샜다</b>(2026-09-23 4차 I7 → 5차 I2·S3 →
+ * 6차 I1·I3 → 2026-09-27 7차 I1·I2·I3).
+ *
+ * <p>기록을 우리 파일로 내보내면 그 질문 자체가 사라진다:
+ * <ul>
+ *   <li>우리 파일 — 통째로 쓰고 통째로 지운다. 병합도 소유 판정도 없다.</li>
+ *   <li>남의 파일({@code config.json}·{@code .mcp.json}·{@code AGENTS.md}) — «병합»해서 쓰고,
+ *       우리 조각만 되돌린다.</li>
+ * </ul>
+ * ★<b>그리고 자기 지문의 순환도 같이 사라진다.</b> 「자기 해시를 담은 문서의 해시」를 피하려고
+ * 정규형에서 그 칸을 빼던 장치가 필요 없다 — 우리 파일은 지문을 «재지 않는다». 사용자가
+ * 고칠 파일이 아니고, 고쳐져 있으면 읽기가 실패해 「기록 없음」으로 안전하게 떨어진다.
+ */
+export const HARNESS_RECORD_PATH = ".ai-erd/init-record.json";
+
 export interface HarnessDocInput {
   projectName: string;
   projectUuid: string;

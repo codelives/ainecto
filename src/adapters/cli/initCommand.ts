@@ -10,12 +10,13 @@ import {
   MANAGED_PATHS,
   planInit,
   planUndo,
+  readRecordBody,
   type FileWrite,
   type InitPlan,
   type ManagedRecord,
   withCreatedDirectories,
 } from "../../core/harness/initPlan";
-import { HARNESS_CONFIG_PATH } from "../../core/harness/harnessDoc";
+import { HARNESS_CONFIG_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
 import { AGENT_TARGETS } from "../../core/harness/agentTargets";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
 
@@ -63,7 +64,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
   const files = await readSnapshot(root);
 
   if (args.undo) {
-    const plan = planUndo({ files, managed: readManaged(files.get(HARNESS_CONFIG_PATH)) });
+    const plan = planUndo({ files, managed: readRecordBody(files.get(HARNESS_RECORD_PATH)) });
     await applyPlan(root, plan, args.dryRun, files, false);
     options.io.stdout.write(renderSuccess(
       {
@@ -113,7 +114,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     endpoint: options.endpoint,
     cliVersion: options.cliVersion,
     files,
-    previous: readManaged(files.get(HARNESS_CONFIG_PATH)),
+    previous: readRecordBody(files.get(HARNESS_RECORD_PATH)),
     documents,
   });
   await applyPlan(root, plan, args.dryRun, files);
@@ -445,27 +446,6 @@ async function assertInsideRepository(root: string, relativePath: string): Promi
   }
 }
 
-function readManaged(config: string | undefined): ManagedRecord | undefined {
-  if (!config) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(config) as { managed?: Partial<ManagedRecord> };
-    if (!parsed.managed) {
-      return undefined;
-    }
-    return {
-      ...emptyManagedRecord(),
-      ...parsed.managed,
-      created: Array.isArray(parsed.managed.created) ? parsed.managed.created : [],
-      blockAdded: Array.isArray(parsed.managed.blockAdded) ? parsed.managed.blockAdded : [],
-      replacedEntries: isRecord(parsed.managed.replacedEntries) ? parsed.managed.replacedEntries : {},
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * 계획을 적용한다.
  *
@@ -503,7 +483,7 @@ async function applyPlan(
     // ★되돌리기에서는 기록을 건드리는 일이 «작업 전체»의 마지막이다. 4차에서 config 를 쓰기
     //   목록의 뒤로 옮겼지만, 쓰기가 다 끝난 «뒤에» 삭제가 온다. 그래서 삭제가 실패하면 기록은
     //   이미 옛 파일로 돌아가 있고 되돌릴 근거가 없었다(2026-09-23 5차 독립 리뷰 I1).
-    const isRecord = (path: string) => !recordFirst && path === HARNESS_CONFIG_PATH;
+    const isRecord = (path: string) => !recordFirst && path === HARNESS_RECORD_PATH;
     const recordWrites = plan.writes.filter((write) => isRecord(write.path));
     const recordDeletes = plan.deletes.filter((path) => isRecord(path));
     /**
@@ -513,6 +493,13 @@ async function applyPlan(
      * (직전 실행에서 이어받은 것은 이미 기록에 있으므로 함께 들고 간다.)
      */
     const createdDirectories: string[] = [...(plan.managed?.createdDirectories ?? [])];
+    const rememberDirectories = (directories: readonly string[]) => {
+      for (const directory of directories) {
+        if (!createdDirectories.includes(directory)) {
+          createdDirectories.push(directory);
+        }
+      }
+    };
     /**
      * 기록의 디렉터리 칸을 «실제로 만든 것»으로 바로잡는다.
      *
@@ -523,25 +510,37 @@ async function applyPlan(
      * <p>⚠기록 보정이 실패해도 원래 오류를 덮지 않는다. 같은 내용을 두 번 써도 무해하다.
      */
     const recordActualDirectories = async () => {
-      const write = plan.writes.find((w) => w.path === HARNESS_CONFIG_PATH);
-      if (!recordFirst || !plan.managed || !write || !applied.includes(HARNESS_CONFIG_PATH)) {
+      const write = plan.writes.find((w) => w.path === HARNESS_RECORD_PATH);
+      if (!recordFirst || !plan.managed || !write || !applied.includes(HARNESS_RECORD_PATH)) {
         return;
       }
       await writeManagedFile(root, {
         ...write,
         content: withCreatedDirectories(write.content, createdDirectories),
-      }).catch(() => undefined);
+      });
+    };
+    /**
+     * 보정을 «삼키지 않는다». 다른 오류가 진행 중이면 그 오류를 살리고, 아니면 드러낸다.
+     *
+     * <p>★예전엔 무조건 삼켰다. 그러면 init 이 종료 0 을 돌려주는데 기록의 디렉터리 칸이
+     * 비어 있고, 그 상태의 undo 는 우리가 만든 디렉터리를 남긴다 — 「성공」이 기록 완료를
+     * 보증하지 않았다(2026-09-27 7차 독립 리뷰 S1).
+     */
+    const recordDirectoriesOrExplain = async (failing: boolean) => {
+      try {
+        await recordActualDirectories();
+      } catch (error) {
+        if (!failing) {
+          throw error;
+        }
+      }
     };
     const apply = async (writes: readonly FileWrite[], deletes: readonly string[]) => {
       for (const write of writes) {
         // ②그리고 «쓰기 직전에» 다시 본다. ①과 실제 쓰기 사이에 누가 고칠 수 있다 — 그 틈으로
         //   남의 편집이 덮여 나갔다(같은 항목). 검사와 쓰기를 붙여 놓으면 창이 작아진다.
         await assertUnchangedSinceSnapshot(root, write.path, snapshot);
-        for (const directory of await writeManagedFile(root, write)) {
-          if (!createdDirectories.includes(directory)) {
-            createdDirectories.push(directory);
-          }
-        }
+        await writeManagedFile(root, write, rememberDirectories);
         applied.push(write.path);
       }
       for (const path of deletes) {
@@ -556,11 +555,11 @@ async function applyPlan(
         orderedWrites(plan.writes.filter((write) => !isRecord(write.path)), recordFirst),
         plan.deletes.filter((path) => !isRecord(path)),
       );
-      await recordActualDirectories();
+      await recordDirectoriesOrExplain(false);
       // 여기까지 전부 된 다음에만 기록을 줄이거나 지운다.
       await apply(recordWrites, recordDeletes);
     } catch (error) {
-      await recordActualDirectories();
+      await recordDirectoriesOrExplain(true);
       throw error;
     }
   } catch (error) {
@@ -587,8 +586,8 @@ async function applyPlan(
  * 안 만든 파일을 지우려 드는 것보다 안전한 쪽이다.
  */
 function orderedWrites(writes: readonly FileWrite[], recordFirst: boolean): FileWrite[] {
-  const record = writes.filter((write) => write.path === HARNESS_CONFIG_PATH);
-  const rest = writes.filter((write) => write.path !== HARNESS_CONFIG_PATH);
+  const record = writes.filter((write) => write.path === HARNESS_RECORD_PATH);
+  const rest = writes.filter((write) => write.path !== HARNESS_RECORD_PATH);
   // ★undo 에서는 «마지막»이다. undo 가 config 에 쓰는 것은 기록을 남기는 일이 아니라
   //   옛 파일로 «되돌리는» 일이라, 먼저 하면 나머지를 되돌릴 근거를 스스로 지운다
   //   (2026-09-23 4차 독립 리뷰 I2). 같은 순서 규칙을 두 방향에 그대로 쓰면 안 된다.
@@ -621,10 +620,20 @@ async function assertUnchangedSinceSnapshot(
  * init 한 번에 0644 로 넓어졌다(2026-09-23 독립 재리뷰 N1). 내용을 합치는 일이 남의 파일
  * 접근 권한까지 바꾸면 안 된다.
  */
-async function writeManagedFile(root: string, write: FileWrite): Promise<string[]> {
+async function writeManagedFile(
+  root: string,
+  write: FileWrite,
+  onDirectoriesCreated?: (directories: readonly string[]) => void,
+): Promise<string[]> {
   const absolutePath = join(root, write.path);
   const targetDirectory = dirname(absolutePath);
   const firstCreated = await mkdir(targetDirectory, { recursive: true });
+  // ★<b>만든 사실을 «지금» 넘긴다.</b> 예전엔 반환값으로만 줬는데, 그 반환은 rename 뒤에
+  //   일어난다 — 그 사이에 쓰기가 실패하면 «우리가 만든 디렉터리»라는 사실이 통째로 사라졌고,
+  //   다음 init 의 mkdir 는 이미 있는 디렉터리에 undefined 를 주므로 회복도 못 했다
+  //   (2026-09-27 7차 독립 리뷰 S1). 만드는 것과 쓰는 것은 다른 일이다.
+  const created = createdChain(root, firstCreated, targetDirectory);
+  onDirectoriesCreated?.(created);
   const previousMode = await fileMode(absolutePath);
   const tmpPath = `${absolutePath}.${process.pid}.${Date.now()}.tmp`;
   // 임시 파일도 «처음부터» 좁게 만든다 — 넓게 만들었다가 좁히면 그 사이가 창이다.
@@ -633,7 +642,7 @@ async function writeManagedFile(root: string, write: FileWrite): Promise<string[
     await chmod(tmpPath, previousMode);
   }
   await rename(tmpPath, absolutePath);
-  return createdChain(root, firstCreated, targetDirectory);
+  return created;
 }
 
 /**
