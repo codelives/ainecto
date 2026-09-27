@@ -184,7 +184,44 @@ export function managedBlockProblem(key: string, body: string): string | undefin
   if (inner.includes(MARKER_BEGIN) || inner.includes(MARKER_END)) {
     return `${key} must contain exactly one ${MARKER_BEGIN} and one ${MARKER_END}`;
   }
+  // ★<b>수락하는 모양과 «다시 찾을 수 있는» 모양이 같아야 한다.</b> 예전엔 양끝 문자열만 봐서
+  //   한 줄짜리 블록이나 앞에 공백이 붙은 마커를 수락했다. 그런데 소유 판정은 「들여쓰기 없이
+  //   줄 맨 앞, 그 줄에 마커만」이라 방금 쓴 블록을 못 찾고, 재실행마다 블록이 하나씩 늘었다
+  //   (2026-09-23 5차 독립 리뷰 I4).
+  if (!inner.startsWith("\n")) {
+    return `${key} must put ${MARKER_BEGIN} alone on its own line`;
+  }
+  if (!inner.endsWith("\n")) {
+    return `${key} must put ${MARKER_END} alone on its own line`;
+  }
+  // 안에 닫히지 않은 코드펜스가 있으면, 파일에 합친 뒤 종료 마커가 그 펜스 «안»으로 들어간다.
+  if (hasUnclosedFence(inner)) {
+    return `${key} contains an unclosed code fence — the closing marker would fall inside it`;
+  }
   return undefined;
+}
+
+/** 이 글이 코드펜스를 열어 둔 채 끝나는가. */
+function hasUnclosedFence(content: string): boolean {
+  let open: { char: string; length: number } | undefined;
+  for (const line of content.split("\n")) {
+    const fence = fenceOf(line);
+    if (!fence) continue;
+    if (!open) open = { char: fence.char, length: fence.length };
+    else if (fence.char === open.char && fence.length >= open.length && fence.info === "") open = undefined;
+  }
+  return open !== undefined;
+}
+
+/**
+ * 저장되는 모양 하나. ★<b>쓰기·교체가 모두 이것을 쓴다.</b>
+ *
+ * <p>끝 개행은 «블록의 것이 아니라 파일 합성의 것»이다. 예전엔 블록에 딸려온 개행을 남긴 채
+ * 합성이 하나를 더 붙여, 같은 입력으로 다시 돌릴 때마다 파일이 1바이트씩 자랐다
+ * (605 → 606 → 607, 2026-09-23 5차 독립 리뷰 S2). 변경 없는 재실행은 파일을 안 바꿔야 한다.
+ */
+export function canonicalManagedBlock(block: string): string {
+  return block.trim();
 }
 
 /**
@@ -197,12 +234,14 @@ export function managedBlockProblem(key: string, body: string): string | undefin
 export function upsertMarkerBlock(existing: string | undefined, block: string): string {
   const current = existing ?? "";
   assertNoDanglingMarker(current);
+  // ★개행의 소유를 한 곳으로 모은다 — 블록은 마커로 끝나고, 뒤의 한 줄은 «파일»의 것이다.
+  const normalized = canonicalManagedBlock(block);
   const range = markerRange(current);
   if (!range) {
     const separator = current.trim() ? `${current.replace(/\s*$/, "")}\n\n` : "";
-    return `${separator}${block}\n`;
+    return `${separator}${normalized}\n`;
   }
-  return `${current.slice(0, range.start)}${block}${current.slice(range.end)}`;
+  return `${current.slice(0, range.start)}${normalized}${current.slice(range.end)}`;
 }
 
 /**

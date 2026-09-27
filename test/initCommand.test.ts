@@ -475,6 +475,74 @@ describe("ai-erd init (files on disk)", () => {
     expect(managed.replacedEntries[".mcp.json"]).toEqual({ command: "mine" });
   });
 
+  it("★이미 원본으로 돌아온 항목을 «충돌»로 세지 않는다", async () => {
+    // 5차 독립 리뷰 I3 — 일부만 복구된 뒤 다시 undo 하면 끝난 항목까지 충돌로 잡혀 영영 안 끝났다.
+    await writeFile(join(root, ".mcp.json"),
+      `${JSON.stringify({ mcpServers: { "ai-erd": { command: "mine" } } }, null, 2)}\n`, "utf8");
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    // 사용자가 손수 원본으로 되돌려 놓았다.
+    await writeFile(join(root, ".mcp.json"),
+      `${JSON.stringify({ mcpServers: { "ai-erd": { command: "mine" } } }, null, 2)}\n`, "utf8");
+    out.length = 0;
+    await executeInitCommand(options(["--undo"], stub));
+
+    expect(out.join("")).toContain("already back in place");
+    // 끝났으므로 기록도 남지 않는다.
+    expect(existsSync(join(root, ".ai-erd/config.json"))).toBe(false);
+  });
+
+  it("★기록은 «줄어서» 남는다 — 끝난 항목은 지워진다", async () => {
+    await writeFile(join(root, ".mcp.json"),
+      `${JSON.stringify({ mcpServers: { "ai-erd": { command: "mine" } } }, null, 2)}\n`, "utf8");
+    await writeFile(join(root, "AGENTS.md"), "# House rules\n\nMine.\n", "utf8");
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    // AGENTS 블록만 손대서 충돌로 남긴다 — MCP 는 정상 복구된다.
+    const agents = join(root, "AGENTS.md");
+    await writeFile(agents, (await readFile(agents, "utf8"))
+      .replace("<!-- ai-erd:end -->", "MINE INSIDE\n<!-- ai-erd:end -->"), "utf8");
+    await executeInitCommand(options(["--undo"], stub));
+
+    const managed = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).managed;
+    // 끝난 MCP 항목의 백업은 사라졌고, 아직 남은 AGENTS 기록만 있다.
+    expect(managed.replacedEntries[".mcp.json"]).toBeUndefined();
+    expect(managed.blockAdded).toContain("AGENTS.md");
+    // 그리고 실제로 MCP 원본은 돌아와 있다.
+    expect(JSON.parse(await readFile(join(root, ".mcp.json"), "utf8")).mcpServers["ai-erd"])
+      .toEqual({ command: "mine" });
+  });
+
+  it("★백업을 든 파일이 사라지면 기록을 지키지 않는다", async () => {
+    // 5차 독립 리뷰 I2 — 「없으니 건너뛴다」가 그 원본을 영영 버렸다.
+    await writeFile(join(root, ".mcp.json"),
+      `${JSON.stringify({ mcpServers: { "ai-erd": { command: "mine" } } }, null, 2)}\n`, "utf8");
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    await rm(join(root, ".mcp.json"));
+    out.length = 0;
+    await executeInitCommand(options(["--undo"], stub));
+
+    expect(out.join("")).toContain("the backup is kept");
+    const managed = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).managed;
+    expect(managed.replacedEntries[".mcp.json"]).toEqual({ command: "mine" });
+  });
+
+  it("★변경 없는 재실행은 파일을 바꾸지 않는다 (끝 개행이 늘지 않는다)", async () => {
+    // 5차 독립 리뷰 S2 — 605 → 606 → 607 로 1바이트씩 자랐다.
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+    const first = await readFile(join(root, "AGENTS.md"), "utf8");
+
+    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(first);
+  });
+
   it("leaves a user's own file inside .ai-erd alone", async () => {
     await mkdir(join(root, ".ai-erd"), { recursive: true });
     await writeFile(join(root, ".ai-erd/notes.md"), "mine\n", "utf8");

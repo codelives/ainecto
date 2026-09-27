@@ -13,6 +13,7 @@ import {
   type FileWrite,
   type InitPlan,
   type ManagedRecord,
+  withCreatedDirectories,
 } from "../../core/harness/initPlan";
 import { HARNESS_CONFIG_PATH } from "../../core/harness/harnessDoc";
 import { AGENT_TARGETS } from "../../core/harness/agentTargets";
@@ -393,6 +394,20 @@ async function readSnapshot(root: string): Promise<Map<string, string | undefine
  * <p>파일 스냅샷만으로는 「비어 있는 디렉터리가 이미 있었나」를 알 수 없다. 그걸 모르면
  * 되돌리기가 남의 빈 디렉터리를 치운다(2026-09-23 4차 독립 리뷰 S3).
  */
+/** 이 중 «지금 실제로 있는» 디렉터리. 계획과 결과를 가르는 자리다. */
+async function existingDirectories(root: string, candidates: readonly string[]): Promise<string[]> {
+  const present: string[] = [];
+  for (const directory of candidates) {
+    try {
+      await stat(join(root, directory));
+      present.push(directory);
+    } catch {
+      // 없으면 우리가 만들지 못한 것이다 — 기록에서 뺀다.
+    }
+  }
+  return present;
+}
+
 async function missingDirectories(root: string): Promise<string[]> {
   const parents = new Set<string>();
   for (const path of MANAGED_PATHS) {
@@ -405,7 +420,12 @@ async function missingDirectories(root: string): Promise<string[]> {
     await assertInsideRepository(root, directory);
     try {
       await stat(join(root, directory));
-    } catch {
+    } catch (error) {
+      // ⚠권한 오류 같은 것을 «없다»로 읽으면 남의 디렉터리를 우리 것으로 기록한다
+      //   (2026-09-23 5차 독립 리뷰 S1). 없다는 것은 ENOENT 뿐이다.
+      if ((error as { code?: string }).code !== "ENOENT") {
+        throw error;
+      }
       missing.push(directory);
     }
   }
@@ -518,18 +538,49 @@ async function applyPlan(
     // ★<b>복구 기록을 먼저 쓴다.</b> 예전엔 관리 기록(.ai-erd/config.json)이 «마지막» 쓰기였다.
     //   그래서 중간에 실패하면 이미 바뀐 파일이 있는데 기록이 없어 undo 가 아무것도 못 되돌렸다
     //   (2026-09-23 독립 재리뷰 I11). 되돌릴 수 있게 만드는 것이 첫 일이다.
-    for (const write of orderedWrites(plan.writes, recordFirst)) {
-      // ②그리고 «쓰기 직전에» 다시 본다. ①과 실제 쓰기 사이에 누가 고칠 수 있다 — 그 틈으로
-      //   남의 편집이 덮여 나갔다(같은 항목). 검사와 쓰기를 붙여 놓으면 창이 작아진다.
-      await assertUnchangedSinceSnapshot(root, write.path, snapshot);
-      await writeManagedFile(root, write);
-      applied.push(write.path);
+    // ★되돌리기에서는 기록을 건드리는 일이 «작업 전체»의 마지막이다. 4차에서 config 를 쓰기
+    //   목록의 뒤로 옮겼지만, 쓰기가 다 끝난 «뒤에» 삭제가 온다. 그래서 삭제가 실패하면 기록은
+    //   이미 옛 파일로 돌아가 있고 되돌릴 근거가 없었다(2026-09-23 5차 독립 리뷰 I1).
+    const isRecord = (path: string) => !recordFirst && path === HARNESS_CONFIG_PATH;
+    const recordWrites = plan.writes.filter((write) => isRecord(write.path));
+    const recordDeletes = plan.deletes.filter((path) => isRecord(path));
+    const apply = async (writes: readonly FileWrite[], deletes: readonly string[]) => {
+      for (const write of writes) {
+        // ②그리고 «쓰기 직전에» 다시 본다. ①과 실제 쓰기 사이에 누가 고칠 수 있다 — 그 틈으로
+        //   남의 편집이 덮여 나갔다(같은 항목). 검사와 쓰기를 붙여 놓으면 창이 작아진다.
+        await assertUnchangedSinceSnapshot(root, write.path, snapshot);
+        await writeManagedFile(root, write);
+        applied.push(write.path);
+      }
+      for (const path of deletes) {
+        await assertUnchangedSinceSnapshot(root, path, snapshot);
+        await rm(join(root, path), { force: true });
+        applied.push(path);
+      }
+    };
+
+    await apply(
+      orderedWrites(plan.writes.filter((write) => !isRecord(write.path)), recordFirst),
+      plan.deletes.filter((path) => !isRecord(path)),
+    );
+    // ★<b>「만들 계획」과 「실제로 만든 것」을 구분한다.</b> 스냅샷에 없었다는 사실만으로
+    //   기록했더니, 만들기 «전에» 실패한 뒤 사용자가 그 디렉터리를 만들면 undo 가 남의
+    //   디렉터리를 지웠다(2026-09-23 5차 독립 리뷰 S1).
+    //   ⇒ 계획은 복구를 위해 먼저 쓰고, 다 된 뒤에 실제 결과로 한 번 고친다.
+    if (recordFirst && plan.managed) {
+      const actual = await existingDirectories(root, plan.managed.createdDirectories);
+      if (actual.length !== plan.managed.createdDirectories.length) {
+        const write = plan.writes.find((w) => w.path === HARNESS_CONFIG_PATH);
+        if (write) {
+          await writeManagedFile(root, {
+            ...write,
+            content: withCreatedDirectories(write.content, actual),
+          });
+        }
+      }
     }
-    for (const path of plan.deletes) {
-      await assertUnchangedSinceSnapshot(root, path, snapshot);
-      await rm(join(root, path), { force: true });
-      applied.push(path);
-    }
+    // 여기까지 전부 된 다음에만 기록을 줄이거나 지운다.
+    await apply(recordWrites, recordDeletes);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(

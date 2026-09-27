@@ -10,6 +10,7 @@ import {
   SERVER_NAME,
 } from "../src/core/harness/agentTargets";
 import {
+  documentContractProblem,
   MARKER_BEGIN,
   MARKER_END,
   removeMarkerBlock,
@@ -219,6 +220,36 @@ describe("marker block", () => {
 
     expect(rendered).toContain("The {{endpoint}} project");
   });
+
+  it("★쓰고 나서 «다시 찾을 수 있는» 모양만 수락한다", () => {
+    // 5차 독립 리뷰 I4 — 한 줄 블록·앞 공백·안 닫힌 펜스를 수락했더니, 소유 판정이 방금 쓴
+    // 블록을 못 찾아 재실행마다 블록이 하나씩 늘었다.
+    const key = "HARNESS.AGENT_NOTE"
+    const good = `${MARKER_BEGIN}\nrules\n${MARKER_END}`
+
+    expect(documentContractProblem(key, good.replace("rules", "{{harnessDocPath}} {{serverName}}")))
+      .toBeUndefined()
+    // 한 줄짜리
+    expect(documentContractProblem(key, `${MARKER_BEGIN}{{harnessDocPath}} {{serverName}}${MARKER_END}`))
+      .toContain("alone on its own line")
+    // 안 닫힌 펜스
+    expect(documentContractProblem(key,
+      `${MARKER_BEGIN}\n\`\`\`\n{{harnessDocPath}} {{serverName}}\n${MARKER_END}`))
+      .toContain("unclosed code fence")
+  })
+
+  it("★같은 블록을 세 번 얹어도 파일이 자라지 않는다", () => {
+    // 5차 독립 리뷰 S2 — 끝 개행의 소유가 정해져 있지 않아 매번 1바이트씩 늘었다.
+    const note = `${renderAgentNote()}\n`   // 서버 리소스처럼 끝 개행이 붙어 온 경우
+    const once = upsertMarkerBlock("# Rules\n\nMine.\n", note)
+    const twice = upsertMarkerBlock(once, note)
+    const thrice = upsertMarkerBlock(twice, note)
+
+    expect(twice).toBe(once)
+    expect(thrice).toBe(once)
+    // 그리고 그 블록은 다시 찾을 수 있다.
+    expect(removeMarkerBlock(thrice).removed).toBe(true)
+  })
 
   it("never writes the role into prose — the config is the only source of truth", () => {
     const note = renderAgentNote();
