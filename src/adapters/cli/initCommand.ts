@@ -6,14 +6,11 @@ import { renderSuccess } from "../../core/output/render";
 import { HARNESS_ROLES, ROLE_ENV_VAR, type HarnessRole } from "../../core/harness/role";
 import {
   detectRoles,
-  emptyManagedRecord,
   MANAGED_PATHS,
   planInit,
   planUndo,
-  readRecordBody,
   type FileWrite,
   type InitPlan,
-  type ManagedRecord,
   withCreatedDirectories,
 } from "../../core/harness/initPlan";
 import { HARNESS_CONFIG_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
@@ -64,7 +61,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
   const files = await readSnapshot(root);
 
   if (args.undo) {
-    const plan = planUndo({ files, managed: readRecordBody(files.get(HARNESS_RECORD_PATH)) });
+    const plan = planUndo({ files });
     await applyPlan(root, plan, args.dryRun, files, false);
     options.io.stdout.write(renderSuccess(
       {
@@ -114,9 +111,13 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     endpoint: options.endpoint,
     cliVersion: options.cliVersion,
     files,
-    previous: readRecordBody(files.get(HARNESS_RECORD_PATH)),
     documents,
   });
+  if (plan.refusal !== undefined) {
+    // ★계획이 「멈춰라」고 하면 멈춘다. 이 판정을 부르는 쪽이 안 보면 그 판정은 «없는» 것이고,
+    //   그 경우 읽어 내지 못한 기록을 백업 없이 덮는다(2026-09-27 8차 독립 리뷰 I1).
+    throw new Error(plan.refusal);
+  }
   await applyPlan(root, plan, args.dryRun, files);
 
   options.io.stdout.write(renderSuccess(
@@ -492,7 +493,7 @@ async function applyPlan(
      * 그 자체다. 이 칸의 진실원은 이 변수 하나이고, 계획은 여기에 관여하지 않는다.
      * (직전 실행에서 이어받은 것은 이미 기록에 있으므로 함께 들고 간다.)
      */
-    const createdDirectories: string[] = [...(plan.managed?.createdDirectories ?? [])];
+    const createdDirectories: string[] = [...(plan.record?.createdDirectories ?? [])];
     const rememberDirectories = (directories: readonly string[]) => {
       for (const directory of directories) {
         if (!createdDirectories.includes(directory)) {
@@ -511,7 +512,7 @@ async function applyPlan(
      */
     const recordActualDirectories = async () => {
       const write = plan.writes.find((w) => w.path === HARNESS_RECORD_PATH);
-      if (!recordFirst || !plan.managed || !write || !applied.includes(HARNESS_RECORD_PATH)) {
+      if (!recordFirst || !plan.record || !write || !applied.includes(HARNESS_RECORD_PATH)) {
         return;
       }
       await writeManagedFile(root, {

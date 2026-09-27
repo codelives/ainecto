@@ -413,6 +413,80 @@ export function replaceMarkerBlockWith(content: string, block: string): string {
   return range ? `${content.slice(0, range.start)}${block}${content.slice(range.end)}` : content;
 }
 
+/**
+ * 짝이 맞지 않는 마커 하나. 중첩·잘림도 «설명해야 할 것»이므로 증거에 자리를 차지한다.
+ *
+ * <p>★<b>여는 것과 닫는 것을 구별한다</b>(3차 리뷰 B2). 하나의 문자열로 뭉쳤더니
+ * 「원래 있던 «닫는» 예제」와 「우리 블록에서 남은 «여는» 마커」가 서로 상쇄돼, 증거가 맞는 것처럼
+ * 보이고 사용자 원본 백업이 버려졌다. 종류가 다르면 다른 증거다.
+ */
+export const UNPAIRED_BEGIN = "(unpaired ai-erd begin)";
+export const UNPAIRED_END = "(unpaired ai-erd end)";
+
+/**
+ * ★<b>init «전»에 이 파일에 있던 관리 블록들의 신원.</b> 되돌리기가 「이 파일에 남은 마커를
+ * 내 기록으로 «설명할 수 있나»」를 묻는 데 쓰는 증거다.
+ *
+ * <p>★<b>왜 개수도, 모양 비교도 아닌가</b>(2026-09-27 9차 2차 리뷰 B2·N1). 두 번 틀렸다:
+ * <ul>
+ *   <li>개수는 「예제를 지우고 그 자리에 우리 블록을 옮기기」를 못 본다 — 총수가 그대로다.</li>
+ *   <li>우리 블록을 «모양»으로 알아보려 하면, 제목 한 줄만 고쳐도·인용문({@code > })으로
+ *       옮겨도·마커를 겹쳐도 못 알아보고 그것을 「블록이 없다」로 읽어 백업을 버렸다.
+ *       거꾸로 init 전부터 있던 «똑같은» 예제는 우리 블록으로 오인해 정상 되돌리기를 막았다.</li>
+ * </ul>
+ * ⇒ 판정을 뒤집는다. 우리 블록을 알아보려 하지 않고, <b>기록에 있는 예제를 지워 나간 뒤 남는
+ * 것을 «설명되지 않은 것»으로 본다.</b> 모양 비교는 「기록해 둔 예제가 그대로 있나」를 볼 때만
+ * 쓰고, 의무 완료는 <b>증거 대조</b>가 정한다.
+ *
+ * <p>⚠사용자가 «자기 예제»를 고쳐 놓으면 그것도 설명되지 않은 것이 되어 되돌리기가 사람에게
+ * 넘어간다. 백업을 지우는 것보다는 그쪽이 맞다 — 우리는 그 둘을 가를 근거를 갖고 있지 않다.
+ */
+export function markerEvidence(content: string | undefined): string[] {
+  if (!content) {
+    return [];
+  }
+  // ★<b>우리 블록을 «빼고» 본 파일이 증거다.</b> 소유 범위를 남겨 두면 그 경계를 가로질러 짝이
+  //   지어진다 — 원래 «여는 마커만» 적어 둔 예제가 우리 블록의 «닫는 마커»와 한 쌍으로 묶여,
+  //   init 이 자기가 쓴 블록 때문에 «새로운 남의 증거»를 만들어 냈다(3차 리뷰 N2).
+  //   빼고 보면 불변식이 선다: 우리 블록을 더하거나 걷어내도 남의 증거는 그대로다.
+  const owned = markerRange(content);
+  const rest = owned === undefined
+    ? content
+    : content.slice(0, owned.start) + content.slice(owned.end);
+  const evidence: string[] = [];
+  let cursor = 0;
+  let begins = 0;
+  let ends = 0;
+  while (true) {
+    const begin = rest.indexOf(MARKER_BEGIN, cursor);
+    const close = rest.indexOf(MARKER_END, cursor);
+    if (begin < 0 && close < 0) {
+      break;
+    }
+    if (begin < 0 || (close >= 0 && close < begin)) {
+      ends += 1; // 여는 것 없이 닫는 것이 먼저 나왔다.
+      cursor = close + MARKER_END.length;
+      continue;
+    }
+    const pairEnd = rest.indexOf(MARKER_END, begin + MARKER_BEGIN.length);
+    if (pairEnd < 0) {
+      begins += 1;
+      cursor = begin + MARKER_BEGIN.length;
+      continue;
+    }
+    evidence.push(blockShape(rest.slice(begin, pairEnd + MARKER_END.length)));
+    cursor = pairEnd + MARKER_END.length;
+  }
+  for (let i = 0; i < begins; i += 1) evidence.push(UNPAIRED_BEGIN);
+  for (let i = 0; i < ends; i += 1) evidence.push(UNPAIRED_END);
+  return evidence;
+}
+
+/** 들여쓰기와 빈 줄을 지운 «모양». 펜스·목록 안으로 옮겨져도 같은 예제로 알아본다. */
+function blockShape(block: string): string {
+  return block.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).join("\n");
+}
+
 /** 파일에 이미 들어 있던 관리 블록 원문. 없으면 undefined. undo 가 이것을 도로 넣는다. */
 export function existingMarkerBlock(content: string | undefined): string | undefined {
   if (!content) {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createdChain, executeInitCommand, readRepositoryRole } from "../src/adapters/cli/initCommand";
-import { readRecordBody } from "../src/core/harness/initPlan";
+import { readRecord } from "../src/core/harness/initPlan";
 
 const RECORD_FILE = ".ai-erd/init-record.json";
 
@@ -14,7 +14,8 @@ const RECORD_FILE = ".ai-erd/init-record.json";
  * 네 차수 연속 샜다.
  */
 async function recordOf(root: string) {
-  return readRecordBody(await readFile(join(root, RECORD_FILE), "utf8"));
+  const state = readRecord(await readFile(join(root, RECORD_FILE), "utf8"));
+  return state.state === "valid" ? state.record : undefined;
 }
 
 import { McpRpcError } from "../src/core/mcp/rpcClient";
@@ -401,8 +402,30 @@ describe("ai-erd init (files on disk)", () => {
     await executeInitCommand(options(["--role", "development"], stub));
     await executeInitCommand(options(["--role", "development"], stub));
 
-    const managed = (await recordOf(root))!;
-    expect(Object.keys(managed.lastWrittenFragment)).toHaveLength(3);
+    const record = (await recordOf(root))!;
+    // ★조각을 소유한 세 파일이 «전부» 기록에 남아 있다 — 재실행이 그것을 잊지 않는다.
+    //
+    // ⚠<b>여기서 한 번 시험을 약화시켰다</b>(9차 독립 리뷰 B3). 옛 검사
+    // {@code Object.keys(lastWrittenFragment).toHaveLength(3)} 를 «기록을 읽는 위치만 바꾼»
+    // 검사로 옮긴다면서 {@code record.files[path]?.written.at !== "absent"} 로 바꿨는데,
+    // 계약이 통째로 없으면 {@code undefined !== "absent"} 라서 <b>그대로 통과했다</b> —
+    // 실제로는 undo 뒤에 우리가 만든 MCP 파일이 남아 있었다.
+    // ⇒ 없는 것을 «없다»고 말하게 한다: 계약이 있는지, scope 가 무엇인지, 무엇을 들고 있는지.
+    for (const [path, scope, at] of [
+      [".mcp.json", "entry", "json"],
+      [".cursor/mcp.json", "entry", "json"],
+      ["AGENTS.md", "block", "text"],
+    ] as const) {
+      const contract = record.files[path];
+      expect(contract, `${path} 의 복구 계약이 기록에 있어야 한다`).toBeDefined();
+      expect(contract!.scope).toBe(scope);
+      expect(contract!.written.at).toBe(at);
+      expect(contract!.createdByUs).toBe(true);
+    }
+    // 조각을 소유한 파일은 «정확히» 그 둘이다 — 더도 덜도 아니다.
+    expect(Object.entries(record.files)
+      .filter(([, contract]) => contract.scope === "entry").map(([path]) => path).sort())
+      .toEqual([".cursor/mcp.json", ".mcp.json"]);
 
     // 블록 «바깥»에만 쓴 글은 보존하면서 우리 블록은 정상적으로 걷어낸다.
     const agentsPath = join(root, "AGENTS.md");
@@ -412,6 +435,9 @@ describe("ai-erd init (files on disk)", () => {
     const after = await readFile(agentsPath, "utf8");
     expect(after).toContain("OUTSIDE THE BLOCK");
     expect(after).not.toContain("AI-ERD Harness");
+    // ★우리가 만든 MCP 파일 «둘»이 실제로 사라졌는지 디스크에서 본다. 약화된 검사가 놓친 것이다.
+    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+    expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(false);
   });
 
   it("★역할 추론도 저장소 경계 검사를 지난다", async () => {
@@ -483,8 +509,8 @@ describe("ai-erd init (files on disk)", () => {
 
     // 기록이 남아 있어야, 충돌을 풀고 다시 undo 할 때 원본을 되돌릴 수 있다.
     expect(existsSync(join(root, RECORD_FILE))).toBe(true);
-    const managed = (await recordOf(root))!;
-    expect(managed.replacedEntries[".mcp.json"]).toEqual({ command: "mine" });
+    const record = (await recordOf(root))!;
+    expect(record.files[".mcp.json"]?.original).toEqual({ at: "json", value: { command: "mine" } });
   });
 
   it("★이미 원본으로 돌아온 항목을 «충돌»로 세지 않는다", async () => {
@@ -518,10 +544,10 @@ describe("ai-erd init (files on disk)", () => {
       .replace("<!-- ai-erd:end -->", "MINE INSIDE\n<!-- ai-erd:end -->"), "utf8");
     await executeInitCommand(options(["--undo"], stub));
 
-    const managed = (await recordOf(root))!;
-    // 끝난 MCP 항목의 백업은 사라졌고, 아직 남은 AGENTS 기록만 있다.
-    expect(managed.replacedEntries[".mcp.json"]).toBeUndefined();
-    expect(managed.blockAdded).toContain("AGENTS.md");
+    const record = (await recordOf(root))!;
+    // 끝난 MCP 항목의 계약은 사라졌고, 아직 남은 AGENTS 계약만 있다.
+    expect(record.files[".mcp.json"]).toBeUndefined();
+    expect(record.files["AGENTS.md"]?.scope).toBe("block");
     // 그리고 실제로 MCP 원본은 돌아와 있다.
     expect(JSON.parse(await readFile(join(root, ".mcp.json"), "utf8")).mcpServers["ai-erd"])
       .toEqual({ command: "mine" });
@@ -539,8 +565,8 @@ describe("ai-erd init (files on disk)", () => {
     await executeInitCommand(options(["--undo"], stub));
 
     expect(out.join("")).toContain("the backup is kept");
-    const managed = (await recordOf(root))!;
-    expect(managed.replacedEntries[".mcp.json"]).toEqual({ command: "mine" });
+    const record = (await recordOf(root))!;
+    expect(record.files[".mcp.json"]?.original).toEqual({ at: "json", value: { command: "mine" } });
   });
 
   it("★변경 없는 재실행은 파일을 바꾸지 않는다 (끝 개행이 늘지 않는다)", async () => {
@@ -625,9 +651,9 @@ describe("★S1 이미 있던 빈 디렉터리는 우리 것으로 기록되지 
     });
 
     expect(code).toBe(0);
-    const managed = (await recordOf(root))!;
-    expect(managed.createdDirectories).toContain(".ai-erd");
-    expect(managed.createdDirectories).not.toContain(".cursor");
+    const record = (await recordOf(root))!;
+    expect(record.createdDirectories).toContain(".ai-erd");
+    expect(record.createdDirectories).not.toContain(".cursor");
     // 그리고 되돌리기가 그 디렉터리를 치우려 들지 않는다.
     expect(existsSync(join(root, ".cursor"))).toBe(true);
   });
