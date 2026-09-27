@@ -237,11 +237,36 @@ export function upsertMarkerBlock(existing: string | undefined, block: string): 
   // ★개행의 소유를 한 곳으로 모은다 — 블록은 마커로 끝나고, 뒤의 한 줄은 «파일»의 것이다.
   const normalized = canonicalManagedBlock(block);
   const range = markerRange(current);
-  if (!range) {
-    const separator = current.trim() ? `${current.replace(/\s*$/, "")}\n\n` : "";
-    return `${separator}${normalized}\n`;
+  const composed = range
+    ? `${current.slice(0, range.start)}${normalized}${current.slice(range.end)}`
+    : `${current.trim() ? `${current.replace(/\s*$/, "")}\n\n` : ""}${normalized}\n`;
+  assertComposedBlockIsOurs(composed, current);
+  return composed;
+}
+
+/**
+ * ★<b>다시 찾을 수 있을 때만 쓴다.</b> 합성 «결과»를 소유 판정으로 되읽어, 관리 블록이
+ * 정확히 하나로 보이는지 확인한다.
+ *
+ * <p>예전엔 «새 블록 안»만 검사했다. 그런데 소유 판정({@link ownedMarkerIndex})은 <b>파일
+ * 문맥</b>을 본다 — 기존 파일이 코드펜스를 열어 둔 채 끝나면 멀쩡한 블록도 그 펜스 «안»으로
+ * 들어가 우리 것으로 안 보인다. 그래서 init 마다 블록이 하나씩 늘고 undo 는 아무것도 못
+ * 걷어냈다(2026-09-27 6차 독립 리뷰 I4).
+ *
+ * <p>「넣는 범위 = 빼는 범위」라는 규칙을 <b>블록이 아니라 합성 결과에</b> 적용한 것이다.
+ * 검사할 대상은 우리가 만든 글이 아니라 «파일에 들어간 모습»이다.
+ */
+function assertComposedBlockIsOurs(composed: string, existing: string): void {
+  if (ownedMarkerCount(composed, MARKER_BEGIN) === 1 && ownedMarkerCount(composed, MARKER_END) === 1) {
+    return;
   }
-  return `${current.slice(0, range.start)}${normalized}${current.slice(range.end)}`;
+  const reason = hasUnclosedFence(existing)
+    ? "this file ends inside an unclosed code fence, so the block would sit inside it"
+    : "the block could not be found again once merged into this file";
+  throw new Error(
+    `ai-erd could not place its block where --undo would find it again — ${reason}. `
+    + "The file was left untouched; fix that and run again.",
+  );
 }
 
 /**

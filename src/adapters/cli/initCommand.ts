@@ -115,7 +115,6 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     files,
     previous: readManaged(files.get(HARNESS_CONFIG_PATH)),
     documents,
-    missingDirectories: await missingDirectories(root),
   });
   await applyPlan(root, plan, args.dryRun, files);
 
@@ -394,43 +393,6 @@ async function readSnapshot(root: string): Promise<Map<string, string | undefine
  * <p>파일 스냅샷만으로는 「비어 있는 디렉터리가 이미 있었나」를 알 수 없다. 그걸 모르면
  * 되돌리기가 남의 빈 디렉터리를 치운다(2026-09-23 4차 독립 리뷰 S3).
  */
-/** 이 중 «지금 실제로 있는» 디렉터리. 계획과 결과를 가르는 자리다. */
-async function existingDirectories(root: string, candidates: readonly string[]): Promise<string[]> {
-  const present: string[] = [];
-  for (const directory of candidates) {
-    try {
-      await stat(join(root, directory));
-      present.push(directory);
-    } catch {
-      // 없으면 우리가 만들지 못한 것이다 — 기록에서 뺀다.
-    }
-  }
-  return present;
-}
-
-async function missingDirectories(root: string): Promise<string[]> {
-  const parents = new Set<string>();
-  for (const path of MANAGED_PATHS) {
-    if (path.includes("/")) {
-      parents.add(path.slice(0, path.lastIndexOf("/")));
-    }
-  }
-  const missing: string[] = [];
-  for (const directory of parents) {
-    await assertInsideRepository(root, directory);
-    try {
-      await stat(join(root, directory));
-    } catch (error) {
-      // ⚠권한 오류 같은 것을 «없다»로 읽으면 남의 디렉터리를 우리 것으로 기록한다
-      //   (2026-09-23 5차 독립 리뷰 S1). 없다는 것은 ENOENT 뿐이다.
-      if ((error as { code?: string }).code !== "ENOENT") {
-        throw error;
-      }
-      missing.push(directory);
-    }
-  }
-  return missing;
-}
 
 async function readManagedFile(root: string, path: string): Promise<string | undefined> {
   await assertInsideRepository(root, path);
@@ -544,12 +506,42 @@ async function applyPlan(
     const isRecord = (path: string) => !recordFirst && path === HARNESS_CONFIG_PATH;
     const recordWrites = plan.writes.filter((write) => isRecord(write.path));
     const recordDeletes = plan.deletes.filter((path) => isRecord(path));
+    /**
+     * ★<b>우리가 «실제로 만든» 디렉터리.</b> {@code mkdir(recursive)} 는 자기가 만든 가장 위
+     * 디렉터리를 돌려주고, 이미 있었으면 undefined 를 준다 — 그게 우리가 알고 싶던 사실
+     * 그 자체다. 이 칸의 진실원은 이 변수 하나이고, 계획은 여기에 관여하지 않는다.
+     * (직전 실행에서 이어받은 것은 이미 기록에 있으므로 함께 들고 간다.)
+     */
+    const createdDirectories: string[] = [...(plan.managed?.createdDirectories ?? [])];
+    /**
+     * 기록의 디렉터리 칸을 «실제로 만든 것»으로 바로잡는다.
+     *
+     * <p>★성공했을 때만 하면 안 된다 — 중간에 실패해도 그 순간까지의 사실이 기록에 남아야
+     * 한다. 예전엔 보정이 성공 경로에만 있어서, 만들기 «전»에 실패한 계획이 그대로 남고
+     * 그 뒤 사용자가 만든 디렉터리를 다음 undo 가 지웠다(2026-09-27 6차 독립 리뷰 S1).
+     *
+     * <p>⚠기록 보정이 실패해도 원래 오류를 덮지 않는다. 같은 내용을 두 번 써도 무해하다.
+     */
+    const recordActualDirectories = async () => {
+      const write = plan.writes.find((w) => w.path === HARNESS_CONFIG_PATH);
+      if (!recordFirst || !plan.managed || !write || !applied.includes(HARNESS_CONFIG_PATH)) {
+        return;
+      }
+      await writeManagedFile(root, {
+        ...write,
+        content: withCreatedDirectories(write.content, createdDirectories),
+      }).catch(() => undefined);
+    };
     const apply = async (writes: readonly FileWrite[], deletes: readonly string[]) => {
       for (const write of writes) {
         // ②그리고 «쓰기 직전에» 다시 본다. ①과 실제 쓰기 사이에 누가 고칠 수 있다 — 그 틈으로
         //   남의 편집이 덮여 나갔다(같은 항목). 검사와 쓰기를 붙여 놓으면 창이 작아진다.
         await assertUnchangedSinceSnapshot(root, write.path, snapshot);
-        await writeManagedFile(root, write);
+        for (const directory of await writeManagedFile(root, write)) {
+          if (!createdDirectories.includes(directory)) {
+            createdDirectories.push(directory);
+          }
+        }
         applied.push(write.path);
       }
       for (const path of deletes) {
@@ -559,28 +551,18 @@ async function applyPlan(
       }
     };
 
-    await apply(
-      orderedWrites(plan.writes.filter((write) => !isRecord(write.path)), recordFirst),
-      plan.deletes.filter((path) => !isRecord(path)),
-    );
-    // ★<b>「만들 계획」과 「실제로 만든 것」을 구분한다.</b> 스냅샷에 없었다는 사실만으로
-    //   기록했더니, 만들기 «전에» 실패한 뒤 사용자가 그 디렉터리를 만들면 undo 가 남의
-    //   디렉터리를 지웠다(2026-09-23 5차 독립 리뷰 S1).
-    //   ⇒ 계획은 복구를 위해 먼저 쓰고, 다 된 뒤에 실제 결과로 한 번 고친다.
-    if (recordFirst && plan.managed) {
-      const actual = await existingDirectories(root, plan.managed.createdDirectories);
-      if (actual.length !== plan.managed.createdDirectories.length) {
-        const write = plan.writes.find((w) => w.path === HARNESS_CONFIG_PATH);
-        if (write) {
-          await writeManagedFile(root, {
-            ...write,
-            content: withCreatedDirectories(write.content, actual),
-          });
-        }
-      }
+    try {
+      await apply(
+        orderedWrites(plan.writes.filter((write) => !isRecord(write.path)), recordFirst),
+        plan.deletes.filter((path) => !isRecord(path)),
+      );
+      await recordActualDirectories();
+      // 여기까지 전부 된 다음에만 기록을 줄이거나 지운다.
+      await apply(recordWrites, recordDeletes);
+    } catch (error) {
+      await recordActualDirectories();
+      throw error;
     }
-    // 여기까지 전부 된 다음에만 기록을 줄이거나 지운다.
-    await apply(recordWrites, recordDeletes);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -639,9 +621,10 @@ async function assertUnchangedSinceSnapshot(
  * init 한 번에 0644 로 넓어졌다(2026-09-23 독립 재리뷰 N1). 내용을 합치는 일이 남의 파일
  * 접근 권한까지 바꾸면 안 된다.
  */
-async function writeManagedFile(root: string, write: FileWrite): Promise<void> {
+async function writeManagedFile(root: string, write: FileWrite): Promise<string[]> {
   const absolutePath = join(root, write.path);
-  await mkdir(dirname(absolutePath), { recursive: true });
+  const targetDirectory = dirname(absolutePath);
+  const firstCreated = await mkdir(targetDirectory, { recursive: true });
   const previousMode = await fileMode(absolutePath);
   const tmpPath = `${absolutePath}.${process.pid}.${Date.now()}.tmp`;
   // 임시 파일도 «처음부터» 좁게 만든다 — 넓게 만들었다가 좁히면 그 사이가 창이다.
@@ -650,6 +633,32 @@ async function writeManagedFile(root: string, write: FileWrite): Promise<void> {
     await chmod(tmpPath, previousMode);
   }
   await rename(tmpPath, absolutePath);
+  return createdChain(root, firstCreated, targetDirectory);
+}
+
+/**
+ * 이번 {@code mkdir} 이 «정말 만든» 디렉터리들 — 저장소 기준 상대 경로, 깊은 것부터.
+ *
+ * <p>★{@code recursive: true} 는 자기가 만든 «가장 위» 디렉터리 하나만 돌려준다. 그 아래부터
+ * 목표 디렉터리까지도 같이 만들어진 것이므로 구간 전체가 우리 것이다. 이미 있었으면
+ * undefined 를 주므로 그때는 빈 목록이다 — <b>「있다」와 「우리가 만들었다」가 갈리는 지점</b>.
+ */
+export function createdChain(root: string, firstCreated: string | undefined, targetDirectory: string): string[] {
+  if (firstCreated === undefined) {
+    return [];
+  }
+  const stop = resolve(firstCreated);
+  const made: string[] = [];
+  for (let at = resolve(targetDirectory); ; at = dirname(at)) {
+    const asRelative = relative(root, at);
+    if (asRelative && !asRelative.startsWith("..")) {
+      made.push(asRelative.split(sep).join("/"));
+    }
+    if (at === stop || dirname(at) === at) {
+      break;
+    }
+  }
+  return made;
 }
 
 async function fileMode(absolutePath: string): Promise<number | undefined> {

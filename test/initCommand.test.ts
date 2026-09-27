@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { executeInitCommand, readRepositoryRole } from "../src/adapters/cli/initCommand";
+import { createdChain, executeInitCommand, readRepositoryRole } from "../src/adapters/cli/initCommand";
 
 import { McpRpcError } from "../src/core/mcp/rpcClient";
 import type { McpRpcClient } from "../src/core/mcp/rpcClient";
@@ -552,5 +552,71 @@ describe("ai-erd init (files on disk)", () => {
     await executeInitCommand(options(["--undo"], stub));
 
     expect(await readFile(join(root, ".ai-erd/notes.md"), "utf8")).toBe("mine\n");
+  });
+});
+
+/**
+ * 2026-09-27 6차 독립 리뷰 S1 — 「누가 만들었는가」.
+ *
+ * ★두 차수를 같은 자리에서 틀렸다. 4차엔 「지금 없으니 우리가 만들 것」으로 기록했고(계획),
+ * 5차엔 그걸 «끝난 뒤 stat» 으로 고치려 했다. 그런데 stat 은 「있다」만 말한다 — 중간에 실패한
+ * 뒤 사용자가 그 디렉터리를 만들면 둘 다 그것을 우리 것으로 읽는다.
+ * ⇒ 이제 진실원은 {@code mkdir(recursive)} 의 반환값 하나다. «만든 행위»가 곧 소유의 증거다.
+ */
+describe("★S1 디렉터리 소유는 mkdir 이 답한다", () => {
+  const root = "/repo";
+
+  it("mkdir 이 아무것도 안 만들었다고 하면 우리 것이 없다", () => {
+    // 이미 있던 디렉터리 — 「있다」와 「우리가 만들었다」가 갈리는 지점이다.
+    expect(createdChain(root, undefined, "/repo/.cursor")).toEqual([]);
+  });
+
+  it("mkdir 이 만든 «가장 위»부터 목표까지가 전부 우리 것이다", () => {
+    // recursive 는 자기가 만든 최상위 하나만 돌려준다. 그 아래도 같이 생긴 것이다.
+    expect(createdChain(root, "/repo/.a", "/repo/.a/b/c")).toEqual([".a/b/c", ".a/b", ".a"]);
+    expect(createdChain(root, "/repo/.ai-erd", "/repo/.ai-erd")).toEqual([".ai-erd"]);
+  });
+
+  it("저장소 밖은 기록하지 않는다", () => {
+    expect(createdChain(root, "/", "/repo")).not.toContain("..");
+  });
+});
+
+describe("★S1 이미 있던 빈 디렉터리는 우리 것으로 기록되지 않는다", () => {
+  let root: string;
+  const out: string[] = [];
+  const io = {
+    stdout: { write: (text: string) => { out.push(text); return true; } },
+    stderr: { write: () => true },
+  } as unknown as { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream };
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "ai-erd-dirs-"));
+    out.length = 0;
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("사용자가 먼저 만들어 둔 .cursor 는 기록에 없고, 우리가 만든 .ai-erd 는 있다", async () => {
+    await mkdir(join(root, ".cursor"), { recursive: true });
+    const stub = {
+      toolsCall: async () => ({
+        content: [{ type: "text", text: JSON.stringify({ projects: [{ uuid: "p-1", name: "Billing" }] }) }],
+      }),
+    } as unknown as McpRpcClient;
+
+    const code = await executeInitCommand({
+      argv: [], role: "development" as HarnessRole, client: stub,
+      endpoint: "https://ai-erd.com/mcp", env: "prod" as const,
+      cliVersion: "@ai-erd/mcp test", cwd: root, json: true, io,
+    });
+
+    expect(code).toBe(0);
+    const config = JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8"));
+    expect(config.managed.createdDirectories).toContain(".ai-erd");
+    expect(config.managed.createdDirectories).not.toContain(".cursor");
+    // 그리고 되돌리기가 그 디렉터리를 치우려 들지 않는다.
+    expect(existsSync(join(root, ".cursor"))).toBe(true);
   });
 });

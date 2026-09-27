@@ -14,6 +14,7 @@ import {
   existingMarkerBlock,
   HARNESS_CONFIG_PATH,
   HARNESS_DOC_PATH,
+  MARKER_BEGIN,
   removeMarkerBlock,
   replaceMarkerBlockWith,
   renderAgentNote,
@@ -138,6 +139,28 @@ function carryForward(previous: ManagedRecord | undefined): ManagedRecord {
   return out as unknown as ManagedRecord;
 }
 
+/**
+ * 이 «경로»에 대한 기록을 전부 지운다.
+ *
+ * <p>★칸을 손으로 세지 않는다 — {@link emptyManagedRecord} 의 모양을 훑어 배열이면 걸러내고
+ * 객체면 그 키를 지운다. 칸이 늘 때 이 자리를 잊는 실수를 이미 한 번 했다
+ * ({@code carryForward}, 2026-09-23 4차 독립 리뷰 I3).
+ *
+ * <p>⚠{@code createdDirectories} 는 «디렉터리» 목록이라 파일 경로와 절대 같아지지 않는다 —
+ * 같은 훑기에 들어와도 걸리는 것이 없다.
+ */
+function forgetPath(record: ManagedRecord, path: string): void {
+  const fields = record as unknown as Record<string, unknown>;
+  for (const key of Object.keys(emptyManagedRecord())) {
+    const value = fields[key];
+    if (Array.isArray(value)) {
+      fields[key] = value.filter((entry) => entry !== path);
+    } else if (value && typeof value === "object") {
+      delete (value as Record<string, unknown>)[path];
+    }
+  }
+}
+
 /** 내용 지문. 암호학적 용도가 아니라 «바뀌었나»만 본다. */
 export function contentFingerprint(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -220,11 +243,6 @@ export interface PlanInitInput {
   previous?: ManagedRecord;
   /** 서버에서 받은 문서 본문. 없으면 패키지 기본값(= 오프라인 기본값)을 쓴다. */
   documents?: { doc?: string; agentNote?: string; versions?: Record<string, string> };
-  /**
-   * 지금 «없는» 저장소 안 디렉터리들(저장소 기준 상대 경로). 우리가 파일을 쓰면서 만들게 되는
-   * 것이므로, 되돌리기가 치워도 되는 대상이 된다. 파일 스냅샷만으로는 알 수 없어서 받는다.
-   */
-  missingDirectories?: string[];
 }
 
 export function planInit(input: PlanInitInput): InitPlan {
@@ -246,8 +264,48 @@ export function planInit(input: PlanInitInput): InitPlan {
     }
   };
 
+  /**
+   * ★<b>이어받은 기록이 아직 참인지 다시 판정한다.</b>
+   *
+   * <p>기록은 «지난 실행의 주장»이고 그 사이에 파일이 바뀌었을 수 있다. 지금 들어 있는 것이
+   * 우리가 쓴 조각도 아니고 백업해 둔 원본도 아니면, 그건 사용자가 새로 적은 값이고 우리
+   * 백업은 낡은 것이다. 예전엔 그냥 이어받아서, 되돌리기가 «두 판 전» 값을 복원하며 사용자가
+   * 그 뒤에 적은 값을 잃었다(2026-09-27 6차 독립 리뷰 I3).
+   *
+   * <p>⚠판단 재료가 없으면(지문이 없던 판의 기록, 파일 자체가 없음) 그대로 둔다 —
+   * 「모르겠으면 백업을 지킨다」가 이 자리의 안전한 쪽이다.
+   */
+  const forgetIfStale = (path: string, current: unknown, backup: unknown) => {
+    const stamp = managed.lastWrittenFragment[path];
+    if (stamp === undefined || current === undefined) {
+      return;
+    }
+    const now = fragmentFingerprint(current);
+    if (now === stamp || now === fragmentFingerprint(backup)) {
+      return; // 우리 것 그대로거나, 이미 원본으로 돌아가 있다.
+    }
+    forgetPath(managed, path);
+    notes.push(`${path}: it changed outside ai-erd, so the older backup was dropped and this is the new baseline.`);
+  };
+  /** 통째로 덮는 파일은 «파일 지문»으로 같은 판정을 한다. */
+  const forgetIfFileStale = (path: string, current: string | undefined) => {
+    const stamp = managed.lastWritten[path];
+    if (stamp === undefined || current === undefined) {
+      return;
+    }
+    const now = fingerprintFor(path, current);
+    const original = managed.originals[path];
+    if (now === stamp || (original !== undefined && now === fingerprintFor(path, original))) {
+      return;
+    }
+    forgetPath(managed, path);
+    notes.push(`${path}: it changed outside ai-erd, so the older backup was dropped and this is the new baseline.`);
+  };
+
   for (const target of AGENT_TARGETS) {
     const existing = input.files.get(target.path);
+    forgetIfStale(target.path, existing === undefined ? undefined : readServerEntry(existing),
+      managed.replacedEntries[target.path]);
     const merged = mergeServerEntry(existing, entry);
     if (existing === merged.content) {
       continue;
@@ -274,6 +332,7 @@ export function planInit(input: PlanInitInput): InitPlan {
   }
 
   const existingDoc = input.files.get(HARNESS_DOC_PATH);
+  forgetIfFileStale(HARNESS_DOC_PATH, existingDoc);
   const docContent = renderHarnessDoc({
     projectName: input.projectName,
     projectUuid: input.projectUuid,
@@ -298,7 +357,18 @@ export function planInit(input: PlanInitInput): InitPlan {
       notes.push(`${target.path} not found — skipped; AGENTS.md already reaches this agent.`);
       continue;
     }
-    const content = upsertMarkerBlock(existing, note);
+    forgetIfStale(target.path, existing === undefined ? undefined : existingMarkerBlock(existing),
+      managed.replacedBlocks[target.path]);
+    let content: string;
+    try {
+      content = upsertMarkerBlock(existing, note);
+    } catch (error) {
+      // ★우리 블록을 «다시 찾을 수 있게» 넣을 수 없는 파일이다 — 그 파일만 건너뛰고 나머지
+      //   init 은 계속한다. 손대지 않는 것이 이 자리의 정답이고, init 전체를 죽이는 것은
+      //   아니다(MCP 설정·HARNESS.md 는 여전히 맞게 써야 한다).
+      notes.push(`${target.path}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
     if (content === existing) {
       continue;
     }
@@ -320,26 +390,24 @@ export function planInit(input: PlanInitInput): InitPlan {
     }
   }
 
-  // 우리가 이번에 «쓰는» 파일의 부모 중, 지금 없는 것 = 우리가 만드는 것.
-  // ★이 계산은 config 를 «만들기 전»에 해야 한다 — 뒤에 하면 기록에 안 실린다.
-  //   (config 를 직렬화한 뒤에 칸을 채워 파일에는 없던 I7 과 같은 모양이다.)
-  for (const directory of parentsOf([...writes.map((write) => write.path), HARNESS_CONFIG_PATH])) {
-    if ((input.missingDirectories ?? []).includes(directory)
-        && !managed.createdDirectories.includes(directory)) {
-      managed.createdDirectories.push(directory);
-    }
-  }
+  // ★<b>「우리가 만들 디렉터리」를 여기서 «예측하지» 않는다.</b> 예전엔 「지금 없으니 우리가
+  //   만들 것」으로 기록했다. 그런데 만들기 전에 init 이 실패하거나, 계획과 적용 사이에
+  //   사용자가 그 디렉터리를 만들면, 되돌리기가 «남의» 디렉터리를 지웠다. 뒤에 stat 으로
+  //   고치려 했지만 stat 은 「있다」만 말하고 「누가 만들었나」는 말하지 못한다
+  //   (2026-09-23 5차 S1 → 2026-09-27 6차 S1).
+  //   ⇒ 이 칸의 진실원은 {@code mkdir(recursive)} 의 반환값 하나다. 적용이 채운다.
+  //     (직전 실행에서 이어받은 것은 carryForward 가 들고 있다.)
 
   // ⛔역할을 여기 적지 않는다 — 진실원은 MCP 설정 한 곳이다.
-  const configBody = {
-    version: 1,
-    project: { uuid: input.projectUuid, name: input.projectName },
+  const configBody = configBodyOf({
+    projectUuid: input.projectUuid,
+    projectName: input.projectName,
     endpoint: input.endpoint,
-    generatedBy: input.cliVersion,
+    cliVersion: input.cliVersion,
     // ★어느 판의 규칙으로 썼나. 이게 없으면 「무엇이 적혀 있었나」를 나중에 못 되짚는다.
-    promptVersions: input.documents?.versions ?? {},
+    versions: input.documents?.versions ?? {},
     managed,
-  };
+  });
   // ★<b>자기 지문을 «자기를 뺀 모습»으로 잰다.</b> 예전엔 문자열을 만든 뒤에 지문을 넣어서
   //   파일에는 자기 지문이 «없었고», 그러면 사용자가 config 를 고쳐도 undo 가 못 알아보고
   //   지웠다(2026-09-23 독립 재리뷰 I7). 그렇다고 대입 순서만 바꾸면 자기 해시를 담은 문서의
@@ -406,23 +474,22 @@ export function planUndo(input: PlanUndoInput): InitPlan {
    * <p>끝난 항목은 이 사본에서 지우고, 남은 것이 있으면 «줄어든» 기록을 다시 쓴다.
    */
   const remaining: ManagedRecord = carryForward(managed);
-  const forget = (path: string) => {
-    remaining.created = remaining.created.filter((p) => p !== path);
-    remaining.blockAdded = remaining.blockAdded.filter((p) => p !== path);
-    delete remaining.replacedEntries[path];
-    delete remaining.replacedBlocks[path];
-    delete remaining.originals[path];
-    delete remaining.lastWritten[path];
-    delete remaining.lastWrittenFragment[path];
-  };
-  /** 되돌릴 목표와 «지금 값»이 같은가 — 그렇다면 이미 끝난 것이고 충돌이 아니다. */
-  const alreadyRestored = (path: string, current: unknown) => {
-    const backup = managed.replacedEntries?.[path] ?? managed.replacedBlocks?.[path];
-    if (backup === undefined) {
-      return false;
-    }
-    return fragmentFingerprint(current) === fragmentFingerprint(backup);
-  };
+  const forget = (path: string) => forgetPath(remaining, path);
+  /**
+   * 되돌릴 «목표»와 지금 값이 같은가 — 같으면 이미 끝난 것이고 충돌이 아니다.
+   *
+   * <p>★<b>목표는 백업이 있으면 그 원본이고, 없으면 «없음»이다.</b> 예전엔 백업이 없을 때
+   * 곧바로 false 를 돌려줬다. 그래서 우리가 «더한» 조각(= 되돌릴 목표가 「없음」인 것)을
+   * 사용자가 손으로 지운 경우를 영영 충돌로 봤고, 반복 undo 가 끝나지 않았다
+   * (2026-09-27 6차 독립 리뷰 I2).
+   *
+   * <p>{@link fragmentFingerprint} 가 undefined 를 {@code "absent"} 로 재기 때문에 두 종류의
+   * 목표가 «한 비교»로 만난다 — 목표를 값으로 만들면 분기가 사라진다.
+   */
+  const restoreTarget = (path: string) =>
+    managed.replacedEntries?.[path] ?? managed.replacedBlocks?.[path];
+  const alreadyRestored = (path: string, current: unknown) =>
+    fragmentFingerprint(current) === fragmentFingerprint(restoreTarget(path));
   const weCreated = (path: string) => managed.created.includes(path);
   /** 우리가 쓴 뒤에 사람이 손댔나. 손댔으면 지우지 않고 알린다. */
   const changedSinceOurWrite = (path: string) => {
@@ -479,8 +546,10 @@ export function planUndo(input: PlanUndoInput): InitPlan {
       continue;
     }
     if (alreadyRestored(target.path, readServerEntry(existing))) {
-      // 이미 원본으로 돌아와 있다 — 끝난 일이다. 충돌로 세면 영영 안 끝난다.
-      notes.push(`${target.path}: your original "${SERVER_NAME}" entry is already back in place.`);
+      // 이미 목표 상태다 — 끝난 일이다. 충돌로 세면 영영 안 끝난다.
+      notes.push(restoreTarget(target.path) !== undefined
+        ? `${target.path}: your original "${SERVER_NAME}" entry is already back in place.`
+        : `${target.path}: the "${SERVER_NAME}" entry ai-erd added is already gone.`);
       forget(target.path);
       continue;
     }
@@ -528,8 +597,21 @@ export function planUndo(input: PlanUndoInput): InitPlan {
       }
       continue;
     }
+    if (existingMarkerBlock(existing) === undefined && existing.includes(MARKER_BEGIN)) {
+      // ★마커가 파일에 «있는데» 우리 것으로 알아볼 수 없다 — 코드펜스 안이거나 들여썼다.
+      //   「없으니 끝났다」로 기록을 지우면 블록은 남고 되돌릴 근거만 사라진다
+      //   (2026-09-27 6차 독립 리뷰 I4). 알아볼 수 없다는 것은 없다는 뜻이 아니다.
+      notes.push(
+        `${target.path}: an ai-erd block is in this file but not where --undo can remove it `
+        + "(inside a code fence, or indented). Remove it by hand, then run --undo again.",
+      );
+      unresolved = true;
+      continue;
+    }
     if (alreadyRestored(target.path, existingMarkerBlock(existing))) {
-      notes.push(`${target.path}: the ai-erd block that was there before is already back in place.`);
+      notes.push(restoreTarget(target.path) !== undefined
+        ? `${target.path}: the ai-erd block that was there before is already back in place.`
+        : `${target.path}: the ai-erd block is already gone.`);
       forget(target.path);
       continue;
     }
@@ -543,13 +625,28 @@ export function planUndo(input: PlanUndoInput): InitPlan {
       continue;
     }
     const replaced = managed.replacedBlocks?.[target.path];
-    forget(target.path);
-    const result = replaced !== undefined
-      ? { content: replaceMarkerBlockWith(existing, replaced), removed: true, emptied: false }
-      : removeMarkerBlock(existing);
-    if (!result.removed) {
+    let result: { content: string; removed: boolean; emptied: boolean };
+    try {
+      result = replaced !== undefined
+        ? { content: replaceMarkerBlockWith(existing, replaced), removed: true, emptied: false }
+        : removeMarkerBlock(existing);
+    } catch (error) {
+      // 표식 짝이 깨졌다 — 범위를 추측해서 지우지 않는다. 기록은 «지키고» 이유를 말한다.
+      notes.push(`${target.path}: ${error instanceof Error ? error.message : String(error)}`);
+      unresolved = true;
       continue;
     }
+    if (!result.removed) {
+      notes.push(
+        `${target.path}: the ai-erd block could not be removed — it is still in the file. `
+        + "Remove it by hand, then run --undo again.",
+      );
+      unresolved = true;
+      continue;
+    }
+    // ★걷어낸 «뒤에» 기록에서 지운다. 예전엔 먼저 지우고 나서 제거를 시도해, 못 걷어낸
+    //   블록이 파일에 남은 채 되돌릴 근거가 사라졌다(2026-09-27 6차 독립 리뷰 I4).
+    forget(target.path);
     if (result.emptied && weCreated(target.path) && !changedSinceOurWrite(target.path)) {
       deletes.push(target.path);
     } else {
@@ -577,6 +674,14 @@ export function planUndo(input: PlanUndoInput): InitPlan {
     }
     const original = managed.originals?.[path];
     if (original !== undefined) {
+      if (fingerprintFor(path, input.files.get(path)!) === fingerprintFor(path, original)) {
+        // ★사용자가 손으로 원본을 되돌려 놨다 — 목표에 이미 도달했으니 끝난 일이다.
+        //   예전엔 「우리가 쓴 것과 다르다」만 보고 네 번을 돌려도 미해결로 남겼다
+        //   (2026-09-27 6차 독립 리뷰 I2). 조각과 같은 규칙을 «파일 전체»에도 적용한다.
+        notes.push(`${path} is already the file that existed before init.`);
+        forget(path);
+        continue;
+      }
       if (changedSinceOurWrite(path)) {
         // ★원본으로 덮으면 «그 뒤의 편집»이 사라진다. 되돌리기가 남의 글을 지워선 안 된다
         //   (2026-09-23 독립 재리뷰 I8). 그리고 되돌릴 일이 «남았»으므로 기록도 지키다
@@ -613,28 +718,32 @@ export function planUndo(input: PlanUndoInput): InitPlan {
   // 예전엔 둘뿐이었다 — 전부 지우거나 통째로 남기거나. 그래서 일부만 복구된 상태에서는
   // 다시 시도할 때마다 이미 끝난 항목까지 충돌로 잡히고(5차 I3), 다음 init 은 완료된 항목의
   // 낡은 원본을 계속 자기 것으로 이어받았다. 끝난 것은 기록에서 지우고 남은 것만 남긴다.
-  if (input.files.get(HARNESS_CONFIG_PATH) !== undefined) {
+  const currentConfig = input.files.get(HARNESS_CONFIG_PATH);
+  if (currentConfig !== undefined) {
     if (unresolved || hasPendingRecovery(remaining)) {
       writes.push({
         path: HARNESS_CONFIG_PATH,
-        content: reducedConfig(input.files.get(HARNESS_CONFIG_PATH)!, remaining),
+        content: reducedConfig(currentConfig, remaining),
         existed: true,
       });
       notes.push(
         `${HARNESS_CONFIG_PATH}: kept, with the finished items removed — it still holds the backups `
         + "--undo needs. Run --undo again once the items above are resolved.",
       );
-    } else if (managed.originals?.[HARNESS_CONFIG_PATH] !== undefined) {
-      writes.push({
-        path: HARNESS_CONFIG_PATH,
-        content: managed.originals[HARNESS_CONFIG_PATH],
-        existed: true,
-      });
-      notes.push(`${HARNESS_CONFIG_PATH}: restored the file that existed before init.`);
-    } else if (!changedSinceOurWrite(HARNESS_CONFIG_PATH)) {
-      deletes.push(HARNESS_CONFIG_PATH);
     } else {
-      notes.push(`${HARNESS_CONFIG_PATH} was edited after init — left in place instead of deleting it.`);
+      // ★<b>되돌릴 것이 없으면 우리 칸만 걷어낸다.</b> 예전엔 여기서 두 길로 갈라졌고 둘 다
+      //   사용자 값을 잃었다 — 원본이 있으면 «무조건» 통째로 덮었고(편집을 지웠다), 없으면
+      //   「우리가 쓴 그대로니 전부 우리 것」이라 판정해 파일을 지웠다. 그리고 완료된 기록을
+      //   지울 길이 없어 다음 init 이 낡은 원본을 이어받았다(6차 독립 리뷰 I1·I3).
+      const undone = configWithOurFieldsUndone(currentConfig, managed.originals?.[HARNESS_CONFIG_PATH]);
+      if (undone === undefined) {
+        deletes.push(HARNESS_CONFIG_PATH);
+      } else if (undone !== currentConfig) {
+        writes.push({ path: HARNESS_CONFIG_PATH, content: undone, existed: true });
+        notes.push(managed.originals?.[HARNESS_CONFIG_PATH] !== undefined
+          ? `${HARNESS_CONFIG_PATH}: put back the fields that were there before init; your own fields are untouched.`
+          : `${HARNESS_CONFIG_PATH}: removed what ai-erd wrote and kept your own fields.`);
+      }
     }
   }
 
@@ -672,6 +781,87 @@ export function withCreatedDirectories(current: string, directories: readonly st
   next.lastWritten[HARNESS_CONFIG_PATH] = configFingerprint(serialize(parsed));
   parsed.managed = next;
   return serialize(parsed);
+}
+
+interface ConfigBodyValues {
+  projectUuid: string;
+  projectName: string;
+  endpoint: string;
+  cliVersion: string;
+  versions: Record<string, string>;
+  managed: ManagedRecord;
+}
+
+/** init 이 config 에 쓰는 내용. ★적는 칸의 진실원이 여기 하나다. */
+function configBodyOf(values: ConfigBodyValues): Record<string, unknown> {
+  return {
+    version: 1,
+    project: { uuid: values.projectUuid, name: values.projectName },
+    endpoint: values.endpoint,
+    generatedBy: values.cliVersion,
+    promptVersions: values.versions,
+    managed: values.managed,
+  };
+}
+
+/**
+ * config 에서 «우리 것»인 칸. ★여기 없는 칸은 <b>사용자가 적은 것</b>이고, 되돌리기는 그것을
+ * 지우지 않는다.
+ *
+ * <p>목록을 {@link configBodyOf} 에서 «뽑아낸다» — 손으로 베끼면 칸이 늘 때 잊는다.
+ * 같은 자리를 이미 한 번 틀렸다({@code carryForward}, 2026-09-23 4차 독립 리뷰 I3).
+ */
+const OUR_CONFIG_FIELDS: readonly string[] = Object.keys(configBodyOf({
+  projectUuid: "", projectName: "", endpoint: "", cliVersion: "",
+  versions: {}, managed: emptyManagedRecord(),
+}));
+
+/**
+ * config 에서 «우리 칸만» 되돌린 내용. 남는 것이 없으면 undefined — 그때만 파일을 지운다.
+ *
+ * <p>★<b>되돌리기의 단위는 파일이 아니라 칸이다.</b> 예전엔 둘뿐이었다 — 원본으로 통째 덮거나
+ * 통째로 지우거나. 그래서 사용자가 config 에 적어 둔 자기 칸이 두 길로 다 사라졌다: 원본
+ * 복원이 편집을 덮고, 「우리가 쓴 그대로니 우리 것」이라는 판정이 파일을 지웠다
+ * (2026-09-27 6차 독립 리뷰 I1).
+ *
+ * <p>원래 있던 칸은 원본 값으로 되돌리고, 우리가 «더한» 칸은 지우고, 우리 칸이 아닌 것은
+ * 손대지 않는다. 그러면 두 소유권이 한 파일에 공존해도 각자 제 것만 잃는다.
+ */
+function configWithOurFieldsUndone(current: string, original: string | undefined): string | undefined {
+  const parsed = parseJsonObject(current);
+  if (!parsed) {
+    return current; // 못 읽는 파일은 손대지 않는다.
+  }
+  const before = original === undefined ? undefined : parseJsonObject(original);
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!OUR_CONFIG_FIELDS.includes(key)) {
+      next[key] = value;
+      continue;
+    }
+    if (before && Object.prototype.hasOwnProperty.call(before, key)) {
+      next[key] = before[key]; // 원래 있던 칸 → 원본 값으로.
+    }
+  }
+  // 원본에는 있었는데 지금 파일에서는 사라진 우리 칸도 도로 넣는다.
+  for (const key of before ? OUR_CONFIG_FIELDS : []) {
+    if (Object.prototype.hasOwnProperty.call(before!, key)
+        && !Object.prototype.hasOwnProperty.call(next, key)) {
+      next[key] = before![key];
+    }
+  }
+  return Object.keys(next).length === 0 ? undefined : serialize(next);
+}
+
+function parseJsonObject(content: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 아직 되돌릴 근거가 남았나 — 백업이나 소유 기록이 하나라도 있으면 그렇다. */

@@ -472,3 +472,172 @@ describe("tool response reading", () => {
     expect(extractProjects({ nothing: true })).toEqual([]);
   });
 });
+
+/**
+ * 2026-09-27 6차 독립 리뷰 — 파일 복구 계약.
+ *
+ * ★네 건(I1·I2·I3)이 «5차를 고치며 내가 만든» 회귀였다. 복구를 「전부 또는 전무」에서
+ * 항목별로 바꾼 대가다. 그래서 여기 시험은 결과 한 컷이 아니라 <b>반복 실행의 수렴</b>을 본다 —
+ * 한 번 돌려서 맞는 것과, 네 번 돌려도 같은 곳에 서 있는 것은 다른 사실이다.
+ */
+describe("6차 독립 리뷰 — 복구 계약", () => {
+  const CONFIG = ".ai-erd/config.json";
+
+  /** 계획을 스냅샷에 «적용»한 결과. 반복 undo 를 보려면 이게 필요하다. */
+  function applyTo(files: Map<string, string | undefined>, plan: { writes: { path: string; content: string }[]; deletes: string[] }) {
+    const next = new Map(files);
+    for (const write of plan.writes) next.set(write.path, write.content);
+    for (const path of plan.deletes) next.set(path, undefined);
+    return next;
+  }
+
+  /** 다음 undo·init 의 입력이 되는 기록. config 에서 읽는다 — 실제 흐름과 같은 경로다. */
+  function managedOf(files: Map<string, string | undefined>) {
+    const raw = files.get(CONFIG);
+    if (raw === undefined) return undefined;
+    try {
+      return (JSON.parse(raw) as { managed?: never }).managed;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const json = (body: unknown) => `${JSON.stringify(body, null, 2)}\n`;
+
+  it("★I1 사용자가 config 에 적은 칸을 되돌리기가 덮지 않는다", () => {
+    // 원본 config 가 있으면 «무조건» 그것으로 덮던 자리다. 그 사이의 편집이 사라졌다.
+    const before = { [CONFIG]: json({ mine: "before-init" }) };
+    const init = planInit({ ...BASE, files: snapshot(before) });
+    const files = applyTo(snapshot(before), init);
+    const ours = JSON.parse(files.get(CONFIG)!) as Record<string, unknown>;
+    ours.mine = "edited-after-init";
+    files.set(CONFIG, json(ours));
+
+    const undone = applyTo(files, planUndo({ files, managed: managedOf(files) }));
+
+    expect(JSON.parse(undone.get(CONFIG)!).mine).toBe("edited-after-init");
+  });
+
+  it("★I1 기록을 줄여 쓴다는 이유로 사용자 칸을 우리 것으로 삼지 않는다", () => {
+    const init = planInit({ ...BASE, files: snapshot({}) });
+    let files = applyTo(snapshot({}), init);
+    // 사용자가 config 에 자기 칸을 더하고, 우리 MCP 항목도 손댔다(= 해소 안 된 충돌).
+    files.set(CONFIG, json({ ...JSON.parse(files.get(CONFIG)!), mine: "keep-me" }));
+    const mcp = JSON.parse(files.get(".mcp.json")!);
+    mcp.mcpServers["ai-erd"].args = [...mcp.mcpServers["ai-erd"].args, "--mine"];
+    files.set(".mcp.json", json(mcp));
+
+    // 1차 — 충돌이 남았으니 기록을 «줄여서» 남긴다. 사용자 칸은 그대로.
+    files = applyTo(files, planUndo({ files, managed: managedOf(files) }));
+    expect(JSON.parse(files.get(CONFIG)!).mine).toBe("keep-me");
+
+    // 사람이 안내대로 우리 항목을 손으로 지워 충돌을 해소했다.
+    files.set(".mcp.json", json({ mcpServers: {} }));
+
+    // 2차 — 끝났다. 우리 칸만 걷히고 사용자 칸은 남는다(파일이 사라지지 않는다).
+    files = applyTo(files, planUndo({ files, managed: managedOf(files) }));
+    expect(files.get(CONFIG)).toBeDefined();
+    expect(JSON.parse(files.get(CONFIG)!).mine).toBe("keep-me");
+    expect(JSON.parse(files.get(CONFIG)!).managed).toBeUndefined();
+  });
+
+  it("★I2 손으로 원본 파일을 되돌려 놨으면 끝난 것으로 본다", () => {
+    const before = { ".ai-erd/HARNESS.md": "my own harness notes\n" };
+    const init = planInit({ ...BASE, files: snapshot(before) });
+    const files = applyTo(snapshot(before), init);
+    files.set(".ai-erd/HARNESS.md", before[".ai-erd/HARNESS.md"]);
+
+    const undo = planUndo({ files, managed: managedOf(files) });
+
+    expect(undo.notes.join(" ")).toContain("already the file that existed before init");
+    // 그리고 기록이 남지 않는다 — 다시 돌려도 할 일이 없다(수렴).
+    expect(managedOf(applyTo(files, undo))).toBeUndefined();
+  });
+
+  it("★I2 우리가 «더한» 항목을 손으로 지웠으면 그것도 끝난 것이다", () => {
+    // 되돌릴 목표가 「없음」인 항목. 예전엔 백업이 없으면 곧바로 충돌로 봐서 안 끝났다.
+    const before = { ".mcp.json": json({ mcpServers: { sentry: { type: "http", url: "https://x" } } }) };
+    const init = planInit({ ...BASE, files: snapshot(before) });
+    const files = applyTo(snapshot(before), init);
+    files.set(".mcp.json", before[".mcp.json"]);
+
+    const undo = planUndo({ files, managed: managedOf(files) });
+
+    expect(undo.notes.join(" ")).toContain("already gone");
+    expect(managedOf(applyTo(files, undo))).toBeUndefined();
+  });
+
+  it("★I2 우리가 «더한» 블록을 손으로 지웠으면 그것도 끝난 것이다", () => {
+    const before = { "AGENTS.md": "# House rules\n\nBe careful.\n" };
+    const init = planInit({ ...BASE, files: snapshot(before) });
+    const files = applyTo(snapshot(before), init);
+    files.set("AGENTS.md", before["AGENTS.md"]);
+
+    const undo = planUndo({ files, managed: managedOf(files) });
+
+    expect(undo.notes.join(" ")).toContain("already");
+    expect(managedOf(applyTo(files, undo))).toBeUndefined();
+  });
+
+  it("★I2 되돌린 상태에서 네 번 더 돌려도 같은 곳에 선다", () => {
+    const before = { ".ai-erd/HARNESS.md": "mine\n" };
+    let files = applyTo(snapshot(before), planInit({ ...BASE, files: snapshot(before) }));
+    files.set(".ai-erd/HARNESS.md", before[".ai-erd/HARNESS.md"]);
+
+    const seen: string[] = [];
+    for (let round = 0; round < 4; round += 1) {
+      files = applyTo(files, planUndo({ files, managed: managedOf(files) }));
+      seen.push(JSON.stringify([...files].filter(([, body]) => body !== undefined).sort()));
+    }
+
+    // ⚠「상태가 안 변한다」만으로는 모자란다 — «안정적이지만 영영 미해결»도 안 변한다.
+    //   수렴의 증거는 <b>할 일이 없어진 것</b>이다: 기록이 사라지고 원본만 남았다.
+    expect(new Set(seen.slice(1)).size).toBe(1);
+    expect(files.get(".ai-erd/HARNESS.md")).toBe(before[".ai-erd/HARNESS.md"]);
+    expect(managedOf(files)).toBeUndefined();
+    expect(files.get(CONFIG)).toBeUndefined();
+  });
+
+  it("★I3 기록보다 «지금 파일»이 최신이면 그것을 새 원본으로 삼는다", () => {
+    const a = { command: "A", args: ["--a"] };
+    const b = { command: "B", args: ["--b"] };
+    const before = { ".mcp.json": json({ mcpServers: { "ai-erd": a } }) };
+    let files = applyTo(snapshot(before), planInit({ ...BASE, files: snapshot(before) }));
+    // 사용자가 우리 항목을 자기 것 B 로 갈아 끼웠다(= 완료된 기록이 낡았다).
+    files.set(".mcp.json", json({ mcpServers: { "ai-erd": b } }));
+
+    files = applyTo(files, planInit({ ...BASE, files, previous: managedOf(files) }));
+    const undo = planUndo({ files, managed: managedOf(files) });
+
+    const restored = JSON.parse(undo.writes.find((w) => w.path === ".mcp.json")!.content);
+    expect(restored.mcpServers["ai-erd"]).toEqual(b);
+  });
+
+  it("★I4 열린 코드펜스로 끝나는 파일에는 블록을 넣지 않는다", () => {
+    // 블록 «안»만 검사했더니, 합친 결과에서 멀쩡한 블록이 펜스 안으로 들어가 우리 것으로
+    // 안 보였다. 그래서 init 마다 하나씩 늘고 undo 는 아무것도 못 걷어냈다.
+    const before = { "AGENTS.md": "# Rules\n\n```sh\nnot closed\n" };
+    const first = planInit({ ...BASE, files: snapshot(before) });
+
+    expect(first.writes.find((w) => w.path === "AGENTS.md")).toBeUndefined();
+    expect(first.notes.join(" ")).toContain("unclosed code fence");
+
+    let files = applyTo(snapshot(before), first);
+    files = applyTo(files, planInit({ ...BASE, files, previous: managedOf(files) }));
+    expect(files.get("AGENTS.md")).toBe(before["AGENTS.md"]);
+  });
+
+  it("★I4 우리 것으로 알아볼 수 없는 블록이 파일에 있으면 기록을 지키고 알린다", () => {
+    const before = { "AGENTS.md": "# Rules\n\nBe careful.\n" };
+    const init = planInit({ ...BASE, files: snapshot(before) });
+    const files = applyTo(snapshot(before), init);
+    // 사람이 블록을 코드펜스 안으로 옮겼다 — 있지만 «우리 것으로» 안 보인다.
+    files.set("AGENTS.md", `# Rules\n\n\`\`\`md\n${MARKER_BEGIN}\nx\n${MARKER_END}\n\`\`\`\n`);
+
+    const undo = planUndo({ files, managed: managedOf(files) });
+
+    expect(undo.notes.join(" ")).toContain("not where --undo can remove it");
+    // 「없으니 끝났다」로 기록을 지우지 않는다 — 블록은 파일에 남아 있다.
+    expect(managedOf(applyTo(files, undo))).toBeDefined();
+  });
+});
