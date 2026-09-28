@@ -1286,3 +1286,63 @@ describe("9차 3차 리뷰 — 증거를 우리 블록 밖에서 센다", () => 
     expect(second.writes).toHaveLength(0);
   });
 });
+
+/**
+ * ★<b>구판이 다른 자리에 남긴 기록.</b> 7차에 기록을 우리 파일로 내보내면서, 구판이
+ * {@code .ai-erd/config.json} 의 {@code managed} 칸에 남긴 기록을 «없는 것»으로 안내하게 됐다
+ * (9차 1차 리뷰 B6) — 그 config 안에 사용자 원본 백업이 그대로 들어 있는데도.
+ * 사용자는 「되돌릴 것이 없구나」로 읽고 그 백업을 영영 쓰지 않는다.
+ *
+ * <p>⚠그리고 이 판정은 <b>7차 I2 와 맞부딪힌다</b> — 「config 의 managed 는 사용자 것이다」.
+ * 모양만으로는 둘이 구별되지 않아서, 구판이 «함께 쓴 것»으로 가른다:
+ * {@code generatedBy}(우리 CLI 만 적는 칸) 또는 {@code managed.lastWritten} 안의 config 자기 경로.
+ */
+describe("9차 B6 — 구판 기록은 «없는 기록»이 아니다", () => {
+  const CONFIG = ".ai-erd/config.json";
+  const json = (body: unknown) => `${JSON.stringify(body, null, 2)}\n`;
+
+  /** 구판(6차 이전) CLI 가 실제로 쓴 모양: 우리 칸 + managed 가 한 파일에 있다. */
+  const legacyConfig = json({
+    version: 1,
+    project: { uuid: "p-1", name: "Billing" },
+    endpoint: "https://ai-erd.com/mcp",
+    generatedBy: "@ai-erd/mcp 0.2.0",
+    promptVersions: {},
+    managed: {
+      created: [".mcp.json"],
+      originals: { "AGENTS.md": "USER ORIGINAL BLOCK" },
+      lastWritten: { [CONFIG]: "sha-of-config" },
+    },
+  });
+
+  it("★undo 가 「이전 init 기록이 없다」고 말하지 않는다 — 그 안에 백업이 있다", () => {
+    const undo = planUndo({ files: snapshot({ [CONFIG]: legacyConfig }) });
+
+    const notes = undo.notes.join(" ");
+    expect(notes).not.toContain("No record of a previous init");
+    expect(notes).toContain("an older version of this CLI");
+    expect(notes).toContain("--undo");          // 무엇을 하라는지 말한다
+    expect(undo.writes).toEqual([]);            // ⛔그리고 아무것도 건드리지 않는다
+    expect(undo.deletes).toEqual([]);
+  });
+
+  it("★init 은 구판 기록 위에 쓰지 않는다 — 이행할 수 없는 백업을 죽은 글로 만들지 않는다", () => {
+    const plan = planInit({ ...BASE, files: snapshot({ [CONFIG]: legacyConfig }) });
+
+    expect(plan.refusal).toContain("an older version of this CLI");
+    expect(plan.writes).toEqual([]);
+  });
+
+  it("★사용자가 적은 managed 칸은 그대로 사용자 것이다 (7차 I2 유지)", () => {
+    // 구판이 «함께 쓴 것»이 없다 — generatedBy 도, lastWritten 안의 config 경로도 없다.
+    const mine = json({ managed: { created: ["AGENTS.md"], lastWritten: { "AGENTS.md": "x" } } });
+
+    expect(planUndo({ files: snapshot({ [CONFIG]: mine }) }).notes.join(" "))
+      .toContain("No record of a previous init");
+    // init 도 막히지 않고, 그 칸을 건드리지도 않는다.
+    const plan = planInit({ ...BASE, files: snapshot({ [CONFIG]: mine }) });
+    expect(plan.refusal).toBeUndefined();
+    expect(JSON.parse(writtenAt(plan, CONFIG)!).managed)
+      .toEqual({ created: ["AGENTS.md"], lastWritten: { "AGENTS.md": "x" } });
+  });
+});

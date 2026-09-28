@@ -26,6 +26,8 @@ import {
   ABSENT,
   emptyRecord,
   fieldsContractProblem,
+  legacyManagedNotice,
+  legacyManagedRecord,
   readRecord,
   serializeRecord,
   stableStringify,
@@ -227,37 +229,57 @@ export interface PlanInitInput {
   documents?: { doc?: string; agentNote?: string; versions?: Record<string, string> };
 }
 
-export function planInit(input: PlanInitInput): InitPlan {
-  const previous = input.previous ?? readRecord(input.files.get(HARNESS_RECORD_PATH));
-  if (previous.state === "corrupt" || previous.state === "legacy") {
+/**
+ * ★<b>기록 때문에 멈춰야 하나 — «파일만» 보고 답한다.</b>
+ *
+ * <p>계획을 세우는 것보다 «앞»에 이 질문이 있어야 한다. 예전엔 이 판정이 {@code planInit} 안에만
+ * 있었고, 부르는 쪽은 그 전에 프로젝트를 해결했다 — 프로젝트가 0개면 <b>원격에 프로젝트를 만든
+ * 뒤에</b> 「아무것도 바꾸지 않았다」는 예외를 냈다(9차 1차 리뷰 B7). 로컬 쓰기가 0이어도
+ * 부수효과가 0인 것은 아니다. 그래서 순수 함수로 빼서 원격 호출 전에 물을 수 있게 한다.
+ *
+ * <p>⚠{@code planInit} 도 이 함수를 쓴다 — 두 곳에 같은 판단을 두면 어긋난다.
+ */
+export function initRefusal(files: FileSnapshot, previous?: RecordState): string | undefined {
+  const state = previous ?? readRecord(files.get(HARNESS_RECORD_PATH));
+  if (state.state === "corrupt" || state.state === "legacy") {
     // ★읽어 내지 못한 기록을 덮으면 그 안의 «남의 원본 백업»이 사라진다. 읽기를 거절했으면
     //   쓰기도 거절해야 한다(8차 독립 리뷰 I1).
-    return {
-      writes: [], deletes: [], notes: [],
-      codexCommand: codexAddCommand({ role: input.role, env: input.env, endpoint: input.endpoint }),
-      refusal: `${previous.reason}. Nothing was changed — move that file aside (or restore it) and run again.`,
-    };
+    return `${state.reason}. Nothing was changed — move that file aside (or restore it) and run again.`;
   }
-
-  const carriedRecord = previous.state === "valid" ? previous.record : emptyRecord();
-  for (const [path, contract] of Object.entries(carriedRecord.files)) {
+  if (state.state === "absent" && legacyManagedRecord(files.get(HARNESS_CONFIG_PATH))) {
+    // ★구판이 config 에 남긴 기록이다. 우리는 그것을 이행할 수 없고, 덮으면 그 안의 사용자
+    //   원본이 «읽을 수는 있지만 쓸 수 없는» 글이 된다 — 아무도 다시 꺼내지 않는다(9차 B6).
+    return legacyManagedNotice(HARNESS_CONFIG_PATH);
+  }
+  const carried = state.state === "valid" ? state.record : emptyRecord();
+  for (const [path, contract] of Object.entries(carried.files)) {
     if (contract.scope !== "fields") {
       continue;
     }
     // ★<b>검증 «전» 기록으로 파일을 고치지 않는다.</b> 같은 완전성 검사가 되돌리기에만 있었고,
-    //   재init 은 그 기록을 그대로 실행해 «현재 값»을 새 원본으로 적어 버렸다 — 그러면 다음
-    //   되돌리기가 사용자 원본이 아니라 우리가 쓴 값을 복원한다(3차 리뷰 F1).
+    //   재init 은 그 기록을 그대로 실행해 «현재 값»을 새 원본으로 적어 버렸다(3차 리뷰 F1).
     //   ⛔로더에 도메인 지식을 넣는 대신, 도메인을 아는 이 경계에서 두 진입점이 같은 검사를 한다.
     const problem = fieldsContractProblem(contract, OUR_CONFIG_FIELDS);
     if (problem !== undefined) {
-      return {
-        writes: [], deletes: [], notes: [],
-        codexCommand: codexAddCommand({ role: input.role, env: input.env, endpoint: input.endpoint }),
-        refusal: `${HARNESS_RECORD_PATH}'s record for ${path} ${problem}. Nothing was changed — `
-          + "restore that file (or move it aside) and run again.",
-      };
+      return `${HARNESS_RECORD_PATH}'s record for ${path} ${problem}. Nothing was changed — `
+        + "restore that file (or move it aside) and run again.";
     }
   }
+  return undefined;
+}
+
+export function planInit(input: PlanInitInput): InitPlan {
+  const previous = input.previous ?? readRecord(input.files.get(HARNESS_RECORD_PATH));
+  const refusal = initRefusal(input.files, previous);
+  if (refusal !== undefined) {
+    return {
+      writes: [], deletes: [], notes: [],
+      codexCommand: codexAddCommand({ role: input.role, env: input.env, endpoint: input.endpoint }),
+      refusal,
+    };
+  }
+
+  const carriedRecord = previous.state === "valid" ? previous.record : emptyRecord();
 
   const entry = buildServerEntry({ role: input.role, env: input.env, endpoint: input.endpoint });
   const writes: FileWrite[] = [];
@@ -521,7 +543,12 @@ export function planUndo(input: PlanUndoInput): InitPlan {
   if (state.state === "absent") {
     // ★기록이 없으면 «아무것도» 되돌리지 않는다. 예전엔 이름이 우리 것이면 지웠는데,
     //   init 을 한 적도 없는 저장소의 사용자 항목까지 지웠다(독립 재리뷰 I2).
-    notes.push(`No record of a previous init in ${HARNESS_RECORD_PATH} — no local file was changed.`);
+    //   ⚠단 «없다»와 «구판이 다른 자리에 남겼다»는 다른 사실이다. 구판 기록이 있는 저장소에서
+    //   「이전 init 기록이 없다」고 말하면, 그 config 안의 사용자 백업을 아무도 다시 꺼내지
+    //   않는다 — 되돌릴 것이 없다고 읽기 때문이다(9차 1차 리뷰 B6).
+    notes.push(legacyManagedRecord(input.files.get(HARNESS_CONFIG_PATH))
+      ? legacyManagedNotice(HARNESS_CONFIG_PATH)
+      : `No record of a previous init in ${HARNESS_RECORD_PATH} — no local file was changed.`);
     tail();
     return { writes, deletes, codexCommand: codexRemoveCommand(), notes };
   }

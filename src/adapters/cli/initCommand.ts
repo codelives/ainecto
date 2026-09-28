@@ -6,6 +6,7 @@ import { renderSuccess } from "../../core/output/render";
 import { HARNESS_ROLES, ROLE_ENV_VAR, type HarnessRole } from "../../core/harness/role";
 import {
   detectRoles,
+  initRefusal,
   MANAGED_PATHS,
   planInit,
   planUndo,
@@ -82,6 +83,15 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     );
   }
 
+  // ★<b>원격을 건드리기 «전»에 기록을 본다.</b> 예전엔 이 판정이 계획 안에만 있어서, 프로젝트가
+  //   0개인 저장소에서 «원격에 프로젝트를 만든 뒤» 「아무것도 바꾸지 않았다」는 예외를 냈다
+  //   (9차 1차 리뷰 B7). 로컬 쓰기가 0이라는 것과 부수효과가 0이라는 것은 다른 사실이다.
+  //   ⚠이번 차수에 거절 경로를 셋 늘렸으므로(손상·구판·fields 불완전) 여기 닿을 일이 더 많아졌다.
+  const refusal = initRefusal(files);
+  if (refusal !== undefined) {
+    throw new Error(refusal);
+  }
+
   const project = await resolveProject(options, args, files, root);
   if ("choices" in project) {
     options.io.stdout.write(renderSuccess(
@@ -116,6 +126,8 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
   if (plan.refusal !== undefined) {
     // ★계획이 「멈춰라」고 하면 멈춘다. 이 판정을 부르는 쪽이 안 보면 그 판정은 «없는» 것이고,
     //   그 경우 읽어 내지 못한 기록을 백업 없이 덮는다(2026-09-27 8차 독립 리뷰 I1).
+    //   ⚠위에서 이미 물었지만 여기서도 본다 — 계획이 거절을 «돌려주는» 이상 그것을 보지 않는
+    //   경로가 생겨선 안 된다. 같은 함수를 쓰므로 두 답이 갈리지 않는다.
     throw new Error(plan.refusal);
   }
   await applyPlan(root, plan, args.dryRun, files);

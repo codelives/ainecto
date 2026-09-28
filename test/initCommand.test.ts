@@ -440,6 +440,38 @@ describe("ai-erd init (files on disk)", () => {
     expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(false);
   });
 
+  it("★B7 손상된 기록이면 «원격을 건드리기 전에» 멈춘다", async () => {
+    // 9차 1차 리뷰 B7 — 프로젝트가 0개인 저장소에서 원격에 프로젝트를 «만든 뒤»
+    // 「아무것도 바꾸지 않았다」는 예외가 났다. 로컬 쓰기 0 과 부수효과 0 은 다른 사실이다.
+    await mkdir(join(root, ".ai-erd"), { recursive: true });
+    await writeFile(join(root, ".ai-erd/init-record.json"), "{ not json", "utf8");
+    const { stub, calls } = client([], { uuid: "p-new", name: "New" });
+
+    await expect(executeInitCommand(options(["--role", "design", "--yes"], stub)))
+      .rejects.toThrow(/not valid JSON/);
+
+    // ★원격 호출이 «하나도» 없어야 한다 — 조회도, 생성도.
+    expect(calls).toEqual([]);
+    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+    // 손상된 기록은 그대로 둔다 — 그 안에 못 읽은 백업이 있을 수 있다.
+    expect(await readFile(join(root, ".ai-erd/init-record.json"), "utf8")).toBe("{ not json");
+  });
+
+  it("★B7 구판 기록이면 그것도 원격 전에 멈춘다", async () => {
+    await mkdir(join(root, ".ai-erd"), { recursive: true });
+    await writeFile(join(root, ".ai-erd/config.json"), `${JSON.stringify({
+      generatedBy: "@ai-erd/mcp 0.2.0",
+      managed: { created: [".mcp.json"], originals: { "AGENTS.md": "USER ORIGINAL" } },
+    }, null, 2)}\n`, "utf8");
+    const { stub, calls } = client([], { uuid: "p-new", name: "New" });
+
+    await expect(executeInitCommand(options(["--role", "design", "--yes"], stub)))
+      .rejects.toThrow(/an older version of this CLI/);
+
+    expect(calls).toEqual([]);
+    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+  });
+
   it("★역할 추론도 저장소 경계 검사를 지난다", async () => {
     // 4차 독립 리뷰 I5 — 나중에 붙인 읽기 경로가 assertInsideRepository 없이 파일을 «한 번 읽었다».
     const outside = join(root, "..", `outside-${Date.now()}.json`);
