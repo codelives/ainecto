@@ -665,7 +665,7 @@ describe("ai-erd init (files on disk)", () => {
     const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
     const { opts, events } = withLogin(["--role", "design", "--dry-run"], stub, undefined);
 
-    await expect(executeInitCommand(opts)).rejects.toThrow(/does not open a browser[\s\S]*ai-erd auth login --role design/);
+    await expect(executeInitCommand(opts)).rejects.toThrow(/neither refreshes it nor opens a browser[\s\S]*ai-erd auth login --role design/);
     expect(events).toEqual([]);
     expect(calls).toEqual([]);
   });
@@ -683,10 +683,34 @@ describe("ai-erd init (files on disk)", () => {
     // 예전엔 서버가 거부한 뒤 「Project creation did not return a project uuid.」로 끝났다.
     const { stub, calls } = client([], { uuid: "p-new", name: "x" });
 
-    await expect(executeInitCommand(options(["--role", "test", "--yes"], stub)))
-      .rejects.toThrow(/only a Design session can create one[\s\S]*--role design --yes/);
+    const failure = await executeInitCommand(options(["--role", "test", "--yes"], stub)).catch((e: Error) => e);
+
+    expect((failure as Error).message).toMatch(/only a Design session can create one[\s\S]*Ask the user[\s\S]*--role test\.$/);
+    // ★「--role design 으로 다시 치라」고 하지 않는다 — 에이전트를 역할 전환으로 이끈다(코드 리뷰 P1).
+    expect((failure as Error).message).not.toContain("--role design");
     expect(calls).toEqual(["list_projects"]);
     expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+  });
+
+  it("★프로젝트를 만들면 그 자리에서 알린다 (뒤에서 실패해도 사용자가 안다)", async () => {
+    const { stub } = client([], { uuid: "p-new", name: "fresh" });
+    const { opts, errors } = withLogin(["--role", "design", "--yes"], stub, "t");
+
+    expect(await executeInitCommand(opts)).toBe(0);
+    expect(errors.join("")).toContain("Created project fresh (p-new).");
+  });
+
+  it("★역할이 바뀌면 사람이 보는 자리에 한 줄 남긴다 — 새 세션부터라는 조건까지", async () => {
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    const changed = withLogin(["--role", "design"], stub, "t");
+    await executeInitCommand(changed.opts);
+    expect(changed.errors.join("")).toContain("Role changes from development to design for new sessions.");
+
+    const same = withLogin(["--role", "design"], stub, "t");
+    await executeInitCommand(same.opts);
+    expect(same.errors.join("")).not.toContain("Role changes");
   });
 
   it("★결과의 다음 할 일에 «따로 로그인하라»가 없다 — 이미 그 역할로 로그인했다", async () => {
@@ -730,6 +754,12 @@ describe("ai-erd init (files on disk)", () => {
     expect(await executeInitCommand(options(["--role", "design"], stub))).toBe(0);
     const result = JSON.parse(out.join("")) as { data: { notes: string[] } };
     expect(result.data.notes.join("\n")).toContain("not inside a git repository");
+    // undo 도 같은 note 를 쓴다 — «init 이 설정했다»가 아니라 «이 폴더를 기준으로 삼았다».
+    out.length = 0;
+    await executeInitCommand(options(["--undo"], stub));
+    const undone = JSON.parse(out.join("")) as { data: { notes: string[] } };
+    expect(undone.data.notes.join("\n")).toContain("this folder was used as the repository root");
+    expect(undone.data.notes.join("\n")).not.toContain("init set up");
   });
 
   it("leaves a user's own file inside .ai-erd alone", async () => {

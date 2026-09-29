@@ -94,6 +94,15 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
   }
 
   const role = options.role ?? currentRole(files);
+  // 설정끼리 어긋나 있으면 «이전 역할»은 하나로 말할 수 없다 — 그때는 변경 알림을 생략한다
+  // (명시한 --role 이 둘을 맞추고, 파일별 변화는 계획의 notes 가 말한다).
+  const previousRole = (() => {
+    try {
+      return currentRole(files);
+    } catch {
+      return undefined;
+    }
+  })();
   if (!role) {
     throw new Error(
       `--role is required on first run. Pick one of: ${HARNESS_ROLES.join(", ")}.`,
@@ -150,6 +159,11 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     throw new Error(plan.refusal);
   }
   await applyPlan(root, plan, args.dryRun, files);
+  if (!args.dryRun && previousRole !== undefined && previousRole !== role) {
+    // ★역할이 바뀐 사실을 사람이 보는 자리(에이전트 대화)에 한 줄 남긴다(설계 §13 S2).
+    //   떠 있는 세션은 그대로이고 새 세션부터다 — 그 조건까지 같이 말한다.
+    options.io.stderr.write(`Role changes from ${previousRole} to ${role} for new sessions.\n`);
+  }
 
   options.io.stdout.write(renderSuccess(
     {
@@ -256,8 +270,9 @@ async function ensureSignedIn(
     return;
   }
   if (dryRun) {
+    // (dry-run 의 accessToken 은 읽기 전용이다 — 갱신하지 않으므로 만료된 토큰도 여기로 온다.)
     throw new Error(
-      `Not signed in for this role, and --dry-run does not open a browser.\n\n`
+      `No usable sign-in for this role, and --dry-run neither refreshes it nor opens a browser.\n\n`
       + `    ${loginCommand(options, role)}\n\n`
       + "Then run init again.",
     );
@@ -276,7 +291,8 @@ async function ensureSignedIn(
 async function repositoryRootNotes(cwd: string): Promise<string[]> {
   const gitRoot = await findGitRoot(cwd);
   if (gitRoot === undefined) {
-    return [`${cwd} is not inside a git repository, so init set up this folder.`];
+    // (init·undo 둘 다 이 note 를 쓴다 — «설정했다»가 아니라 «어디를 기준으로 삼았나»를 말한다.)
+    return [`${cwd} is not inside a git repository, so this folder was used as the repository root.`];
   }
   if (gitRoot !== cwd) {
     throw new Error(
@@ -339,11 +355,13 @@ async function resolveProject(
   // ★만들 수 있는 것은 Design 세션뿐이다(서버 McpRolePolicy: create_projects 는 Design·FULL 만).
   //   예전엔 다른 역할로 --yes 를 주면 서버가 거부하고, 우리는 「Project creation did not return a
   //   project uuid.」라는 엉뚱한 말로 끝났다. 원격 쓰기를 부르기 «전에» 사람이 할 일을 말한다.
+  // ⚠「--role design 으로 다시 치라」고 말하지 않는다. 그 문장은 에이전트를 «역할 전환»으로 이끈다 —
+  //   역할은 사용자가 고른 것이다(2026-09-29 코드 리뷰 P1). 사람에게 묻게 하고, 원래 역할로 돌아오게 한다.
   if (role !== "design") {
     throw new Error(
       `No project found in your AI-ERD account, and only a Design session can create one. `
-      + `Re-run with --role design --yes (add --project-name <name> to pick the name), `
-      + `or create a project at ${new URL(options.endpoint).origin} and run init again.`,
+      + `Ask the user: create the project at ${new URL(options.endpoint).origin} or in a Design session, `
+      + `then run init again with --role ${role}.`,
     );
   }
   // ★쓰기이므로 --yes 없이는 하지 않는다.
@@ -431,6 +449,9 @@ async function createProject(options: InitCommandOptions, name: string): Promise
   if (!first) {
     throw new Error("Project creation did not return a project uuid.");
   }
+  // ★원격에 생긴 것을 «바로» 알린다. 뒤에서 실패하면 결과 출력이 없어 사용자는 이 프로젝트가
+  //   생긴 줄 모른다(설계 §13 S9).
+  options.io.stderr.write(`Created project ${first.name} (${first.uuid}).\n`);
   return first;
 }
 

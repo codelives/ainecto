@@ -44,6 +44,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       endpoint: resolved.endpoint,
       tokenStore,
       role: sessionRole,
+      // ★init --dry-run 은 토큰을 갱신하지도 않는다 — 「아무것도 바꾸지 않는다」에 로그인 상태도 든다.
+      //   (init 의 플래그는 positional 로 흘러온다.)
+      readOnly: parsed.positionals[0] === "init" && parsed.positionals.includes("--dry-run"),
       // ★URL 을 «브라우저를 열기 전에» 알린다. 에이전트가 실행했다면 명령이 끝날 때 이 줄이 닿는다.
       //   stdout 은 결과 전용이라 stderr 에 쓴다.
       onAuthorizeUrl: (url) => {
