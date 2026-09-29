@@ -713,10 +713,10 @@ Then use any AI-ERD tool once; the client asks the user to sign in. Roles are se
 | P2 | `refreshStoredToken` 도달 불가 가드 | 제거, 타입으로 요구 |
 | P2 | undo note 「init set up this folder」 | 「this folder was used as the repository root」 |
 | P2 | 시험 보강(검증자 값, 실패 뒤 콜백 서버 닫힘·토큰 미저장, ainectoCli 연결부) | 추가 |
-| P2 | `--json` 모드에서 URL 안내 줄이 stderr 의 JSON 오류와 섞인다 | ⏸**보류 — 설계에 없음.** 사용자 결정 대기(아래) |
+| P2 | `--json` 모드에서 URL 안내 줄이 stderr 의 JSON 오류와 섞인다 | **(가)로 결정**(2026-09-29 루트 판단 — 되돌리기 쉬운 기술 선택): `--json` 이면 stderr 안내가 JSON 한 줄 `{"event":"login_url","url":…,"role":…}`(역할이 없으면 `null`). 사람용 문장은 `--json` 이 아닐 때만 |
 | — | `findGitRoot` 가 부모 폴더의 `.git` 에도 멈춘다 | 그대로 둔다(사용자 결정) |
 
-**보류: `--json` 에서의 URL 안내 형식.** 지금은 `--json` 이어도 stderr 에 사람용 문장 한 줄(URL 포함)이 먼저 나오고, 실패하면 그 뒤에 JSON 오류가 붙는다. stdout 의 JSON 결과는 깨지지 않지만, stderr 를 JSON 으로 읽는 호출자는 첫 줄에서 파싱에 실패한다. 선택지:
+**결정됨 — (가): `--json` 에서의 URL 안내 형식.** (아래는 결정 전 비교 기록.) 지금은 `--json` 이어도 stderr 에 사람용 문장 한 줄(URL 포함)이 먼저 나오고, 실패하면 그 뒤에 JSON 오류가 붙는다. stdout 의 JSON 결과는 깨지지 않지만, stderr 를 JSON 으로 읽는 호출자는 첫 줄에서 파싱에 실패한다. 선택지:
 - (가) `--json` 이면 stderr 안내를 JSON 한 줄로: `{"event":"login_url","url":"…","role":"design"}` — 기계가 읽을 수 있고, 사람용 줄은 없다.
 - (나) 지금대로 두고 «`--json` 의 stderr 는 사람용 줄과 JSON 오류가 섞일 수 있다»고 문서에 적는다.
 - 권장: (가). 에이전트는 URL 을 사용자에게 옮겨야 하는데, 구조화돼 있으면 문장 파싱이 필요 없다. 변경은 ainectoCli 의 `onAuthorizeUrl` 한 곳이다.

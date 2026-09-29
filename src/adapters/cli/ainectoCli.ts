@@ -49,11 +49,13 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       readOnly: parsed.positionals[0] === "init" && parsed.positionals.includes("--dry-run"),
       // ★URL 을 «브라우저를 열기 전에» 알린다. 에이전트가 실행했다면 명령이 끝날 때 이 줄이 닿는다.
       //   stdout 은 결과 전용이라 stderr 에 쓴다.
+      //   ★--json 이면 사람용 문장 대신 JSON 한 줄이다 — stderr 를 JSON 으로 읽는 호출자가 첫 줄에서
+      //   깨지지 않고, 에이전트는 문장을 파싱하지 않고 URL 을 옮긴다(설계 §21-3 결정 (가)).
       onAuthorizeUrl: (url) => {
-        io.stderr.write(
-          `Opening your browser to sign in${sessionRole ? ` (role: ${sessionRole})` : ""}. `
-          + `If it does not open, visit:\n  ${url}\n`,
-        );
+        io.stderr.write(parsed.json
+          ? `${JSON.stringify({ event: "login_url", url, role: sessionRole ?? null })}\n`
+          : `Opening your browser to sign in${sessionRole ? ` (role: ${sessionRole})` : ""}. `
+            + `If it does not open, visit:\n  ${url}\n`);
       },
     });
     const client = new McpRpcClient({

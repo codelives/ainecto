@@ -98,8 +98,20 @@ describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
     await rm(repo, { recursive: true, force: true });
   });
 
-  it("★토큰이 없으면 init 이 그 역할로 로그인을 시작하고, URL 을 stderr 에 먼저 알린다", async () => {
+  it("★--json 이면 URL 안내가 stderr 의 JSON 한 줄이다 (사람용 문장이 섞이지 않는다)", async () => {
     const code = await runAinectoCli(["--role", "design", "init", "--json"], io);
+
+    expect(code).toBe(1);
+    const first = stderr[0]!;
+    expect(first.endsWith("\n")).toBe(true);
+    const event = JSON.parse(first) as { event: string; url: string; role: string | null };
+    expect(event).toMatchObject({ event: "login_url", role: "design" });
+    expect(event.url).toContain("https://auth.example/authorize?");
+    expect(stderr.join("")).not.toContain("Opening your browser");
+  });
+
+  it("★토큰이 없으면 init 이 그 역할로 로그인을 시작하고, URL 을 stderr 에 먼저 알린다", async () => {
+    const code = await runAinectoCli(["--role", "design", "init"], io);
 
     expect(code).toBe(1);
     const said = stderr.join("");
@@ -108,7 +120,7 @@ describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
     expect(said).toContain("scope=mcp+ai-erd%3Arole%3Adesign");
     // 브라우저 여는 명령이 불렸고, 그것이 실패하자 기다리지 않고 끝났다.
     expect(spawned).toHaveLength(1);
-    expect(said).toContain('"code": "BROWSER_UNAVAILABLE"');
+    expect(said).toContain("Could not open a browser on this machine");
   });
 
   it("★dry-run 은 로그인을 시작하지 않는다 (브라우저도, 인증 서버 조회도 없다)", async () => {
