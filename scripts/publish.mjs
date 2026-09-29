@@ -35,6 +35,10 @@ import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG = join(ROOT, "package.json");
+/** 주 이름. MCP Registry 와 init 이 쓰는 `npx -y @ai-erd/mcp` 가 이것이다. */
+const PRIMARY_NAME = "@ai-erd/mcp";
+/** 브리지 bin. 범위 뗀 주 이름(`mcp`)과 같아야 `npx -y @ai-erd/mcp` 가 브리지를 실행한다. */
+const BRIDGE_BIN = "mcp";
 /** 범위 없는 두 번째 이름. 코드는 같고 이름만 다르다. */
 const UNSCOPED_NAME = "ai-erd";
 /** 세 번째 이름. bin 을 CLI 하나로 줄인 매니페스트로 올린다. */
@@ -49,20 +53,26 @@ const original = readFileSync(PKG, "utf8");
 const parsed = JSON.parse(original);
 const primaryName = parsed.name;
 
-if (primaryName === UNSCOPED_NAME) {
-  console.error(`package.json 의 name 이 ${UNSCOPED_NAME} 입니다. 주 이름(@ai-erd/mcp)을 두세요.`);
+// ★주 이름과 브리지 bin 을 강제한다. init 이 쓰는 `.mcp.json`(`npx -y @ai-erd/mcp --role …`)과 MCP Registry 가
+//   npx 의 «범위 뗀 패키지 이름 = bin» 규칙으로 `mcp` 를 실행한다 — 이 둘이 어긋나면 모든 역할 세션이 안 뜬다.
+if (primaryName !== PRIMARY_NAME || !parsed.bin?.[BRIDGE_BIN]) {
+  console.error(`package.json 은 name "${PRIMARY_NAME}" 와 bin "${BRIDGE_BIN}" 를 가져야 합니다 — \`npx -y ${PRIMARY_NAME}\` 이 브리지를 실행한다.`);
   process.exit(1);
 }
-// ★이름별 bin 가드(npx 의 선택 규칙). ai-erd 는 이름과 같은 bin 이, @ai-erd/cli 는 bin 하나가 CLI 여야 한다.
-if (!parsed.bin || !parsed.bin[UNSCOPED_NAME]) {
-  console.error(`package.json bin 에 "${UNSCOPED_NAME}" 가 없습니다 — \`npx ${UNSCOPED_NAME}\` 이 CLI 를 실행하지 못합니다.`);
+// ★ai-erd 와 @ai-erd/cli 는 CLI bin 이 있어야 한다(npx 가 이름과 같은 bin, 또는 하나뿐인 bin 을 실행한다).
+if (!parsed.bin[CLI_BIN]) {
+  console.error(`package.json bin 에 "${CLI_BIN}" 가 없습니다 — \`npx ${UNSCOPED_NAME}\` · \`npx ${CLI_NAME}\` 이 CLI 를 실행하지 못합니다.`);
   process.exit(1);
 }
+/**
+ * 이름별로 싣는 bin. ★퍼블리시할 때만 줄인다 — 저장소의 package.json 은 원본 그대로다.
+ *   @ai-erd/mcp : 원본 전부 {mcp, ai-erd, ai-erd-mcp}
+ *   ai-erd      : {ai-erd, ai-erd-mcp} — `mcp` 같은 흔한 이름을 이 패키지로 사용자 PATH 에 깔지 않는다.
+ *                 npx 는 이름과 같은 bin(`ai-erd`)을 고르므로 동작은 같다.
+ *   @ai-erd/cli : {ai-erd} 하나 — npx 는 범위 뗀 이름(`cli`)의 bin 이 없으면 하나뿐인 bin 을 실행한다.
+ */
+const unscopedBin = Object.fromEntries(Object.entries(parsed.bin).filter(([name]) => name !== BRIDGE_BIN));
 const cliOnlyBin = { [CLI_BIN]: parsed.bin[CLI_BIN] };
-if (!cliOnlyBin[CLI_BIN] || Object.keys(cliOnlyBin).length !== 1) {
-  console.error(`${CLI_NAME} 는 bin "${CLI_BIN}" 하나로 올려야 합니다 — \`npx ${CLI_NAME}\` 이 그 하나를 실행한다.`);
-  process.exit(1);
-}
 
 /**
  * 올리기 «전에» 막힐 것을 먼저 막는다.
@@ -158,25 +168,51 @@ function buildOnce() {
   console.log(`  dist 확인: ${binFiles.join(", ")} — 방금 빌드됨`);
 }
 
-preflight();
-buildOnce();
+/**
+ * ★Ctrl+C 에도 package.json 을 원복한다. 핸들러가 없으면 SIGINT 가 이 프로세스를 즉시 죽여 finally 가
+ * 돌지 않는다 — 저장소에 다른 이름(ai-erd·@ai-erd/cli)의 매니페스트가 남는다(0.4.1 최종 리뷰 P1).
+ * 핸들러를 두면: 같은 프로세스 그룹의 자식(npm)이 SIGINT 로 끝나고 → execFileSync 가 던지고 → finally 가
+ * 원복한 뒤 → 130 으로 끝난다.
+ */
+// ⚠핸들러 «안에서» 표시만 해서는 모자란다: execFileSync 가 막고 있는 동안에는 이벤트 루프가 돌지 않아,
+//   아래 판정 시점에 핸들러가 아직 안 불렸다(실측). 그래서 자식이 SIGINT 로 끝났는지(signal·130)도 본다.
+let interrupted = false;
+process.on("SIGINT", () => {
+  interrupted = true;
+});
+const endedBySigint = (error) => error?.signal === "SIGINT" || error?.status === 130;
 
+let failure;
 try {
-  // 1) 주 이름
+  preflight();
+  buildOnce();
+
+  // 1) 주 이름 — 원본 매니페스트 그대로
   publish(primaryName);
 
-  // 2) 범위 없는 이름 — 이름만 바꿔 같은 산출물을 한 번 더 올린다
-  writeManifest({ name: UNSCOPED_NAME });
-  publish(UNSCOPED_NAME, "(범위 없는 이름 — 같은 코드)");
+  // 2) 범위 없는 이름 — 이름을 바꾸고 bin 에서 `mcp` 를 뺀다
+  writeManifest({ name: UNSCOPED_NAME, bin: unscopedBin });
+  publish(UNSCOPED_NAME, `(bin ${Object.keys(unscopedBin).join("·")} — 같은 코드)`);
 
   // 3) @ai-erd/cli — 이름을 바꾸고 bin 을 CLI 하나로 줄인다
   writeManifest({ name: CLI_NAME, bin: cliOnlyBin });
-  publish(CLI_NAME, "(bin ai-erd 하나 — 같은 코드)");
+  publish(CLI_NAME, `(bin ${CLI_BIN} 하나 — 같은 코드)`);
+} catch (error) {
+  failure = error;
 } finally {
-  // 3) 무슨 일이 있어도 package.json 을 원상복구한다.
-  //    이게 없으면 실패한 퍼블리시가 저장소에 다른 이름을 남긴다.
+  // 무슨 일이 있어도 package.json 을 원상복구한다.
+  // 이게 없으면 실패·중단한 퍼블리시가 저장소에 다른 이름을 남긴다.
   writeFileSync(PKG, original);
   console.log(`\n✓ package.json 복구: name = ${primaryName}`);
+}
+
+if (interrupted || endedBySigint(failure)) {
+  console.error("중단했습니다. 이미 올라간 이름은 다시 돌리면 건너뜁니다.");
+  process.exit(130);
+}
+if (failure) {
+  console.error(failure instanceof Error ? failure.message : String(failure));
+  process.exit(1);
 }
 
 console.log(dryRun ? "\n(dry-run) 실제로 올리지 않았습니다." : `\n세 이름 모두 ${parsed.version} 을 퍼블리시했습니다.`);
