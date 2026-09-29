@@ -15,14 +15,32 @@ import {
   withCreatedDirectories,
 } from "../../core/harness/initPlan";
 import { HARNESS_CONFIG_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
-import { AGENT_TARGETS } from "../../core/harness/agentTargets";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
+import { PromptCancelled, type Choice, type Prompter } from "./prompter";
+
+/** 역할이 정해진 «뒤»에 만드는 연결. 역할이 토큰 칸과 헤더를 정하므로 역할보다 먼저 만들 수 없다. */
+export interface InitConnection {
+  client: McpRpcClient;
+  accessToken?: () => Promise<string | undefined>;
+  login?: () => Promise<void>;
+}
 
 export interface InitCommandOptions {
   argv: string[];
   /** 전역 `--role` / AI_ERD_ROLE 에서 온 역할. init 은 이것을 따로 파싱하지 않는다. */
   role?: HarnessRole;
-  client: McpRpcClient;
+  /**
+   * 이미 만든 연결(시험·역할이 미리 정해진 호출). {@link connect} 가 있으면 그쪽이 이긴다.
+   */
+  client?: McpRpcClient;
+  /**
+   * ★역할이 정해진 뒤 연결을 만든다(설계 §21-4). 대화형에서는 역할을 «물어서» 정하므로, 바깥 CLI 가
+   * 미리 클라이언트를 만들 수 없다. 저장소 역할 추론도 init 안에서 하므로 «역할이 클라이언트보다 먼저
+   * 정해진다»(I10)가 이 한 곳에서 지켜진다.
+   */
+  connect?: (role: HarnessRole) => InitConnection;
+  /** 대화형일 때만 있다(판정은 prompter.isInteractive 한 곳). 없으면 묻지 않고 빠진 값을 말하고 멈춘다. */
+  prompter?: Prompter;
   endpoint: string;
   /**
    * 문서를 받을 때 쓸 토큰을 «필요할 때» 가져온다. 없으면 패키지 기본값으로 간다.
@@ -49,6 +67,9 @@ export interface InitCommandOptions {
   io: { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream };
 }
 
+/** 연결까지 갖춘 옵션 — 원격을 부르는 함수들은 이것만 받는다. */
+type ConnectedOptions = InitCommandOptions & { client: McpRpcClient };
+
 interface InitArgs {
   projectUuid?: string;
   projectName?: string;
@@ -68,9 +89,26 @@ interface InitArgs {
  *   <li><b>역할이 있으면 로그인까지 한다.</b> 그 역할의 토큰이 없으면 브라우저를 띄우고(사람이 승인)
  *       이어서 진행한다.</li>
  * </ul>
- * 대화형 질문(역할·프로젝트 메뉴, 확인 단계)은 2단계다(설계 §21-2).
+ * ★<b>사람이 터미널에서 치면(대화형) 빠진 역할·프로젝트를 번호로 묻는다</b>(설계 §21-4, 0.4.1).
+ * 기본값으로 역할을 고르지 않는다. 질문 중 입력이 끝나면(EOF) 아무것도 쓰지 않고 130 으로 끝난다.
+ * 확인 단계·루트 질문은 2단계다(설계 §21-2).
  */
 export async function executeInitCommand(options: InitCommandOptions): Promise<number> {
+  try {
+    return await runInit(options);
+  } catch (error) {
+    if (error instanceof PromptCancelled) {
+      options.io.stderr.write(`${error.message}\n`);
+      return 130;
+    }
+    throw error;
+  } finally {
+    options.prompter?.close();
+  }
+}
+
+async function runInit(initialOptions: InitCommandOptions): Promise<number> {
+  let options = initialOptions;
   const args = parseInitArgs(options.argv);
   const root = resolve(options.cwd);
   // ★하위 폴더에서 치면 멈춘다. 그 자리에 .mcp.json 을 쓰면 에이전트는 루트에서 그것을 못 본다 —
@@ -93,7 +131,20 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     return 0;
   }
 
-  const role = options.role ?? currentRole(files);
+  // ★<b>원격을 건드리기 «전»에 기록을 본다.</b> 예전엔 이 판정이 계획 안에만 있어서, 프로젝트가
+  //   0개인 저장소에서 «원격에 프로젝트를 만든 뒤» 「아무것도 바꾸지 않았다」는 예외를 냈다
+  //   (9차 1차 리뷰 B7). 로컬 쓰기가 0이라는 것과 부수효과가 0이라는 것은 다른 사실이다.
+  //   ★묻기 «전»에도 본다 — 다 물어 놓고 거절하지 않는다.
+  const refusal = initRefusal(files);
+  if (refusal !== undefined) {
+    throw new Error(refusal);
+  }
+
+  // ⚠명시한 --role 이 있으면 저장소 역할을 읽지 않는다 — 설정끼리 어긋난 저장소를 그 --role 이 맞춘다.
+  const prompter = options.prompter;
+  const role = options.role ?? (prompter
+    ? await askRole(prompter, currentRole(files))
+    : currentRole(files));
   // 설정끼리 어긋나 있으면 «이전 역할»은 하나로 말할 수 없다 — 그때는 변경 알림을 생략한다
   // (명시한 --role 이 둘을 맞추고, 파일별 변화는 계획의 notes 가 말한다).
   const previousRole = (() => {
@@ -109,18 +160,13 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     );
   }
 
-  // ★<b>원격을 건드리기 «전»에 기록을 본다.</b> 예전엔 이 판정이 계획 안에만 있어서, 프로젝트가
-  //   0개인 저장소에서 «원격에 프로젝트를 만든 뒤» 「아무것도 바꾸지 않았다」는 예외를 냈다
-  //   (9차 1차 리뷰 B7). 로컬 쓰기가 0이라는 것과 부수효과가 0이라는 것은 다른 사실이다.
-  //   ⚠이번 차수에 거절 경로를 셋 늘렸으므로(손상·구판·fields 불완전) 여기 닿을 일이 더 많아졌다.
-  const refusal = initRefusal(files);
-  if (refusal !== undefined) {
-    throw new Error(refusal);
-  }
+  // 역할이 정해졌으니 이제 그 역할의 연결을 만든다.
+  const connected: ConnectedOptions = connectAs(options, role);
+  options = connected;
 
-  await ensureSignedIn(options, role, args.dryRun);
+  await ensureSignedIn(connected, role, args.dryRun);
 
-  const project = await resolveProject(options, args, files, root, role);
+  const project = await resolveProject(connected, args, files, root, role);
   if ("choices" in project) {
     options.io.stdout.write(renderSuccess(
       {
@@ -197,30 +243,6 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     { json: options.json },
   ));
   return 0;
-}
-
-/**
- * 이 저장소에 이미 걸린 역할 — 디스크에서 읽는다.
- *
- * <p>★<b>인증 클라이언트를 만들기 «전에» 불러야 한다.</b> 예전엔 바깥 CLI 가 플래그·환경변수만
- * 보고 클라이언트를 먼저 만들고, init 이 나중에 파일에서 역할을 정했다. 그래서 저장소는
- * development 로 걸려 있고 그 역할 자격증명만 있는데, 역할 인자 없이 재실행하면 «무역할»
- * 슬롯을 뒤지다 401 로 끝났다(2026-09-23 독립 재리뷰 I10).
- *
- * <p>읽기만 한다. 파일이 없으면 undefined.
- */
-export async function readRepositoryRole(cwd: string): Promise<HarnessRole | undefined> {
-  const root = resolve(cwd);
-  const files = new Map<string, string | undefined>();
-  for (const target of AGENT_TARGETS) {
-    files.set(target.path, await readManagedFile(root, target.path));
-  }
-  try {
-    return currentRole(files);
-  } catch {
-    // 설정끼리 어긋난 경우 — 여기서 멈추지 않는다. init 본체가 같은 검사로 제대로 말한다.
-    return undefined;
-  }
 }
 
 /** 이 저장소에 이미 걸린 역할. 두 설정이 어긋나 있으면 «고르지 않고» 멈춘다. */
@@ -320,10 +342,104 @@ export async function findGitRoot(cwd: string): Promise<string | undefined> {
   }
 }
 
+/**
+ * 역할이 정해진 뒤의 연결. {@code connect} 가 있으면 그것으로 만들고, 없으면 이미 받은 {@code client}.
+ * 둘 다 없으면 부르는 쪽의 실수다.
+ */
+function connectAs(options: InitCommandOptions, role: HarnessRole): ConnectedOptions {
+  if (options.connect) {
+    const connection = options.connect(role);
+    return { ...options, ...connection };
+  }
+  if (!options.client) {
+    throw new Error("init needs either a client or a way to connect once the role is known.");
+  }
+  return { ...options, client: options.client };
+}
+
+const ROLE_CHOICES: ReadonlyArray<Choice<HarnessRole>> = [
+  { label: "Design       requirements, ERD, boundaries, tasks", value: "design" },
+  { label: "Development  product code, following the approved design", value: "development" },
+  { label: "Test         test scenarios and test code", value: "test" },
+  { label: "Validation   judges the result; changes nothing", value: "validation" },
+];
+
+/**
+ * 역할을 묻는다(설계 §6-2). ★기본값이 없다 — 빈 입력은 다시 묻는다. 저장소에 이미 걸린 역할이 있을
+ * 때만 그것이 기본값이다(Enter = 유지). 그 값은 사람이 전에 고른 것이지 우리가 고른 것이 아니다.
+ */
+async function askRole(prompter: Prompter, current: HarnessRole | undefined): Promise<HarnessRole> {
+  const index = current === undefined ? undefined : ROLE_CHOICES.findIndex((choice) => choice.value === current);
+  return prompter.choose(
+    current === undefined
+      ? "Which role should AI sessions in this repository have?"
+      : `Which role should AI sessions in this repository have? (now: ${current})`,
+    ROLE_CHOICES,
+    index,
+  );
+}
+
+/**
+ * 프로젝트를 묻는다(설계 §6-4). 「새로 만들기」는 Design 이고 dry-run 이 아닐 때만 보인다 — 다른 역할은
+ * 서버가 만들기를 거부한다. 0개면: Design 은 이름을 물어 만들고(사람의 선택이 --yes 를 대신한다),
+ * 다른 역할은 비대화형과 같은 안내로 멈춘다.
+ */
+async function askProject(
+  options: ConnectedOptions,
+  args: InitArgs,
+  projects: Array<{ uuid: string; name: string }>,
+  bound: string | undefined,
+  root: string,
+  role: HarnessRole,
+  prompter: Prompter,
+): Promise<{ uuid: string; name: string }> {
+  const canCreate = role === "design" && !args.dryRun;
+  const askNameAndCreate = async () => {
+    const name = await prompter.text("New project name", args.projectName ?? basenameOf(root));
+    return createProject(options, name);
+  };
+  if (projects.length === 0) {
+    if (role !== "design") {
+      throw new Error(noProjectForRole(options, role));
+    }
+    if (args.dryRun) {
+      throw new Error(dryRunCannotCreate(args.projectName ?? basenameOf(root)));
+    }
+    return askNameAndCreate();
+  }
+  type ProjectPick = { project: { uuid: string; name: string } } | { create: true };
+  const choices: Array<Choice<ProjectPick>> = projects.map((project) => ({
+    label: `${project.name}  (${project.uuid})`,
+    value: { project },
+  }));
+  if (canCreate) {
+    choices.push({ label: "Create a new project", value: { create: true } });
+  }
+  const boundIndex = bound === undefined ? -1 : projects.findIndex((project) => project.uuid === bound);
+  const defaultIndex = boundIndex >= 0 ? boundIndex : projects.length === 1 ? 0 : undefined;
+  const picked = await prompter.choose("Which AI-ERD project should this repository use?", choices, defaultIndex);
+  return "create" in picked ? askNameAndCreate() : picked.project;
+}
+
+/** 0개 + Design 아님의 안내. 비대화형·대화형이 같은 문장을 쓴다. */
+function noProjectForRole(options: Pick<InitCommandOptions, "endpoint">, role: HarnessRole): string {
+  // ⚠「--role design 으로 다시 치라」고 말하지 않는다. 그 문장은 에이전트를 «역할 전환»으로 이끈다 —
+  //   역할은 사용자가 고른 것이다(2026-09-29 코드 리뷰 P1). 사람에게 묻게 하고, 원래 역할로 돌아오게 한다.
+  return `No project found in your AI-ERD account, and only a Design session can create one. `
+    + `Ask the user: create the project at ${new URL(options.endpoint).origin} or in a Design session, `
+    + `then run init again with --role ${role}.`;
+}
+
+function dryRunCannotCreate(name: string): string {
+  // ★dry-run 이 «원격에» 프로젝트를 만들면 그것은 dry-run 이 아니다(2026-09-22 독립 리뷰 I6).
+  return `--dry-run cannot continue: there is no project to bind, and creating "${name}" `
+    + "would be a real change. Re-run without --dry-run, or pass --project <uuid>.";
+}
+
 type ResolvedProject = { uuid: string; name: string } | { choices: Array<{ uuid: string; name: string }> };
 
 async function resolveProject(
-  options: InitCommandOptions,
+  options: ConnectedOptions,
   args: InitArgs,
   files: ReadonlyMap<string, string | undefined>,
   root: string,
@@ -337,6 +453,9 @@ async function resolveProject(
   }
 
   const bound = boundProjectUuid(files.get(HARNESS_CONFIG_PATH));
+  if (options.prompter) {
+    return askProject(options, args, projects, bound, root, role, options.prompter);
+  }
   if (bound) {
     const found = projects.find((project) => project.uuid === bound);
     if (found) {
@@ -355,14 +474,8 @@ async function resolveProject(
   // ★만들 수 있는 것은 Design 세션뿐이다(서버 McpRolePolicy: create_projects 는 Design·FULL 만).
   //   예전엔 다른 역할로 --yes 를 주면 서버가 거부하고, 우리는 「Project creation did not return a
   //   project uuid.」라는 엉뚱한 말로 끝났다. 원격 쓰기를 부르기 «전에» 사람이 할 일을 말한다.
-  // ⚠「--role design 으로 다시 치라」고 말하지 않는다. 그 문장은 에이전트를 «역할 전환»으로 이끈다 —
-  //   역할은 사용자가 고른 것이다(2026-09-29 코드 리뷰 P1). 사람에게 묻게 하고, 원래 역할로 돌아오게 한다.
   if (role !== "design") {
-    throw new Error(
-      `No project found in your AI-ERD account, and only a Design session can create one. `
-      + `Ask the user: create the project at ${new URL(options.endpoint).origin} or in a Design session, `
-      + `then run init again with --role ${role}.`,
-    );
+    throw new Error(noProjectForRole(options, role));
   }
   // ★쓰기이므로 --yes 없이는 하지 않는다.
   const name = args.projectName ?? basenameOf(root);
@@ -373,17 +486,12 @@ async function resolveProject(
     );
   }
   if (args.dryRun) {
-    // ★dry-run 이 «원격에» 프로젝트를 만들면 그것은 dry-run 이 아니다
-    //   (2026-09-22 독립 리뷰 I6). 로컬 쓰기만 막던 검사가 여기보다 뒤에 있었다.
-    throw new Error(
-      `--dry-run cannot continue: there is no project to bind, and creating "${name}" `
-      + "would be a real change. Re-run without --dry-run, or pass --project <uuid>.",
-    );
+    throw new Error(dryRunCannotCreate(name));
   }
   return createProject(options, name);
 }
 
-async function listProjects(options: InitCommandOptions): Promise<Array<{ uuid: string; name: string }>> {
+async function listProjects(options: ConnectedOptions): Promise<Array<{ uuid: string; name: string }>> {
   const result = await callOrExplainSignIn(options, () => options.client.toolsCall("list_projects", {}));
   return extractProjects(unwrapToolJson(result));
 }
@@ -441,7 +549,7 @@ function isUnauthorized(error: unknown): boolean {
     && (error.details as { status?: number } | undefined)?.status === 401;
 }
 
-async function createProject(options: InitCommandOptions, name: string): Promise<{ uuid: string; name: string }> {
+async function createProject(options: ConnectedOptions, name: string): Promise<{ uuid: string; name: string }> {
   const result = await callOrExplainSignIn(options, () =>
     options.client.toolsCall("create_projects", { items: [{ name }] }));
   const created = extractProjects(unwrapToolJson(result));

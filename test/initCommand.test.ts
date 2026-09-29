@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createdChain, executeInitCommand, findGitRoot, readRepositoryRole } from "../src/adapters/cli/initCommand";
+import { createdChain, executeInitCommand, findGitRoot } from "../src/adapters/cli/initCommand";
 import { readRecord } from "../src/core/harness/initPlan";
 
 const RECORD_FILE = ".ai-erd/init-record.json";
@@ -388,12 +388,22 @@ describe("ai-erd init (files on disk)", () => {
   it("★저장소에 걸린 역할을 «인증보다 먼저» 읽는다", async () => {
     // 2026-09-23 독립 재리뷰 I10 — 바깥 CLI 가 플래그만 보고 클라이언트를 먼저 만들어,
     // 저장소는 development 인데 무역할 슬롯을 뒤지다 401 로 끝났다.
+    // 이제 저장소 역할은 init 이 읽고, 그 «뒤에» 그 역할로 연결을 만든다(설계 §21-4).
     const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    expect(await readRepositoryRole(root)).toBeUndefined();
-
     await executeInitCommand(options(["--role", "test"], stub));
 
-    expect(await readRepositoryRole(root)).toBe("test");
+    const connectedAs: string[] = [];
+    const { client: _unused, ...rest } = options([], stub);
+    const code = await executeInitCommand({
+      ...rest,
+      connect: (role) => {
+        connectedAs.push(role);
+        return { client: stub };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(connectedAs).toEqual(["test"]);
   });
 
   it("★같은 설정으로 다시 init 해도 조각 지문을 잊지 않는다", async () => {
@@ -479,7 +489,12 @@ describe("ai-erd init (files on disk)", () => {
     await writeFile(outside, JSON.stringify({ mcpServers: {} }), "utf8");
     await symlink(outside, join(root, ".mcp.json"));
 
-    await expect(readRepositoryRole(root)).rejects.toThrow();
+    let connected = 0;
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    const { client: _unused, ...rest } = options([], stub);
+    await expect(executeInitCommand({ ...rest, connect: () => { connected += 1; return { client: stub }; } }))
+      .rejects.toThrow();
+    expect(connected).toBe(0);
     await rm(outside, { force: true });
   });
 

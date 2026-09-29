@@ -8,7 +8,8 @@ import { getGeneratedTools } from "../../core/catalog";
 import { runConnector } from "../mcp/connector";
 import { executeGeneratedCommand } from "./generatedCommandRouter";
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
-import { executeInitCommand, readRepositoryRole } from "./initCommand";
+import { executeInitCommand } from "./initCommand";
+import { createReadlinePrompter, isInteractive } from "./prompter";
 import { CLI_VERSION } from "../../core/version";
 import { assertRole, resolveRole, type HarnessRole } from "../../core/harness/role";
 
@@ -31,38 +32,41 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     // ★역할을 «한 번» 정하고 모든 경로가 그것을 쓴다.
     //   예전에는 stdio 브리지만 역할을 실어, 같은 토큰을 쓰는 `tools call` 경로가
     //   역할 없이 서버에 닿았다 — 제한을 우회하는 두 번째 문이었다(독립 리뷰 C1).
-    let sessionRole = resolveRole({ role: parsed.role }).role;
-    // ★init 은 저장소에 «이미 걸린» 역할을 이어받는다. 그 결정이 클라이언트보다 늦으면,
-    //   파일에 쓸 역할과 서버에 보내는 역할이 서로 다른 시점에 정해진다(독립 재리뷰 I10).
-    // ⚠undo 는 순수한 로컬 작업이라 역할이 필요 없다 — 추론하려고 저장소를 읽을 이유가 없다
-    //   (2026-09-23 4차 독립 리뷰 I5).
-    if (parsed.positionals[0] === "init" && sessionRole === undefined && !argv.includes("--undo")) {
-      sessionRole = await readRepositoryRole(process.cwd());
-    }
+    const sessionRole = resolveRole({ role: parsed.role }).role;
     const tokenStore = new FileTokenStore();
-    const auth = new OAuthClient({
-      endpoint: resolved.endpoint,
-      tokenStore,
-      role: sessionRole,
-      // ★init --dry-run 은 토큰을 갱신하지도 않는다 — 「아무것도 바꾸지 않는다」에 로그인 상태도 든다.
-      //   (init 의 플래그는 positional 로 흘러온다.)
-      readOnly: parsed.positionals[0] === "init" && parsed.positionals.includes("--dry-run"),
-      // ★URL 을 «브라우저를 열기 전에» 알린다. 에이전트가 실행했다면 명령이 끝날 때 이 줄이 닿는다.
-      //   stdout 은 결과 전용이라 stderr 에 쓴다.
-      //   ★--json 이면 사람용 문장 대신 JSON 한 줄이다 — stderr 를 JSON 으로 읽는 호출자가 첫 줄에서
-      //   깨지지 않고, 에이전트는 문장을 파싱하지 않고 URL 을 옮긴다(설계 §21-3 결정 (가)).
-      onAuthorizeUrl: (url) => {
-        io.stderr.write(parsed.json
-          ? `${JSON.stringify({ event: "login_url", url, role: sessionRole ?? null })}\n`
-          : `Opening your browser to sign in${sessionRole ? ` (role: ${sessionRole})` : ""}. `
-            + `If it does not open, visit:\n  ${url}\n`);
-      },
-    });
-    const client = new McpRpcClient({
-      endpoint: resolved.endpoint,
-      tokenProvider: auth,
-      role: sessionRole,
-    });
+    /**
+     * 이 역할의 인증·RPC 클라이언트. ★init 은 역할을 «물어서» 정할 수 있으므로, 역할이 정해진 뒤 init 이
+     * 이 함수를 부른다(설계 §21-4). 저장소에 이미 걸린 역할도 init 이 읽는다 — 그래서 «역할이 클라이언트보다
+     * 먼저 정해진다»(독립 재리뷰 I10)가 init 안의 한 자리에서 지켜진다.
+     */
+    const connect = (role: HarnessRole | undefined) => {
+      const auth = new OAuthClient({
+        endpoint: resolved.endpoint,
+        tokenStore,
+        role,
+        // ★init --dry-run 은 토큰을 갱신하지도 않는다 — 「아무것도 바꾸지 않는다」에 로그인 상태도 든다.
+        //   (init 의 플래그는 positional 로 흘러온다.)
+        readOnly: parsed.positionals[0] === "init" && parsed.positionals.includes("--dry-run"),
+        // ★URL 을 «브라우저를 열기 전에» 알린다. 에이전트가 실행했다면 명령이 끝날 때 이 줄이 닿는다.
+        //   stdout 은 결과 전용이라 stderr 에 쓴다.
+        //   ★--json 이면 사람용 문장 대신 JSON 한 줄이다 — stderr 를 JSON 으로 읽는 호출자가 첫 줄에서
+        //   깨지지 않고, 에이전트는 문장을 파싱하지 않고 URL 을 옮긴다(설계 §21-3 결정 (가)).
+        onAuthorizeUrl: (url) => {
+          io.stderr.write(parsed.json
+            ? `${JSON.stringify({ event: "login_url", url, role: role ?? null })}\n`
+            : `Opening your browser to sign in${role ? ` (role: ${role})` : ""}. `
+              + `If it does not open, visit:\n  ${url}\n`);
+        },
+      });
+      const client = new McpRpcClient({
+        endpoint: resolved.endpoint,
+        tokenProvider: auth,
+        role,
+      });
+      return { auth, client };
+    };
+    // init 밖의 경로는 역할이 지금 정해져 있다(플래그·환경변수).
+    const { auth, client } = connect(sessionRole);
     const [domain, action, ...rest] = parsed.positionals;
 
     if (domain === "mcp") {
@@ -82,25 +86,33 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       return await executeInitCommand({
         argv: parsed.positionals.slice(1),
         role: sessionRole,
-        // 문서는 인증 후에 받는다 — 토큰이 없으면 패키지 기본값으로 가고, 그 사실을 보고한다.
-        // ★«필요할 때» 가져온다. --undo 는 로컬 작업이라 토큰을 건드릴 이유가 없다(S1).
-        // ★갱신 실패는 «토큰 없음»(→ 로그인)이지만, AINECTO_TOKEN 을 못 쓰는 주소라는 거절은 삼키지 않는다 —
-        //   삼키면 그 설정 오류가 브라우저 로그인으로 둔갑한다.
-        accessToken: async () => {
-          try {
-            return await auth.getAccessToken();
-          } catch (error) {
-            if (process.env.AINECTO_TOKEN) {
-              throw error;
-            }
-            return undefined;
-          }
+        connect: (role) => {
+          const { auth, client } = connect(role);
+          return {
+            client,
+            // 문서는 인증 후에 받는다 — 토큰이 없으면 패키지 기본값으로 가고, 그 사실을 보고한다.
+            // ★«필요할 때» 가져온다. --undo 는 로컬 작업이라 토큰을 건드릴 이유가 없다(S1) — undo 는
+            //   connect 자체를 부르지 않는다.
+            // ★갱신 실패는 «토큰 없음»(→ 로그인)이지만, AINECTO_TOKEN 을 못 쓰는 주소라는 거절은 삼키지 않는다 —
+            //   삼키면 그 설정 오류가 브라우저 로그인으로 둔갑한다.
+            accessToken: async () => {
+              try {
+                return await auth.getAccessToken();
+              } catch (error) {
+                if (process.env.AINECTO_TOKEN) {
+                  throw error;
+                }
+                return undefined;
+              }
+            },
+            // 이 역할로 로그인한다 — `ai-erd auth login` 과 같은 함수다(설계 §8-1).
+            login: async () => {
+              await auth.login();
+            },
+          };
         },
-        // 이 역할로 로그인한다 — `ai-erd auth login` 과 같은 함수다(설계 §8-1).
-        login: async () => {
-          await auth.login();
-        },
-        client,
+        // ★대화형일 때만 묻는다(판정은 isInteractive 한 곳). 에이전트·CI 는 TTY 가 아니다.
+        prompter: isInteractive(io, parsed.json) ? createReadlinePrompter(io) : undefined,
         endpoint: resolved.endpoint,
         env: resolved.env,
         cliVersion: `@ai-erd/mcp ${CLI_VERSION}`,
