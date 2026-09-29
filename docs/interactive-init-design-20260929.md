@@ -705,7 +705,7 @@ Then use any AI-ERD tool once; the client asks the user to sign in. Roles are se
 | `src/core/harness/role.ts` | D5 문구 + §10-1 네 줄 |
 | `server.json`, `package.json`, `package-lock.json`, `src/core/version.ts`(있으면) | 0.4.0, `remotes` |
 | `docs/mcp-registry-registration.md` | 새 이름·remotes |
-| `src/bin/ainecto.ts` → `src/bin/ai-erd.ts` (2026-09-29 사용자 결정) | 실행 파일 이름 정리. 빌드 산출물 `dist/bin/ai-erd.js`. bin: `ai-erd`·`ainecto` → `dist/bin/ai-erd.js`, `ai-erd-mcp`·`ainecto-mcp`·`mcp` → `dist/bin/mcp.js`(옛 이름은 같은 파일을 가리켜 호환 유지). 동작 변화 없음 |
+| `src/bin/ainecto.ts` → `src/bin/ai-erd.ts` (2026-09-29 사용자 결정) | 실행 파일 이름 정리. 빌드 산출물 `dist/bin/ai-erd.js`. bin: `ai-erd` → `dist/bin/ai-erd.js`, `ai-erd-mcp`·`mcp` → `dist/bin/mcp.js`. ★0.4.1 에서 옛 이름 `ainecto`·`ainecto-mcp` 를 뺐다(0.3.0 이하 사용자 없음 — 사용자 확인). ⛔`mcp` 는 빼지 않는다 — init 이 쓰는 `npx -y @ai-erd/mcp --role …` 와 MCP Registry(npx)가 «범위 뗀 패키지 이름 = bin» 규칙으로 `mcp` 를 실행한다 |
 | `README.md` | «For AI agents», init 절, Connector 절 다시 쓰기 |
 | 시험 | §15 중 비대화형 항목 + 로그인(URL 출력 순서, 시간 초과, 비0 종료, ENOENT, 만료 + refresh 없음) |
 

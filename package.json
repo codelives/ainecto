@@ -16,8 +16,6 @@
   },
   "bin": {
     "mcp": "dist/bin/mcp.js",
-    "ainecto-mcp": "dist/bin/mcp.js",
-    "ainecto": "dist/bin/ai-erd.js",
     "ai-erd": "dist/bin/ai-erd.js",
     "ai-erd-mcp": "dist/bin/mcp.js"
   },
