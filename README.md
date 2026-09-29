@@ -20,6 +20,8 @@ browser if needed.
   with `claude mcp add` while Claude Code was running did not attach to the running session. Do not
   tell the user it will work right away — ask them to start a new session. `/mcp` shows what the
   current session actually loaded.
+- Inside the repository, `ai-erd` commands (`ai-erd tools call …`) use the repository's role
+  automatically — do not pass `--role`; a different `--role` is refused.
 - Claude Code's auto mode may block running an external package with `npx`. If it does, ask the user
   to allow the command.
 
@@ -52,9 +54,10 @@ Ctrl+C or Ctrl+D at a question cancels without writing repository files (Ctrl+D 
 sign-in you already completed stays saved, and choosing «Create a new project» creates it right away.
 Anywhere else (an agent's shell, CI) it asks nothing. In both cases:
 
-- If that role is not signed in yet, `init` opens a browser and continues once the user approves.
-  The sign-in URL is printed first (with `--json`, as one JSON line on stderr:
-  `{"event":"login_url","url":…,"role":…}`), and sign-in gives up after 5 minutes. It fails at once
+- If this machine is not signed in to AI-ERD yet, `init` opens a browser and continues once the user
+  approves — **once per machine** (per server), not per role. The sign-in URL is printed first (with
+  `--json`, as one JSON line on stderr: `{"event":"login_url","url":…}`), and sign-in gives up after
+  5 minutes. It fails at once
   when the command that opens the browser is missing, or (except on Windows, where the exit code is
   not reliable) exits with an error.
 - Outside a terminal, with no `--role`/`AI_ERD_ROLE` it uses the role already set on the repository.
@@ -78,20 +81,26 @@ only one of `ai-erd`, `@ai-erd/mcp` and `@ai-erd/cli` globally: they are the sam
 `ai-erd` command, so a second global install conflicts. (`@ai-erd/cli` carries only the `ai-erd` command.)
 
 ```bash
-ai-erd auth login --role design
-ai-erd auth status --role design
-ai-erd auth logout --role design
+ai-erd auth login          # once per machine (and per --env); not per role
+ai-erd auth status
+ai-erd auth logout
 
-ai-erd --role design tools list
-ai-erd --role design tools call list_projects --json
-ai-erd --role design tools call erd_apply_changes -f changes.json --json
-cat payload.json | ai-erd --role design tools call erd_apply_changes --json
+ai-erd tools list
+ai-erd tools call list_projects --json
+ai-erd tools call erd_apply_changes -f changes.json --json
+cat payload.json | ai-erd tools call erd_apply_changes --json
 
-ai-erd --role design projects list
-ai-erd --role design erd apply-changes -f erd-operations.json --yes
+ai-erd projects list
+ai-erd erd apply-changes -f erd-operations.json --yes
 ```
 
-Pass the role you signed in with (`--role`, or `AI_ERD_ROLE`); each role has its own sign-in.
+**The role comes from the repository.** Inside a folder set up with `ai-erd init` (the command looks
+from the current folder upward for the first `.mcp.json`/`.cursor/mcp.json` with an `ai-erd` entry),
+every command uses that folder's role without `--role`. A `--role` or `AI_ERD_ROLE` that differs from
+it is refused — the role changes only with `ai-erd init --role <role>`, after asking the user. If the
+role there cannot be read (an `ai-erd` entry without `--role`, configs that disagree, a link that
+points outside the folder), the command stops. Outside such a folder there is no role (no
+restriction), and `--role` narrows it.
 Tool names are the server's own names (`list_projects`, `erd_apply_changes`, …). Your AI client
 shows them with its own prefix, for example `mcp__ai-erd__list_projects` in Claude Code; the CLI
 does not use that prefix. The older `mcp__ainecto__…` form is still accepted.
@@ -119,15 +128,15 @@ Every checked-in generated catalog tool is reachable through its deterministic c
 schema fields are exposed as flags, with both kebab-case and schema-case accepted:
 
 ```bash
-ai-erd --role design documents list --project-uuid <projectUuid>
-ai-erd --role design documents list --projectUuid <projectUuid>
+ai-erd documents list --project-uuid <projectUuid>
+ai-erd documents list --projectUuid <projectUuid>
 ```
 
 Array or object payloads use the first-party CLI JSON payload reader:
 
 ```bash
-ai-erd --role design documents create -f create-documents.json
-cat erd-operations.json | ai-erd --role design erd apply-changes --json
+ai-erd documents create -f create-documents.json
+cat erd-operations.json | ai-erd erd apply-changes --json
 ```
 
 Destructive generated commands prompt in human mode unless `--yes` is supplied. In `--json` mode
@@ -137,7 +146,7 @@ Attachment file upload is available through a bespoke command that performs the 
 PUT, and attachment registration flow:
 
 ```bash
-ai-erd --role design attachments upload --document-uuid <documentUuid> ./diagram.png ./notes.pdf
+ai-erd attachments upload --document-uuid <documentUuid> ./diagram.png ./notes.pdf
 ```
 
 The generated `request_upload_token` and `upload_attachments` paths remain raw MCP argument-contract
@@ -151,8 +160,9 @@ ai-erd mcp --role <design|development|test|validation> [--env dev]
 
 The package doubles as a stdio-to-HTTP proxy for the resolved `/mcp` endpoint. It proxies
 `initialize`, `tools/list`, and `tools/call`, does not rewrite remote schemas, and does not interpret
-local file references. It uses the sign-in stored for its role (`ai-erd auth login --role <role>`,
-or the sign-in `ai-erd init` performs) and never opens a browser on its own.
+local file references. It uses this machine's one sign-in (`ai-erd auth login`, or the sign-in
+`ai-erd init` performs) and never opens a browser on its own. Its role comes only from `--role` (or
+`AI_ERD_ROLE`) and is sent with every request; the server applies it.
 
 This is the entry `ai-erd init` writes into a repository's MCP config — you normally do not add it
 by hand:
@@ -168,8 +178,9 @@ by hand:
 }
 ```
 
-Do not register the stdio bridge without a role: it has no sign-in flow of its own, so it connects
-only if someone already ran `ai-erd auth login` without a role — and then it runs with no role at all.
+A bridge without a role has no restriction. If it starts inside a folder whose `.mcp.json` sets a role,
+it prints a one-line warning on stderr — usually another `ai-erd` entry (for example Claude Code's
+local scope) is hiding the one `init` wrote (`claude mcp get ai-erd`).
 
 The official MCP Registry entry (see `server.json`) lists both the remote (`streamable-http`,
 `https://ai-erd.com/mcp`) and the `@ai-erd/mcp` npm package. Registry publication requires the npm
@@ -189,8 +200,7 @@ npm link            # puts `ai-erd` on your PATH
 
 `sync:tools --check` is intended for publish-time live drift checks. It fails fast when
 `AINECTO_CATALOG_SYNC_TOKEN` is missing, so automatic publish cannot silently fall back to fixtures.
-For local development, `sync:tools` can also use credentials from `ai-erd auth login --env <env>`
-(without a role).
+For local development, `sync:tools` can also use credentials from `ai-erd auth login --env <env>`.
 
 ```bash
 AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env prod --check

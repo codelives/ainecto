@@ -48,6 +48,7 @@
   - `findRepositoryRole(cwd)` — 명령용.
   - `findGitRoot`, 경계 검사 읽기(`readManagedFile`·`assertInsideRepository`)도 여기로 옮긴다. init 과 명령이 같은 읽기 문을 지난다.
 - 탐색: **cwd 에서 위로, `ai-erd` 항목이 든 `.mcp.json`·`.cursor/mcp.json` 이 있는 첫 폴더**(리뷰 P1-a). git 과 무관하다.
+  - ★**홈 폴더 자체는 보지 않는다**(구현 중 발견, 2026-09-29 — 설계에 없던 결정이라 보고함). `~/.cursor/mcp.json` 은 Cursor 의 «전역» 설정이다. 이 기계에서 실측: 사람의 `~/.cursor/mcp.json` 에 역할 없는 `ai-erd` 항목(HTTP 연결)이 있었고, 홈을 탐색하자 홈 아래 모든 폴더의 명령이 «역할을 못 읽음»으로 멈췄다.
   - 중첩 저장소는 가까운 쪽이 이기고, git 아닌 하위 폴더와 worktree 도 같은 규칙이다.
   - 그런 폴더가 없으면 «역할 없음».
 - **읽기 문제는 멈춘다(conflict)** — 리뷰 P2:

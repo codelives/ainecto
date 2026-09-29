@@ -178,9 +178,9 @@ This repository uses AI-ERD as its design source of truth, and each session has 
 (Design / Development / Test / Validation). Read \`{{harnessDocPath}}\` before doing work that
 touches requirements, the ERD, or architecture.
 
-The role of this session comes from the \`{{serverName}}\` MCP server configuration, and from the
-access token when you signed in with a role; the server states it in its \`initialize\`
-instructions and exposes only that role's tools. If the work needs something outside the role,
+The role of this session comes from the \`{{serverName}}\` MCP server configuration that
+\`ai-erd init\` wrote; the server states it in its \`initialize\` instructions and exposes only
+that role's tools. If the work needs something outside the role,
 stop and report which session is required.
 ${MARKER_END}`;
 
