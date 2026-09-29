@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   OAuthClient,
   OAuthLoginError,
+  createLoopbackReceiver,
   discoverOAuthMetadata,
   getBrowserOpenCommand,
   launchBrowser,
@@ -147,10 +148,11 @@ describe("non-interactive sign-in", () => {
   it("announces the authorize URL before it tries to open a browser", async () => {
     const order: string[] = [];
     let announced = "";
+    let tokenRequestBody = "";
     const client = new OAuthClient({
       endpoint: ENDPOINT,
       tokenStore: new MemoryTokenStore(),
-      fetchImpl: buildOAuthFetch(),
+      fetchImpl: buildOAuthFetch({ onTokenRequest: (body) => { tokenRequestBody = body; } }),
       onAuthorizeUrl: (url) => { order.push("announce"); announced = url; },
       openBrowser: async (url) => {
         order.push("open");
@@ -163,15 +165,21 @@ describe("non-interactive sign-in", () => {
 
     expect(order).toEqual(["announce", "open"]);
     expect(announced).toContain("https://auth.example/authorize?");
-    // URL 에 담기는 것은 공개 값뿐이다 — 검증자(code_verifier)는 프로세스 밖으로 안 나간다.
+    // URL 에 담기는 것은 공개 값뿐이다 — 검증자(code_verifier)의 «값»은 프로세스 밖으로 안 나간다.
+    const verifier = new URLSearchParams(tokenRequestBody).get("code_verifier");
+    expect(verifier).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+    expect(announced).not.toContain(verifier!);
     expect(announced).not.toContain("code_verifier");
   });
 
   it("gives up after the sign-in time limit instead of waiting forever", async () => {
+    const store = new MemoryTokenStore();
+    let redirectUri = "";
     const client = new OAuthClient({
       endpoint: ENDPOINT,
-      tokenStore: new MemoryTokenStore(),
+      tokenStore: store,
       fetchImpl: buildOAuthFetch(),
+      onAuthorizeUrl: (url) => { redirectUri = new URL(url).searchParams.get("redirect_uri")!; },
       openBrowser: async () => undefined, // 열렸지만 사람이 승인하지 않는다
       loginTimeoutMs: 60,
     });
@@ -180,15 +188,21 @@ describe("non-interactive sign-in", () => {
 
     expect(failure).toBeInstanceOf(OAuthLoginError);
     expect((failure as OAuthLoginError).code).toBe("LOGIN_TIMEOUT");
-    expect((failure as Error).message).toContain("run the same command again");
+    expect((failure as Error).message).toContain("Nothing was saved");
+    // ★말한 대로다: 토큰은 저장되지 않았고, 콜백 서버는 닫혀 늦게 온 승인도 받지 않는다.
+    expect(store.token).toBeUndefined();
+    await expect(fetch(`${redirectUri}?code=late&state=x`)).rejects.toThrow();
   });
 
   it("fails at once when the browser cannot be opened, without waiting for the time limit", async () => {
     const started = Date.now();
+    const store = new MemoryTokenStore();
+    let redirectUri = "";
     const client = new OAuthClient({
       endpoint: ENDPOINT,
-      tokenStore: new MemoryTokenStore(),
+      tokenStore: store,
       fetchImpl: buildOAuthFetch(),
+      onAuthorizeUrl: (url) => { redirectUri = new URL(url).searchParams.get("redirect_uri")!; },
       openBrowser: async () => {
         throw new OAuthLoginError("BROWSER_UNAVAILABLE", "Could not open a browser on this machine (xdg-open: exited with code 3).");
       },
@@ -197,6 +211,18 @@ describe("non-interactive sign-in", () => {
 
     await expect(client.login()).rejects.toMatchObject({ code: "BROWSER_UNAVAILABLE" });
     expect(Date.now() - started).toBeLessThan(5_000);
+    expect(store.token).toBeUndefined();
+    await expect(fetch(`${redirectUri}?code=late&state=x`)).rejects.toThrow();
+  });
+
+  it("★turns a blocked local callback port into an error that says what to do (no crash)", async () => {
+    // 2026-09-29 코드 리뷰 P1 — sandbox 처럼 로컬 바인딩이 막힌 곳에서 listen 이 처리되지 않은
+    // 예외로 죽었다. 192.0.2.1 은 문서용(TEST-NET-1) 주소라 이 기계에 없다 → 바인딩이 실패한다.
+    const failure = await createLoopbackReceiver("state", "192.0.2.1").catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(OAuthLoginError);
+    expect((failure as OAuthLoginError).code).toBe("CALLBACK_UNAVAILABLE");
+    expect((failure as Error).message).toContain("sandbox");
   });
 
   it("does not wait for the opener to exit before accepting the callback", async () => {
@@ -272,6 +298,18 @@ describe("stored token expiry", () => {
 
   it("a token with no expiry is used as is", async () => {
     await expect(clientWith({}).getAccessToken()).resolves.toBe("stored");
+  });
+
+  it("★read-only (init --dry-run) never refreshes: an expired token is simply absent", async () => {
+    const store = new MemoryTokenStore();
+    store.token = { endpoint: ENDPOINT, accessToken: "stored", updatedAt: "x", expiresAt: Date.now() - 1_000, refreshToken: "r" };
+    const fetchImpl = vi.fn();
+    const client = new OAuthClient({ endpoint: ENDPOINT, tokenStore: store, envVars: {}, fetchImpl: fetchImpl as unknown as typeof fetch, readOnly: true });
+
+    await expect(client.getAccessToken()).resolves.toBeUndefined();
+    await expect(client.refreshAfterUnauthorized()).resolves.toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.token.accessToken).toBe("stored");
   });
 
   it("an expired token with a refresh token is refreshed", async () => {

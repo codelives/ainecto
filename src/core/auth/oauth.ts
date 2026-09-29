@@ -27,6 +27,12 @@ export interface OAuthClientOptions {
   onAuthorizeUrl?: (url: string) => void;
   /** 콜백을 기다리는 한도. 기본 5분 — 사람이 로그인하기엔 넉넉하고, 에이전트 셸 도구 최대 한도보다 짧다. */
   loginTimeoutMs?: number;
+  /**
+   * 토큰 저장소를 «읽기만» 한다 — 갱신하지 않는다(네트워크도, 토큰 파일 쓰기도 없다).
+   * {@code init --dry-run} 이 쓴다: 「아무것도 바꾸지 않는다」에 사용자의 로그인 상태도 든다.
+   * 갱신이 필요한(만료된) 토큰은 «없음»으로 본다.
+   */
+  readOnly?: boolean;
 }
 
 /** 로그인 대기 기본 한도(5분). */
@@ -37,7 +43,7 @@ export const DEFAULT_LOGIN_TIMEOUT_MS = 300_000;
  * 그대로 나간다(종료 코드는 다른 실패와 같은 1 — 받는 쪽은 메시지를 읽고 사람에게 옮긴다).
  */
 export class OAuthLoginError extends Error {
-  constructor(readonly code: "LOGIN_TIMEOUT" | "BROWSER_UNAVAILABLE", message: string) {
+  constructor(readonly code: "LOGIN_TIMEOUT" | "BROWSER_UNAVAILABLE" | "CALLBACK_UNAVAILABLE", message: string) {
     super(message);
     this.name = "OAuthLoginError";
   }
@@ -82,6 +88,9 @@ export class OAuthClient implements TokenProvider {
     if (!shouldRefresh(stored)) {
       return stored.accessToken;
     }
+    if (this.options.readOnly) {
+      return isExpired(stored) ? undefined : stored.accessToken;
+    }
     // ★만료됐는데 갱신할 수단이 없으면 «토큰 없음»이다. 예전엔 만료된 토큰을 그대로 돌려줘서,
     //   init 은 로그인 대신 401 안내로 떨어졌고 다른 경로는 받을 게 뻔한 401 을 받으러 갔다
     //   (2026-09-29 독립 리뷰 P1-2). 아직 60초 창 안이면 쓸 수 있으므로 돌려준다.
@@ -89,15 +98,15 @@ export class OAuthClient implements TokenProvider {
       return isExpired(stored) ? undefined : stored.accessToken;
     }
 
-    return this.refreshStoredToken(stored);
+    return this.refreshStoredToken({ ...stored, refreshToken: stored.refreshToken });
   }
 
   async refreshAfterUnauthorized(): Promise<string | undefined> {
     const stored = await this.options.tokenStore.load(this.options.endpoint, this.options.role);
-    if (!stored?.refreshToken) {
+    if (this.options.readOnly || !stored?.refreshToken) {
       return undefined;
     }
-    return this.refreshStoredToken(stored);
+    return this.refreshStoredToken({ ...stored, refreshToken: stored.refreshToken });
   }
 
   async login(): Promise<StoredTokenSet> {
@@ -158,10 +167,8 @@ export class OAuthClient implements TokenProvider {
     await this.options.tokenStore.delete(this.options.endpoint, this.options.role);
   }
 
-  private async refreshStoredToken(stored: StoredTokenSet): Promise<string | undefined> {
-    if (!stored.refreshToken) {
-      return stored.accessToken;
-    }
+  /** 부르는 쪽이 refresh token 이 있음을 이미 확인했다 — 타입이 그것을 요구한다. */
+  private async refreshStoredToken(stored: StoredTokenSet & { refreshToken: string }): Promise<string | undefined> {
     const metadata = await discoverOAuthMetadata(this.options.endpoint, this.fetchImpl);
     const token = await exchangeToken(metadata.tokenEndpoint, {
       grant_type: "refresh_token",
@@ -322,7 +329,10 @@ function toStoredToken(
   };
 }
 
-async function createLoopbackReceiver(expectedState: string): Promise<{
+/**
+ * 로그인 콜백을 받는 loopback 서버. {@code host} 는 시험이 «바인딩 실패»를 만들 때만 바꾼다.
+ */
+export async function createLoopbackReceiver(expectedState: string, host = "127.0.0.1"): Promise<{
   redirectUri: string;
   waitForCode(): Promise<string>;
   close(): Promise<void>;
@@ -363,7 +373,16 @@ async function createLoopbackReceiver(expectedState: string): Promise<{
     resolveCode(code);
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // ★바인딩이 막히면(에이전트 sandbox 등) 예전엔 error 리스너가 없어 처리되지 않은 예외로 죽었다
+  //   (2026-09-29 코드 리뷰 P1). 사람이 할 일을 말하는 오류로 바꾼다.
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", (error) => reject(new OAuthLoginError(
+      "CALLBACK_UNAVAILABLE",
+      `Could not start the local sign-in callback on ${host} (${error.message}). `
+      + "If this command runs in a sandbox, allow local network binding or run it outside the sandbox.",
+    )));
+    server.listen(0, host, () => resolve());
+  });
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("Loopback OAuth server did not bind to a TCP port.");
@@ -371,7 +390,11 @@ async function createLoopbackReceiver(expectedState: string): Promise<{
   return {
     redirectUri: `http://127.0.0.1:${address.port}/callback`,
     waitForCode: () => codePromise,
-    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+    close: () => new Promise<void>((resolve, reject) => {
+      // Node 18 은 브라우저가 붙들고 있는 keep-alive 연결이 끝날 때까지 close 가 늦어진다.
+      server.closeAllConnections?.();
+      server.close((error) => error ? reject(error) : resolve());
+    }),
   };
 }
 
