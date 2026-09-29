@@ -689,8 +689,27 @@ describe("ai-erd init (files on disk)", () => {
     const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
     const { opts, events } = withLogin([], stub, undefined);
 
-    await expect(executeInitCommand(opts)).rejects.toThrow(/--role is required/);
+    const failure = await executeInitCommand(opts).catch((e: Error) => e);
+    // ★「하나 고르라」가 아니라 «사용자에게 물어라» — 읽는 쪽이 대개 에이전트다(0.4.1 최종 리뷰 P1).
+    expect((failure as Error).message).toMatch(/^No role given\. Ask the user which role[\s\S]*re-run with --role <role>\.$/);
+    expect((failure as Error).message).not.toContain("Pick one");
     expect(events).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("★설정끼리 역할이 어긋나면 비대화형은 «사용자에게 물어라»고 하고 멈춘다", async () => {
+    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
+    await executeInitCommand(options(["--role", "development"], stub));
+    const cursor = join(root, ".cursor/mcp.json");
+    const parsed = JSON.parse(await readFile(cursor, "utf8"));
+    const args = parsed.mcpServers["ai-erd"].args as string[];
+    args[args.indexOf("--role") + 1] = "test";
+    await writeFile(cursor, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+    calls.length = 0;
+
+    const failure = await executeInitCommand(options([], stub)).catch((e: Error) => e);
+
+    expect((failure as Error).message).toMatch(/disagree[\s\S]*Ask the user which role[\s\S]*--role <role>/);
     expect(calls).toEqual([]);
   });
 

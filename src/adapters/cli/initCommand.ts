@@ -141,9 +141,10 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
   }
 
   // ⚠명시한 --role 이 있으면 저장소 역할을 읽지 않는다 — 설정끼리 어긋난 저장소를 그 --role 이 맞춘다.
+  // ★설정끼리 역할이 어긋난 저장소: 대화형이면 «기본값 없이» 묻고, 비대화형이면 사용자에게 물으라며 멈춘다.
   const prompter = options.prompter;
   const role = options.role ?? (prompter
-    ? await askRole(prompter, currentRole(files))
+    ? await askRole(prompter, repositoryRoles(files).length === 1 ? repositoryRoles(files)[0] : undefined)
     : currentRole(files));
   // 설정끼리 어긋나 있으면 «이전 역할»은 하나로 말할 수 없다 — 그때는 변경 알림을 생략한다
   // (명시한 --role 이 둘을 맞추고, 파일별 변화는 계획의 notes 가 말한다).
@@ -155,8 +156,11 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
     }
   })();
   if (!role) {
+    // ⚠「하나 고르라」고 말하지 않는다 — 이 문장을 읽는 것은 대개 에이전트이고, 역할은 사용자가 고른다
+    //   (0.4.1 최종 리뷰 P1, noProjectForRole 과 같은 어조).
     throw new Error(
-      `--role is required on first run. Pick one of: ${HARNESS_ROLES.join(", ")}.`,
+      "No role given. Ask the user which role this repository's AI sessions should have "
+      + `(${HARNESS_ROLES.join(", ")}), then re-run with --role <role>.`,
     );
   }
 
@@ -247,15 +251,21 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
 
 /** 이 저장소에 이미 걸린 역할. 두 설정이 어긋나 있으면 «고르지 않고» 멈춘다. */
 function currentRole(files: ReadonlyMap<string, string | undefined>): HarnessRole | undefined {
-  const found = [...detectRoles(files).values()].filter((role): role is HarnessRole => role !== undefined);
-  const unique = [...new Set(found)];
+  const unique = repositoryRoles(files);
   if (unique.length > 1) {
     throw new Error(
-      `Agent configs disagree about the session role (${unique.join(", ")}). `
-      + "Re-run with an explicit --role to line them up.",
+      `Agent configs in this repository disagree about the session role (${unique.join(", ")}). `
+      + "Ask the user which role this repository's AI sessions should have "
+      + `(${HARNESS_ROLES.join(", ")}), then re-run with --role <role> to line them up.`,
     );
   }
   return unique[0];
+}
+
+/** 저장소의 에이전트 설정들에 걸린 역할(중복 없이). 둘 이상이면 설정끼리 어긋난 것이다. */
+function repositoryRoles(files: ReadonlyMap<string, string | undefined>): HarnessRole[] {
+  const found = [...detectRoles(files).values()].filter((role): role is HarnessRole => role !== undefined);
+  return [...new Set(found)];
 }
 
 /** 패키지 기본값을 쓴 사실과 그 이유. 없으면 빈 배열. */

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -165,7 +165,8 @@ describe("ai-erd init — interactive (TTY)", () => {
     const { result, calls, connectedAs } = run([], [{ uuid: "p-1", name: "Billing" }]);
 
     expect(await result).toBe(130);
-    expect(prompts()).toContain("Cancelled — nothing was written.");
+    expect(prompts()).toContain("Cancelled — no repository files were written.");
+    expect(prompts()).toContain("A sign-in you already completed stays saved.");
     expect(connectedAs).toEqual([]);
     expect(calls).toEqual([]);
     expect(existsSync(join(root, ".mcp.json"))).toBe(false);
@@ -190,6 +191,24 @@ describe("ai-erd init — interactive (TTY)", () => {
     expect(prompts()).toContain("(now: test)");
     expect(prompts()).toContain("Enter a number (1-4) [3]: ");
     expect(await roleInMcpJson()).toBe("test");
+  });
+
+  it("★configs that disagree about the role: asked with no default (neither side is picked for the user)", async () => {
+    await run(["2", ""], [{ uuid: "p-1", name: "Billing" }]).result;
+    // Cursor 설정만 손으로 다른 역할로 바꿔 둔다.
+    const cursor = join(root, ".cursor/mcp.json");
+    const parsed = JSON.parse(await readFile(cursor, "utf8"));
+    const args = parsed.mcpServers["ai-erd"].args as string[];
+    args[args.indexOf("--role") + 1] = "test";
+    await writeFile(cursor, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+    said.length = 0;
+
+    const { result } = run(["", "4", ""], [{ uuid: "p-1", name: "Billing" }]);
+
+    expect(await result).toBe(0);
+    expect(prompts()).toContain("Enter a number (1-4): ");
+    expect(prompts()).toContain("there is no default here");
+    expect(await roleInMcpJson()).toBe("validation");
   });
 
   it("--role and --project skip their questions", async () => {

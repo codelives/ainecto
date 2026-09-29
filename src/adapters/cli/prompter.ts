@@ -19,10 +19,11 @@ export interface Choice<T> {
   value: T;
 }
 
-/** 질문 중에 입력이 끝났다(EOF, Ctrl+D). init 은 아무것도 쓰지 않고 130 으로 끝낸다. */
+/** 질문 중에 입력이 끝났다(EOF, Ctrl+D). init 은 저장소 파일을 쓰지 않고 130 으로 끝낸다. */
 export class PromptCancelled extends Error {
   constructor() {
-    super("Cancelled — nothing was written.");
+    // ★«아무것도 안 썼다»가 아니다 — 질문 전에 끝낸 로그인은 토큰 저장소에 남는다(0.4.1 최종 리뷰 P2).
+    super("Cancelled — no repository files were written. A sign-in you already completed stays saved.");
     this.name = "PromptCancelled";
   }
 }
