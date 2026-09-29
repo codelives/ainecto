@@ -112,9 +112,11 @@ not in this repository's files.
 ## One session, one role
 
 A session picks exactly one role and keeps it for the whole session. The role comes from the
-MCP server configuration — not from this file, and not from anything an agent can change at
-runtime. The server exposes only the tools that role is allowed to use, so a tool that is out
-of role is not merely discouraged: it is absent.
+MCP server configuration — not from this file — and it does not change during a session. The
+user picks the role; an agent applies a new one only when the user asks, and it takes effect in
+the next session. This is a working guardrail, not a security boundary. The server exposes only
+the tools that role is allowed to use, so a tool that is out of role is not merely discouraged:
+it is absent.
 
 | Role | Owns | Must not |
 | --- | --- | --- |
