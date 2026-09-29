@@ -33,7 +33,7 @@
     "smoke:attachments": "tsx scripts/smoke-attachment-upload.ts",
     "catalog:fixture": "vitest run test/catalog.test.ts",
     "prepack": "npm run typecheck && npm test && npm run build",
-    "publish:both": "node scripts/publish-both.mjs"
+    "release": "node scripts/publish.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.8",
