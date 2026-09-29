@@ -1,6 +1,6 @@
 # ai-erd — AI-ERD CLI and MCP connector
 
-Published as `ai-erd` and `@ai-erd/mcp` (same code). Command: `ai-erd`.
+Published as `ai-erd`, `@ai-erd/mcp` and `@ai-erd/cli` — the same code. Command: `ai-erd`.
 
 **In a terminal, from your repository root:** `npx -y ai-erd@latest init` — it asks which role this
 repository's AI sessions should have and which AI-ERD project to use, and signs you in through the
@@ -68,7 +68,8 @@ In both cases:
 ## Commands
 
 Prefer `npx -y ai-erd@latest <command>`. To install once instead, use `npm install -g ai-erd` — but install
-only one of `ai-erd` and `@ai-erd/mcp` globally: they ship the same command names and conflict.
+only one of `ai-erd`, `@ai-erd/mcp` and `@ai-erd/cli` globally: they are the same code and ship the same
+`ai-erd` command, so a second global install conflicts. (`@ai-erd/cli` carries only the `ai-erd` command.)
 
 ```bash
 ai-erd auth login --role design
@@ -228,9 +229,9 @@ temp file, and stored upload file unless `--keep` is supplied.
 
 ### Releasing
 
-`npm run release -- --otp=<code>` publishes the same build as `@ai-erd/mcp` and `ai-erd`
-(`--dry-run` shows what would go out). An already-published name is skipped, so a retry after an
-expired code is safe.
+`npm run release -- --otp=<code>` runs typecheck, test and build once, then publishes that build as
+`@ai-erd/mcp`, `ai-erd` and `@ai-erd/cli` (the last with only the `ai-erd` command). `--dry-run` shows
+what would go out. An already-published name is skipped, so a retry after an expired code is safe.
 
 ## Known Limitations
 
