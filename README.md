@@ -98,8 +98,11 @@ ai-erd erd apply-changes -f erd-operations.json --yes
 from the current folder upward for the first `.mcp.json`/`.cursor/mcp.json` with an `ai-erd` entry),
 every command uses that folder's role without `--role`. A `--role` or `AI_ERD_ROLE` that differs from
 it is refused — the role changes only with `ai-erd init --role <role>`, after asking the user. If the
-role there cannot be read (an `ai-erd` entry without `--role`, configs that disagree, a link that
-points outside the folder), the command stops. Outside such a folder there is no role (no
+role there cannot be read (the `@ai-erd/mcp` bridge entry without a valid `--role`, configs that
+disagree, broken JSON that mentions `ai-erd`, a link that points outside the folder), the command
+stops. An `ai-erd` entry that is not this bridge (for example an HTTP `url` or `mcp-remote` entry)
+means no role there. Your home folder itself is never read as a repository (`~/.cursor/mcp.json` is
+Cursor's global config). Outside such a folder there is no role (no
 restriction), and `--role` narrows it.
 Tool names are the server's own names (`list_projects`, `erd_apply_changes`, …). Your AI client
 shows them with its own prefix, for example `mcp__ai-erd__list_projects` in Claude Code; the CLI
@@ -178,9 +181,9 @@ by hand:
 }
 ```
 
-A bridge without a role has no restriction. If it starts inside a folder whose `.mcp.json` sets a role,
-it prints a one-line warning on stderr — usually another `ai-erd` entry (for example Claude Code's
-local scope) is hiding the one `init` wrote (`claude mcp get ai-erd`).
+A bridge without a role has no restriction. If a session inside a set-up repository still has no role,
+another `ai-erd` entry (for example Claude Code's local scope) is usually hiding the one `init` wrote —
+check with `claude mcp get ai-erd`.
 
 The official MCP Registry entry (see `server.json`) lists both the remote (`streamable-http`,
 `https://ai-erd.com/mcp`) and the `@ai-erd/mcp` npm package. Registry publication requires the npm

@@ -68,7 +68,7 @@
 | 없음 | 없음 | 역할 없음(제한 없음) |
 | 없음 | S | S |
 
-- `mcp`(브리지): 역할은 `--role`/`AI_ERD_ROLE` 만 쓴다(저장소를 적용하지 않는다). 역할이 없고, cwd 에서 찾은 저장소 역할이 있으면 stderr 에 경고 한 줄을 쓴다(리뷰 P1-b, §2-6).
+- `mcp`(브리지): 역할은 `--role`/`AI_ERD_ROLE` 만 쓴다(저장소를 적용하지 않는다). (§2-6 의 경고는 코드 리뷰 P1-2 로 삭제 — §11.)
 - `init`: 자기 규칙.
 - `auth login|status|logout`: 역할과 무관하다. `--role` 을 주면 `Sign-in is one per machine; --role is not used by auth.` 한 줄을 쓰고 진행한다. 저장소를 읽지 않는다 — 깨진 저장소 안에서도 로그인·로그아웃이 된다.
 - 시험 셋(리뷰 P2): 설정이 어긋난 저장소 안에서 `auth status`·`mcp`·`init --role X` 이 저장소 역할 판정에 막히지 않는다.
@@ -96,7 +96,7 @@
 - `--json` 의 `login_url` 이벤트는 `{"event":"login_url","url":…}` — **`role` 필드를 뺀다**(리뷰 P2). 로그인이 역할과 무관해졌다. 사람용 줄은 `Opening your browser to sign in to AI-ERD. If it does not open, visit: <url>`.
 - 동의 화면에서 역할(`ai-erd:role:…`)이 사라진다. 잃는 것: 사람이 브라우저에서 «어느 역할인지» 보는 기회. 대화에서 고른 값이 대신한다.
 
-### 2-6. 역할 없는 브리지 경고 (리뷰 P1-b)
+### 2-6. 역할 없는 브리지 경고 (리뷰 P1-b) — ⛔코드 리뷰 P1-2 로 삭제(§11). 아래는 기록.
 
 - 0.4.1 에서는 역할 없는 칸이 비어 있으면 역할 없는 브리지가 401 로 막혔다. 0.4.2 는 칸이 하나라 **조용히 제한 없음**으로 붙는다. README 의 「역할 없는 브리지는 거절된다」 뜻도 뒤집힌다.
 - `runConnector` 는 역할이 없을 때 cwd 에서 `findRepositoryRole` 을 본다. 저장소 역할 R 이 있으면 stderr 에 한 줄을 쓴다:
@@ -187,7 +187,7 @@
   - `ainectoCli.ts`(§2-2, help, login_url)
   - `oauth.ts`·`tokenStore.ts`(§2-4)
   - `rpcClient.ts`(role 필수)
-  - `connector.ts`·`bin/mcp.ts`(§2-6)
+  - `connector.ts`·`bin/mcp.ts`(토큰 한 칸·역할 헤더)
   - `initCommand.ts`(§2-5, 모듈 이동)
   - `harnessDoc.ts`(AGENT_NOTE 기본값)
   - `role.ts`, README, scripts(sync-tools·smoke-mcp: `role: null`)
@@ -221,3 +221,19 @@
 | P2 binding 빈 문자열 | §1 |
 | P2 문구 누락분 | §4 |
 | P2 배포 순서 | §3 |
+
+---
+
+## 11. 0.4.2 코드 리뷰(GO, P0 없음) 반영 — 사용자 결정: 추천대로
+
+| 지적 | 반영 |
+|---|---|
+| P1-1 홈 제외가 문자열 비교라 `/var` ↔ `/private/var` 처럼 링크로 갈라진 같은 폴더를 못 알아봄 | 양쪽을 실제 경로(realpath, 실패 시 resolve)로 비교, Windows 는 대소문자 무시. 시험은 macOS tmpdir 로 재현했고, 고치기 전 코드에서 실패함을 확인했다 |
+| P1-2 역할 없는 브리지 경고(§2-6)는 보이지 않는 장치(stderr 는 호스트 디버그 로그로만 감) | **삭제.** 가림 진단은 README 한 줄(`claude mcp get ai-erd`)과 서버 안내문(`HARNESS.INSTRUCTIONS`)이 맡는다 |
+| P1-3 «읽기 문제는 멈춤» 범위가 넓음 | 폴더 «안»을 가리키는 링크는 읽는다. `ai-erd` 항목이 우리 브리지(`@ai-erd/mcp`·`ai-erd`·`ai-erd-mcp`·`--role`)가 아니면(url·mcp-remote) 역할 없음. 깨진 JSON 은 원문에 `ai-erd` 가 있을 때만 멈춘다. 우리 브리지인데 `--role` 이 없거나 모르는 값이면 멈춘다(그대로) |
+| P2 잘못된 `AI_ERD_ROLE` 이 auth 를 막음 | auth 는 명시 역할을 읽지 않는다 |
+| P2 원격을 안 부르는 명령도 역할 판정을 지남 | `tools catalog`·모르는 명령은 판정 «전»에 끝난다(`--help` 는 원래 맨 앞) |
+| P2 시험 보강 | R 저장소에서 `init --role S` 성공(종료 0·파일 역할 S), 어긋난 저장소의 init 을 성공으로 증명, cwd 를 안 옮기던 CLI 시험 셋을 임시 폴더로 격리 |
+| P2 역할 읽기 중복(`initPlan.previousRole` vs `rolesInFiles`) | `readConfigRole` 한 곳 |
+| P2 멈춤 안내가 막다른 길 | 그 폴더가 git 저장소의 하위 폴더면 «init 으로 고치라» 대신 «사용자에게 그 설정을 어떻게 둘지 물어라 — init 은 저장소 루트에서만 돈다» |
+| 그대로 둠(사용자 결정) | logout 뒤 옛 역할 칸, AINECTO_TOKEN 가드, connect(null) 타입 한계 |
