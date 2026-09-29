@@ -40,7 +40,19 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       sessionRole = await readRepositoryRole(process.cwd());
     }
     const tokenStore = new FileTokenStore();
-    const auth = new OAuthClient({ endpoint: resolved.endpoint, tokenStore, role: sessionRole });
+    const auth = new OAuthClient({
+      endpoint: resolved.endpoint,
+      tokenStore,
+      role: sessionRole,
+      // ★URL 을 «브라우저를 열기 전에» 알린다. 에이전트가 실행했다면 명령이 끝날 때 이 줄이 닿는다.
+      //   stdout 은 결과 전용이라 stderr 에 쓴다.
+      onAuthorizeUrl: (url) => {
+        io.stderr.write(
+          `Opening your browser to sign in${sessionRole ? ` (role: ${sessionRole})` : ""}. `
+          + `If it does not open, visit:\n  ${url}\n`,
+        );
+      },
+    });
     const client = new McpRpcClient({
       endpoint: resolved.endpoint,
       tokenProvider: auth,
@@ -67,7 +79,22 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         role: sessionRole,
         // 문서는 인증 후에 받는다 — 토큰이 없으면 패키지 기본값으로 가고, 그 사실을 보고한다.
         // ★«필요할 때» 가져온다. --undo 는 로컬 작업이라 토큰을 건드릴 이유가 없다(S1).
-        accessToken: () => auth.getAccessToken().catch(() => undefined),
+        // ★갱신 실패는 «토큰 없음»(→ 로그인)이지만, AINECTO_TOKEN 을 못 쓰는 주소라는 거절은 삼키지 않는다 —
+        //   삼키면 그 설정 오류가 브라우저 로그인으로 둔갑한다.
+        accessToken: async () => {
+          try {
+            return await auth.getAccessToken();
+          } catch (error) {
+            if (process.env.AINECTO_TOKEN) {
+              throw error;
+            }
+            return undefined;
+          }
+        },
+        // 이 역할로 로그인한다 — `ai-erd auth login` 과 같은 함수다(설계 §8-1).
+        login: async () => {
+          await auth.login();
+        },
         client,
         endpoint: resolved.endpoint,
         env: resolved.env,

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createdChain, executeInitCommand, readRepositoryRole } from "../src/adapters/cli/initCommand";
+import { createdChain, executeInitCommand, findGitRoot, readRepositoryRole } from "../src/adapters/cli/initCommand";
 import { readRecord } from "../src/core/harness/initPlan";
 
 const RECORD_FILE = ".ai-erd/init-record.json";
@@ -110,7 +110,8 @@ describe("ai-erd init (files on disk)", () => {
   it("creates one when told to, naming it after the directory", async () => {
     const { stub, calls } = client([], { uuid: "p-new", name: "whatever" });
 
-    const code = await executeInitCommand(options(["--role", "test", "--yes"], stub));
+    // ★프로젝트를 만들 수 있는 것은 Design 세션뿐이다(서버 정책).
+    const code = await executeInitCommand(options(["--role", "design", "--yes"], stub));
 
     expect(code).toBe(0);
     expect(calls).toEqual(["list_projects", "create_projects"]);
@@ -199,7 +200,7 @@ describe("ai-erd init (files on disk)", () => {
   it("★--dry-run 은 원격에 프로젝트를 만들지 않는다", async () => {
     const { stub, calls } = client([], { uuid: "p-new", name: "x" });
 
-    await expect(executeInitCommand(options(["--role", "test", "--yes", "--dry-run"], stub)))
+    await expect(executeInitCommand(options(["--role", "design", "--yes", "--dry-run"], stub)))
       .rejects.toThrow(/--dry-run cannot continue/);
     expect(calls).toEqual(["list_projects"]);
   });
@@ -611,6 +612,124 @@ describe("ai-erd init (files on disk)", () => {
     await executeInitCommand(options(["--role", "development"], stub));
 
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(first);
+  });
+
+  // ── 1단계: 비대화형 경로(설계 §21-1) ─────────────────────────────────────────
+
+  function withLogin(argv: string[], rpc: McpRpcClient, token: string | undefined) {
+    const events: string[] = [];
+    const errors: string[] = [];
+    let current = token;
+    return {
+      events,
+      errors,
+      opts: {
+        ...options(argv, rpc),
+        io: {
+          stdout: io.stdout,
+          stderr: { write: (text: string) => { errors.push(text); return true; } },
+        } as unknown as { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream },
+        accessToken: async () => current,
+        login: async () => { events.push("login"); current = "fresh"; },
+      },
+    };
+  }
+
+  it("★토큰이 없으면 원격을 부르기 «전에» 그 역할로 로그인하고 이어서 진행한다", async () => {
+    const calls: string[] = [];
+    const { opts, events, errors } = withLogin(["--role", "development"], {
+      toolsCall: async (name: string) => {
+        calls.push(`${name} after ${events.join(",") || "nothing"}`);
+        return { content: [{ type: "text", text: JSON.stringify({ projects: [{ uuid: "p-1", name: "Billing" }] }) }] };
+      },
+    } as unknown as McpRpcClient, undefined);
+
+    const code = await executeInitCommand(opts);
+
+    expect(code).toBe(0);
+    expect(events).toEqual(["login"]);
+    expect(calls).toEqual(["list_projects after login"]);
+    expect(errors.join("")).toContain("Signed in for role development.");
+    expect(existsSync(join(root, ".mcp.json"))).toBe(true);
+  });
+
+  it("토큰이 있으면 로그인하지 않는다", async () => {
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+    const { opts, events } = withLogin(["--role", "test"], stub, "stored");
+
+    expect(await executeInitCommand(opts)).toBe(0);
+    expect(events).toEqual([]);
+  });
+
+  it("★--dry-run 은 브라우저를 띄우지 않고 로그인 명령을 알려 준다", async () => {
+    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
+    const { opts, events } = withLogin(["--role", "design", "--dry-run"], stub, undefined);
+
+    await expect(executeInitCommand(opts)).rejects.toThrow(/does not open a browser[\s\S]*ai-erd auth login --role design/);
+    expect(events).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("역할이 없으면 로그인도 원격 호출도 없이 멈춘다 (기본값으로 고르지 않는다)", async () => {
+    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
+    const { opts, events } = withLogin([], stub, undefined);
+
+    await expect(executeInitCommand(opts)).rejects.toThrow(/--role is required/);
+    expect(events).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("★Design 이 아니면 프로젝트를 만들지 않고, 원격 쓰기 «전에» 무엇을 할지 말한다", async () => {
+    // 예전엔 서버가 거부한 뒤 「Project creation did not return a project uuid.」로 끝났다.
+    const { stub, calls } = client([], { uuid: "p-new", name: "x" });
+
+    await expect(executeInitCommand(options(["--role", "test", "--yes"], stub)))
+      .rejects.toThrow(/only a Design session can create one[\s\S]*--role design --yes/);
+    expect(calls).toEqual(["list_projects"]);
+    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+  });
+
+  it("★결과의 다음 할 일에 «따로 로그인하라»가 없다 — 이미 그 역할로 로그인했다", async () => {
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+
+    await executeInitCommand(options(["--role", "development"], stub));
+
+    const result = JSON.parse(out.join("")) as { data: { next: string[] } };
+    expect(result.data.next.join("\n")).not.toContain("auth login");
+    expect(result.data.next.join("\n")).toContain("claude -c");
+    expect(result.data.next.join("\n")).toContain("codex -p development");
+  });
+
+  it("★git 저장소의 하위 폴더에서는 멈춘다 (init·undo 모두)", async () => {
+    await mkdir(join(root, ".git"));
+    const sub = join(root, "packages", "api");
+    await mkdir(sub, { recursive: true });
+    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
+
+    await expect(executeInitCommand({ ...options(["--role", "design"], stub), cwd: sub }))
+      .rejects.toThrow(new RegExp(`cd ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    await expect(executeInitCommand({ ...options(["--undo"], stub), cwd: sub }))
+      .rejects.toThrow(/not at its root/);
+    expect(calls).toEqual([]);
+    expect(existsSync(join(sub, ".mcp.json"))).toBe(false);
+  });
+
+  it("★.git 이 «파일»(worktree)이어도 루트로 알아본다", async () => {
+    await writeFile(join(root, ".git"), "gitdir: /somewhere/else\n", "utf8");
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+
+    expect(await executeInitCommand(options(["--role", "design"], stub))).toBe(0);
+    const result = JSON.parse(out.join("")) as { data: { notes: string[] } };
+    expect(result.data.notes.join("\n")).not.toContain("not inside a git repository");
+    expect(await findGitRoot(join(root, "deeper"))).toBe(root);
+  });
+
+  it("git 저장소가 아니면 그 자리에서 진행하고 그 사실을 적는다", async () => {
+    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+
+    expect(await executeInitCommand(options(["--role", "design"], stub))).toBe(0);
+    const result = JSON.parse(out.join("")) as { data: { notes: string[] } };
+    expect(result.data.notes.join("\n")).toContain("not inside a git repository");
   });
 
   it("leaves a user's own file inside .ai-erd alone", async () => {

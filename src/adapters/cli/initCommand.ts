@@ -32,6 +32,14 @@ export interface InitCommandOptions {
    * 의존하면, 서버가 죽은 날 되돌릴 수가 없다.
    */
   accessToken?: () => Promise<string | undefined>;
+  /**
+   * 이 역할로 브라우저 로그인을 한다(= {@code ai-erd auth login} 과 같은 함수). 없으면 init 은 예전처럼
+   * 로그인하지 않고 401 을 안내로 바꾼다.
+   *
+   * <p>★init 은 사람이나 에이전트가 «명시적으로» 친 명령이라 여기서 로그인한다. 브리지({@code ai-erd mcp})는
+   * 여전히 자동 로그인하지 않는다 — 세션 한가운데서 창이 뜨면 안 된다(설계 §8-4).
+   */
+  login?: () => Promise<void>;
   /** 시험용 주입. 기본은 전역 fetch. */
   fetchImpl?: typeof fetch;
   env: "prod" | "dev";
@@ -52,13 +60,22 @@ interface InitArgs {
 /**
  * {@code ai-erd init} — 이 저장소를 AI-ERD 하네스에 붙인다.
  *
- * ★<b>대화형 프롬프트를 쓰지 않는다.</b> 이 명령은 에이전트 세션 «안에서» 실행될 때가 많고,
- * 거기엔 사람이 답할 TTY 가 없다. 고를 것이 여럿이면 목록을 보여 주고 «다시 실행하라»고
- * 말한다 — 멈춰서 기다리다 죽는 것보다 낫다.
+ * ★<b>지금은 비대화형 경로만 있다</b>(설계 §21-1, 1단계). 합격 시나리오는 에이전트가 셸로 이 명령을
+ * 치는 것이고 거기엔 사람이 답할 TTY 가 없다. 그래서:
+ * <ul>
+ *   <li><b>빠진 값은 채우지 않고 말하고 멈춘다.</b> 역할을 기본값으로 고르지 않는다 — 사람이 고른 값이
+ *       {@code --role} 로 와야 한다. 프로젝트가 여럿이면 목록을 보여 주고 «다시 실행하라»고 한다.</li>
+ *   <li><b>역할이 있으면 로그인까지 한다.</b> 그 역할의 토큰이 없으면 브라우저를 띄우고(사람이 승인)
+ *       이어서 진행한다.</li>
+ * </ul>
+ * 대화형 질문(역할·프로젝트 메뉴, 확인 단계)은 2단계다(설계 §21-2).
  */
 export async function executeInitCommand(options: InitCommandOptions): Promise<number> {
   const args = parseInitArgs(options.argv);
   const root = resolve(options.cwd);
+  // ★하위 폴더에서 치면 멈춘다. 그 자리에 .mcp.json 을 쓰면 에이전트는 루트에서 그것을 못 본다 —
+  //   역할이 걸린 줄 알고 걸리지 않는다. undo 도 같은 이유로 루트에서만 한다(기록이 루트에 있다).
+  const rootNotes = await repositoryRootNotes(root);
   const files = await readSnapshot(root);
 
   if (args.undo) {
@@ -69,7 +86,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
         action: args.dryRun ? "undo (dry-run)" : "undo",
         updated: plan.writes.map((write) => write.path),
         removed: plan.deletes,
-        notes: plan.notes,
+        notes: [...rootNotes, ...plan.notes],
       },
       { json: options.json },
     ));
@@ -92,7 +109,9 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     throw new Error(refusal);
   }
 
-  const project = await resolveProject(options, args, files, root);
+  await ensureSignedIn(options, role, args.dryRun);
+
+  const project = await resolveProject(options, args, files, root, role);
   if ("choices" in project) {
     options.io.stdout.write(renderSuccess(
       {
@@ -145,14 +164,19 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
       // ⚠조용히 기본값으로 떨어지지 않는다 — 서버에서 규칙을 고쳐도 안 바뀌는 이유를
       //   사용자가 영영 못 찾게 된다. ★요청 자체의 실패와 «문서별» 되돌림을 둘 다 적는다
       //   (2026-09-23 독립 재리뷰 I5: HTTP 200 으로 온 빈 문서가 조용히 패키지 판이 됐다).
-      notes: [...plan.notes, ...fallbackNotes(documents)],
+      notes: [...rootNotes, ...plan.notes, ...fallbackNotes(documents)],
+      // ★「Enforce this on the server too: ai-erd auth login …」 줄은 뺐다. init 이 이미 그 역할로
+      //   로그인했으므로 참이 아니고, 남아 있으면 에이전트가 따라 쳐서 사람이 한 번 더 승인하게 된다
+      //   (2026-09-29 독립 리뷰 P1-1).
       next: [
-        "Restart the agent so it picks up the new MCP server.",
+        "Start a new agent session to use this role — the running session keeps the role it started with.",
+        "Claude Code: exit and run `claude -c` in this folder, then approve the \"ai-erd\" server from .mcp.json when asked.",
+        `Codex: save the profile above as $CODEX_HOME/${role}.config.toml and start with \`codex -p ${role}\`.`,
         role === "design"
           // ⚠Design 은 그 변경이 «허용»된다 — 모든 역할에 같은 문장을 내보내면 거짓이 된다.
-          ? "Ask it to change a table — a Design session may, and the change lands in AI-ERD."
-          : `Ask it to change a table — a ${role} session will be told to stop.`,
-        `Enforce this on the server too: ${loginCommand(options, role)}`,
+          ? "Then ask it to change a table — a Design session may, and the change lands in AI-ERD."
+          : `Then ask it to change a table — a ${role} session will be told to stop.`,
+        "If the new Claude Code session still has no role, run `claude mcp get ai-erd`: a local-scope \"ai-erd\" entry hides .mcp.json (remove it with `claude mcp remove ai-erd -s local`).",
         "Undo everything with: ai-erd init --undo",
       ],
     },
@@ -210,6 +234,76 @@ function fallbackNotes(documents: HarnessDocuments): string[] {
   return notes;
 }
 
+/**
+ * ★<b>원격을 부르기 전에 로그인을 확인한다.</b> 그 역할의 토큰이 없으면(만료 + refresh 없음 포함)
+ * 브라우저 로그인을 하고 이어서 진행한다(합격 시나리오 4 — 예전엔 401 로 멈추고
+ * {@code ai-erd auth login} 을 치라고 했다).
+ *
+ * <p>⚠{@code --dry-run} 은 브라우저를 띄우지 않는다 — 「아무것도 바꾸지 않는다」는 약속에 사용자의
+ * 로그인 상태도 든다. 로그인 명령을 알려 주고 멈춘다.
+ * <p>토큰은 있는데 서버가 401 을 주는 경우(폐기된 토큰)는 드물어 여기서 다루지 않는다 —
+ * {@link callOrExplainSignIn} 이 안내한다. 트리거를 둘로 늘리지 않는다(설계 §8-1).
+ */
+async function ensureSignedIn(
+  options: InitCommandOptions,
+  role: HarnessRole,
+  dryRun: boolean,
+): Promise<void> {
+  if (options.login === undefined) {
+    return;
+  }
+  if (await options.accessToken?.()) {
+    return;
+  }
+  if (dryRun) {
+    throw new Error(
+      `Not signed in for this role, and --dry-run does not open a browser.\n\n`
+      + `    ${loginCommand(options, role)}\n\n`
+      + "Then run init again.",
+    );
+  }
+  await options.login();
+  options.io.stderr.write(`Signed in for role ${role}.\n`);
+}
+
+/**
+ * 저장소 루트 판정. 하위 폴더면 멈추고(던진다), git 저장소가 아니면 그 사실을 note 로 돌려준다.
+ *
+ * <p>★{@code .git} 은 디렉터리 «또는 파일»이다 — worktree·submodule 은 파일이다. {@code git} 실행
+ * 파일에는 기대지 않는다. git 이 아니면 멈추지 않는다: git 을 안 쓰는 사용자가 있고, 그 경우엔
+ * 가리킬 «진짜 루트»가 없다(설계 §6-1).
+ */
+async function repositoryRootNotes(cwd: string): Promise<string[]> {
+  const gitRoot = await findGitRoot(cwd);
+  if (gitRoot === undefined) {
+    return [`${cwd} is not inside a git repository, so init set up this folder.`];
+  }
+  if (gitRoot !== cwd) {
+    throw new Error(
+      `This folder is inside the git repository at ${gitRoot}, not at its root. `
+      + "Agents read their MCP config from the repository root, so run init there:\n\n"
+      + `    cd ${gitRoot}\n\n`
+      + "Nothing was changed.",
+    );
+  }
+  return [];
+}
+
+/** cwd 에서 위로 올라가며 {@code .git} 이 있는 첫 디렉터리. 없으면 undefined. */
+export async function findGitRoot(cwd: string): Promise<string | undefined> {
+  for (let at = resolve(cwd); ; at = dirname(at)) {
+    try {
+      await lstat(join(at, ".git"));
+      return at;
+    } catch {
+      // 없다(또는 볼 수 없다) — 한 칸 위로.
+    }
+    if (dirname(at) === at) {
+      return undefined;
+    }
+  }
+}
+
 type ResolvedProject = { uuid: string; name: string } | { choices: Array<{ uuid: string; name: string }> };
 
 async function resolveProject(
@@ -217,6 +311,7 @@ async function resolveProject(
   args: InitArgs,
   files: ReadonlyMap<string, string | undefined>,
   root: string,
+  role: HarnessRole,
 ): Promise<ResolvedProject> {
   const projects = await listProjects(options);
 
@@ -240,7 +335,18 @@ async function resolveProject(
     return { choices: projects };
   }
 
-  // 프로젝트가 하나도 없다 — 만들어야 한다. ★쓰기이므로 --yes 없이는 하지 않는다.
+  // 프로젝트가 하나도 없다 — 만들어야 한다.
+  // ★만들 수 있는 것은 Design 세션뿐이다(서버 McpRolePolicy: create_projects 는 Design·FULL 만).
+  //   예전엔 다른 역할로 --yes 를 주면 서버가 거부하고, 우리는 「Project creation did not return a
+  //   project uuid.」라는 엉뚱한 말로 끝났다. 원격 쓰기를 부르기 «전에» 사람이 할 일을 말한다.
+  if (role !== "design") {
+    throw new Error(
+      `No project found in your AI-ERD account, and only a Design session can create one. `
+      + `Re-run with --role design --yes (add --project-name <name> to pick the name), `
+      + `or create a project at ${new URL(options.endpoint).origin} and run init again.`,
+    );
+  }
+  // ★쓰기이므로 --yes 없이는 하지 않는다.
   const name = args.projectName ?? basenameOf(root);
   if (!args.yes) {
     throw new Error(
@@ -265,15 +371,15 @@ async function listProjects(options: InitCommandOptions): Promise<Array<{ uuid: 
 }
 
 /**
- * ★<b>「로그인하라」는 말을 «여기서» 한다.</b>
+ * ★<b>401 을 «무엇을 하라»로 바꾼다.</b>
  *
- * <p>init 은 새 사용자가 치는 «첫 명령»인데, 토큰이 없으면 MCP 호출이 401 로 떨어지고
- * 그대로 {@code MCP HTTP request failed with HTTP 401.} 한 줄만 남았다. 그 문장은 무엇을
- * 해야 하는지 말해 주지 않는다 — 로그인은 {@code auth login} 에서만 일어나는데, 그걸
- * 모르면 여기서 막힌다(2026-09-23 살아 있는 서버로 처음 돌려 보고 발견).
+ * <p>토큰이 «없을» 때는 여기까지 오지 않는다 — {@link ensureSignedIn} 이 먼저 로그인한다.
+ * 여기 오는 것은 토큰은 있는데 서버가 거절한 경우(폐기 등)와, 로그인 함수를 받지 못한 호출이다.
+ * 그때 {@code MCP HTTP request failed with HTTP 401.} 한 줄만 남기면 무엇을 해야 하는지 모른다
+ * (2026-09-23 살아 있는 서버로 처음 돌려 보고 발견).
  *
- * <p>⚠자동으로 로그인시키지 않는다. 같은 클라이언트를 stdio 브리지({@code ai-erd mcp})가
- * 쓰고 있어서, 401 에 브라우저를 여는 순간 에이전트 세션 한가운데서 창이 뜬다.
+ * <p>⚠401 을 받았다고 «다시» 브라우저를 띄우지는 않는다. 로그인 트리거는 하나로 둔다(설계 §8-1).
+ * 브리지({@code ai-erd mcp})는 애초에 자동 로그인하지 않는다 — 세션 한가운데서 창이 뜨면 안 된다.
  */
 async function callOrExplainSignIn<T>(
   options: InitCommandOptions,
