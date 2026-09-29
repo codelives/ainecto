@@ -94,7 +94,9 @@ function preflight() {
  */
 function alreadyPublished(name, version) {
   try {
-    execFileSync("npm", ["view", `${name}@${version}`, "version"], { cwd: ROOT, stdio: "pipe" });
+    // ★--prefer-online: 로컬 packument 캐시가 «아직 없음»을 답하면, 방금 올린 이름을 다시 올리려다
+    //   EPUBLISHCONFLICT 로 멈춘다 — 이 함수가 막으려던 바로 그 상황이다(0.4.1 리뷰 P1).
+    execFileSync("npm", ["view", `${name}@${version}`, "version", "--prefer-online"], { cwd: ROOT, stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -121,8 +123,8 @@ try {
   publish(primaryName);
 
   // 2) 범위 없는 이름 — 이름만 바꿔 같은 산출물을 한 번 더 올린다
-  //    ★prepack 을 다시 돌리지 않도록 --ignore-scripts 는 쓰지 않는다.
-  //      같은 dist 를 그대로 싸는 것이 목적이므로 재빌드돼도 결과는 같다.
+  //    ★--ignore-scripts 는 쓰지 않는다 — 그래서 prepack(typecheck·test·build)이 한 번 더 돈다.
+  //      같은 소스에서 같은 dist 를 다시 만들 뿐이라 결과는 같고, 시험을 건너뛴 채 싸는 길을 만들지 않는다.
   writeFileSync(PKG, JSON.stringify({ ...parsed, name: UNSCOPED_NAME }, null, 2) + "\n");
   publish(UNSCOPED_NAME, "(범위 없는 이름 — 같은 코드)");
 } finally {
