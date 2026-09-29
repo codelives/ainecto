@@ -209,7 +209,7 @@ Project [1]:
 New project name [my-repo]:
 ```
 
-- **「새로 만들기」는 역할이 Design 이고 `--dry-run` 이 아닐 때만 보인다.** 서버 정책상 다른 역할은 `create_projects` 가 거부된다([확인] §2). Design 이 아닐 때 0개면 이렇게 말하고 멈춘다: `No project yet, and only a Design session can create one. Re-run with --role design, or create one at https://ai-erd.com.` ⇒ §2 의 기존 결함(엉뚱한 오류 문구)도 같이 사라진다.
+- **「새로 만들기」는 역할이 Design 이고 `--dry-run` 이 아닐 때만 보인다.** 서버 정책상 다른 역할은 `create_projects` 가 거부된다([확인] §2). Design 이 아닐 때 0개면 이렇게 말하고 멈춘다: `No project found in your AI-ERD account, and only a Design session can create one. Ask the user: create the project at <origin> or in a Design session, then run init again with --role <원래 역할>.` ★「--role design 으로 다시 치라」고 말하지 않는다 — 에이전트를 역할 전환으로 이끈다(2026-09-29 코드 리뷰 P1). 역할은 사용자가 고른 것이다 ⇒ §2 의 기존 결함(엉뚱한 오류 문구)도 같이 사라진다.
 - 생성은 확인(§6-6) **뒤** 실행 단계에서 한다.
 - 목록은 전부 보여 준다(상한 없음). 프로젝트 수가 수십을 넘는 계정이 실측되면 그때 `q` 검색을 붙인다.
 
@@ -294,6 +294,8 @@ export class PromptCancelled extends Error {}   // EOF → 이것을 던지고 i
           판정 위치는 getAccessToken() 한 곳이다(브리지·tools call 도 같은 답을 받는다: 만료 토큰을
           보내 401 을 받느니 «없음»이 정직하다).
   없음 → --dry-run 이면 로그인 명령을 안내하고 멈춤 / 아니면 login()
+  ★--dry-run 은 토큰을 «읽기만» 한다(OAuthClient readOnly): 갱신하지 않으므로 네트워크도 토큰 파일 쓰기도 없다.
+    갱신이 필요한 토큰은 «없음»으로 보고 안내한다(2026-09-29 코드 리뷰 P2).
   ```
   토큰은 있는데 서버가 401 을 주는 경우(폐기된 토큰)는 드물다. 이때는 지금의 안내 오류(`callOrExplainSignIn`)를 그대로 둔다. 401 뒤 자동 재로그인까지 넣으면 트리거가 둘이 된다(빈도 대비 과함).
 - **`login()` 에 보탤 것 세 가지**(`oauth.ts`, 시나리오 4). `auth login` 도 같이 좋아진다.
@@ -307,7 +309,7 @@ export class PromptCancelled extends Error {}   // EOF → 이것을 던지고 i
      - 즉시 실패하는 이유: 에이전트의 셸 도구는 명령이 끝나야 출력을 보여 준다. 기다려 봐야 URL 이 에이전트에게 닿지 않는다. 원격 머신이라면 loopback 콜백이 사용자 브라우저에서 닿지도 않는다.
   3. **대기 한도 5분.** `loginTimeoutMs`(기본 300,000) 가 지나면 `Sign-in was not completed within 5 minutes. Nothing was written — run the same command again.`. 한도를 5분으로 둔 이유: 사람이 로그인·2단계 인증을 하기에 충분하고, 에이전트 셸 도구의 최대 한도(Claude Code 10분)보다 짧다. 안내문(§10)은 에이전트에게 긴 타임아웃을 쓰라고 말한다.
 - init 은 로그인이 끝나면 stderr 에 `Signed in for role design.` 한 줄을 쓰고 진행한다.
-- **종료 코드**(리뷰 P2-9 지정): 로그인 시간 초과·브라우저 실패·동의 거부 모두 **종료 1**(CLI 의 모든 실패와 같다). 구별은 `--json` 의 `error.code` 로 한다: `LOGIN_TIMEOUT` / `BROWSER_UNAVAILABLE` / (기존 문구 그대로의) OAuth 실패. 종료 코드를 따로 나누지 않는 이유: 받는 쪽(에이전트)은 메시지를 읽고 사용자에게 옮긴다. 코드표를 새로 두면 모든 호출자가 그 표를 알아야 한다.
+- **종료 코드**(리뷰 P2-9 지정): 로그인 시간 초과·브라우저 실패·동의 거부 모두 **종료 1**(CLI 의 모든 실패와 같다). 구별은 `--json` 의 `error.code` 로 한다: `LOGIN_TIMEOUT` / `BROWSER_UNAVAILABLE` / `CALLBACK_UNAVAILABLE`(로컬 콜백 포트 바인딩 실패 — sandbox 등, 코드 리뷰 P1) / (기존 문구 그대로의) OAuth 실패. 종료 코드를 따로 나누지 않는 이유: 받는 쪽(에이전트)은 메시지를 읽고 사용자에게 옮긴다. 코드표를 새로 두면 모든 호출자가 그 표를 알아야 한다.
 - **init 결과 `next` 에서 「Enforce this on the server too: ai-erd auth login …」 줄을 지운다**(리뷰 P1-1, `initCommand.ts:155`). init 이 이미 그 역할로 로그인했으므로 참이 아니고, 남으면 에이전트가 따라 쳐서 승인을 한 번 더 받는다. 대신 재시작 문구(§9)를 둔다.
 
 ### 8-2. 저장 위치
@@ -387,8 +389,8 @@ This AI-ERD session has no role, so every tool is available. AI-ERD is designed 
 If you are working in a code repository and can run shell commands, set a role up:
 1. Ask the user which role AI sessions in this repository should have: Design, Development, Test, or Validation. Never choose it yourself and never assume a default.
 2. Run this from the repository root with the role the user chose, using the longest command timeout you have (at least 6 minutes):
-   npx -y -p @ai-erd/mcp ai-erd init --role <role>
-   If the user is not signed in for that role, it opens a browser and the user approves there. If it lists projects, ask the user which one and run it again with --project <uuid>. If there is no project yet, only a Design session can create one: ask the user before adding --yes, or ask them to create it at https://ai-erd.com.
+   npx -y -p @ai-erd/mcp@latest ai-erd init --role <role>
+   If the user is not signed in for that role, it opens a browser and the user approves there. If it lists projects, ask the user which one and run it again with --project <uuid>. If there is no project yet, only a Design session can create one: in a Design session ask the user before adding --yes; in any other role ask the user to create the project (at https://ai-erd.com or in a Design session), then run the same command again. Never switch roles yourself to create it.
 3. Tell the user the role applies from a new session. Claude Code: exit and run `claude -c` in this folder, and approve the "ai-erd" server from .mcp.json when asked. Codex: save the profile init printed and start with `codex -p <role>`.
 
 If init already ran here and you still see this message after restarting, another "ai-erd" entry is hiding it. In Claude Code, run `claude mcp get ai-erd`; if it shows local scope, remove it with `claude mcp remove ai-erd -s local` and restart.
@@ -697,3 +699,24 @@ Then use any AI-ERD tool once; the client asks the user to sign in. Roles are se
 ### 21-2. 2단계 — 대화형 (남김)
 
 §5 판정 규칙, §6-1 루트 질문(대화형 분기), §6-2 역할 메뉴, §6-4 프로젝트 메뉴·「새로 만들기」, §6-6 확인 단계, §7 `Prompter`(readline) + `destructiveConfirmation` 통합, `connect(role)` 팩토리, §4-2 취소 의미(Ctrl+C·EOF), §15-2 의 대화형 시험(7~9, 11~14).
+
+### 21-3. 독립 코드 리뷰(2026-09-29, GO · P0 없음) 반영 기록
+
+| # | 지적 | 처리 |
+|---|---|---|
+| P1 | loopback `listen` 에 error 리스너가 없어 로컬 바인딩이 막힌 곳(sandbox, V12)에서 처리되지 않은 예외 | `CALLBACK_UNAVAILABLE` 로 거절, sandbox 밖 실행 안내 |
+| P1 | 프로젝트 0개 문구 「Re-run with --role design --yes」가 역할 전환을 부른다 | 「사용자에게 묻고, 웹이나 Design 세션에서 만든 뒤 `--role <원래 역할>` 로 다시」(§6-4, §10-3 초안, README 도 같이) |
+| P2 | README 과장 두 곳(Windows 즉시 실패 조건, 역할 없는 브리지 거절), npx `@latest` | 정정 |
+| P2 | dry-run 이 `accessToken()` 으로 갱신(네트워크 + 토큰 파일 쓰기)할 수 있다 | `OAuthClient.readOnly` — init `--dry-run` 이면 갱신하지 않는다(§8-1) |
+| P2 | Node 18 `server.close()` 지연 | `closeAllConnections?.()` |
+| P2 | §13 S2·S9 미구현 | `Role changes from X to Y for new sessions.` / `Created project <name> (<uuid>).` (stderr) |
+| P2 | `refreshStoredToken` 도달 불가 가드 | 제거, 타입으로 요구 |
+| P2 | undo note 「init set up this folder」 | 「this folder was used as the repository root」 |
+| P2 | 시험 보강(검증자 값, 실패 뒤 콜백 서버 닫힘·토큰 미저장, ainectoCli 연결부) | 추가 |
+| P2 | `--json` 모드에서 URL 안내 줄이 stderr 의 JSON 오류와 섞인다 | ⏸**보류 — 설계에 없음.** 사용자 결정 대기(아래) |
+| — | `findGitRoot` 가 부모 폴더의 `.git` 에도 멈춘다 | 그대로 둔다(사용자 결정) |
+
+**보류: `--json` 에서의 URL 안내 형식.** 지금은 `--json` 이어도 stderr 에 사람용 문장 한 줄(URL 포함)이 먼저 나오고, 실패하면 그 뒤에 JSON 오류가 붙는다. stdout 의 JSON 결과는 깨지지 않지만, stderr 를 JSON 으로 읽는 호출자는 첫 줄에서 파싱에 실패한다. 선택지:
+- (가) `--json` 이면 stderr 안내를 JSON 한 줄로: `{"event":"login_url","url":"…","role":"design"}` — 기계가 읽을 수 있고, 사람용 줄은 없다.
+- (나) 지금대로 두고 «`--json` 의 stderr 는 사람용 줄과 JSON 오류가 섞일 수 있다»고 문서에 적는다.
+- 권장: (가). 에이전트는 URL 을 사용자에게 옮겨야 하는데, 구조화돼 있으면 문장 파싱이 필요 없다. 변경은 ainectoCli 의 `onAuthorizeUrl` 한 곳이다.
