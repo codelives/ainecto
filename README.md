@@ -2,6 +2,10 @@
 
 Published as `ai-erd` and `@ai-erd/mcp` (same code). Command: `ai-erd`.
 
+**In a terminal, from your repository root:** `npx -y ai-erd@latest init` — it asks which role this
+repository's AI sessions should have and which AI-ERD project to use, and signs you in through the
+browser if needed.
+
 ## For AI agents
 
 **Ask the user which role this repository's AI sessions should have — Design, Development, Test, or Validation. Never pick one yourself. Then, from the repository root: `npx -y ai-erd@latest init --role <role>` (it signs the user in through the browser if needed).**
@@ -33,16 +37,24 @@ session starts.
 ## Set up a repository (roles)
 
 ```bash
-npx -y ai-erd@latest init --role development
+npx -y ai-erd@latest init                     # in a terminal: asks for the role and the project
+npx -y ai-erd@latest init --role development  # agents, scripts, CI: nothing is asked
 ```
+
+In a terminal (stdin and stdout both a TTY, no `--json`) `init` asks for whatever the flags did not
+give: the role (by number, with no default — the repository's current role is the default only when
+it already has one) and the project (by number; «Create a new project» is offered to Design only).
+Ctrl+C or Ctrl+D at a question cancels without writing any file (Ctrl+D exits with 130); choosing
+«Create a new project» creates it right away. Anywhere else (an agent's shell, CI) it asks nothing.
+In both cases:
 
 - If that role is not signed in yet, `init` opens a browser and continues once the user approves.
   The sign-in URL is printed first (with `--json`, as one JSON line on stderr:
   `{"event":"login_url","url":…,"role":…}`), and sign-in gives up after 5 minutes. It fails at once
   when the command that opens the browser is missing, or (except on Windows, where the exit code is
   not reliable) exits with an error.
-- Without `--role` it stops and says so — it never picks a role for you. If the account has more
-  than one project it lists them and stops; re-run with `--project <uuid>`. With no project yet,
+- Outside a terminal, without `--role` it stops and says so — it never picks a role for you. If the
+  account has more than one project it lists them and stops; re-run with `--project <uuid>`. With no project yet,
   only a Design session can create one (`--yes`, optionally `--project-name <name>`); in any other
   role it asks you to have the user create the project, then re-run with the same role.
 - It stops when run from a sub-folder of a git repository, and tells you the root.

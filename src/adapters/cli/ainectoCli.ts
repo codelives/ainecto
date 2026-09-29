@@ -306,7 +306,8 @@ function helpText(): string {
     "  ai-erd mcp [--env prod|dev] [--endpoint URL] [--role design|development|test|validation]",
     "",
     "Harness:",
-    "  ai-erd init --role <design|development|test|validation> [--project <uuid>] [--dry-run]",
+    "  ai-erd init [--role <design|development|test|validation>] [--project <uuid>] [--dry-run]",
+    "      In a terminal, asks for the role and project when they are not given.",
     "  ai-erd init --undo",
     "",
   ].join("\n");
