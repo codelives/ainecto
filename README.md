@@ -55,7 +55,8 @@ npx -y ai-erd@latest init --role development
 
 ## Commands
 
-Install once with `npm install -g ai-erd`, or prefix any command with `npx -y ai-erd@latest`.
+Prefer `npx -y ai-erd@latest <command>`. To install once instead, use `npm install -g ai-erd` — but install
+only one of `ai-erd` and `@ai-erd/mcp` globally: they ship the same command names and conflict.
 
 ```bash
 ai-erd auth login --role design
@@ -87,8 +88,10 @@ Endpoint URLs must use `https:`. Plain `http:` is accepted only for localhost lo
 as `127.0.0.1`. When `AINECTO_TOKEN` is set, the CLI only sends it to the default prod/dev endpoints
 unless `AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN=1` is set for an explicitly trusted custom endpoint.
 
-Names that still say `ainecto` are kept for compatibility: the `AINECTO_*` environment variables,
-the MCP Registry name `io.github.codelives/ainecto`, and the `ainecto` command alias.
+Names that still say `ainecto` are kept for compatibility: the MCP Registry name
+`io.github.codelives/ainecto` and the `ainecto` command alias. The `AINECTO_*` environment variables
+above are the **only** names for those settings — there is no `AI_ERD_*` equivalent, so do not guess
+one. (The one `AI_ERD_*` variable is `AI_ERD_ROLE`.)
 
 ## Generated Friendly Commands
 
