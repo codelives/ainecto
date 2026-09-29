@@ -1,5 +1,7 @@
 import type { TokenProvider } from "../auth/oauth";
+import { PACKAGE_NAME } from "../harness/agentTargets";
 import { ROLE_HEADER, type HarnessRole } from "../harness/role";
+import { CLI_VERSION } from "../version";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -61,7 +63,7 @@ export class McpRpcClient {
     return this.request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "@ainecto/mcp", version: "0.1.0" },
+      clientInfo: { name: PACKAGE_NAME, version: CLI_VERSION },
     });
   }
 
