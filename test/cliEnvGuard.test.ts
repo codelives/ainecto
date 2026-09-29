@@ -16,12 +16,13 @@ describe("CLI env flag guards", () => {
     expect(() => parseMcpArgs(["--env"])).toThrow("--env requires a value.");
   });
 
-  it("marks prod tools catalog output as seed fixture until prod live sync", async () => {
+  it("marks prod tools catalog output as a checked-in snapshot of prod tools/list", async () => {
     const io = createIo();
 
     await expect(runAinectoCli(["tools", "catalog", "--json"], io)).resolves.toBe(0);
     const output = JSON.parse(io.stdoutText()) as { warnings?: string[] };
-    expect(output.warnings?.join("\n")).toContain("prod catalog is seed fixture only");
+    expect(output.warnings?.join("\n")).toContain("prod catalog is a checked-in snapshot of that server's tools/list");
+    expect(output.warnings?.join("\n")).not.toContain("seed fixture");
   });
 
   it("marks dev tools catalog output as a live sync snapshot", async () => {
@@ -30,7 +31,7 @@ describe("CLI env flag guards", () => {
     await expect(runAinectoCli(["tools", "catalog", "--env", "dev", "--json"], io)).resolves.toBe(0);
     const output = JSON.parse(io.stdoutText()) as { data?: unknown[]; warnings?: string[] };
     expect(output.data?.length).toBeGreaterThan(1);
-    expect(output.warnings?.join("\n")).toContain("dev catalog is a checked-in live sync snapshot");
+    expect(output.warnings?.join("\n")).toContain("dev catalog is a checked-in snapshot of that server's tools/list");
   });
 });
 

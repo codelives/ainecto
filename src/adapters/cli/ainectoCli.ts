@@ -205,12 +205,13 @@ async function handleTools(
   }
 
   if (action === "catalog") {
+    // ★두 카탈로그 다 «그 서버의 tools/list 를 받아 저장소에 넣은 스냅샷»이다. 예전 문구는 prod 를
+    //   「seed fixture」라고 했는데, prod 도 운영에서 받아 온 것이다(0.4.1 에서 다시 받음, 리뷰 P2).
     const catalogEnv = parsed.env ?? "prod";
-    io.stdout.write(renderSuccess(getGeneratedTools(parsed.env ?? "prod"), {
+    io.stdout.write(renderSuccess(getGeneratedTools(catalogEnv), {
       json: parsed.json,
-      warnings: [catalogEnv === "dev"
-        ? "Local dev catalog is a checked-in live sync snapshot; rerun sync:tools --env dev to refresh it."
-        : "Local prod catalog is seed fixture only until authenticated prod live sync updates generated catalogs."],
+      warnings: [`Local ${catalogEnv} catalog is a checked-in snapshot of that server's tools/list, `
+        + `taken when this CLI version was built; rerun sync:tools --env ${catalogEnv} to refresh it.`],
     }));
     return 0;
   }
