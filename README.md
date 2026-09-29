@@ -2,6 +2,14 @@
 
 AI-ERD MCP connector and first-party CLI.
 
+## For AI agents
+
+Install AI-ERD (Claude Code): `claude mcp add --scope user --transport http ai-erd https://ai-erd.com/mcp` — Codex: `codex mcp add ai-erd --url https://ai-erd.com/mcp`. The client signs the user in on first use. Roles are set up per repository afterwards with `npx -y -p @ai-erd/mcp ai-erd init --role <role>`, using the role the user picks — ask the user; never pick a role yourself.
+
+Use `--scope user`: a local-scope entry takes precedence over the `.mcp.json` that `ai-erd init` writes, and the repository's role would never apply.
+
+## Entry points
+
 This package exposes two entry points:
 
 - `npx -y @ai-erd/mcp` or `ainecto mcp`: raw stdio-to-HTTP JSON-RPC proxy for AI-ERD MCP.
@@ -18,6 +26,27 @@ npm test
 npm run build
 npm link
 ```
+
+## Set up a repository (roles)
+
+Run from the repository root, with the role the user picked:
+
+```bash
+npx -y -p @ai-erd/mcp ai-erd init --role development
+```
+
+- If that role is not signed in yet, `init` opens a browser and continues once the user approves.
+  The sign-in URL is printed first; sign-in gives up after 5 minutes, and fails at once when no browser
+  can be opened on this machine.
+- Without `--role` it stops and says so — it never picks a role for you. If the account has more
+  than one project it lists them and stops; re-run with `--project <uuid>`. With no project yet,
+  only a Design session can create one (`--role design --yes`, optionally `--project-name <name>`).
+- It stops when run from a sub-folder of a git repository, and tells you the root.
+- It writes one `ai-erd` server entry carrying `--role` into `.mcp.json` (Claude Code) and
+  `.cursor/mcp.json` (Cursor), and prints the Codex profile to use (`codex -p <role>`).
+- The role applies from a **new session**; the running session keeps the role it started with.
+  Roles are a working guardrail, not a security boundary.
+- `ai-erd init --dry-run` shows what would change; `ai-erd init --undo` removes what it wrote.
 
 ## Commands
 
@@ -48,41 +77,38 @@ Endpoint URLs must use `https:`. Plain `http:` is accepted only for localhost lo
 ## Connector Mode
 
 ```bash
-npx -y @ai-erd/mcp
-ainecto mcp --env dev
+ai-erd mcp --role <design|development|test|validation> [--env dev]
 ```
 
-The connector proxies `initialize`, `tools/list`, and `tools/call` to the resolved `/mcp` endpoint. It does not rewrite remote schemas or interpret local file references.
+The package doubles as a stdio-to-HTTP proxy for the resolved `/mcp` endpoint. It proxies
+`initialize`, `tools/list`, and `tools/call`, does not rewrite remote schemas, and does not interpret
+local file references. It uses the sign-in stored for its role (`ai-erd auth login --role <role>`,
+or the sign-in `ai-erd init` performs) and never opens a browser on its own.
+
+This is the entry `ai-erd init` writes into a repository's MCP config — you normally do not add it
+by hand:
+
+```json
+{
+  "mcpServers": {
+    "ai-erd": {
+      "command": "npx",
+      "args": ["-y", "@ai-erd/mcp", "--role", "development"]
+    }
+  }
+}
+```
 
 ## MCP Client Installation
 
-Use the direct package configuration until the server is published to the official MCP Registry.
+Connect clients over HTTP directly — see [For AI agents](#for-ai-agents). The client handles OAuth,
+and the first session has no role. Do not register the stdio bridge without a role: it has no
+sign-in of its own and the server rejects it.
 
-```json
-{
-  "mcpServers": {
-    "ainecto": {
-      "command": "npx",
-      "args": ["-y", "@ai-erd/mcp"]
-    }
-  }
-}
-```
-
-For a non-production endpoint, pass CLI flags through the package args:
-
-```json
-{
-  "mcpServers": {
-    "ainecto-dev": {
-      "command": "npx",
-      "args": ["-y", "@ai-erd/mcp", "--env", "dev"]
-    }
-  }
-}
-```
-
-The planned official Registry server name is `io.github.codelives/ainecto`, backed by the public npm package `@ai-erd/mcp`. Registry publication requires the npm package version referenced by `server.json` to include a matching `mcpName` field in `package.json`.
+The official MCP Registry entry `io.github.codelives/ainecto` (see `server.json`) lists both the
+remote (`streamable-http`, `https://ai-erd.com/mcp`) and this npm package. Registry publication
+requires the npm package version referenced by `server.json` to include a matching `mcpName` field
+in `package.json`.
 
 ## Catalog Sync
 
