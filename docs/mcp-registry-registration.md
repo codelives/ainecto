@@ -1,15 +1,15 @@
 # MCP Registry Registration Prep
 
 Date: 2026-07-10 KST (updated 2026-09-29 for 0.4.0)
-Status: prepared, not submitted
+Status: published — 0.4.2 on 2026-09-29 (package only)
 
 ## Proposed Identity
 
 - Registry name: `io.github.codelives/ainecto`
 - Namespace auth path: GitHub organization namespace `io.github.codelives/*`
 - npm package: `@ai-erd/mcp` (the old name `@ainecto/mcp` is deprecated since 0.3.0)
-- Package version: `0.4.0`
-- Remote: `streamable-http` at `https://ai-erd.com/mcp` — the client does OAuth itself
+- Package version: `0.4.2`
+- Remote: none here — `https://ai-erd.com/mcp` is listed by `com.ai-erd/ai-erd`
 - Package: `npx -y @ai-erd/mcp` over stdio — the per-repository role bridge that `ai-erd init --role` writes
 - Homepage: `https://ai-erd.com`
 - Repository: `https://github.com/codelives/ainecto`
@@ -17,14 +17,23 @@ Status: prepared, not submitted
 
 The repository contains `server.json` at the package root. Its `name` must match `package.json#mcpName`.
 
-### Why `server.json` lists a remote as well as the package (2026-09-29)
+### Why `server.json` has no remote (2026-09-29)
 
-With only `packages`, a Registry-driven install starts the stdio bridge with no role and no CLI
-sign-in. The server requires auth even for `initialize`, so that bridge cannot connect at all.
-The `remotes` entry lets Registry clients connect over HTTP directly — the client signs the user
-in, and the first session is a session without a role. Roles are then set up per repository with
-`ai-erd init --role <role>`, which writes the stdio bridge into the repository's own MCP config.
-The package entry stays: that bridge is this package.
+The remote `https://ai-erd.com/mcp` is already listed by another entry we own,
+`com.ai-erd/ai-erd` (1.0.0, published 2025-12-29 under the ai-erd.com domain namespace). The Registry
+lets one remote URL belong to only one server, so publishing it here fails with
+`remote URL … is already used by server com.ai-erd/ai-erd`. This entry lists only the package:
+the per-repository role bridge that `ai-erd init --role` writes.
+
+Folding both into `com.ai-erd/ai-erd` needs `package.json#mcpName` changed to that name (a new npm
+release) and ai-erd.com domain auth (`mcp-publisher login dns|http --domain ai-erd.com`).
+
+### Publishing under `io.github.codelives/*` (2026-09-29)
+
+Only an org **Owner** gets the org namespace, and the registry must be able to read the role.
+The browser login (`mcp-publisher login github`) came back with `io.github.Ryan9071/*` only, even
+for an Owner with public membership. A classic PAT with just `read:org` worked:
+`MCP_GITHUB_TOKEN=$(pbpaste) mcp-publisher login github && mcp-publisher publish`.
 
 ## Official Registry Procedure
 
