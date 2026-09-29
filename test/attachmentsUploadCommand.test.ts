@@ -1,11 +1,27 @@
+import { tmpdir as isolationTmpdir } from "node:os";
+import { join as isolationJoin } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
 
 describe("attachments upload command", () => {
+  // ★저장소 역할 탐색(0.4.2)은 cwd 에서 위로 올라간다. 이 저장소의 조상 폴더에 사람의 설정이 있어도
+  //   시험이 흔들리지 않게, 아무 설정도 없는 임시 폴더에서 돈다.
+  let isolatedCwd: string;
+  let previousCwd: string;
+  beforeEach(() => {
+    previousCwd = process.cwd();
+    isolatedCwd = mkdtempSync(isolationJoin(isolationTmpdir(), "ai-erd-cwd-"));
+    process.chdir(isolatedCwd);
+  });
+  afterEach(() => {
+    process.chdir(previousCwd);
+    rmSync(isolatedCwd, { recursive: true, force: true });
+  });
+
   let tempDir: string | undefined;
 
   afterEach(() => {

@@ -1,9 +1,26 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir as isolationTmpdir } from "node:os";
+import { join as isolationJoin } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
 import { parseMcpArgs } from "../src/adapters/mcp/args";
 
 describe("CLI env flag guards", () => {
+  // ★저장소 역할 탐색(0.4.2)은 cwd 에서 위로 올라간다. 이 저장소의 조상 폴더에 사람의 설정이 있어도
+  //   시험이 흔들리지 않게, 아무 설정도 없는 임시 폴더에서 돈다.
+  let isolatedCwd: string;
+  let previousCwd: string;
+  beforeEach(() => {
+    previousCwd = process.cwd();
+    isolatedCwd = mkdtempSync(isolationJoin(isolationTmpdir(), "ai-erd-cwd-"));
+    process.chdir(isolatedCwd);
+  });
+  afterEach(() => {
+    process.chdir(previousCwd);
+    rmSync(isolatedCwd, { recursive: true, force: true });
+  });
+
   it("rejects ainecto --env without a value before resolving the default prod endpoint", async () => {
     const io = createIo();
 
