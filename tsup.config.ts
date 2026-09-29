@@ -6,7 +6,7 @@ const { version } = createRequire(import.meta.url)("./package.json") as { versio
 export default defineConfig({
   entry: {
     "bin/mcp": "src/bin/mcp.ts",
-    "bin/ainecto": "src/bin/ainecto.ts",
+    "bin/ai-erd": "src/bin/ai-erd.ts",
   },
   format: ["esm"],
   target: "node18",
