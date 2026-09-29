@@ -1,21 +1,30 @@
 # MCP Registry Registration Prep
 
-Date: 2026-07-10 KST
+Date: 2026-07-10 KST (updated 2026-09-29 for 0.4.0)
 Status: prepared, not submitted
 
 ## Proposed Identity
 
 - Registry name: `io.github.codelives/ainecto`
 - Namespace auth path: GitHub organization namespace `io.github.codelives/*`
-- npm package: `@ainecto/mcp`
-- Package version: `0.1.4`
-- Execution: `npx -y @ainecto/mcp`
-- Transport: stdio
-- Homepage: `https://ainecto.com`
+- npm package: `@ai-erd/mcp` (the old name `@ainecto/mcp` is deprecated since 0.3.0)
+- Package version: `0.4.0`
+- Remote: `streamable-http` at `https://ai-erd.com/mcp` — the client does OAuth itself
+- Package: `npx -y @ai-erd/mcp` over stdio — the per-repository role bridge that `ai-erd init --role` writes
+- Homepage: `https://ai-erd.com`
 - Repository: `https://github.com/codelives/ainecto`
 - License metadata: `UNLICENSED`
 
 The repository contains `server.json` at the package root. Its `name` must match `package.json#mcpName`.
+
+### Why `server.json` lists a remote as well as the package (2026-09-29)
+
+With only `packages`, a Registry-driven install starts the stdio bridge with no role and no CLI
+sign-in. The server requires auth even for `initialize`, so that bridge cannot connect at all.
+The `remotes` entry lets Registry clients connect over HTTP directly — the client signs the user
+in, and the first session is a session without a role. Roles are then set up per repository with
+`ai-erd init --role <role>`, which writes the stdio bridge into the repository's own MCP config.
+The package entry stays: that bridge is this package.
 
 ## Official Registry Procedure
 
@@ -75,7 +84,7 @@ mcp-publisher publish
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.codelives/ainecto"
 ```
 
-Current patch readiness: `@ainecto/mcp@0.1.4` is prepared locally and contains `mcpName: "io.github.codelives/ainecto"`. npm publish is pending user approval before Registry publication.
+Current readiness: `@ai-erd/mcp@0.4.0` is prepared locally and contains `mcpName: "io.github.codelives/ainecto"`. npm publish is pending user approval before Registry publication.
 
 ## Community Directory Mapping
 
@@ -87,7 +96,7 @@ Current patch readiness: `@ainecto/mcp@0.1.4` is prepared locally and contains `
 | MCP.so | https://mcp.so/submit | Public GitHub server submit form; draft completion publishes automatically | User or maintainer signs in and submits GitHub repository URL. |
 | MCP.Directory | https://mcp.directory/submit | GitHub URL form; auto-pulls metadata, tools, README, npm/PyPI; review within 24 hours; can claim auto-discovered official Registry entries | Submit GitHub repo and optional npm package, or claim if auto-discovered. |
 | mcpservers.org | https://mcpservers.org/submit | Form with server name, description, GitHub/docs link, category, contact email | User or maintainer submits form; premium review is optional. |
-| Smithery | https://smithery.ai/docs/build/publish | URL publish for Streamable HTTP servers, or MCPB bundle for local stdio distribution | Current stdio npm package is not directly enough; prepare MCPB or hosted HTTP endpoint before Smithery listing. |
+| Smithery | https://smithery.ai/docs/build/publish | URL publish for Streamable HTTP servers, or MCPB bundle for local stdio distribution | Use the hosted Streamable HTTP endpoint `https://ai-erd.com/mcp` (the same one `server.json#remotes` lists). |
 
 ## User-Only Actions
 
@@ -99,7 +108,7 @@ Current patch readiness: `@ainecto/mcp@0.1.4` is prepared locally and contains `
 ## Developer-Ready Actions
 
 - Keep `server.json` and `package.json#mcpName` synchronized.
-- Keep README direct-install JSON current.
+- Keep the README «For AI agents» install line current (HTTP direct, `--scope user`).
 - Before user publish, run local checks:
 
 ```bash
