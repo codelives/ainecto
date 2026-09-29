@@ -1,6 +1,6 @@
 # Attachment Upload Live Smoke
 
-Purpose: verify the bespoke `ainecto attachments upload` command against a local `ainecto-api` dev server with real file bytes.
+Purpose: verify the bespoke `ai-erd attachments upload` command against a local `ainecto-api` dev server with real file bytes.
 
 ## Command
 
@@ -15,7 +15,7 @@ npm run smoke:attachments -- --base-url http://localhost:8080 --endpoint http://
 - Runs the CLI command:
 
 ```bash
-ainecto attachments upload --env dev --endpoint http://localhost:8080/mcp --document-uuid <documentUuid> <file> --json
+ai-erd attachments upload --env dev --endpoint http://localhost:8080/mcp --document-uuid <documentUuid> <file> --json
 ```
 
 - Verifies `request_upload_token`, raw bytes `PUT`, `upload_attachments`, `list_attachments`, and server filesystem bytes.

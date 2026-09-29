@@ -744,10 +744,10 @@ Then use any AI-ERD tool once; the client asks the user to sign in. Roles are se
 
 | # | 항목 | 규칙 |
 |---|---|---|
-| 1 | 대화형 판정 | §5 그대로: `stdin.isTTY && stdout.isTTY && !--json`. 판정은 `prompter.ts` 의 `isInteractive` 한 곳 |
-| 2 | 역할 질문 | `--role`/`AI_ERD_ROLE` 이 없고 대화형이면 넷 중 번호로 고른다. **기본값 없음** — 빈 입력·잘못된 번호는 다시 묻는다. 단 저장소에 이미 걸린 역할이 있으면 §6-2 대로 그 역할이 기본값(Enter = 유지)이다 — 사람이 전에 고른 값이지 우리가 고른 값이 아니다. 비대화형은 지금처럼 멈춘다 |
+| 1 | 대화형 판정 | §5 그대로: `stdin.isTTY && stdout.isTTY && !--json`, ★그리고 에이전트·CI 표지가 없을 때(0.4.1 최종 리뷰 P1 — pty 에서 도는 에이전트가 답을 «쳐서» 역할을 고르지 못하게). 표지는 확인된 것만: `CLAUDECODE`(실측) · `CI` · `GEMINI_CLI`(Gemini CLI 문서) · `CODEX_SANDBOX`(`codex sandbox -- env` 실측, 샌드박스 밖 Codex 명령의 표지는 미확인) · `CURSOR_AGENT`(Cursor 문서). 판정은 `prompter.ts` 의 `isInteractive` 한 곳, 목록은 `AGENT_ENV_MARKERS` 한 곳 |
+| 2 | 역할 질문 | `--role`/`AI_ERD_ROLE` 이 없고 대화형이면 넷 중 번호로 고른다. **기본값 없음** — 빈 입력·잘못된 번호는 다시 묻는다. 단 저장소에 이미 걸린 역할이 있으면 §6-2 대로 그 역할이 기본값(Enter = 유지)이다 — 사람이 전에 고른 값이지 우리가 고른 값이 아니다. 설정끼리 역할이 어긋나 있으면 기본값 없이 묻는다. 비대화형은 멈추고 «사용자에게 역할을 물어 --role 로 다시»라고 말한다(「하나 고르라」가 아니다 — 읽는 쪽이 대개 에이전트다) |
 | 3 | 로그인 | 역할이 정해진 «뒤»에 기존 흐름 그대로(브라우저·URL 출력·5분). 역할이 나중에 정해지므로 클라이언트는 `connect(role)` 로 역할이 정해진 뒤에 만든다(§14 의 최종 모양). 저장소 역할 추론도 init 안에서 한다 — 역할이 클라이언트보다 먼저 정해진다는 I10 불변식은 그대로 |
 | 4 | 프로젝트 질문 | `--project` 가 없고 대화형이면 번호로 고른다(§6-4). 연결된 프로젝트가 목록에 있으면 그것, 1개뿐이면 그것이 기본값. 「새로 만들기」는 역할이 Design 이고 `--dry-run` 이 아닐 때만 보인다. 0개 + Design 이면 이름을 물어(기본값 = 폴더 이름) 만든다 — `--yes` 대신 사람의 선택이 동의다. 0개 + Design 아님은 지금 문구로 멈춘다. 비대화형은 지금 동작 그대로 |
-| 5 | 취소 | 질문 중 EOF(Ctrl+D)면 `Cancelled — nothing was written.` 과 종료 130. Ctrl+C 는 OS 기본 SIGINT 로 끝난다(cooked 모드, §4-2). 질문은 모두 파일 쓰기보다 앞에 있다 — 예외: 질문에서 「새로 만들기」를 고르면 그 자리에서 원격에 프로젝트가 생긴다(확인 단계가 2단계라서). 생성 직후 `Created project …` 를 알린다(S9) |
+| 5 | 취소 | 질문 중 EOF(Ctrl+D)면 `Cancelled — no repository files were written. A sign-in you already completed stays saved.` 과 종료 130(질문 전에 끝낸 로그인은 토큰 저장소에 남는다). Ctrl+C 는 OS 기본 SIGINT 로 끝난다(cooked 모드, §4-2). 질문은 모두 파일 쓰기보다 앞에 있다 — 예외: 질문에서 「새로 만들기」를 고르면 그 자리에서 원격에 프로젝트가 생긴다(확인 단계가 2단계라서). 생성 직후 `Created project …` 를 알린다(S9) |
 | 6 | 구현 | Node 내장 `readline` 한 인터페이스(§7). 프롬프트는 stderr. `Prompter` 인터페이스로 입력을 주입해 시험한다. 새 런타임 의존성 0 |
 | 7 | README | 사람용 첫 줄 `npx -y ai-erd@latest init`(역할·프로젝트를 물어봄), 에이전트용 절은 그대로 |
