@@ -659,6 +659,20 @@ Then use any AI-ERD tool once; the client asks the user to sign in. Roles are se
 5. **문서·홈페이지·앱 문구**(§16, D1). 퍼블리시와 같은 날에 낸다. 단 `claude-code.mdx` 의 `--scope user` 는 지금 코드와 무관한 결함이라 1 을 기다리지 않고 먼저 고쳐도 된다.
 6. **V8**(합격 시나리오 전 구간)을 운영 기준으로 한 번 돌린다.
 
+**진행 기록 (2026-09-29)**
+- 1 완료: `@ai-erd/mcp` 0.4.0 퍼블리시(`v0.4.0` = `d80b7ef`).
+- 2 완료(dev): `HARNESS.DOC` `harness-r4`(id 2753, 3,481자 — r3 본문에서 SQL 로 D3·D4 만 바꿈, 등급 절 유지, `auth login` 줄 0) · `HARNESS.INSTRUCTIONS` `harness-r3`(id 2754, 2,255자 — §10-3 안내 + r2 의 ERD 한 줄). 같은 SQL 을 다시 돌리면 0행.
+  §10-3 초안에서 두 곳을 다듬어 넣었다: 「하위 폴더라고 하면 그 폴더에서 다시」 한 문장 추가, 프로젝트가 없을 때 「when the chosen role is Design … otherwise … on the AI-ERD website」(dev·운영 공통 문구라 주소를 박지 않는다).
+- 3 대기: 운영 레지스트리 — 같은 SQL 파일로(가드가 운영 r3 본문에서 다시 만든다).
+- 4 D6 완료(api dev `ffca54b8`, 주석만). ★**D3 의 «소스 파일도 맞춘다»는 전제가 틀렸다 — 하지 않는다.**
+  `src/main/resources/harness/HARNESS.DOC.en-US.md` 는 런타임 예비값이 아니라 **적용된 Java 마이그레이션
+  V198·V199 의 입력**이다(두 마이그레이션이 이 파일을 읽어 r1·r2 를 심는다). DOC 의 런타임 예비값은 빈 글이고
+  (`HarnessPromptCatalog.DEFAULTS`), 그때는 CLI 패키지 기본값(0.4.0, D2 반영)이 쓰인다. 파일을 고치면
+  새 DB 에서 «r1·r2» 라벨로 새 문구가 심겨 이력이 거짓이 된다 — 적용된 마이그레이션을 고치는 것과 같다.
+  같은 이유로 `HarnessPromptCatalog.codeDefault(INSTRUCTIONS)`(ERD 한 줄)도 V199 가 읽으므로 새 안내문으로
+  바꾸지 않는다. 레지스트리를 못 읽을 때 역할 없는 세션은 역할 안내 없이 ERD 한 줄만 받는다(기능 저하이지
+  거짓은 아니다).
+
 ---
 
 ## 20. 리뷰 P1/P2 — 반영 결정 (2026-09-29 사용자 결정: 전부 반영)
