@@ -1322,6 +1322,10 @@ describe("9차 B6 — 구판 기록은 «없는 기록»이 아니다", () => {
     expect(notes).not.toContain("No record of a previous init");
     expect(notes).toContain("an older version of this CLI");
     expect(notes).toContain("--undo");          // 무엇을 하라는지 말한다
+    // ★그 명령이 «실제로 CLI 를» 부른다 — `-p` 없이 `npx @ai-erd/mcp@0.2 ai-erd …` 이면 기본 bin(브리지)이
+    //   돈다(0.4.1 리뷰 P2).
+    expect(notes).toContain("npx -y -p @ai-erd/mcp@0.2 ai-erd init --undo");
+    expect(notes).not.toMatch(/npx @ai-erd\/mcp@/);
     expect(undo.writes).toEqual([]);            // ⛔그리고 아무것도 건드리지 않는다
     expect(undo.deletes).toEqual([]);
   });

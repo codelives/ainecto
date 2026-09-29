@@ -255,7 +255,9 @@ export function legacyManagedNotice(configPath: string): string {
   return `${configPath} holds an init record written by an older version of this CLI `
     + `(a "managed" field). This version keeps its record in ${HARNESS_RECORD_PATH} and cannot `
     + "read that one, so your saved originals are still in there and nothing was changed. "
-    + "Undo with the version that wrote it (for example: npx @ai-erd/mcp@0.2 ai-erd init --undo), "
+    // ★`-p` 가 있어야 한다. `npx @ai-erd/mcp@0.2 ai-erd …` 는 패키지의 기본 bin(`mcp` — 브리지)을
+    //   실행하고 뒤의 말을 그 인자로 넘긴다(0.4.1 리뷰 P2). 버전은 «그 기록을 쓴 판»(0.2)을 가리킨다.
+    + "Undo with the version that wrote it (for example: npx -y -p @ai-erd/mcp@0.2 ai-erd init --undo), "
     + "then run this version again.";
 }
 
