@@ -1,5 +1,13 @@
+import { EventEmitter } from "node:events";
+import type { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
-import { OAuthClient, discoverOAuthMetadata, getBrowserOpenCommand } from "../src/core/auth/oauth";
+import {
+  OAuthClient,
+  OAuthLoginError,
+  discoverOAuthMetadata,
+  getBrowserOpenCommand,
+  launchBrowser,
+} from "../src/core/auth/oauth";
 import type { StoredTokenSet, TokenStore } from "../src/core/auth/tokenStore";
 
 class MemoryTokenStore implements TokenStore {
@@ -126,6 +134,149 @@ describe("OAuth PKCE login", () => {
       args: ["https://auth.example/authorize"],
     });
     expect(() => getBrowserOpenCommand("http://auth.example/authorize", "win32")).toThrow("must use https");
+  });
+});
+
+/**
+ * 2026-09-29 독립 리뷰 P1-2 — 비TTY(에이전트가 실행)에서의 로그인.
+ * 예전엔 URL 을 어디에도 안 찍고, 한도가 없고, 브라우저를 못 열어도 몰랐다.
+ */
+describe("non-interactive sign-in", () => {
+  const ENDPOINT = "https://dev.ai-erd.com/mcp";
+
+  it("announces the authorize URL before it tries to open a browser", async () => {
+    const order: string[] = [];
+    let announced = "";
+    const client = new OAuthClient({
+      endpoint: ENDPOINT,
+      tokenStore: new MemoryTokenStore(),
+      fetchImpl: buildOAuthFetch(),
+      onAuthorizeUrl: (url) => { order.push("announce"); announced = url; },
+      openBrowser: async (url) => {
+        order.push("open");
+        const authorize = new URL(url);
+        await fetch(`${authorize.searchParams.get("redirect_uri")}?code=c&state=${authorize.searchParams.get("state")}`);
+      },
+    });
+
+    await client.login();
+
+    expect(order).toEqual(["announce", "open"]);
+    expect(announced).toContain("https://auth.example/authorize?");
+    // URL 에 담기는 것은 공개 값뿐이다 — 검증자(code_verifier)는 프로세스 밖으로 안 나간다.
+    expect(announced).not.toContain("code_verifier");
+  });
+
+  it("gives up after the sign-in time limit instead of waiting forever", async () => {
+    const client = new OAuthClient({
+      endpoint: ENDPOINT,
+      tokenStore: new MemoryTokenStore(),
+      fetchImpl: buildOAuthFetch(),
+      openBrowser: async () => undefined, // 열렸지만 사람이 승인하지 않는다
+      loginTimeoutMs: 60,
+    });
+
+    const failure = await client.login().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(OAuthLoginError);
+    expect((failure as OAuthLoginError).code).toBe("LOGIN_TIMEOUT");
+    expect((failure as Error).message).toContain("run the same command again");
+  });
+
+  it("fails at once when the browser cannot be opened, without waiting for the time limit", async () => {
+    const started = Date.now();
+    const client = new OAuthClient({
+      endpoint: ENDPOINT,
+      tokenStore: new MemoryTokenStore(),
+      fetchImpl: buildOAuthFetch(),
+      openBrowser: async () => {
+        throw new OAuthLoginError("BROWSER_UNAVAILABLE", "Could not open a browser on this machine (xdg-open: exited with code 3).");
+      },
+      loginTimeoutMs: 10_000,
+    });
+
+    await expect(client.login()).rejects.toMatchObject({ code: "BROWSER_UNAVAILABLE" });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("does not wait for the opener to exit before accepting the callback", async () => {
+    // 일부 여는 명령은 브라우저가 닫힐 때까지 안 끝난다. 순서대로 기다리면 교착한다.
+    const client = new OAuthClient({
+      endpoint: ENDPOINT,
+      tokenStore: new MemoryTokenStore(),
+      fetchImpl: buildOAuthFetch(),
+      openBrowser: (url) => {
+        const authorize = new URL(url);
+        void fetch(`${authorize.searchParams.get("redirect_uri")}?code=c&state=${authorize.searchParams.get("state")}`);
+        return new Promise<void>(() => undefined); // 영원히 안 끝나는 여는 명령
+      },
+      loginTimeoutMs: 5_000,
+    });
+
+    await expect(client.login()).resolves.toMatchObject({ accessToken: "access-token" });
+  });
+});
+
+describe("launchBrowser", () => {
+  const URL_ = "https://auth.example/authorize";
+
+  function fakeSpawn(script: (child: EventEmitter) => void) {
+    return vi.fn(() => {
+      const child = new EventEmitter() as EventEmitter & { unref: () => void };
+      child.unref = () => undefined;
+      setImmediate(() => script(child));
+      return child as unknown as ChildProcess;
+    });
+  }
+
+  it("rejects when the opener exits non-zero (xdg-open with no browser)", async () => {
+    const spawnImpl = fakeSpawn((child) => child.emit("exit", 3, null));
+    await expect(launchBrowser(URL_, { platform: "linux", spawnImpl }))
+      .rejects.toMatchObject({ code: "BROWSER_UNAVAILABLE" });
+    expect(spawnImpl).toHaveBeenCalledWith("xdg-open", [URL_], expect.anything());
+  });
+
+  it("rejects when the opener command does not exist (ENOENT) instead of crashing", async () => {
+    const spawnImpl = fakeSpawn((child) => child.emit("error", Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" })));
+    await expect(launchBrowser(URL_, { platform: "linux", spawnImpl }))
+      .rejects.toThrow(/Could not open a browser.*ENOENT/);
+  });
+
+  it("resolves when the opener exits 0", async () => {
+    const spawnImpl = fakeSpawn((child) => child.emit("exit", 0, null));
+    await expect(launchBrowser(URL_, { platform: "darwin", spawnImpl })).resolves.toBeUndefined();
+  });
+
+  it("does not judge Windows by exit code — explorer.exe exits 1 on success", async () => {
+    const spawnImpl = fakeSpawn((child) => { child.emit("spawn"); child.emit("exit", 1, null); });
+    await expect(launchBrowser(URL_, { platform: "win32", spawnImpl })).resolves.toBeUndefined();
+  });
+});
+
+describe("stored token expiry", () => {
+  const ENDPOINT = "https://dev.ai-erd.com/mcp";
+
+  function clientWith(token: Partial<StoredTokenSet>) {
+    const store = new MemoryTokenStore();
+    store.token = { endpoint: ENDPOINT, accessToken: "stored", updatedAt: "x", ...token };
+    return new OAuthClient({ endpoint: ENDPOINT, tokenStore: store, envVars: {}, fetchImpl: buildOAuthFetch() });
+  }
+
+  it("★an expired token with no refresh token counts as signed out", async () => {
+    await expect(clientWith({ expiresAt: Date.now() - 1_000 }).getAccessToken()).resolves.toBeUndefined();
+  });
+
+  it("a token inside the last minute but not yet expired is still used", async () => {
+    await expect(clientWith({ expiresAt: Date.now() + 30_000 }).getAccessToken()).resolves.toBe("stored");
+  });
+
+  it("a token with no expiry is used as is", async () => {
+    await expect(clientWith({}).getAccessToken()).resolves.toBe("stored");
+  });
+
+  it("an expired token with a refresh token is refreshed", async () => {
+    await expect(clientWith({ expiresAt: Date.now() - 1_000, refreshToken: "r" }).getAccessToken())
+      .resolves.toBe("access-token");
   });
 });
 

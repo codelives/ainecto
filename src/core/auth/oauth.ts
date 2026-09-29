@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { URLSearchParams } from "node:url";
 import type { StoredTokenSet, TokenStore } from "./tokenStore";
 import { registerPublicClient, type ClientRegistrationResult } from "./clientRegistration";
@@ -14,7 +14,33 @@ export interface OAuthClientOptions {
   tokenStore: TokenStore;
   fetchImpl?: typeof fetch;
   envVars?: NodeJS.ProcessEnv;
+  /**
+   * 브라우저를 연다. <b>열기에 실패하면 거절</b>하고, 성공이 확인되면(또는 아직 모르면) 가만히 있는다.
+   * login 은 이 약속을 «기다리지 않고» 콜백 대기와 경주시킨다 — 여는 명령이 브라우저가 닫힐 때까지
+   * 안 끝나는 환경에서 순서대로 기다리면 교착한다.
+   */
   openBrowser?: (url: string) => Promise<void>;
+  /**
+   * 인가 URL 을 «브라우저를 열기 전에» 알린다. CLI 는 stderr 에 한 줄 쓴다 — 브라우저가 안 열려도
+   * 사람이 직접 열 수 있고, 에이전트가 실행했다면 명령이 끝날 때 그 줄이 에이전트에게 닿는다.
+   */
+  onAuthorizeUrl?: (url: string) => void;
+  /** 콜백을 기다리는 한도. 기본 5분 — 사람이 로그인하기엔 넉넉하고, 에이전트 셸 도구 최대 한도보다 짧다. */
+  loginTimeoutMs?: number;
+}
+
+/** 로그인 대기 기본 한도(5분). */
+export const DEFAULT_LOGIN_TIMEOUT_MS = 300_000;
+
+/**
+ * 로그인이 «사람 쪽 사정으로» 끝나지 못한 이유. {@code code} 는 {@code --json} 의 {@code error.code} 로
+ * 그대로 나간다(종료 코드는 다른 실패와 같은 1 — 받는 쪽은 메시지를 읽고 사람에게 옮긴다).
+ */
+export class OAuthLoginError extends Error {
+  constructor(readonly code: "LOGIN_TIMEOUT" | "BROWSER_UNAVAILABLE", message: string) {
+    super(message);
+    this.name = "OAuthLoginError";
+  }
 }
 
 export interface OAuthMetadata {
@@ -56,6 +82,12 @@ export class OAuthClient implements TokenProvider {
     if (!shouldRefresh(stored)) {
       return stored.accessToken;
     }
+    // ★만료됐는데 갱신할 수단이 없으면 «토큰 없음»이다. 예전엔 만료된 토큰을 그대로 돌려줘서,
+    //   init 은 로그인 대신 401 안내로 떨어졌고 다른 경로는 받을 게 뻔한 401 을 받으러 갔다
+    //   (2026-09-29 독립 리뷰 P1-2). 아직 60초 창 안이면 쓸 수 있으므로 돌려준다.
+    if (!stored.refreshToken) {
+      return isExpired(stored) ? undefined : stored.accessToken;
+    }
 
     return this.refreshStoredToken(stored);
   }
@@ -86,15 +118,24 @@ export class OAuthClient implements TokenProvider {
       authorizeUrl.searchParams.set("code_challenge_method", "S256");
       authorizeUrl.searchParams.set("resource", this.options.endpoint);
       authorizeUrl.searchParams.set("state", state);
-      // ★역할을 OAuth scope 로 요구한다. 승인은 브라우저에서 사람이 한다 —
-      //   그래서 에이전트가 자기 역할을 넓힌 토큰을 혼자 만들 수 없다.
+      // ★역할을 OAuth scope 로 요구한다. 새 역할 토큰은 브라우저에서 사람이 승인해야 발급된다.
+      //   ⚠발급된 토큰은 저장소에 남아 그 뒤로는 승인 없이 쓰인다 — 역할은 작업 가드레일이지
+      //   보안 경계가 아니다(2026-09-29 사용자 결정).
       if (this.options.role) {
         authorizeUrl.searchParams.set("scope", `mcp ${ROLE_SCOPE_PREFIX}${this.options.role}`);
       }
 
       assertTrustedEndpointUrl(authorizeUrl, "OAuth authorization URL");
-      await this.openBrowserImpl(authorizeUrl.toString());
-      const code = await loopback.waitForCode();
+      const url = authorizeUrl.toString();
+      this.options.onAuthorizeUrl?.(url);
+      // ★셋 중 먼저 오는 것이 결과다 — 콜백 도착 / 브라우저 열기 실패 / 시간 한도.
+      //   예전엔 한도가 없고 열기 실패를 못 봐서, 브라우저가 없는 기계에서 말없이 영원히 기다렸다
+      //   (2026-09-29 독립 리뷰 P1-2). 비TTY(에이전트가 실행)에서는 그 대기가 곧 멈춤이다.
+      const browserFailure = this.openBrowserImpl(url).then(() => new Promise<never>(() => undefined));
+      const code = await withTimeout(
+        Promise.race([loopback.waitForCode(), browserFailure]),
+        this.options.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
+      );
       const token = await exchangeToken(metadata.tokenEndpoint, {
         grant_type: "authorization_code",
         code,
@@ -143,6 +184,30 @@ export function generatePkcePair(): { codeVerifier: string; codeChallenge: strin
 
 export function generateOAuthState(): string {
   return randomBytes(32).toString("base64url");
+}
+
+/** 이미 만료됐는가. 만료 시각이 없으면 만료되지 않은 것으로 본다(서버가 수명을 안 알려 준 토큰). */
+export function isExpired(token: Pick<StoredTokenSet, "expiresAt">, now = Date.now()): boolean {
+  return token.expiresAt !== undefined && token.expiresAt <= now;
+}
+
+async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const minutes = timeoutMs / 60_000;
+      const span = Number.isInteger(minutes) ? `${minutes} minute${minutes === 1 ? "" : "s"}` : `${timeoutMs} ms`;
+      reject(new OAuthLoginError(
+        "LOGIN_TIMEOUT",
+        `Sign-in was not completed within ${span}. Nothing was saved — run the same command again.`,
+      ));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function shouldRefresh(token: Pick<StoredTokenSet, "expiresAt">, now = Date.now()): boolean {
@@ -337,10 +402,56 @@ export function getBrowserOpenCommand(
   return { command: "xdg-open", args: [url] };
 }
 
-async function openBrowser(url: string): Promise<void> {
-  const { command, args } = getBrowserOpenCommand(url);
-  const child = spawn(command, args, { stdio: "ignore", detached: true });
-  child.unref();
+export interface LaunchBrowserDeps {
+  platform?: NodeJS.Platform;
+  spawnImpl?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+}
+
+/**
+ * 기본 브라우저 열기. <b>여는 명령이 없거나(ENOENT) 0 이 아닌 코드로 끝나면 거절</b>한다.
+ *
+ * <p>★예전엔 {@code error} 리스너가 없어 명령이 없으면 처리되지 않은 오류로 죽었고, 명령은 있는데
+ * 브라우저가 없으면({@code xdg-open} 비0 종료) 아무 말 없이 콜백을 영원히 기다렸다
+ * (2026-09-29 독립 리뷰 P1-2).
+ *
+ * <p>⚠<b>Windows 는 종료 코드를 보지 않는다.</b> {@code explorer.exe} 는 성공해도 1 로 끝나는 것으로
+ * 알려져 있어, 그 코드로 판정하면 정상 환경을 실패로 만든다 — 명령이 «떴다»는 것만 본다
+ * (설계 §8-1, Windows 실측 V14 전까지 추정).
+ */
+export function launchBrowser(url: string, deps: LaunchBrowserDeps = {}): Promise<void> {
+  const platform = deps.platform ?? process.platform;
+  const { command, args } = getBrowserOpenCommand(url, platform);
+  const spawnImpl = deps.spawnImpl ?? spawn;
+  return new Promise<void>((resolve, reject) => {
+    const unavailable = (reason: string) => new OAuthLoginError(
+      "BROWSER_UNAVAILABLE",
+      `Could not open a browser on this machine (${command}: ${reason}). Sign-in needs a browser here.`,
+    );
+    let child: ChildProcess;
+    try {
+      child = spawnImpl(command, args, { stdio: "ignore", detached: true });
+    } catch (error) {
+      reject(unavailable(error instanceof Error ? error.message : String(error)));
+      return;
+    }
+    child.once("error", (error) => reject(unavailable(error.message)));
+    if (platform === "win32") {
+      child.once("spawn", () => resolve());
+    } else {
+      child.once("exit", (code, signal) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(unavailable(code === null ? `stopped by ${signal ?? "a signal"}` : `exited with code ${code}`));
+        }
+      });
+    }
+    child.unref();
+  });
+}
+
+function openBrowser(url: string): Promise<void> {
+  return launchBrowser(url);
 }
 
 function assertEnvTokenEndpointAllowed(endpoint: string, envVars: NodeJS.ProcessEnv): void {
