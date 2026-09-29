@@ -4,7 +4,7 @@ AI-ERD MCP connector and first-party CLI.
 
 ## For AI agents
 
-Install AI-ERD (Claude Code): `claude mcp add --scope user --transport http ai-erd https://ai-erd.com/mcp` — Codex: `codex mcp add ai-erd --url https://ai-erd.com/mcp`. The client signs the user in on first use. Roles are set up per repository afterwards with `npx -y -p @ai-erd/mcp ai-erd init --role <role>`, using the role the user picks — ask the user; never pick a role yourself.
+Install AI-ERD (Claude Code): `claude mcp add --scope user --transport http ai-erd https://ai-erd.com/mcp` — Codex: `codex mcp add ai-erd --url https://ai-erd.com/mcp`. The client signs the user in on first use. Roles are set up per repository afterwards with `npx -y -p @ai-erd/mcp@latest ai-erd init --role <role>`, using the role the user picks — ask the user; never pick a role yourself.
 
 Use `--scope user`: a local-scope entry takes precedence over the `.mcp.json` that `ai-erd init` writes, and the repository's role would never apply.
 
@@ -32,15 +32,17 @@ npm link
 Run from the repository root, with the role the user picked:
 
 ```bash
-npx -y -p @ai-erd/mcp ai-erd init --role development
+npx -y -p @ai-erd/mcp@latest ai-erd init --role development
 ```
 
 - If that role is not signed in yet, `init` opens a browser and continues once the user approves.
-  The sign-in URL is printed first; sign-in gives up after 5 minutes, and fails at once when no browser
-  can be opened on this machine.
+  The sign-in URL is printed first, and sign-in gives up after 5 minutes. It fails at once when the
+  command that opens the browser is missing, or (except on Windows, where the exit code is not
+  reliable) exits with an error.
 - Without `--role` it stops and says so — it never picks a role for you. If the account has more
   than one project it lists them and stops; re-run with `--project <uuid>`. With no project yet,
-  only a Design session can create one (`--role design --yes`, optionally `--project-name <name>`).
+  only a Design session can create one (`--yes`, optionally `--project-name <name>`); in any other
+  role it asks you to have the user create the project, then re-run with the same role.
 - It stops when run from a sub-folder of a git repository, and tells you the root.
 - It writes one `ai-erd` server entry carrying `--role` into `.mcp.json` (Claude Code) and
   `.cursor/mcp.json` (Cursor), and prints the Codex profile to use (`codex -p <role>`).
@@ -102,8 +104,9 @@ by hand:
 ## MCP Client Installation
 
 Connect clients over HTTP directly — see [For AI agents](#for-ai-agents). The client handles OAuth,
-and the first session has no role. Do not register the stdio bridge without a role: it has no
-sign-in of its own and the server rejects it.
+and the first session has no role. Do not register the stdio bridge without a role: it has no sign-in
+flow of its own, so it connects only if someone already ran `ai-erd auth login` without a role — and
+then it runs with no role at all.
 
 The official MCP Registry entry `io.github.codelives/ainecto` (see `server.json`) lists both the
 remote (`streamable-http`, `https://ai-erd.com/mcp`) and this npm package. Registry publication
