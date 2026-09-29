@@ -25,7 +25,9 @@ async function main(): Promise<void> {
   const tools = await client.toolsList();
   const toolNames = tools.map((tool) => isRecord(tool) && typeof tool.name === "string" ? tool.name : "").filter(Boolean);
   const result = await client.toolsCall("list_projects", {});
-  const hasTaskTools = toolNames.some((name) => name.includes("__task_") || name.includes("__tasks_"));
+  // ★서버는 이제 짧은 이름(`task_list_tasks`)을 내보낸다. `__task_` 로 찾으면 늘 false 였다(0.4.1 리뷰 P2).
+  //   긴 이름(`mcp__ainecto__task_…`)도 같은 규칙으로 맞춘다.
+  const hasTaskTools = toolNames.some((name) => /^(?:mcp__ainecto__)?tasks?_/.test(name));
 
   console.log(JSON.stringify({
     ok: true,
