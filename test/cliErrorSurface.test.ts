@@ -27,10 +27,16 @@ describe("실패는 전부 한 곳에서 그려진다", () => {
     stdin: { on: () => undefined, resume: () => undefined },
   } as unknown as Parameters<typeof runAinectoCli>[1];
 
+  let originalCwd: string;
+
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), "ai-erd-home-"));
     originalHome = process.env.HOME;
     process.env.HOME = home;
+    // ★저장소 역할 탐색(0.4.2)은 cwd 에서 위로 올라간다. 이 저장소의 조상 폴더에 사람의 설정이 있어도
+    //   시험이 흔들리지 않게, 아무 설정도 없는 임시 폴더에서 돈다.
+    originalCwd = process.cwd();
+    process.chdir(home);
     errors.length = 0;
     originalFetch = globalThis.fetch;
     // 토큰이 없는 새 기계에서 실서버가 내는 응답 그대로.
@@ -38,6 +44,7 @@ describe("실패는 전부 한 곳에서 그려진다", () => {
   });
 
   afterEach(async () => {
+    process.chdir(originalCwd);
     globalThis.fetch = originalFetch;
     if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
     await rm(home, { recursive: true, force: true });

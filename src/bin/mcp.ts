@@ -18,7 +18,7 @@ try {
   const resolvedRole = resolveRole({ role: args.role });
   await runConnector({
     endpoint: resolved.endpoint,
-    role: resolvedRole.role,
+    role: resolvedRole.role ?? null,
     input: process.stdin,
     output: process.stdout,
     errorOutput: process.stderr,

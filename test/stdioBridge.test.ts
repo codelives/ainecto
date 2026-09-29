@@ -14,7 +14,7 @@ describe("stdio bridge", () => {
         result: { ok: true },
       }));
     });
-    const client = new McpRpcClient({ endpoint: "https://dev.ai-erd.com/mcp", fetchImpl });
+    const client = new McpRpcClient({ endpoint: "https://dev.ai-erd.com/mcp", fetchImpl, role: null });
     const input = new PassThrough();
     const output = new PassThrough();
     const chunks: string[] = [];

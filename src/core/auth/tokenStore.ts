@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { ROLE_SCOPE_PREFIX } from "../harness/role";
 
 export interface StoredTokenSet {
   endpoint: string;
@@ -16,10 +17,16 @@ export interface StoredTokenSet {
   updatedAt: string;
 }
 
+/**
+ * 토큰 저장소 — ★서버(endpoint)마다 «한 칸»이다(설계 0.4.2 §2-4).
+ *
+ * <p>역할은 더는 토큰 칸이 정하지 않는다. 역할은 저장소(init 이 쓴 --role)에서 와서 요청 헤더로 실린다.
+ * 0.4.1 이하가 쓴 역할별 칸은 읽지도 지우지도 않는다(사용자 결정 «마이그레이션은 고려하지 마»).
+ */
 export interface TokenStore {
-  load(endpoint: string, role?: string): Promise<StoredTokenSet | undefined>;
-  save(endpoint: string, token: StoredTokenSet, role?: string): Promise<void>;
-  delete(endpoint: string, role?: string): Promise<void>;
+  load(endpoint: string): Promise<StoredTokenSet | undefined>;
+  save(endpoint: string, token: StoredTokenSet): Promise<void>;
+  delete(endpoint: string): Promise<void>;
 }
 
 type TokenFile = Record<string, StoredTokenSet>;
@@ -31,20 +38,21 @@ export class FileTokenStore implements TokenStore {
     this.filePath = join(rootDir, "tokens.json");
   }
 
-  async load(endpoint: string, role?: string): Promise<StoredTokenSet | undefined> {
+  async load(endpoint: string): Promise<StoredTokenSet | undefined> {
     const file = await this.readFile();
-    return file[tokenKey(endpoint, role)];
+    return file[tokenKey(endpoint)];
   }
 
-  async save(endpoint: string, token: StoredTokenSet, role?: string): Promise<void> {
+  async save(endpoint: string, token: StoredTokenSet): Promise<void> {
+    assertNoRoleScope(token);
     const file = await this.readFile();
-    file[tokenKey(endpoint, role)] = { ...token, endpoint, updatedAt: new Date().toISOString() };
+    file[tokenKey(endpoint)] = { ...token, endpoint, updatedAt: new Date().toISOString() };
     await this.writeFile(file);
   }
 
-  async delete(endpoint: string, role?: string): Promise<void> {
+  async delete(endpoint: string): Promise<void> {
     const file = await this.readFile();
-    delete file[tokenKey(endpoint, role)];
+    delete file[tokenKey(endpoint)];
     await this.writeFile(file);
   }
 
@@ -82,18 +90,25 @@ export class FileTokenStore implements TokenStore {
   }
 }
 
+/** 서버 하나의 칸. 0.4.1 이하의 «역할 없는» 칸과 같은 키다 — 그때 역할 없이 로그인해 둔 사람은 그대로 쓴다. */
+export function tokenKey(endpoint: string): string {
+  return createHash("sha256").update(endpoint).digest("hex");
+}
+
 /**
- * ★역할마다 토큰을 «따로» 둔다.
+ * ★역할 scope 가 든 토큰은 이 칸에 두지 않는다(설계 0.4.2 §2-4, 리뷰 P0-1).
  *
- * <p>하나로 두면 design 세션으로 로그인하는 순간 development 세션의 토큰이 덮여, 돌고 있던
- * 세션의 역할이 몰래 바뀐다. 역할이 토큰에 박히는 설계에서 토큰 저장소가 한 칸이면 그 칸이
- * 곧 역할 전환 스위치가 된다.
- *
- * <p>역할이 없으면 종전 키 그대로다 — 이미 로그인해 둔 사람이 다시 로그인하지 않아도 된다.
+ * <p>토큰에 역할이 박혀 있으면 서버는 헤더보다 토큰을 믿는다. 그런 토큰이 이 한 칸에 들어가면 «모든»
+ * 저장소에서 그 역할이 헤더를 이겨 역할이 뒤바뀐다. 지금은 그런 토큰을 받을 경로가 없지만(로그인에 역할을
+ * 싣지 않는다), 저장 경계에서 막아 두면 새 경로가 생겨도 조용히 새지 않는다.
  */
-export function tokenKey(endpoint: string, role?: string): string {
-  const material = role && role.trim() ? `${endpoint}#role=${role.trim().toLowerCase()}` : endpoint;
-  return createHash("sha256").update(material).digest("hex");
+export function assertNoRoleScope(token: Pick<StoredTokenSet, "scope">): void {
+  if (token.scope?.split(/\s+/).some((scope) => scope.startsWith(ROLE_SCOPE_PREFIX))) {
+    throw new Error(
+      "Refusing to store a role-scoped access token: sign-in is one per machine and the role comes "
+      + "from the repository. Run `ai-erd auth login` again.",
+    );
+  }
 }
 
 export async function tokenStorePermissions(path: string): Promise<{ mode: number } | undefined> {

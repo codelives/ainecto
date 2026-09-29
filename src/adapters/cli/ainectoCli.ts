@@ -12,6 +12,7 @@ import { executeInitCommand } from "./initCommand";
 import { createReadlinePrompter, isInteractive } from "./prompter";
 import { CLI_VERSION } from "../../core/version";
 import { assertRole, resolveRole, type HarnessRole } from "../../core/harness/role";
+import { askTheUserToFixRole, findRepositoryRole } from "../../core/harness/repositoryRole";
 
 export interface CliIO {
   stdout: NodeJS.WriteStream;
@@ -29,51 +30,39 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     const resolved = resolveEndpoint({ env: parsed.env, endpoint: parsed.endpoint });
-    // ★역할을 «한 번» 정하고 모든 경로가 그것을 쓴다.
-    //   예전에는 stdio 브리지만 역할을 실어, 같은 토큰을 쓰는 `tools call` 경로가
-    //   역할 없이 서버에 닿았다 — 제한을 우회하는 두 번째 문이었다(독립 리뷰 C1).
-    const sessionRole = resolveRole({ role: parsed.role }).role;
+    // 플래그·환경변수로 «명시한» 역할. 저장소 역할과의 판정은 아래 한 곳에서 한다.
+    const explicit = resolveRole({ role: parsed.role });
+    const explicitRole = explicit.role ?? null;
     const tokenStore = new FileTokenStore();
     /**
-     * 이 역할의 인증·RPC 클라이언트. ★init 은 역할을 «물어서» 정할 수 있으므로, 역할이 정해진 뒤 init 이
-     * 이 함수를 부른다(설계 §21-4). 저장소에 이미 걸린 역할도 init 이 읽는다 — 그래서 «역할이 클라이언트보다
-     * 먼저 정해진다»(독립 재리뷰 I10)가 init 안의 한 자리에서 지켜진다.
+     * 인증·RPC 클라이언트. ★토큰은 서버마다 한 칸이고(역할 없음), 역할은 RPC 헤더로만 실린다
+     * (설계 0.4.2 §2-3·§2-4). init 은 역할을 «물어서» 정할 수 있으므로 역할이 정해진 뒤 이것을 부른다.
      */
-    const connect = (role: HarnessRole | undefined) => {
+    const connect = (role: HarnessRole | null) => {
       const auth = new OAuthClient({
         endpoint: resolved.endpoint,
         tokenStore,
-        role,
         // ★init --dry-run 은 토큰을 갱신하지도 않는다 — 「아무것도 바꾸지 않는다」에 로그인 상태도 든다.
         //   (init 의 플래그는 positional 로 흘러온다.)
         readOnly: parsed.positionals[0] === "init" && parsed.positionals.includes("--dry-run"),
-        // ★URL 을 «브라우저를 열기 전에» 알린다. 에이전트가 실행했다면 명령이 끝날 때 이 줄이 닿는다.
-        //   stdout 은 결과 전용이라 stderr 에 쓴다.
-        //   ★--json 이면 사람용 문장 대신 JSON 한 줄이다 — stderr 를 JSON 으로 읽는 호출자가 첫 줄에서
-        //   깨지지 않고, 에이전트는 문장을 파싱하지 않고 URL 을 옮긴다(설계 §21-3 결정 (가)).
+        // ★URL 을 «브라우저를 열기 전에» 알린다. stdout 은 결과 전용이라 stderr 에 쓴다.
+        //   --json 이면 JSON 한 줄이다(설계 §21-3 (가)). 로그인이 역할과 무관해져 role 칸은 없다(0.4.2 §2-5).
         onAuthorizeUrl: (url) => {
           io.stderr.write(parsed.json
-            ? `${JSON.stringify({ event: "login_url", url, role: role ?? null })}\n`
-            : `Opening your browser to sign in${role ? ` (role: ${role})` : ""}. `
-              + `If it does not open, visit:\n  ${url}\n`);
+            ? `${JSON.stringify({ event: "login_url", url })}\n`
+            : `Opening your browser to sign in to AI-ERD. If it does not open, visit:\n  ${url}\n`);
         },
       });
-      const client = new McpRpcClient({
-        endpoint: resolved.endpoint,
-        tokenProvider: auth,
-        role,
-      });
+      const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, role });
       return { auth, client };
     };
-    // init 밖의 경로는 역할이 지금 정해져 있다(플래그·환경변수).
-    const { auth, client } = connect(sessionRole);
     const [domain, action, ...rest] = parsed.positionals;
 
     if (domain === "mcp") {
       await runConnector({
         endpoint: resolved.endpoint,
-        // `ai-erd mcp` 로 붙는 경로도 같은 역할을 쓴다 — bin/mcp.ts 와 같은 규칙.
-        role: sessionRole,
+        // 브리지의 역할은 인자·환경변수에서만 온다 — bin/mcp.ts 와 같은 규칙. 저장소를 적용하지 않는다.
+        role: explicitRole,
         input: io.stdin,
         output: io.stdout,
         errorOutput: io.stderr,
@@ -85,7 +74,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       // ⚠init 의 플래그(--role 등)는 전역 파서가 positional 로 흘려보낸다. 그대로 넘긴다.
       return await executeInitCommand({
         argv: parsed.positionals.slice(1),
-        role: sessionRole,
+        role: explicitRole ?? undefined,
         connect: (role) => {
           const { auth, client } = connect(role);
           return {
@@ -105,7 +94,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
                 return undefined;
               }
             },
-            // 이 역할로 로그인한다 — `ai-erd auth login` 과 같은 함수다(설계 §8-1).
+            // 로그인한다 — `ai-erd auth login` 과 같은 함수다. 서버마다 한 번이다(0.4.2).
             login: async () => {
               await auth.login();
             },
@@ -123,10 +112,18 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     if (domain === "auth") {
+      // 로그인은 서버마다 한 번이다 — 역할과 무관하다. 옛 문서를 따라 친 --role 은 알리고 넘어간다.
+      if (parsed.role !== undefined) {
+        io.stderr.write("Sign-in is one per machine; --role is not used by auth.\n");
+      }
       // ★await 를 빼면 이 try 가 실패를 «못 본다» — 거부 사유가 renderError 를 지나치고
       //   날것의 스택 트레이스로 나간다(2026-09-23 실물 실행에서 발견).
-      return await handleAuth(action, auth, resolved.endpoint, parsed.json, io);
+      return await handleAuth(action, connect(null).auth, resolved.endpoint, parsed.json, io);
     }
+
+    // ★여기부터 원격을 부르는 명령은 «저장소 역할»로 간다(설계 0.4.2 §2-2). mcp·init·auth 는 위에서
+    //   끝났다 — 역할이 어긋난 저장소 안에서도 로그인·브리지·init 은 막히지 않는다.
+    const { client } = connect(await commandRole(explicitRole, explicit.source, process.cwd()));
 
     if (isAttachmentsUploadCommand(domain, action)) {
       return await executeAttachmentsUploadCommand({
@@ -158,6 +155,36 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     io.stderr.write(renderError(error, { json: parsed.json }));
     return 1;
   }
+}
+
+/**
+ * ★셸 명령의 역할 — 한 곳(설계 0.4.2 §2-2).
+ *
+ * <p>저장소(cwd 에서 위로, ai-erd 항목이 있는 첫 폴더)에 역할 R 이 있으면 R 로 간다. 명시한 역할이 R 과
+ * 다르면 거절한다 — 역할을 바꾸는 길은 `ai-erd init --role` 하나이고 사용자가 고른다. 저장소를 못
+ * 읽으면(어긋남·읽기 문제) 멈추고 사용자에게 물으라고 한다 — 모르는 채로 «제한 없음»으로 가지 않는다.
+ * 저장소 밖이면 명시한 역할(없으면 역할 없음 = 제한 없음, 현행).
+ */
+export async function commandRole(
+  explicitRole: HarnessRole | null,
+  source: "flag" | "env" | "none",
+  cwd: string,
+): Promise<HarnessRole | null> {
+  const found = await findRepositoryRole(cwd);
+  if (found.kind === "conflict") {
+    throw new Error(askTheUserToFixRole(found.dir, found.reason));
+  }
+  if (found.kind === "none") {
+    return explicitRole;
+  }
+  if (explicitRole !== null && explicitRole !== found.role) {
+    const given = source === "env" ? `AI_ERD_ROLE=${explicitRole}` : `--role ${explicitRole}`;
+    throw new Error(
+      `This repository's AI sessions have the role ${found.role} (set in ${found.dir}). `
+      + `${given} does not match — the role changes only with \`ai-erd init --role <role>\`, after asking the user.`,
+    );
+  }
+  return found.role;
 }
 
 async function handleAuth(
@@ -297,8 +324,7 @@ function helpText(): string {
     "AI-ERD CLI",
     "",
     "Usage:",
-    "  ai-erd auth login --role <design|development|test|validation> [--env prod|dev] [--json]",
-    "  ai-erd auth status|logout [--role <role>] [--env prod|dev] [--json]",
+    "  ai-erd auth login|status|logout [--env prod|dev] [--json]   (one sign-in per machine)",
     "  ai-erd tools list [--env prod|dev] [--endpoint URL] [--json]",
     "  ai-erd tools call <mcpName> [-f payload.json|@-] [inline-json] [--json]",
     "  ai-erd attachments upload --document-uuid <uuid> <file...> [--json]",

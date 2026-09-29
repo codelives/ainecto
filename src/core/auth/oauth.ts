@@ -5,11 +5,12 @@ import { URLSearchParams } from "node:url";
 import type { StoredTokenSet, TokenStore } from "./tokenStore";
 import { registerPublicClient, type ClientRegistrationResult } from "./clientRegistration";
 import { assertTrustedEndpointUrl, isDefaultEndpoint } from "../config/endpoints";
-import { ROLE_SCOPE_PREFIX, type HarnessRole } from "../harness/role";
 
+/**
+ * ★로그인은 서버마다 한 번이다(설계 0.4.2). 토큰은 역할을 싣지 않고, 역할은 저장소에서 와서
+ * 요청 헤더로 실린다({@link McpRpcClient}). 그래서 이 클라이언트에는 역할이 없다.
+ */
 export interface OAuthClientOptions {
-  /** 이 클라이언트가 쓰는 세션 역할. 토큰이 이 역할로 발급되고 저장된다. */
-  role?: HarnessRole;
   endpoint: string;
   tokenStore: TokenStore;
   fetchImpl?: typeof fetch;
@@ -80,7 +81,7 @@ export class OAuthClient implements TokenProvider {
       return envToken;
     }
 
-    const stored = await this.options.tokenStore.load(this.options.endpoint, this.options.role);
+    const stored = await this.options.tokenStore.load(this.options.endpoint);
     if (!stored) {
       return undefined;
     }
@@ -102,7 +103,7 @@ export class OAuthClient implements TokenProvider {
   }
 
   async refreshAfterUnauthorized(): Promise<string | undefined> {
-    const stored = await this.options.tokenStore.load(this.options.endpoint, this.options.role);
+    const stored = await this.options.tokenStore.load(this.options.endpoint);
     if (this.options.readOnly || !stored?.refreshToken) {
       return undefined;
     }
@@ -127,12 +128,8 @@ export class OAuthClient implements TokenProvider {
       authorizeUrl.searchParams.set("code_challenge_method", "S256");
       authorizeUrl.searchParams.set("resource", this.options.endpoint);
       authorizeUrl.searchParams.set("state", state);
-      // ★역할을 OAuth scope 로 요구한다. 새 역할 토큰은 브라우저에서 사람이 승인해야 발급된다.
-      //   ⚠발급된 토큰은 저장소에 남아 그 뒤로는 승인 없이 쓰인다 — 역할은 작업 가드레일이지
-      //   보안 경계가 아니다(2026-09-29 사용자 결정).
-      if (this.options.role) {
-        authorizeUrl.searchParams.set("scope", `mcp ${ROLE_SCOPE_PREFIX}${this.options.role}`);
-      }
+      // ★역할을 scope 에 싣지 않는다(설계 0.4.2) — 로그인은 서버마다 한 번이고, 역할은 저장소에서
+      //   요청 헤더로 온다. 역할은 작업 가드레일이지 보안 경계가 아니다(2026-09-29 사용자 결정 Q1).
 
       assertTrustedEndpointUrl(authorizeUrl, "OAuth authorization URL");
       const url = authorizeUrl.toString();
@@ -156,7 +153,7 @@ export class OAuthClient implements TokenProvider {
       }, this.fetchImpl);
 
       const stored = toStoredToken(this.options.endpoint, token, metadata, registration);
-      await this.options.tokenStore.save(this.options.endpoint, stored, this.options.role);
+      await this.options.tokenStore.save(this.options.endpoint, stored);
       return stored;
     } finally {
       await loopback.close();
@@ -164,7 +161,7 @@ export class OAuthClient implements TokenProvider {
   }
 
   async logout(): Promise<void> {
-    await this.options.tokenStore.delete(this.options.endpoint, this.options.role);
+    await this.options.tokenStore.delete(this.options.endpoint);
   }
 
   /** 부르는 쪽이 refresh token 이 있음을 이미 확인했다 — 타입이 그것을 요구한다. */
@@ -178,7 +175,7 @@ export class OAuthClient implements TokenProvider {
       resource: this.options.endpoint,
     }, this.fetchImpl);
     const next = toStoredToken(this.options.endpoint, token, metadata, stored);
-    await this.options.tokenStore.save(this.options.endpoint, next, this.options.role);
+    await this.options.tokenStore.save(this.options.endpoint, next);
     return next.accessToken;
   }
 }

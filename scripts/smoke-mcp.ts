@@ -20,7 +20,7 @@ async function main(): Promise<void> {
     throw new Error("SMOKE_AUTH_REQUIRED: run `ai-erd auth login --env dev` or provide AINECTO_TOKEN before smoke.");
   }
 
-  const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth });
+  const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, role: null });
   await client.initialize();
   const tools = await client.toolsList();
   const toolNames = tools.map((tool) => isRecord(tool) && typeof tool.name === "string" ? tool.name : "").filter(Boolean);

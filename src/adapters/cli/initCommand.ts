@@ -309,13 +309,13 @@ async function ensureSignedIn(
   if (dryRun) {
     // (dry-run 의 accessToken 은 읽기 전용이다 — 갱신하지 않으므로 만료된 토큰도 여기로 온다.)
     throw new Error(
-      `No usable sign-in for this role, and --dry-run neither refreshes it nor opens a browser.\n\n`
-      + `    ${loginCommand(options, role)}\n\n`
+      `No usable AI-ERD sign-in on this machine, and --dry-run neither refreshes it nor opens a browser.\n\n`
+      + `    ${loginCommand(options)}\n\n`
       + "Then run init again.",
     );
   }
   await options.login();
-  options.io.stderr.write(`Signed in for role ${role}.\n`);
+  options.io.stderr.write("Signed in.\n");
 }
 
 /**
@@ -518,9 +518,9 @@ async function callOrExplainSignIn<T>(
       throw error;
     }
     throw new Error(
-      `Not signed in for this role, so ${options.endpoint} refused the request (HTTP 401).\n\n`
-      + `    ${loginCommand(options, options.role)}\n\n`
-      + "Then run init again. The role is carried by the access token, so each role signs in once.",
+      `Not signed in, so ${options.endpoint} refused the request (HTTP 401).\n\n`
+      + `    ${loginCommand(options)}\n\n`
+      + "Then run init again. Sign-in is one per machine; the role comes from this repository.",
     );
   }
 }
@@ -533,14 +533,12 @@ async function callOrExplainSignIn<T>(
  * 슬롯에 로그인하고 같은 자리에서 또 막힌다(2026-09-23 4차 독립 리뷰 S2).
  * 주소든 env 든 <b>하나는 반드시</b> 실린다.
  */
-function loginCommand(
-  options: Pick<InitCommandOptions, "env" | "endpoint">,
-  role: HarnessRole | undefined,
-): string {
+function loginCommand(options: Pick<InitCommandOptions, "env" | "endpoint">): string {
   const target = isDefaultEndpointFor(options.env, options.endpoint)
     ? (options.env === "prod" ? "" : ` --env ${options.env}`)
     : ` --endpoint ${options.endpoint}`;
-  return `ai-erd auth login --role ${role ?? "<design|development|test|validation>"}${target}`;
+  // 로그인은 서버마다 한 번이다(0.4.2) — 역할을 싣지 않는다.
+  return `ai-erd auth login${target}`;
 }
 
 function isUnauthorized(error: unknown): boolean {

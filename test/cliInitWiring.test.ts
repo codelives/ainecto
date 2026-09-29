@@ -104,9 +104,11 @@ describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
     expect(code).toBe(1);
     const first = stderr[0]!;
     expect(first.endsWith("\n")).toBe(true);
-    const event = JSON.parse(first) as { event: string; url: string; role: string | null };
-    expect(event).toMatchObject({ event: "login_url", role: "design" });
-    expect(event.url).toContain("https://auth.example/authorize?");
+    const event = JSON.parse(first) as Record<string, unknown>;
+    // ★로그인이 역할과 무관해져 role 칸은 없다(0.4.2 §2-5).
+    expect(Object.keys(event).sort()).toEqual(["event", "url"]);
+    expect(event.event).toBe("login_url");
+    expect(String(event.url)).toContain("https://auth.example/authorize?");
     expect(stderr.join("")).not.toContain("Opening your browser");
   });
 
@@ -115,9 +117,10 @@ describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
 
     expect(code).toBe(1);
     const said = stderr.join("");
-    expect(said).toContain("Opening your browser to sign in (role: design). If it does not open, visit:");
+    expect(said).toContain("Opening your browser to sign in to AI-ERD. If it does not open, visit:");
     expect(said).toContain("https://auth.example/authorize?");
-    expect(said).toContain("scope=mcp+ai-erd%3Arole%3Adesign");
+    // ★로그인은 서버마다 한 번이다(0.4.2) — 인가 URL 에 역할 scope 가 없다.
+    expect(said).not.toContain("ai-erd%3Arole");
     // 브라우저 여는 명령이 불렸고, 그것이 실패하자 기다리지 않고 끝났다.
     expect(spawned).toHaveLength(1);
     expect(said).toContain("Could not open a browser on this machine");

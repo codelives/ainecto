@@ -13,7 +13,7 @@ describe("McpRpcClient", () => {
     expect(seen[0]).toMatchObject({ "x-ai-erd-role": "development" });
 
     // 역할이 없으면 헤더도 없다 — 하네스를 안 쓰는 연결은 종전 그대로다.
-    await new McpRpcClient({ endpoint: "https://ai-erd.com/mcp", fetchImpl }).toolsList();
+    await new McpRpcClient({ endpoint: "https://ai-erd.com/mcp", fetchImpl, role: null }).toolsList();
     expect(Object.keys(seen[1]!)).not.toContain("x-ai-erd-role");
   });
 
@@ -24,6 +24,7 @@ describe("McpRpcClient", () => {
       result: { tools: [] },
     })));
     const client = new McpRpcClient({
+      role: null,
       endpoint: "https://dev.ai-erd.com/mcp",
       fetchImpl,
       tokenProvider: {
@@ -49,6 +50,7 @@ describe("McpRpcClient", () => {
       })));
     const refreshAfterUnauthorized = vi.fn(async () => "fresh-token");
     const client = new McpRpcClient({
+      role: null,
       endpoint: "https://dev.ai-erd.com/mcp",
       fetchImpl,
       tokenProvider: {
@@ -67,6 +69,7 @@ describe("McpRpcClient", () => {
   it("omits HTTP error body previews unless debug is enabled", async () => {
     const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
     const client = new McpRpcClient({
+      role: null,
       endpoint: "https://dev.ai-erd.com/mcp",
       fetchImpl,
       envVars: {},
@@ -82,6 +85,7 @@ describe("McpRpcClient", () => {
   it("keeps debug HTTP body previews for explicit diagnostics", async () => {
     const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
     const client = new McpRpcClient({
+      role: null,
       endpoint: "https://dev.ai-erd.com/mcp",
       fetchImpl,
       envVars: { AINECTO_CLI_DEBUG: "1" },

@@ -244,7 +244,7 @@ describe("ai-erd init (files on disk)", () => {
     } as unknown as McpRpcClient;
 
     await expect(executeInitCommand(options(["--role", "development"], stub)))
-      .rejects.toThrow(/ai-erd auth login --role development/);
+      .rejects.toThrow(/ai-erd auth login$|ai-erd auth login\n/m);
     // 기본 주소면 --endpoint 를 덧붙이지 않는다 — 안 쓰는 플래그를 가르치지 않는다.
     await expect(executeInitCommand(options(["--role", "development"], stub)))
       .rejects.not.toThrow(/--endpoint/);
@@ -262,7 +262,7 @@ describe("ai-erd init (files on disk)", () => {
     await expect(executeInitCommand({
       ...options(["--role", "test"], stub),
       endpoint: "https://custom.example/mcp",
-    })).rejects.toThrow(/--role test --endpoint https:\/\/custom\.example\/mcp/);
+    })).rejects.toThrow(/ai-erd auth login --endpoint https:\/\/custom\.example\/mcp/);
   });
 
   it("401 이 아닌 실패는 그대로 올린다", async () => {
@@ -526,7 +526,7 @@ describe("ai-erd init (files on disk)", () => {
       ...options(["--role", "development"], stub),
       env: "dev" as const,
       endpoint: "https://dev.ai-erd.com/mcp",
-    })).rejects.toThrow(/--role development --env dev/);
+    })).rejects.toThrow(/ai-erd auth login --env dev/);
   });
 
   it("★init 전부터 있던 빈 디렉터리는 undo 가 남긴다", async () => {
@@ -665,7 +665,7 @@ describe("ai-erd init (files on disk)", () => {
     expect(code).toBe(0);
     expect(events).toEqual(["login"]);
     expect(calls).toEqual(["list_projects after login"]);
-    expect(errors.join("")).toContain("Signed in for role development.");
+    expect(errors.join("")).toContain("Signed in.");
     expect(existsSync(join(root, ".mcp.json"))).toBe(true);
   });
 
@@ -681,7 +681,7 @@ describe("ai-erd init (files on disk)", () => {
     const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
     const { opts, events } = withLogin(["--role", "design", "--dry-run"], stub, undefined);
 
-    await expect(executeInitCommand(opts)).rejects.toThrow(/neither refreshes it nor opens a browser[\s\S]*ai-erd auth login --role design/);
+    await expect(executeInitCommand(opts)).rejects.toThrow(/neither refreshes it nor opens a browser[\s\S]*ai-erd auth login\n/);
     expect(events).toEqual([]);
     expect(calls).toEqual([]);
   });

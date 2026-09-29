@@ -31,8 +31,12 @@ export interface McpRpcClientOptions {
   tokenProvider?: TokenProvider;
   fetchImpl?: typeof fetch;
   envVars?: NodeJS.ProcessEnv;
-  /** 세션 역할. 있으면 모든 요청에 실린다 — 강제는 서버가 한다. */
-  role?: HarnessRole;
+  /**
+   * 세션 역할. ★필수다 — 역할이 없으면 {@code null} 을 «명시»한다(설계 0.4.2 §2-3, 리뷰 P2).
+   * 저장소 안에서 이것을 빠뜨리면 요청이 조용히 «제한 없음»으로 간다. 그 빠뜨림을 타입이 잡는다.
+   * 값이 있으면 모든 요청의 {@code X-AI-ERD-Role} 헤더로 실린다 — 강제는 서버가 한다.
+   */
+  role: HarnessRole | null;
 }
 
 export class McpRpcError extends Error {
