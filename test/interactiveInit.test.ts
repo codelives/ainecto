@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executeInitCommand } from "../src/adapters/cli/initCommand";
-import { createReadlinePrompter, isInteractive } from "../src/adapters/cli/prompter";
+import { AGENT_ENV_MARKERS, createReadlinePrompter, isInteractive } from "../src/adapters/cli/prompter";
 import type { McpRpcClient } from "../src/core/mcp/rpcClient";
 import type { HarnessRole } from "../src/core/harness/role";
 
@@ -206,13 +206,24 @@ describe("ai-erd init — interactive (TTY)", () => {
 });
 
 describe("isInteractive — the only place that decides whether to ask", () => {
+  const tty = { isTTY: true };
+  const pipe = { isTTY: false };
+
   it("asks only when stdin and stdout are both terminals and --json is off", () => {
-    const tty = { isTTY: true };
-    const pipe = { isTTY: false };
-    expect(isInteractive({ stdin: tty, stdout: tty }, false)).toBe(true);
-    expect(isInteractive({ stdin: tty, stdout: tty }, true)).toBe(false);
-    expect(isInteractive({ stdin: pipe, stdout: tty }, false)).toBe(false);
-    expect(isInteractive({ stdin: tty, stdout: pipe }, false)).toBe(false);
-    expect(isInteractive({ stdin: {}, stdout: {} }, false)).toBe(false);   // 에이전트 셸 도구: isTTY 없음
+    expect(isInteractive({ stdin: tty, stdout: tty }, false, {})).toBe(true);
+    expect(isInteractive({ stdin: tty, stdout: tty }, true, {})).toBe(false);
+    expect(isInteractive({ stdin: pipe, stdout: tty }, false, {})).toBe(false);
+    expect(isInteractive({ stdin: tty, stdout: pipe }, false, {})).toBe(false);
+    expect(isInteractive({ stdin: {}, stdout: {} }, false, {})).toBe(false);   // 에이전트 셸 도구: isTTY 없음
+  });
+
+  it("★does not ask under an agent or CI even on a terminal (pty) — the agent could answer for the user", () => {
+    for (const name of AGENT_ENV_MARKERS) {
+      expect(isInteractive({ stdin: tty, stdout: tty }, false, { [name]: "1" })).toBe(false);
+    }
+    expect(AGENT_ENV_MARKERS).toEqual(["CLAUDECODE", "CI", "GEMINI_CLI", "CODEX_SANDBOX", "CURSOR_AGENT"]);
+    expect(isInteractive({ stdin: tty, stdout: tty }, false, { CODEX_SANDBOX: "seatbelt" })).toBe(false);
+    // 꺼 둔 표지는 없는 것이다.
+    expect(isInteractive({ stdin: tty, stdout: tty }, false, { CI: "false", CLAUDECODE: "0", GEMINI_CLI: "" })).toBe(true);
   });
 });

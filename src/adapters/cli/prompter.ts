@@ -28,14 +28,40 @@ export class PromptCancelled extends Error {
 }
 
 /**
- * ★대화형 판정의 유일한 자리(설계 §5): stdin·stdout 이 둘 다 TTY 이고 {@code --json} 이 아닐 때만.
- * 에이전트·CI 의 셸 도구는 TTY 가 아니다 — 그때는 묻지 않고, 빠진 값을 말하고 멈춘다.
+ * ★에이전트·CI 가 실행했다는 표지 — TTY 여도 묻지 않는다. <b>확인된 것만</b> 둔다(추측 금지).
+ *
+ * <p>일부 에이전트는 명령을 pty 에서 돌려 stdin·stdout 이 TTY 로 보인다(설계 §5 «알려진 한계»). 그러면
+ * 첫 질문에서 명령이 멈추고, 더 나쁘게는 에이전트가 답을 «쳐서» 역할을 고를 수 있다. 그 길을 닫는다.
+ * <ul>
+ *   <li>{@code CLAUDECODE} — Claude Code 의 셸 도구 환경에 있다(2026-09-29 이 세션의 Bash 도구에서 실측).</li>
+ *   <li>{@code CI} — CI 의 관례적 표지.</li>
+ *   <li>{@code GEMINI_CLI} — Gemini CLI 문서: run_shell_command 는 하위 프로세스에 {@code GEMINI_CLI=1} 을 둔다
+ *       (docs/tools/shell.md).</li>
+ *   <li>{@code CODEX_SANDBOX} — Codex 가 샌드박스로 돌리는 명령에 둔다({@code codex sandbox -- env} 로 실측,
+ *       codex-cli 0.153.4). ⚠샌드박스 없이(권한 상승·full access) 돌린 명령에 둔다는 표지는 확인하지 못했다.</li>
+ *   <li>{@code CURSOR_AGENT} — Cursor 문서(cursor.com/docs/agent/terminal): 에이전트 터미널 감지용.</li>
+ * </ul>
+ */
+export const AGENT_ENV_MARKERS = ["CLAUDECODE", "CI", "GEMINI_CLI", "CODEX_SANDBOX", "CURSOR_AGENT"] as const;
+
+/** 이 환경에 에이전트·CI 표지가 있는가. 빈 값·"0"·"false" 는 없는 것으로 본다. */
+export function agentEnvironment(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return AGENT_ENV_MARKERS.find((name) => {
+    const value = env[name]?.trim().toLowerCase();
+    return value !== undefined && value !== "" && value !== "0" && value !== "false";
+  });
+}
+
+/**
+ * ★대화형 판정의 유일한 자리(설계 §5): stdin·stdout 이 둘 다 TTY 이고 {@code --json} 이 아니며,
+ * 에이전트·CI 표지({@link AGENT_ENV_MARKERS})가 없을 때만. 아니면 묻지 않고, 빠진 값을 말하고 멈춘다.
  */
 export function isInteractive(
   io: { stdin?: { isTTY?: boolean }; stdout?: { isTTY?: boolean } },
   json: boolean,
+  env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  return io.stdin?.isTTY === true && io.stdout?.isTTY === true && !json;
+  return io.stdin?.isTTY === true && io.stdout?.isTTY === true && !json && agentEnvironment(env) === undefined;
 }
 
 /**
