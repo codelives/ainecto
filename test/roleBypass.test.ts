@@ -1,10 +1,9 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
-import { runConnector } from "../src/adapters/mcp/connector";
 import { FileTokenStore, tokenKey } from "../src/core/auth/tokenStore";
 import { findRepositoryRole } from "../src/core/harness/repositoryRole";
 import { ROLE_HEADER } from "../src/core/harness/role";
@@ -69,7 +68,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
       return new Response(JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
-        result: { content: [{ type: "text", text: "{}" }] },
+        result: { content: [{ type: "text", text: JSON.stringify({ projects: [{ uuid: "p-1", name: "Billing" }] }) }] },
       }));
     }) as unknown as typeof fetch;
     await seedToken();
@@ -85,6 +84,12 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
   });
 
   const roleHeader = () => sent[0]?.[ROLE_HEADER.toLowerCase()];
+
+  async function roleIn(file: string): Promise<string> {
+    const parsed = JSON.parse(await readFile(join(work, file), "utf8"));
+    const args = parsed.mcpServers["ai-erd"].args as string[];
+    return args[args.indexOf("--role") + 1]!;
+  }
 
   it("★저장소 안에서는 --role 없이도 저장소 역할이 헤더로 간다 (토큰은 역할 없는 한 칸)", async () => {
     await repo(work, "development");
@@ -188,12 +193,49 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
       expect(errors.join("")).not.toContain("disagree");
     });
 
-    it("init --role (역할을 맞추는 유일한 길)", async () => {
-      const code = await runAinectoCli(["--role", "design", "init", "--dry-run", "--json"], io);
-      // init 은 git 저장소 루트가 아니어도(임시 폴더) 진행한다. 역할 판정 오류로 멈추지 않는다.
-      expect(errors.join("")).not.toContain("Cannot tell this repository's AI session role");
-      expect([0, 1]).toContain(code);
+    it("★init --role (역할을 맞추는 유일한 길) — «성공»하고 두 설정이 그 역할로 맞춰진다", async () => {
+      const code = await runAinectoCli(["--role", "design", "init", "--json"], io);
+
+      expect(code).toBe(0);
+      expect(await roleIn(".mcp.json")).toBe("design");
+      expect(await roleIn(".cursor/mcp.json")).toBe("design");
     });
+  });
+
+  it("★R 저장소에서 init --role S 는 «성공»한다 — 역할을 바꾸는 유일한 길 (종료 0, 파일 역할 S)", async () => {
+    await repo(work, "development");
+
+    const code = await runAinectoCli(["--role", "design", "init", "--json"], io);
+
+    expect(code).toBe(0);
+    expect(await roleIn(".mcp.json")).toBe("design");
+  });
+
+  it("잘못된 AI_ERD_ROLE 이 로그인(auth)을 막지 않는다", async () => {
+    process.env.AI_ERD_ROLE = "designer";
+    expect(await runAinectoCli(["auth", "status", "--json"], io)).toBe(0);
+  });
+
+  it("원격을 부르지 않는 명령은 역할 판정 전에 끝난다 — 깨진 저장소에서도 카탈로그, 모르는 명령은 «모르는 명령»", async () => {
+    await repo(work, null);
+
+    expect(await runAinectoCli(["tools", "catalog", "--json"], io)).toBe(0);
+    expect(await runAinectoCli(["no-such-command"], io)).toBe(1);
+    expect(errors.join("")).toContain('Unknown command "no-such-command"');
+    expect(errors.join("")).not.toContain("Cannot tell");
+  });
+
+  it("★멈출 때 안내가 막다른 길이 아니다 — git 하위 폴더의 설정이면 «init 으로 고치라»고 하지 않는다", async () => {
+    await mkdir(join(work, ".git"));
+    const sub = join(work, "tools", "x");
+    await repo(sub, null);
+    process.chdir(sub);
+
+    expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(1);
+    const said = errors.join("");
+    expect(said).toContain("inside the git repository at");
+    expect(said).toContain("Ask the user how that AI-ERD setting should look");
+    expect(said).not.toContain("then run `ai-erd init --role <role>` in");
   });
 
   it("auth 에 --role 을 주면 알리고 진행한다 (로그인은 서버마다 한 번)", async () => {
@@ -233,6 +275,22 @@ describe("findRepositoryRole", () => {
     expect(await findRepositoryRole(project, root)).toEqual({ kind: "none" });
   });
 
+  it("★홈 제외는 «실제 경로»로 비교한다 — /var 와 /private/var 처럼 링크로 갈라진 같은 폴더", async () => {
+    // macOS 의 tmpdir 은 /var/folders/… 이고 그 실제 경로는 /private/var/folders/… 다. HOME 이 한쪽, cwd 가
+    // 다른 쪽이면 문자열 비교로는 홈을 못 알아보고 홈의 전역 설정(~/.cursor/mcp.json)을 저장소 역할로 읽었다.
+    await mkdir(join(root, ".cursor"), { recursive: true });
+    await writeFile(join(root, ".cursor/mcp.json"), JSON.stringify({
+      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "@ai-erd/mcp", "--role", "design"] } },
+    }), "utf8");
+    const project = join(root, "projects", "x");
+    await mkdir(project, { recursive: true });
+    const realProject = await realpath(project);
+    expect(realProject).not.toBe(project);   // 이 기계에서 두 경로가 실제로 갈라져 있다(재현 조건)
+
+    // HOME 은 mkdtemp 가 준 링크 경로 그대로, cwd 는 실제 경로.
+    expect(await findRepositoryRole(realProject, root)).toEqual({ kind: "none" });
+  });
+
   it("저장소 밖을 가리키는 링크는 읽지 않고 멈춘다", async () => {
     const outside = await mkdtemp(join(tmpdir(), "ai-erd-outside-"));
     await writeFile(join(outside, "mcp.json"), JSON.stringify({ mcpServers: {} }), "utf8");
@@ -245,54 +303,42 @@ describe("findRepositoryRole", () => {
     await rm(outside, { recursive: true, force: true });
   });
 
-  it("JSON 이 아니면 멈춘다", async () => {
+  it("깨진 JSON 은 원문에 ai-erd 가 있을 때만 멈추고, 아니면 우리와 무관한 파일로 건너뛴다", async () => {
     await writeFile(join(root, ".mcp.json"), "{ not json", "utf8");
+    expect(await findRepositoryRole(root, "/nonexistent-home")).toEqual({ kind: "none" });
+
+    await writeFile(join(root, ".mcp.json"), '{ "mcpServers": { "ai-erd": ', "utf8");
     expect((await findRepositoryRole(root, "/nonexistent-home")).kind).toBe("conflict");
   });
-});
 
-describe("역할 없는 브리지 경고 (리뷰 P1-b)", () => {
-  let root: string;
-  let home: string;
-  let originalHome: string | undefined;
-  beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "ai-erd-bridge-"));
-    home = await mkdtemp(join(tmpdir(), "ai-erd-home-"));
-    originalHome = process.env.HOME;
-    process.env.HOME = home;
+  it("★ai-erd 항목이 우리 브리지가 아니면(mcp-remote·url) 역할 없음이다 — 멈추지 않는다", async () => {
     await writeFile(join(root, ".mcp.json"), JSON.stringify({
-      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "@ai-erd/mcp", "--role", "design"] } },
+      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "mcp-remote", "https://ai-erd.com/mcp"] } },
     }), "utf8");
-  });
-  afterEach(async () => {
-    if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
-    await rm(root, { recursive: true, force: true });
-    await rm(home, { recursive: true, force: true });
-  });
+    await mkdir(join(root, ".cursor"), { recursive: true });
+    await writeFile(join(root, ".cursor/mcp.json"), JSON.stringify({
+      mcpServers: { "ai-erd": { url: "https://ai-erd.com/mcp" } },
+    }), "utf8");
 
-  async function bridge(role: "design" | null) {
-    const input = new PassThrough();
-    input.end();
-    const said: string[] = [];
-    await runConnector({
-      endpoint: "https://ai-erd.com/mcp",
-      role,
-      input,
-      output: new PassThrough(),
-      errorOutput: { write: (text: string) => { said.push(text); return true; } } as unknown as NodeJS.WritableStream as never,
-      cwd: root,
-    });
-    return said.join("");
-  }
-
-  it("★역할이 걸린 저장소 안에서 역할 없이 붙으면 한 줄 경고한다 — 가림 진단", async () => {
-    const said = await bridge(null);
-    expect(said).toContain("this MCP connection has no role");
-    expect(said).toContain("sets the role design");
-    expect(said).toContain("claude mcp get ai-erd");
+    expect(await findRepositoryRole(root, "/nonexistent-home")).toEqual({ kind: "none" });
   });
 
-  it("역할이 있으면 경고하지 않는다", async () => {
-    expect(await bridge("design")).toBe("");
+  it("우리 브리지인데 --role 이 없거나 모르는 값이면 멈춘다", async () => {
+    await writeFile(join(root, ".mcp.json"), JSON.stringify({
+      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "@ai-erd/mcp@0.4.2", "--role", "designer"] } },
+    }), "utf8");
+    expect((await findRepositoryRole(root, "/nonexistent-home")).kind).toBe("conflict");
+  });
+
+  it("★폴더 «안»을 가리키는 링크는 읽는다 (.cursor/mcp.json → ../.mcp.json)", async () => {
+    await writeFile(join(root, ".mcp.json"), JSON.stringify({
+      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "@ai-erd/mcp", "--role", "test"] } },
+    }), "utf8");
+    await mkdir(join(root, ".cursor"), { recursive: true });
+    await symlink("../.mcp.json", join(root, ".cursor/mcp.json"));
+
+    const found = await findRepositoryRole(root, "/nonexistent-home");
+    expect(found.kind).toBe("role");
+    expect(found.kind === "role" && found.role).toBe("test");
   });
 });

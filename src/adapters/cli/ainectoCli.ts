@@ -6,7 +6,7 @@ import { McpRpcClient, isToolError } from "../../core/mcp/rpcClient";
 import { renderError, renderSuccess } from "../../core/output/render";
 import { getGeneratedTools } from "../../core/catalog";
 import { runConnector } from "../mcp/connector";
-import { executeGeneratedCommand } from "./generatedCommandRouter";
+import { executeGeneratedCommand, matchGeneratedCommand } from "./generatedCommandRouter";
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
 import { executeInitCommand } from "./initCommand";
 import { createReadlinePrompter, isInteractive } from "./prompter";
@@ -30,9 +30,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     const resolved = resolveEndpoint({ env: parsed.env, endpoint: parsed.endpoint });
-    // 플래그·환경변수로 «명시한» 역할. 저장소 역할과의 판정은 아래 한 곳에서 한다.
-    const explicit = resolveRole({ role: parsed.role });
-    const explicitRole = explicit.role ?? null;
+    // 플래그·환경변수로 «명시한» 역할. ★auth 는 이것을 읽지 않는다 — 잘못된 AI_ERD_ROLE 이 로그인을
+    //   막지 않게(0.4.2 리뷰 P2). 저장소 역할과의 판정은 아래 한 곳에서 한다.
+    const explicitRole = () => resolveRole({ role: parsed.role });
     const tokenStore = new FileTokenStore();
     /**
      * 인증·RPC 클라이언트. ★토큰은 서버마다 한 칸이고(역할 없음), 역할은 RPC 헤더로만 실린다
@@ -62,7 +62,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       await runConnector({
         endpoint: resolved.endpoint,
         // 브리지의 역할은 인자·환경변수에서만 온다 — bin/mcp.ts 와 같은 규칙. 저장소를 적용하지 않는다.
-        role: explicitRole,
+        role: explicitRole().role ?? null,
         input: io.stdin,
         output: io.stdout,
         errorOutput: io.stderr,
@@ -74,7 +74,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       // ⚠init 의 플래그(--role 등)는 전역 파서가 positional 로 흘려보낸다. 그대로 넘긴다.
       return await executeInitCommand({
         argv: parsed.positionals.slice(1),
-        role: explicitRole ?? undefined,
+        role: explicitRole().role,
         connect: (role) => {
           const { auth, client } = connect(role);
           return {
@@ -121,9 +121,24 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       return await handleAuth(action, connect(null).auth, resolved.endpoint, parsed.json, io);
     }
 
+    // 원격을 부르지 않는 것은 역할 판정 «전»에 끝낸다(0.4.2 리뷰 P2) — 깨진 저장소 안에서도 카탈로그를
+    //   볼 수 있고, 모르는 명령은 «역할을 못 읽음»이 아니라 «모르는 명령»으로 답한다.
+    if (domain === "tools" && action === "catalog") {
+      return printCatalog(parsed, io);
+    }
+    const remote = isAttachmentsUploadCommand(domain, action)
+      || matchGeneratedCommand(parsed.env ?? "prod", parsed.positionals) !== undefined
+      || (domain === "tools" && (action === "list" || action === "call"));
+    if (!remote) {
+      throw new Error(domain === "tools"
+        ? "Expected tools list, tools call <mcpName>, or tools catalog."
+        : `Unknown command "${domain}".`);
+    }
+
     // ★여기부터 원격을 부르는 명령은 «저장소 역할»로 간다(설계 0.4.2 §2-2). mcp·init·auth 는 위에서
     //   끝났다 — 역할이 어긋난 저장소 안에서도 로그인·브리지·init 은 막히지 않는다.
-    const { client } = connect(await commandRole(explicitRole, explicit.source, process.cwd()));
+    const explicit = explicitRole();
+    const { client } = connect(await commandRole(explicit.role ?? null, explicit.source, process.cwd()));
 
     if (isAttachmentsUploadCommand(domain, action)) {
       return await executeAttachmentsUploadCommand({
@@ -172,7 +187,7 @@ export async function commandRole(
 ): Promise<HarnessRole | null> {
   const found = await findRepositoryRole(cwd);
   if (found.kind === "conflict") {
-    throw new Error(askTheUserToFixRole(found.dir, found.reason));
+    throw new Error(await askTheUserToFixRole(found.dir, found.reason));
   }
   if (found.kind === "none") {
     return explicitRole;
@@ -212,6 +227,19 @@ async function handleAuth(
   throw new Error("Expected auth login, auth status, or auth logout.");
 }
 
+/** `tools catalog` — 원격을 부르지 않는다(역할 판정 전에 처리). */
+function printCatalog(parsed: GlobalArgs, io: CliIO): number {
+  // ★두 카탈로그 다 «그 서버의 tools/list 를 받아 저장소에 넣은 스냅샷»이다. 예전 문구는 prod 를
+  //   「seed fixture」라고 했는데, prod 도 운영에서 받아 온 것이다(0.4.1 에서 다시 받음, 리뷰 P2).
+  const catalogEnv = parsed.env ?? "prod";
+  io.stdout.write(renderSuccess(getGeneratedTools(catalogEnv), {
+    json: parsed.json,
+    warnings: [`Local ${catalogEnv} catalog is a checked-in snapshot of that server's tools/list, `
+      + `taken when this CLI version was built; rerun sync:tools --env ${catalogEnv} to refresh it.`],
+  }));
+  return 0;
+}
+
 async function handleTools(
   action: string | undefined,
   rest: string[],
@@ -241,18 +269,6 @@ async function handleTools(
     io.stdout.write(renderSuccess(result, { json: parsed.json, warnings: payload.warnings }));
     // 거부 문구는 그대로 보여 주되, 종료 코드로는 «실패»라고 말한다.
     return isToolError(result) ? 1 : 0;
-  }
-
-  if (action === "catalog") {
-    // ★두 카탈로그 다 «그 서버의 tools/list 를 받아 저장소에 넣은 스냅샷»이다. 예전 문구는 prod 를
-    //   「seed fixture」라고 했는데, prod 도 운영에서 받아 온 것이다(0.4.1 에서 다시 받음, 리뷰 P2).
-    const catalogEnv = parsed.env ?? "prod";
-    io.stdout.write(renderSuccess(getGeneratedTools(catalogEnv), {
-      json: parsed.json,
-      warnings: [`Local ${catalogEnv} catalog is a checked-in snapshot of that server's tools/list, `
-        + `taken when this CLI version was built; rerun sync:tools --env ${catalogEnv} to refresh it.`],
-    }));
-    return 0;
   }
 
   throw new Error("Expected tools list, tools call <mcpName>, or tools catalog.");

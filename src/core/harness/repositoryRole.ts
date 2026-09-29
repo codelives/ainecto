@@ -1,7 +1,7 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
-import { AGENT_TARGETS, readRoleFromEntry, SERVER_NAME } from "./agentTargets";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { AGENT_TARGETS, PACKAGE_NAME, readRoleFromEntry, SERVER_NAME } from "./agentTargets";
 import { HARNESS_ROLES, type HarnessRole } from "./role";
 
 /**
@@ -22,70 +22,112 @@ export type RepositoryRole =
 export interface RolesInFiles {
   /** 중복 없는 역할. 둘 이상이면 설정끼리 어긋난 것이다. */
   roles: HarnessRole[];
-  /** 읽기 문제(JSON 아님, --role 없는 ai-erd 항목 등). */
+  /** 읽기 문제(우리 브리지인데 --role 이 없거나 모르는 값, `ai-erd` 가 든 깨진 JSON). */
   problems: string[];
-  /** 어느 파일이든 ai-erd 항목(또는 읽기 문제)이 있었나 — 이 폴더가 «ai-erd 폴더»인가. */
+  /** 어느 파일이든 우리 브리지 항목(또는 읽기 문제)이 있었나 — 이 폴더가 «ai-erd 폴더»인가. */
   found: boolean;
+}
+
+/** 설정 파일 하나에서 읽은 것. */
+export type ConfigRole =
+  | { kind: "absent" }
+  | { kind: "role"; role: HarnessRole }
+  | { kind: "problem"; reason: string };
+
+/**
+ * ★설정 파일 «하나»에서 우리 브리지의 역할을 읽는 유일한 함수. init 의 역할 변경 알림(initPlan)과
+ * 저장소 역할 판정이 모두 이것을 쓴다.
+ *
+ * <p>멈출 이유는 좁게 둔다(0.4.2 리뷰 P1-3) — 사람의 설정을 잘못 읽어 모든 명령을 막으면 안 된다.
+ * <ul>
+ *   <li>{@code ai-erd} 항목이 «우리 브리지»가 아니면(mcp-remote·url 방식 등) 역할 없음이다.</li>
+ *   <li>JSON 이 깨졌어도 원문에 {@code ai-erd} 가 없으면 우리와 무관한 파일이다 — 건너뛴다.</li>
+ *   <li>우리 브리지인데 {@code --role} 이 없거나 모르는 값이면 멈춘다 — 역할을 모르는 채로 «제한 없음»으로
+ *       가지 않는다.</li>
+ * </ul>
+ */
+export function readConfigRole(path: string, content: string | undefined): ConfigRole {
+  if (content === undefined || !content.trim()) {
+    return { kind: "absent" };
+  }
+  let entry: unknown;
+  try {
+    const parsed = JSON.parse(content) as { mcpServers?: Record<string, unknown> } | null;
+    entry = parsed?.mcpServers?.[SERVER_NAME];
+  } catch {
+    return content.includes(SERVER_NAME)
+      ? { kind: "problem", reason: `${path} is not valid JSON` }
+      : { kind: "absent" };
+  }
+  if (entry === undefined || !isOurBridge(entry)) {
+    return { kind: "absent" };
+  }
+  const role = readRoleFromEntry(entry);
+  return role === undefined
+    ? { kind: "problem", reason: `${path} has the "${SERVER_NAME}" bridge without a valid --role` }
+    : { kind: "role", role };
+}
+
+/**
+ * 이 항목이 우리 브리지({@code npx -y @ai-erd/mcp …}, 전역 설치한 {@code ai-erd}·{@code ai-erd-mcp})인가.
+ * {@code --role} 을 싣는 것도 우리 브리지뿐이다.
+ */
+function isOurBridge(entry: unknown): boolean {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return false;
+  }
+  const { command, args } = entry as { command?: unknown; args?: unknown };
+  const argList = Array.isArray(args) ? args.filter((arg): arg is string => typeof arg === "string") : [];
+  if (argList.some((arg) => arg === PACKAGE_NAME || arg.startsWith(`${PACKAGE_NAME}@`) || arg === "--role")) {
+    return true;
+  }
+  const bin = typeof command === "string" ? basename(command) : "";
+  return bin === "ai-erd" || bin === "ai-erd-mcp";
 }
 
 /**
  * 스냅샷(경로 → 내용)에서 역할을 읽는다. 순수 함수.
  *
  * <p>init 은 {@code roles} 만 본다(자기가 그 파일을 다시 쓰므로 문제를 고칠 수 있다). 셸 명령은
- * {@code problems} 가 있으면 멈춘다 — 역할을 모르는 채로 «제한 없음»으로 떨어지지 않는다.
+ * {@code problems} 가 있으면 멈춘다.
  */
 export function rolesInFiles(files: ReadonlyMap<string, string | undefined>): RolesInFiles {
   const roles: HarnessRole[] = [];
   const problems: string[] = [];
   for (const target of AGENT_TARGETS) {
-    const content = files.get(target.path);
-    if (content === undefined || !content.trim()) {
-      continue;
-    }
-    let entry: unknown;
-    try {
-      const parsed = JSON.parse(content) as { mcpServers?: Record<string, unknown> };
-      entry = parsed?.mcpServers?.[SERVER_NAME];
-    } catch {
-      problems.push(`${target.path} is not valid JSON`);
-      continue;
-    }
-    if (entry === undefined) {
-      continue;
-    }
-    const role = readRoleFromEntry(entry);
-    if (role === undefined) {
-      problems.push(`${target.path} has an "${SERVER_NAME}" entry without a valid --role`);
-      continue;
-    }
-    if (!roles.includes(role)) {
-      roles.push(role);
+    const read = readConfigRole(target.path, files.get(target.path));
+    if (read.kind === "problem") {
+      problems.push(read.reason);
+    } else if (read.kind === "role" && !roles.includes(read.role)) {
+      roles.push(read.role);
     }
   }
   return { roles, problems, found: roles.length > 0 || problems.length > 0 };
 }
 
 /**
- * 셸 명령의 저장소 역할. ★cwd 에서 위로, {@code ai-erd} 항목이 있는 «첫 폴더»에서 멈춘다
+ * 셸 명령의 저장소 역할. ★cwd 에서 위로, 우리 브리지 항목이 있는 «첫 폴더»에서 멈춘다
  * (리뷰 P1-a — 중첩 저장소는 가까운 쪽, git 아닌 하위 폴더·worktree 도 같은 규칙).
  *
- * <p>⚠홈 폴더 자체는 보지 않는다. {@code ~/.cursor/mcp.json} 은 Cursor 의 «전역» 설정이라, 거기 있는
- * {@code ai-erd} 항목(역할 없는 HTTP 연결 등)을 저장소 역할로 읽으면 모든 폴더의 명령이 멈춘다.
+ * <p>⚠홈 폴더 자체는 보지 않는다. {@code ~/.cursor/mcp.json} 은 Cursor 의 «전역» 설정이다(실측: 역할 없는
+ * {@code ai-erd} 항목이 있었다). ★비교는 «실제 경로»로 한다 — macOS 의 {@code /var} 와 {@code /private/var}
+ * 처럼 링크로 갈라진 같은 폴더를 문자열로 비교하면 홈을 못 알아본다(0.4.2 리뷰 P1-1). Windows 는 대소문자를
+ * 가리지 않는다.
  *
- * <p>읽기 문제(저장소 밖을 가리키는 링크, JSON 아님, --role 없는 항목)와 설정끼리의 불일치는
- * {@code conflict} 다 — 호출자는 멈추고 사용자에게 물으라고 말한다.
+ * <p>설정 파일이 폴더 «안»을 가리키는 링크면 그대로 읽는다({@code .cursor/mcp.json → ../.mcp.json}). 폴더
+ * «밖»을 가리키면 멈춘다.
  */
 export async function findRepositoryRole(cwd: string, home: string = homedir()): Promise<RepositoryRole> {
-  const stopAt = resolve(home);
-  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
-    if (dir === stopAt) {
+  const stopAt = await realOrResolved(home);
+  for (let dir = await realOrResolved(cwd); ; dir = dirname(dir)) {
+    if (samePath(dir, stopAt)) {
       return { kind: "none" };
     }
     const files = new Map<string, string | undefined>();
     let readProblem: string | undefined;
     for (const target of AGENT_TARGETS) {
       try {
-        files.set(target.path, await readManagedFile(dir, target.path));
+        files.set(target.path, await readConfigInside(dir, target.path));
       } catch (error) {
         readProblem = error instanceof Error ? error.message : String(error);
       }
@@ -113,11 +155,56 @@ export async function findRepositoryRole(cwd: string, home: string = homedir()):
   }
 }
 
-/** 멈출 때 쓰는 문장 — 역할은 사용자가 고른다(읽는 쪽은 대개 에이전트다). */
-export function askTheUserToFixRole(dir: string, reason: string): string {
+/**
+ * 멈출 때 쓰는 문장. ★막다른 길이 되지 않게 한다(0.4.2 리뷰 P2): init 은 git 저장소의 루트에서만 돈다.
+ * 그 폴더가 git 저장소의 «하위 폴더»면 init 으로는 그 폴더의 설정을 고칠 수 없으므로, 사용자에게 그 파일을
+ * 어떻게 둘지 물으라고 말한다.
+ */
+export async function askTheUserToFixRole(dir: string, reason: string): Promise<string> {
+  const gitRoot = await findGitRoot(dir);
+  const roles = HARNESS_ROLES.join(", ");
+  if (gitRoot !== undefined && !samePath(await realOrResolved(gitRoot), await realOrResolved(dir))) {
+    return `Cannot tell this folder's AI session role: ${reason} (in ${dir}, inside the git repository at ${gitRoot}). `
+      + "Ask the user how that AI-ERD setting should look — `ai-erd init` only sets up a repository root "
+      + `(${gitRoot}).`;
+  }
   return `Cannot tell this repository's AI session role: ${reason} (in ${dir}). `
-    + `Ask the user which role this repository's AI sessions should have (${HARNESS_ROLES.join(", ")}), `
+    + `Ask the user which role this repository's AI sessions should have (${roles}), `
     + `then run \`ai-erd init --role <role>\` in ${dir}.`;
+}
+
+async function realOrResolved(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+/**
+ * 역할을 읽으려고 설정 파일을 연다. 링크면 따라가되, 그 실제 경로가 이 폴더 «안»일 때만 읽는다.
+ * (init 의 {@link readManagedFile} 은 쓰기를 위한 문이라 링크를 아예 거절한다 — 역할 읽기에는 너무 좁다.)
+ */
+async function readConfigInside(dir: string, path: string): Promise<string | undefined> {
+  let real: string;
+  try {
+    real = await realpath(join(dir, path));
+  } catch (error) {
+    if (isNodeError(error, "ENOENT") || isNodeError(error, "ENOTDIR")) {
+      return undefined;
+    }
+    throw error;
+  }
+  const realDir = await realOrResolved(dir);
+  if (!samePath(real, realDir) && !real.startsWith(realDir + sep)
+      && !(process.platform === "win32" && real.toLowerCase().startsWith((realDir + sep).toLowerCase()))) {
+    throw new Error(`${path} points outside ${dir} (${real})`);
+  }
+  return readFile(real, "utf8");
 }
 
 /** cwd 에서 위로 올라가며 {@code .git} 이 있는 첫 디렉터리. 없으면 undefined. */

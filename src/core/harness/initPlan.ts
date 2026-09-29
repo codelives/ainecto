@@ -37,6 +37,7 @@ import {
   type RecordState,
 } from "./initRecord";
 import { createHash } from "node:crypto";
+import { readConfigRole } from "./repositoryRole";
 import { ROLE_ENV_VAR, type HarnessRole } from "./role";
 
 /**
@@ -317,7 +318,7 @@ export function planInit(input: PlanInitInput): InitPlan {
     if (existing === merged.content) {
       continue;
     }
-    const before = previousRole(existing);
+    const before = previousRole(target.path, existing);
     if (merged.replaced && before && before !== input.role) {
       notes.push(`${target.path}: role ${before} → ${input.role}`);
     }
@@ -897,14 +898,8 @@ function parentsOf(paths: readonly string[]): string[] {
   return [...directories].sort((left, right) => right.length - left.length);
 }
 
-function previousRole(existing: string | undefined): HarnessRole | undefined {
-  if (existing === undefined) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(existing) as { mcpServers?: Record<string, unknown> };
-    return readRoleFromEntry(parsed.mcpServers?.[SERVER_NAME]);
-  } catch {
-    return undefined;
-  }
+/** 이 설정 파일에 걸린 역할 — 읽는 규칙은 {@link readConfigRole} 한 곳이다. */
+function previousRole(path: string, existing: string | undefined): HarnessRole | undefined {
+  const read = readConfigRole(path, existing);
+  return read.kind === "role" ? read.role : undefined;
 }
