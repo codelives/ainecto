@@ -1,44 +1,46 @@
-# @ai-erd/mcp
+# ai-erd — AI-ERD CLI and MCP connector
 
-AI-ERD MCP connector and first-party CLI.
+Published as `ai-erd` and `@ai-erd/mcp` (same code). Command: `ai-erd`.
 
 ## For AI agents
 
-Install AI-ERD (Claude Code): `claude mcp add --scope user --transport http ai-erd https://ai-erd.com/mcp` — Codex: `codex mcp add ai-erd --url https://ai-erd.com/mcp`. The client signs the user in on first use. Roles are set up per repository afterwards with `npx -y -p @ai-erd/mcp@latest ai-erd init --role <role>`, using the role the user picks — ask the user; never pick a role yourself.
+**Ask the user which role this repository's AI sessions should have — Design, Development, Test, or Validation. Never pick one yourself. Then, from the repository root: `npx -y ai-erd@latest init --role <role>` (it signs the user in through the browser if needed).**
 
-Use `--scope user`: a local-scope entry takes precedence over the `.mcp.json` that `ai-erd init` writes, and the repository's role would never apply.
+- Use a long command timeout (at least 6 minutes): sign-in waits up to 5 minutes for the user.
+- If `init` lists projects, ask the user which one and re-run with `--project <uuid>`. If it says
+  this is not the repository root, re-run from the folder it names.
+- The role applies from a **new session**. Tell the user to start one (Claude Code: exit, then
+  `claude -c` in this folder to keep the conversation; approve the `ai-erd` server from `.mcp.json`
+  when asked). Codex: save the profile `init` prints and start with `codex -p <role>`.
+- **A server added during a session is not available in that session.** In our test, a server added
+  with `claude mcp add` while Claude Code was running did not attach to the running session. Do not
+  tell the user it will work right away — ask them to start a new session. `/mcp` shows what the
+  current session actually loaded.
+- Claude Code's auto mode may block running an external package with `npx`. If it does, ask the user
+  to allow the command.
 
-## Entry points
-
-This package exposes two entry points:
-
-- `npx -y @ai-erd/mcp` or `ainecto mcp`: raw stdio-to-HTTP JSON-RPC proxy for AI-ERD MCP.
-- `ainecto <command>`: human CLI for auth and low-level tool calls.
-
-Phase 1 keeps the connector as a raw proxy. File, stdin, and inline JSON parsing are only available in first-party CLI commands.
-
-## Local Setup
+To connect AI-ERD without a repository role (for example before `init`), add the remote server at
+**user scope** — a local-scope entry would hide the `.mcp.json` that `init` writes:
 
 ```bash
-npm install
-npm run typecheck
-npm test
-npm run build
-npm link
+claude mcp add --scope user --transport http ai-erd https://ai-erd.com/mcp   # Claude Code
+codex mcp add ai-erd --url https://ai-erd.com/mcp                            # Codex
 ```
+
+The client signs the user in on first use. That session has no role until `init` runs and a new
+session starts.
 
 ## Set up a repository (roles)
 
-Run from the repository root, with the role the user picked:
-
 ```bash
-npx -y -p @ai-erd/mcp@latest ai-erd init --role development
+npx -y ai-erd@latest init --role development
 ```
 
 - If that role is not signed in yet, `init` opens a browser and continues once the user approves.
-  The sign-in URL is printed first, and sign-in gives up after 5 minutes. It fails at once when the
-  command that opens the browser is missing, or (except on Windows, where the exit code is not
-  reliable) exits with an error.
+  The sign-in URL is printed first (with `--json`, as one JSON line on stderr:
+  `{"event":"login_url","url":…,"role":…}`), and sign-in gives up after 5 minutes. It fails at once
+  when the command that opens the browser is missing, or (except on Windows, where the exit code is
+  not reliable) exits with an error.
 - Without `--role` it stops and says so — it never picks a role for you. If the account has more
   than one project it lists them and stops; re-run with `--project <uuid>`. With no project yet,
   only a Design session can create one (`--yes`, optionally `--project-name <name>`); in any other
@@ -48,33 +50,75 @@ npx -y -p @ai-erd/mcp@latest ai-erd init --role development
   `.cursor/mcp.json` (Cursor), and prints the Codex profile to use (`codex -p <role>`).
 - The role applies from a **new session**; the running session keeps the role it started with.
   Roles are a working guardrail, not a security boundary.
-- `ai-erd init --dry-run` shows what would change; `ai-erd init --undo` removes what it wrote.
+- `ai-erd init --dry-run` shows what would change (it does not sign in or refresh a sign-in);
+  `ai-erd init --undo` removes what it wrote.
 
 ## Commands
 
+Install once with `npm install -g ai-erd`, or prefix any command with `npx -y ai-erd@latest`.
+
 ```bash
-ainecto auth login --env dev
-ainecto auth status --env dev
-ainecto auth logout --env dev
+ai-erd auth login --role design
+ai-erd auth status --role design
+ai-erd auth logout --role design
 
-ainecto tools list --env dev
-ainecto tools call mcp__ainecto__list_projects --env dev --json
-ainecto tools call mcp__ainecto__erd_apply_changes -f changes.json --json
-cat payload.json | ainecto tools call mcp__ainecto__erd_apply_changes --json
+ai-erd --role design tools list
+ai-erd --role design tools call list_projects --json
+ai-erd --role design tools call erd_apply_changes -f changes.json --json
+cat payload.json | ai-erd --role design tools call erd_apply_changes --json
 
-ainecto projects list --env dev
-ainecto task list-tasks --env dev --document-uuid <documentUuid> --json
-ainecto erd apply-changes --env dev -f erd-operations.json --yes
+ai-erd --role design projects list
+ai-erd --role design erd apply-changes -f erd-operations.json --yes
 ```
 
-Endpoint resolution priority:
+Pass the role you signed in with (`--role`, or `AI_ERD_ROLE`); each role has its own sign-in.
+Tool names are the server's own names (`list_projects`, `erd_apply_changes`, …). Your AI client
+shows them with its own prefix, for example `mcp__ai-erd__list_projects` in Claude Code; the CLI
+does not use that prefix. The older `mcp__ainecto__…` form is still accepted.
+
+Every command takes `--env dev` for `https://dev.ai-erd.com/mcp`. Endpoint resolution priority:
 
 1. `--endpoint <url>`
 2. `AINECTO_MCP_ENDPOINT`
 3. `--env dev`
 4. production default, `https://ai-erd.com/mcp`
 
-Endpoint URLs must use `https:`. Plain `http:` is accepted only for localhost loopback targets such as `127.0.0.1`. When `AINECTO_TOKEN` is set, the CLI only sends it to the default prod/dev endpoints unless `AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN=1` is set for an explicitly trusted custom endpoint.
+Endpoint URLs must use `https:`. Plain `http:` is accepted only for localhost loopback targets such
+as `127.0.0.1`. When `AINECTO_TOKEN` is set, the CLI only sends it to the default prod/dev endpoints
+unless `AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN=1` is set for an explicitly trusted custom endpoint.
+
+Names that still say `ainecto` are kept for compatibility: the `AINECTO_*` environment variables,
+the MCP Registry name `io.github.codelives/ainecto`, and the `ainecto` command alias.
+
+## Generated Friendly Commands
+
+Every checked-in generated catalog tool is reachable through its deterministic command path. Scalar
+schema fields are exposed as flags, with both kebab-case and schema-case accepted:
+
+```bash
+ai-erd --role design documents list --project-uuid <projectUuid>
+ai-erd --role design documents list --projectUuid <projectUuid>
+```
+
+Array or object payloads use the first-party CLI JSON payload reader:
+
+```bash
+ai-erd --role design documents create -f create-documents.json
+cat erd-operations.json | ai-erd --role design erd apply-changes --json
+```
+
+Destructive generated commands prompt in human mode unless `--yes` is supplied. In `--json` mode
+they fail with a structured error unless `--yes` is present.
+
+Attachment file upload is available through a bespoke command that performs the upload-token, raw
+PUT, and attachment registration flow:
+
+```bash
+ai-erd --role design attachments upload --document-uuid <documentUuid> ./diagram.png ./notes.pdf
+```
+
+The generated `request_upload_token` and `upload_attachments` paths remain raw MCP argument-contract
+commands and do not read local files.
 
 ## Connector Mode
 
@@ -101,89 +145,80 @@ by hand:
 }
 ```
 
-## MCP Client Installation
+Do not register the stdio bridge without a role: it has no sign-in flow of its own, so it connects
+only if someone already ran `ai-erd auth login` without a role — and then it runs with no role at all.
 
-Connect clients over HTTP directly — see [For AI agents](#for-ai-agents). The client handles OAuth,
-and the first session has no role. Do not register the stdio bridge without a role: it has no sign-in
-flow of its own, so it connects only if someone already ran `ai-erd auth login` without a role — and
-then it runs with no role at all.
+The official MCP Registry entry (see `server.json`) lists both the remote (`streamable-http`,
+`https://ai-erd.com/mcp`) and the `@ai-erd/mcp` npm package. Registry publication requires the npm
+package version referenced by `server.json` to include a matching `mcpName` field in `package.json`.
 
-The official MCP Registry entry `io.github.codelives/ainecto` (see `server.json`) lists both the
-remote (`streamable-http`, `https://ai-erd.com/mcp`) and this npm package. Registry publication
-requires the npm package version referenced by `server.json` to include a matching `mcpName` field
-in `package.json`.
+## Development
 
-## Catalog Sync
+```bash
+npm install
+npm run typecheck
+npm test
+npm run build
+npm link            # puts `ai-erd` on your PATH
+```
 
-`sync:tools --check` is intended for publish-time live drift checks. It fails fast when `AINECTO_CATALOG_SYNC_TOKEN` is missing, so automatic publish cannot silently fall back to fixtures.
-For local development, `sync:tools` can also use credentials from `ainecto auth login --env <env>`.
+### Catalog Sync
+
+`sync:tools --check` is intended for publish-time live drift checks. It fails fast when
+`AINECTO_CATALOG_SYNC_TOKEN` is missing, so automatic publish cannot silently fall back to fixtures.
+For local development, `sync:tools` can also use credentials from `ai-erd auth login --env <env>`
+(without a role).
 
 ```bash
 AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env prod --check
 AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env dev --check
 ```
 
-The checked-in generated catalogs are deterministic output from `tools/list`. The prod and dev catalogs are live-synced snapshots from `https://ai-erd.com/mcp` and `https://dev.ai-erd.com/mcp`. Presentation metadata lives separately in `src/core/catalog/enrichments.ts`.
+The checked-in generated catalogs are deterministic output from `tools/list`, live-synced from
+`https://ai-erd.com/mcp` and `https://dev.ai-erd.com/mcp`. Presentation metadata lives separately in
+`src/core/catalog/enrichments.ts`. `ai-erd tools catalog` prints the local generated catalog.
 
-`ainecto tools catalog` prints the local generated catalog. Rerun authenticated `sync:tools` when prod or dev `tools/list` changes.
-
-## Generated Friendly Commands
-
-Every checked-in generated catalog tool is reachable through its deterministic command path. Scalar schema fields are exposed as flags, with both kebab-case and schema-case accepted:
-
-```bash
-ainecto task list-tasks --env dev --document-uuid <documentUuid>
-ainecto task list-tasks --env dev --documentUuid <documentUuid>
-```
-
-Array or object payloads use the existing first-party CLI JSON payload reader:
-
-```bash
-ainecto documents create --env dev -f create-documents.json
-cat task-ops.json | ainecto task apply-changes --env dev --json
-```
-
-Destructive generated commands prompt in human mode unless `--yes` is supplied. In `--json` mode they fail with a structured error unless `--yes` is present.
-
-Attachment file upload is available through a bespoke command that performs the upload-token, raw PUT, and attachment registration flow:
-
-```bash
-ainecto attachments upload --env dev --document-uuid <documentUuid> ./diagram.png ./notes.pdf
-```
-
-The generated `request_upload_token` and `upload_attachments` paths remain raw MCP argument-contract commands and do not read local files.
-
-## Local Tarball Smoke
+### Local Tarball Smoke
 
 ```bash
 npm pack
-npx -y ./ainecto-mcp-0.1.4.tgz --help
-npm exec --package ./ainecto-mcp-0.1.4.tgz -- ainecto --help
+npm exec --package ./ai-erd-mcp-<version>.tgz -- ai-erd --help
 ```
 
-## Live Dev MCP Smoke
+### Live Dev MCP Smoke
 
-This requires an authenticated dev token from `ainecto auth login --env dev` or a local developer `AINECTO_TOKEN`.
+This requires an authenticated dev token from `ai-erd auth login --env dev` or a local developer
+`AINECTO_TOKEN`.
 
 ```bash
 npm run smoke:mcp -- --env dev
 ```
 
-The smoke initializes MCP, reads `tools/list`, calls `mcp__ainecto__list_projects`, and prints only aggregate metadata such as tool count and Task tool exposure.
+The smoke initializes MCP, reads `tools/list`, calls `list_projects`, and prints only aggregate
+metadata such as tool count and Task tool exposure.
 
-## Local Attachment Upload Smoke
+### Local Attachment Upload Smoke
 
-This exercises the full `attachments upload` flow against a local `ainecto-api` dev server:
-OAuth MCP token issue, REST fixture document creation, CLI upload, `list_attachments`, and server filesystem byte verification.
+This exercises the full `attachments upload` flow against a local API dev server: OAuth MCP token
+issue, REST fixture document creation, CLI upload, `list_attachments`, and server filesystem byte
+verification.
 
 ```bash
-npm run smoke:attachments -- --base-url http://localhost:8080 --endpoint http://localhost:8080/mcp --api-root /Users/ryan/project/workspace/codelive/ainecto-api
+npm run smoke:attachments -- --base-url http://localhost:8080 --endpoint http://localhost:8080/mcp --api-root <path-to-api-repo>
 ```
 
-The smoke creates a temporary user/workspace/project/document and removes the fixture account, local temp file, and stored upload file unless `--keep` is supplied.
+The smoke creates a temporary user/workspace/project/document and removes the fixture account, local
+temp file, and stored upload file unless `--keep` is supplied.
+
+### Releasing
+
+`npm run release -- --otp=<code>` publishes the same build as `@ai-erd/mcp` and `ai-erd`
+(`--dry-run` shows what would go out). An already-published name is skipped, so a retry after an
+expired code is safe.
 
 ## Known Limitations
 
-- The MCP connector currently implements newline-delimited stdio JSON-RPC to HTTP JSON-RPC. Streamable HTTP SSE responses and `MCP-Session-Id` session handling are not implemented in Phase 1.
-
-Official MCP Registry publish is pending GitHub namespace owner authentication with `mcp-publisher` and metadata submission.
+- The MCP connector implements newline-delimited stdio JSON-RPC to HTTP JSON-RPC. Streamable HTTP SSE
+  responses and `MCP-Session-Id` session handling are not implemented.
+- Official MCP Registry publication is pending GitHub namespace owner authentication with
+  `mcp-publisher`.

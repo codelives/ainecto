@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   await client.initialize();
   const tools = await client.toolsList();
   const toolNames = tools.map((tool) => isRecord(tool) && typeof tool.name === "string" ? tool.name : "").filter(Boolean);
-  const result = await client.toolsCall("mcp__ainecto__list_projects", {});
+  const result = await client.toolsCall("list_projects", {});
   const hasTaskTools = toolNames.some((name) => name.includes("__task_") || name.includes("__tasks_"));
 
   console.log(JSON.stringify({
