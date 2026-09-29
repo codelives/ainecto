@@ -212,6 +212,9 @@ async function handleAuth(
   if (action === "login") {
     await auth.login();
     io.stdout.write(renderSuccess({ endpoint, authenticated: true }, { json }));
+    // ★로그인은 설치의 끝이 아니다. 에이전트가 여기서 «설치 완료»로 닫은 실측(2026-09-29, Codex)이 있다.
+    //   stdout 은 --json 소비자 몫이라 다음 단계는 stderr 로.
+    if (!json) io.stderr.write(`\n${NEXT_STEP_INIT}\n`);
     return 0;
   }
   if (action === "status") {
@@ -335,9 +338,19 @@ function requireValue(flag: string, value: string | undefined): string {
   return value;
 }
 
+/** 설치·로그인 뒤 «다음에 할 일». 도움말과 로그인 성공이 같은 문장을 쓴다. */
+const NEXT_STEP_INIT = [
+  "Setup is not finished until `ai-erd init` runs in the repository.",
+  "Next, from the repository root: `ai-erd init` (a terminal asks for the role and the project).",
+  "AI agents: ask the user which role this repository's AI sessions should have — Design, Development,",
+  "Test, or Validation — never pick one yourself, then run `ai-erd init --role <role>`.",
+].join("\n");
+
 function helpText(): string {
   return [
     "AI-ERD CLI",
+    "",
+    NEXT_STEP_INIT,
     "",
     "Usage:",
     "  ai-erd auth login|status|logout [--env prod|dev] [--json]   (one sign-in per machine)",
