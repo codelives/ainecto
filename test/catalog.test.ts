@@ -9,7 +9,7 @@ import devFixture from "./fixtures/tools-list.dev.json";
 import { enrichments } from "../src/core/catalog/enrichments";
 import { generatedTools as prodGenerated } from "../src/core/catalog/generated.prod";
 import { generatedTools as devGenerated } from "../src/core/catalog/generated.dev";
-import { generateCatalog, stableStringify } from "../src/core/catalog/generator";
+import { bareToolName, generateCatalog, stableStringify } from "../src/core/catalog/generator";
 import { assertUniqueCommandPaths } from "../src/adapters/cli/commandBuilder";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -47,14 +47,17 @@ describe("catalog generation", () => {
   it("keeps generated commands reachable and unique", () => {
     for (const tool of [...prodGenerated, ...devGenerated]) {
       expect(tool.commandPath.length).toBeGreaterThan(0);
-      expect(tool.mcpName).toMatch(/^mcp__ainecto__/);
+    }
+    // prod 는 서버가 prefix 를 뗀 뒤 다시 받았다(0.4.1). dev 는 그 전 판이라 긴 이름이다 — 서버는 둘 다 받는다.
+    for (const tool of prodGenerated) {
+      expect(tool.mcpName).not.toMatch(/^mcp__ainecto__/);
     }
     expect(() => assertUniqueCommandPaths(prodGenerated)).not.toThrow();
     expect(() => assertUniqueCommandPaths(devGenerated)).not.toThrow();
   });
 
   it("requires enrichments to refer to generated tools and stay presentation-only", () => {
-    const names = new Set([...prodGenerated, ...devGenerated].map((tool) => tool.mcpName));
+    const names = new Set([...prodGenerated, ...devGenerated].map((tool) => bareToolName(tool.mcpName)));
     for (const enrichment of enrichments) {
       expect(names.has(enrichment.mcpName)).toBe(true);
       expect(enrichment).not.toHaveProperty("inputSchema");

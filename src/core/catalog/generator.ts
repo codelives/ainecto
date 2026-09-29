@@ -10,6 +10,14 @@ import type { GeneratedToolDefinition, JsonSchema, McpToolListItem, PayloadMode,
  * 에는 긴 이름이 남아 있고 서버가 그것도 계속 받아주므로, 두 형태가 함께 산다.
  */
 const LEGACY_PREFIX = "mcp__ainecto__";
+
+/**
+ * 서버 prefix 를 뗀 «맨 이름». 카탈로그가 어느 판에서 왔든(긴 이름·짧은 이름) 같은 도구를 같은
+ * 이름으로 가리키려면 이 한 곳을 거친다 — 표시 정보(enrichments)를 이름으로 붙일 때 특히.
+ */
+export function bareToolName(name: string): string {
+  return name.startsWith(LEGACY_PREFIX) ? name.slice(LEGACY_PREFIX.length) : name;
+}
 const DESTRUCTIVE_PREFIXES = [
   "delete_",
   "remove_",
@@ -33,7 +41,7 @@ export function normalizeTool(tool: McpToolListItem, sourceCatalog: "prod" | "de
   if (!tool.name) {
     throw new Error("Unsupported tool name: empty.");
   }
-  const stripped = tool.name.startsWith(LEGACY_PREFIX) ? tool.name.slice(LEGACY_PREFIX.length) : tool.name;
+  const stripped = bareToolName(tool.name);
   const group = inferGroup(stripped);
   const inputSchema = normalizeSchema(tool.inputSchema ?? { type: "object", properties: {} });
   const required = Array.isArray(inputSchema.required)

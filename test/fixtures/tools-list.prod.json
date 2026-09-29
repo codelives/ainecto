@@ -1,7 +1,386 @@
 {
   "tools": [
     {
-      "name": "mcp__ainecto__erd_arrange_tables",
+      "name": "diagram_apply_changes",
+      "description": "Required single-call mutation path for diagram node/edge/group create/update/delete changes. Put nodes, edges, and groups in one request and call this once. Do not look for type-specific diagram CUD tools; this tool is the only diagram CUD entry point.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "diagramUuid": {
+            "type": "string",
+            "description": "Diagram UUID"
+          },
+          "description": {
+            "type": "string",
+            "description": "Reason for batch (audit)"
+          },
+          "nodes": {
+            "type": "array",
+            "description": "Node operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Operation kind",
+                  "enum": [
+                    "create",
+                    "update",
+                    "delete"
+                  ]
+                },
+                "uuid": {
+                  "type": "string",
+                  "description": "Required for update/delete; optional for create"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Node type"
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 4000,
+                  "description": "Node text/label. Supports newlines (\\n) for multi-line display."
+                },
+                "shape": {
+                  "type": "string",
+                  "description": "Node shape (start/end/diamond/cylinder/parallelogram/stadium/hexagon/rect/roundRect/...)",
+                  "enum": [
+                    "rect",
+                    "roundRect",
+                    "stadium",
+                    "diamond",
+                    "decision",
+                    "circle",
+                    "start",
+                    "doubleCircle",
+                    "end",
+                    "hexagon",
+                    "cylinder",
+                    "parallelogram"
+                  ]
+                },
+                "x": {
+                  "type": "number",
+                  "description": "X"
+                },
+                "y": {
+                  "type": "number",
+                  "description": "Y"
+                },
+                "width": {
+                  "type": "number",
+                  "description": "Width"
+                },
+                "height": {
+                  "type": "number",
+                  "description": "Height"
+                },
+                "groupUuid": {
+                  "type": "string",
+                  "description": "Group UUID; empty string clears membership"
+                },
+                "fillColor": {
+                  "type": "string",
+                  "description": "Fill color"
+                },
+                "strokeColor": {
+                  "type": "string",
+                  "description": "Stroke color"
+                },
+                "textColor": {
+                  "type": "string",
+                  "description": "Text color"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          },
+          "edges": {
+            "type": "array",
+            "description": "Edge operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Operation kind",
+                  "enum": [
+                    "create",
+                    "update",
+                    "delete"
+                  ]
+                },
+                "uuid": {
+                  "type": "string",
+                  "description": "Required for update/delete"
+                },
+                "fromUuid": {
+                  "type": "string",
+                  "description": "Source"
+                },
+                "toUuid": {
+                  "type": "string",
+                  "description": "Target"
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Edge label"
+                },
+                "bridgeType": {
+                  "type": "string",
+                  "description": "Bridge type"
+                },
+                "strokeColor": {
+                  "type": "string",
+                  "description": "Stroke color"
+                },
+                "lineStyle": {
+                  "type": "string",
+                  "description": "Line style"
+                },
+                "strokeWidth": {
+                  "type": "integer",
+                  "description": "Stroke width"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          },
+          "groups": {
+            "type": "array",
+            "description": "Group operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Operation kind",
+                  "enum": [
+                    "create",
+                    "update",
+                    "delete"
+                  ]
+                },
+                "uuid": {
+                  "type": "string",
+                  "description": "Required for update/delete"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Group name"
+                },
+                "color": {
+                  "type": "string",
+                  "description": "Group color"
+                },
+                "width": {
+                  "type": "number",
+                  "description": "Explicit width; omit to keep it derived from member nodes"
+                },
+                "height": {
+                  "type": "number",
+                  "description": "Explicit height; omit to keep it derived from member nodes"
+                },
+                "parentGroupUuid": {
+                  "type": "string",
+                  "description": "Parent group UUID"
+                },
+                "collapsed": {
+                  "type": "boolean",
+                  "description": "Collapsed state"
+                },
+                "sortOrder": {
+                  "type": "integer",
+                  "description": "Sort order"
+                },
+                "linkedDiagramUuid": {
+                  "type": "string",
+                  "description": "Linked diagram UUID"
+                },
+                "linkMode": {
+                  "type": "string",
+                  "description": "Link mode"
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          }
+        },
+        "required": [
+          "diagramUuid",
+          "description"
+        ]
+      }
+    },
+    {
+      "name": "diagram_get_edge",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "edgeUuid": {
+            "type": "string",
+            "description": "Edge UUID"
+          }
+        },
+        "required": [
+          "edgeUuid"
+        ]
+      }
+    },
+    {
+      "name": "diagram_get_group",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "groupUuid": {
+            "type": "string",
+            "description": "Group UUID"
+          }
+        },
+        "required": [
+          "groupUuid"
+        ]
+      }
+    },
+    {
+      "name": "diagram_get_node",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "nodeUuid": {
+            "type": "string",
+            "description": "Node UUID"
+          }
+        },
+        "required": [
+          "nodeUuid"
+        ]
+      }
+    },
+    {
+      "name": "diagram_get_pending_llm_requests",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "diagram_list_edges",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "diagramUuid": {
+            "type": "string",
+            "description": "Diagram document UUID"
+          }
+        },
+        "required": [
+          "diagramUuid"
+        ]
+      }
+    },
+    {
+      "name": "diagram_list_groups",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "diagramUuid": {
+            "type": "string",
+            "description": "Diagram document UUID"
+          }
+        },
+        "required": [
+          "diagramUuid"
+        ]
+      }
+    },
+    {
+      "name": "diagram_list_nodes",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "diagramUuid": {
+            "type": "string",
+            "description": "Diagram document UUID"
+          }
+        },
+        "required": [
+          "diagramUuid"
+        ]
+      }
+    },
+    {
+      "name": "diagram_submit_llm_result",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "description": "LLM request UUID"
+          },
+          "result": {
+            "type": "string",
+            "description": "LLM result text"
+          },
+          "inputTokens": {
+            "type": "integer",
+            "description": "Provider total input tokens; Java persists uncached input after one normalization"
+          },
+          "cachedInputTokens": {
+            "type": "integer",
+            "description": "Cached subset of provider total input tokens"
+          },
+          "outputTokens": {
+            "type": "integer",
+            "description": "Output token count"
+          },
+          "creditsCharged": {
+            "type": "integer",
+            "description": "Deprecated; ignored. Credits are calculated server-side from tokens."
+          }
+        },
+        "required": [
+          "uuid",
+          "result"
+        ]
+      }
+    },
+    {
+      "name": "diagram_update_llm_request_status",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuid": {
+            "type": "string",
+            "description": "LLM request UUID"
+          },
+          "status": {
+            "type": "string",
+            "description": "Target status — currently only FAILED is mutable from caller side",
+            "enum": [
+              "FAILED"
+            ]
+          },
+          "errorMessage": {
+            "type": "string",
+            "description": "Error message (when status=FAILED)"
+          }
+        },
+        "required": [
+          "uuid",
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "erd_arrange_tables",
       "description": "Arrange ERD tables after edits. Default incremental mode places newly-created tables while preserving existing positions; full=true re-layouts the entire diagram. Use after several separate table edits to tidy the canvas.",
       "inputSchema": {
         "type": "object",
@@ -21,8 +400,8 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_apply_changes",
-      "description": "Required single-call mutation path for ERD create/update/delete changes. Put tables, columns, indexes, refs, enums, enum_values, and table groups in one operations array and call this once.\nRules: (1) all data field names are snake_case; (2) for create, generate your own UUIDs and put them in data.uuid, then later operations in the same batch may reference those UUIDs without read-back calls; (3) enum values are separate enum_value operations, not inline on enum; (4) ref.relationship uses short dbdiagram-style symbols: >, <, or -; (5) ref_column operations map FK columns explicitly, never automatically.\nDo not look for type-specific ERD CUD tools; this tool is the only ERD CUD entry point. If operations is very large, use mcp__ainecto__request_upload_token with purpose=mcp.call and send the tools/call payload with curl to save LLM tokens.\nOne-call worked example:\n{\n  \"documentUuid\": \"erd-doc-uuid\",\n  \"description\": \"create users/posts ERD\",\n  \"operations\": [\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_users\",\"name\":\"users\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_id\",\"table_uuid\":\"tbl_users\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_email\",\"table_uuid\":\"tbl_users\",\"name\":\"email\",\"type\":\"varchar(255)\",\"is_unique\":true,\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_posts\",\"name\":\"posts\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_author_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"author_id\",\"type\":\"bigint\",\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_status\",\"table_uuid\":\"tbl_posts\",\"name\":\"status\",\"type\":\"post_status\",\"is_not_null\":true,\"display_order\":3}},\n    {\"op\":\"create\",\"type\":\"enum\",\"data\":{\"uuid\":\"enum_post_status\",\"name\":\"post_status\"}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_draft\",\"enum_uuid\":\"enum_post_status\",\"value\":\"draft\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_published\",\"enum_uuid\":\"enum_post_status\",\"value\":\"published\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"ref\",\"data\":{\"uuid\":\"ref_posts_author\",\"name\":\"fk_posts_author\",\"from_table_uuid\":\"tbl_posts\",\"to_table_uuid\":\"tbl_users\",\"relationship\":\">\",\"on_delete\":\"cascade\"}},\n    {\"op\":\"create\",\"type\":\"ref_column\",\"data\":{\"uuid\":\"refcol_posts_author\",\"ref_uuid\":\"ref_posts_author\",\"from_column_uuid\":\"col_posts_author_id\",\"to_column_uuid\":\"col_users_id\",\"display_order\":1}}\n  ]\n}",
+      "name": "erd_apply_changes",
+      "description": "Required single-call mutation path for ERD create/update/delete changes. Put tables, columns, indexes, refs, enums, enum_values, and table groups in one operations array and call this once.\nRules: (1) all data field names are snake_case; (2) for create, generate your own UUIDs and put them in data.uuid, then later operations in the same batch may reference those UUIDs without read-back calls; (3) enum values are separate enum_value operations, not inline on enum; (4) ref.relationship uses short dbdiagram-style symbols: >, <, or -; (5) ref_column operations map FK columns explicitly, never automatically.\nDo not look for type-specific ERD CUD tools; this tool is the only ERD CUD entry point. If operations is very large, use request_upload_token with purpose=mcp.call and send the tools/call payload with curl to save LLM tokens.\nOne-call worked example:\n{\n  \"documentUuid\": \"erd-doc-uuid\",\n  \"description\": \"create users/posts ERD\",\n  \"operations\": [\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_users\",\"name\":\"users\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_id\",\"table_uuid\":\"tbl_users\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_email\",\"table_uuid\":\"tbl_users\",\"name\":\"email\",\"type\":\"varchar(255)\",\"is_unique\":true,\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_posts\",\"name\":\"posts\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_author_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"author_id\",\"type\":\"bigint\",\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_status\",\"table_uuid\":\"tbl_posts\",\"name\":\"status\",\"type\":\"post_status\",\"is_not_null\":true,\"display_order\":3}},\n    {\"op\":\"create\",\"type\":\"enum\",\"data\":{\"uuid\":\"enum_post_status\",\"name\":\"post_status\"}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_draft\",\"enum_uuid\":\"enum_post_status\",\"value\":\"draft\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_published\",\"enum_uuid\":\"enum_post_status\",\"value\":\"published\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"ref\",\"data\":{\"uuid\":\"ref_posts_author\",\"name\":\"fk_posts_author\",\"from_table_uuid\":\"tbl_posts\",\"to_table_uuid\":\"tbl_users\",\"relationship\":\">\",\"on_delete\":\"cascade\"}},\n    {\"op\":\"create\",\"type\":\"ref_column\",\"data\":{\"uuid\":\"refcol_posts_author\",\"ref_uuid\":\"ref_posts_author\",\"from_column_uuid\":\"col_posts_author_id\",\"to_column_uuid\":\"col_users_id\",\"display_order\":1}}\n  ]\n}",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2350,7 +2729,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_get_enum",
+      "name": "erd_get_enum",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2370,7 +2749,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_get_ref",
+      "name": "erd_get_ref",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2390,7 +2769,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_get_table_group",
+      "name": "erd_get_table_group",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2410,8 +2789,8 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_get_table",
-      "description": "Get one ERD table with nested columns and indexes. Returns persistent table/column/index UUIDs usable directly as mcp__ainecto__erd_apply_changes update/delete targets and ref_column column references. Column fields use apply_changes snake_case names: uuid, table_uuid, name, type, is_pk, is_unique, is_not_null, is_increment, default_value, note, display_order. Index fields include uuid, name, columns (column UUIDs), is_unique, is_pk, type.",
+      "name": "erd_get_table",
+      "description": "Get one ERD table with nested columns and indexes. Returns persistent table/column/index UUIDs usable directly as erd_apply_changes update/delete targets and ref_column column references. Column fields use apply_changes snake_case names: uuid, table_uuid, name, type, is_pk, is_unique, is_not_null, is_increment, default_value, note, display_order. Index fields include uuid, name, columns (column UUIDs), is_unique, is_pk, type.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2432,7 +2811,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_list_enums",
+      "name": "erd_list_enums",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2447,7 +2826,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_list_refs",
+      "name": "erd_list_refs",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2462,7 +2841,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_list_table_groups",
+      "name": "erd_list_table_groups",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2477,7 +2856,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__erd_list_tables",
+      "name": "erd_list_tables",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2492,7 +2871,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__markdown_append_document",
+      "name": "markdown_append_document",
       "description": "Append to Markdown documents. If the appended body is tens of KB or more, prefer request_upload_token (purpose=document.append) and upload the body with curl.",
       "inputSchema": {
         "type": "object",
@@ -2529,7 +2908,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__create_documents",
+      "name": "create_documents",
       "description": "Create documents. If a document body is tens of KB or more, prefer request_upload_token (purpose=document.create) and upload the body with curl.",
       "inputSchema": {
         "type": "object",
@@ -2550,10 +2929,12 @@
                 },
                 "type": {
                   "type": "string",
-                  "description": "Document type. Enabled values: erd, markdown.",
+                  "description": "Document type. Creatable values: erd, markdown, diagram, openapi.",
                   "enum": [
                     "erd",
-                    "markdown"
+                    "markdown",
+                    "diagram",
+                    "openapi"
                   ]
                 },
                 "title": {
@@ -2562,7 +2943,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}."
                 },
                 "body": {
                   "type": "string",
@@ -2583,7 +2964,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__create_folders",
+      "name": "create_folders",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2619,7 +3000,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__create_projects",
+      "name": "create_projects",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2658,7 +3039,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__create_workspaces",
+      "name": "create_workspaces",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2689,7 +3070,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__delete_attachments",
+      "name": "delete_attachments",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2707,7 +3088,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__delete_documents",
+      "name": "delete_documents",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2725,7 +3106,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__delete_folders",
+      "name": "delete_folders",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2743,7 +3124,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__delete_projects",
+      "name": "delete_projects",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2761,7 +3142,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__delete_workspaces",
+      "name": "delete_workspaces",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2779,7 +3160,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__disable_shares",
+      "name": "disable_shares",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2807,13 +3188,13 @@
       }
     },
     {
-      "name": "mcp__ainecto__enable_shares",
+      "name": "enable_shares",
       "inputSchema": {
         "type": "object",
         "properties": {
           "targetType": {
             "type": "string",
-            "description": "Share target type",
+            "description": "Share target type. A document gets a shareUrl anyone can open; a project gets a public API path only (there is no public project page); a folder token is stored but nothing public reads it yet.",
             "enum": [
               "project",
               "folder",
@@ -2835,7 +3216,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__markdown_generate_document",
+      "name": "markdown_generate_document",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2871,7 +3252,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__get_attachment",
+      "name": "get_attachment",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2886,7 +3267,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__get_document",
+      "name": "get_document",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2901,7 +3282,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__get_project",
+      "name": "get_project",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2916,7 +3297,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__get_version",
+      "name": "get_version",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2936,7 +3317,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__get_workspace",
+      "name": "get_workspace",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2951,7 +3332,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__list_attachments",
+      "name": "list_attachments",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2966,7 +3347,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__list_documents",
+      "name": "list_documents",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2980,10 +3361,12 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Enabled values: erd, markdown.",
+            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi.",
             "enum": [
               "erd",
-              "markdown"
+              "markdown",
+              "diagram",
+              "openapi"
             ]
           },
           "q": {
@@ -2998,7 +3381,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__list_folders",
+      "name": "list_folders",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3013,7 +3396,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__list_projects",
+      "name": "list_projects",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3033,14 +3416,14 @@
       }
     },
     {
-      "name": "mcp__ainecto__list_trash",
+      "name": "list_trash",
       "inputSchema": {
         "type": "object",
         "properties": {}
       }
     },
     {
-      "name": "mcp__ainecto__list_versions",
+      "name": "list_versions",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3055,14 +3438,14 @@
       }
     },
     {
-      "name": "mcp__ainecto__list_workspaces",
+      "name": "list_workspaces",
       "inputSchema": {
         "type": "object",
         "properties": {}
       }
     },
     {
-      "name": "mcp__ainecto__move_documents",
+      "name": "move_documents",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3108,7 +3491,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__move_folders",
+      "name": "move_folders",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3139,8 +3522,8 @@
       }
     },
     {
-      "name": "mcp__ainecto__request_upload_token",
-      "description": "Use this for large payloads of tens of KB or more to save LLM tokens. purpose=mcp.call returns a short-lived bearer token that can call any MCP tool, including mcp__ainecto__erd_apply_changes, via curl. purpose=document.create/update/append uploads document bodies directly to the upload endpoint with PUT/curl. Tokens are reusable for 5 minutes by default.",
+      "name": "request_upload_token",
+      "description": "Use this for large payloads of tens of KB or more to save LLM tokens. purpose=mcp.call returns a short-lived bearer token that can call any MCP tool, including erd_apply_changes, via curl. purpose=document.create/update/append uploads document bodies directly to the upload endpoint with PUT/curl. Tokens are reusable for 5 minutes by default.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3157,7 +3540,7 @@
           },
           "scopeJson": {
             "type": "string",
-            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 enabled type values 는 erd, markdown. document.update/document.append 는 documentUuid 를 포함. attachment.upload: {documentUuid, filename, contentType?, sizeBytes?}; storageKey 는 서버가 발급 scope 에 추가."
+            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 creatable type values 는 erd, markdown, diagram, openapi. document.update/document.append 는 documentUuid 를 포함. attachment.upload typed: {parentType:TEST_CASE|TEST_EXECUTION,parentUuid,filename,contentType,sizeBytes}."
           },
           "maxBytes": {
             "type": "integer",
@@ -3174,7 +3557,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__restore_versions",
+      "name": "restore_versions",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3206,7 +3589,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__unarchive_documents",
+      "name": "unarchive_documents",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3224,7 +3607,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__unarchive_folders",
+      "name": "unarchive_folders",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3242,7 +3625,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__unarchive_projects",
+      "name": "unarchive_projects",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3260,7 +3643,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__unarchive_workspaces",
+      "name": "unarchive_workspaces",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3278,7 +3661,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__update_documents",
+      "name": "update_documents",
       "description": "Update documents. If a replacement body is tens of KB or more, prefer request_upload_token (purpose=document.update) and upload the body with curl.",
       "inputSchema": {
         "type": "object",
@@ -3299,7 +3682,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}."
                 },
                 "body": {
                   "type": "string",
@@ -3318,7 +3701,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__update_folders",
+      "name": "update_folders",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3350,7 +3733,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__update_projects",
+      "name": "update_projects",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3385,7 +3768,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__update_workspaces",
+      "name": "update_workspaces",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3420,7 +3803,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__upload_attachments",
+      "name": "upload_attachments",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3465,7 +3848,7 @@
       }
     },
     {
-      "name": "mcp__ainecto__search_documents",
+      "name": "search_documents",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3475,10 +3858,12 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Enabled values: erd, markdown.",
+            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi.",
             "enum": [
               "erd",
-              "markdown"
+              "markdown",
+              "diagram",
+              "openapi"
             ]
           },
           "projectUuid": {
@@ -3497,6 +3882,15 @@
         "required": [
           "q"
         ]
+      }
+    },
+    {
+      "name": "identity_get_self",
+      "description": "Return the authenticated MCP caller identity summary; never returns email or token claims.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
       }
     }
   ]
