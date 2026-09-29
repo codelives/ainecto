@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   });
   const token = await auth.getAccessToken();
   if (!token) {
-    throw new Error("SMOKE_AUTH_REQUIRED: run `ainecto auth login --env dev` or provide AINECTO_TOKEN before smoke.");
+    throw new Error("SMOKE_AUTH_REQUIRED: run `ai-erd auth login --env dev` or provide AINECTO_TOKEN before smoke.");
   }
 
   const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth });

@@ -352,13 +352,13 @@ export async function createLoopbackReceiver(expectedState: string, host = "127.
     const state = url.searchParams.get("state");
     if (error) {
       res.writeHead(400, { "content-type": "text/plain" });
-      res.end("Ainecto CLI authorization failed. You can close this tab.");
+      res.end("AI-ERD CLI authorization failed. You can close this tab.");
       rejectCode(new Error(`OAuth authorization failed: ${error}`));
       return;
     }
     if (!state || state !== expectedState) {
       res.writeHead(400, { "content-type": "text/plain" });
-      res.end("Ainecto CLI authorization state mismatch. You can close this tab.");
+      res.end("AI-ERD CLI authorization state mismatch. You can close this tab.");
       rejectCode(new Error("OAuth state mismatch."));
       return;
     }
@@ -369,7 +369,7 @@ export async function createLoopbackReceiver(expectedState: string, host = "127.
       return;
     }
     res.writeHead(200, { "content-type": "text/plain" });
-    res.end("Ainecto CLI authorization complete. You can close this tab.");
+    res.end("AI-ERD CLI authorization complete. You can close this tab.");
     resolveCode(code);
   });
 

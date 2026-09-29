@@ -16,7 +16,7 @@ export async function registerPublicClient(
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({
-      client_name: "Ainecto CLI",
+      client_name: "AI-ERD CLI",
       redirect_uris: [redirectUri],
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"],
