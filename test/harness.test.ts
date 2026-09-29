@@ -19,7 +19,8 @@ import {
   renderHarnessDoc,
   upsertMarkerBlock,
 } from "../src/core/harness/harnessDoc";
-import { detectRoles, planInit, planUndo, readRecord } from "../src/core/harness/initPlan";
+import { planInit, planUndo, readRecord } from "../src/core/harness/initPlan";
+import { rolesInFiles } from "../src/core/harness/repositoryRole";
 import { extractProjects, unwrapToolJson } from "../src/adapters/cli/initCommand";
 
 const BASE = {
@@ -358,9 +359,10 @@ describe("init plan", () => {
 
   it("detects a role already wired into the repository", () => {
     const first = planInit({ ...BASE, files: snapshot({}) });
-    const roles = detectRoles(snapshot({ ".mcp.json": writtenAt(first, ".mcp.json") }));
+    const found = rolesInFiles(snapshot({ ".mcp.json": writtenAt(first, ".mcp.json") }));
 
-    expect([...roles.values()]).toEqual(["development"]);
+    expect(found.roles).toEqual(["development"]);
+    expect(found.problems).toEqual([]);
   });
 });
 

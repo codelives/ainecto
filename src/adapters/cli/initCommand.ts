@@ -1,11 +1,10 @@
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { McpRpcError, type McpRpcClient } from "../../core/mcp/rpcClient";
 import { isDefaultEndpointFor } from "../../core/config/endpoints";
 import { renderSuccess } from "../../core/output/render";
 import { HARNESS_ROLES, ROLE_ENV_VAR, type HarnessRole } from "../../core/harness/role";
 import {
-  detectRoles,
   initRefusal,
   MANAGED_PATHS,
   planInit,
@@ -17,6 +16,18 @@ import {
 import { HARNESS_CONFIG_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
 import { PromptCancelled, type Choice, type Prompter } from "./prompter";
+import {
+  assertInsideRepository,
+  findGitRoot,
+  readIfExists,
+  readManagedFile,
+  rolesInFiles,
+} from "../../core/harness/repositoryRole";
+
+/** 역할이 딱 하나일 때만 그 역할(대화형 기본값). 없거나 어긋나 있으면 기본값이 없다. */
+function singleRole(roles: HarnessRole[]): HarnessRole | undefined {
+  return roles.length === 1 ? roles[0] : undefined;
+}
 
 /** 역할이 정해진 «뒤»에 만드는 연결. 역할이 토큰 칸과 헤더를 정하므로 역할보다 먼저 만들 수 없다. */
 export interface InitConnection {
@@ -144,7 +155,7 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
   // ★설정끼리 역할이 어긋난 저장소: 대화형이면 «기본값 없이» 묻고, 비대화형이면 사용자에게 물으라며 멈춘다.
   const prompter = options.prompter;
   const role = options.role ?? (prompter
-    ? await askRole(prompter, repositoryRoles(files).length === 1 ? repositoryRoles(files)[0] : undefined)
+    ? await askRole(prompter, singleRole(rolesInFiles(files).roles))
     : currentRole(files));
   // 설정끼리 어긋나 있으면 «이전 역할»은 하나로 말할 수 없다 — 그때는 변경 알림을 생략한다
   // (명시한 --role 이 둘을 맞추고, 파일별 변화는 계획의 notes 가 말한다).
@@ -251,7 +262,7 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
 
 /** 이 저장소에 이미 걸린 역할. 두 설정이 어긋나 있으면 «고르지 않고» 멈춘다. */
 function currentRole(files: ReadonlyMap<string, string | undefined>): HarnessRole | undefined {
-  const unique = repositoryRoles(files);
+  const unique = rolesInFiles(files).roles;
   if (unique.length > 1) {
     throw new Error(
       `Agent configs in this repository disagree about the session role (${unique.join(", ")}). `
@@ -260,12 +271,6 @@ function currentRole(files: ReadonlyMap<string, string | undefined>): HarnessRol
     );
   }
   return unique[0];
-}
-
-/** 저장소의 에이전트 설정들에 걸린 역할(중복 없이). 둘 이상이면 설정끼리 어긋난 것이다. */
-function repositoryRoles(files: ReadonlyMap<string, string | undefined>): HarnessRole[] {
-  const found = [...detectRoles(files).values()].filter((role): role is HarnessRole => role !== undefined);
-  return [...new Set(found)];
 }
 
 /** 패키지 기본값을 쓴 사실과 그 이유. 없으면 빈 배열. */
@@ -335,21 +340,6 @@ async function repositoryRootNotes(cwd: string): Promise<string[]> {
     );
   }
   return [];
-}
-
-/** cwd 에서 위로 올라가며 {@code .git} 이 있는 첫 디렉터리. 없으면 undefined. */
-export async function findGitRoot(cwd: string): Promise<string | undefined> {
-  for (let at = resolve(cwd); ; at = dirname(at)) {
-    try {
-      await lstat(join(at, ".git"));
-      return at;
-    } catch {
-      // 없다(또는 볼 수 없다) — 한 칸 위로.
-    }
-    if (dirname(at) === at) {
-      return undefined;
-    }
-  }
 }
 
 /**
@@ -637,71 +627,6 @@ async function readSnapshot(root: string): Promise<Map<string, string | undefine
     snapshot.set(path, await readManagedFile(root, path));
   }
   return snapshot;
-}
-
-/**
- * ★<b>저장소 안의 파일을 읽는 유일한 문.</b> 경계 검사가 읽기 «앞»에 붙어 있다.
- *
- * <p>예전엔 {@code readSnapshot} 만 검사를 했고, 나중에 붙인 역할 추론이 {@code readIfExists} 를
- * 바로 불렀다. 그래서 저장소 밖을 가리키는 설정 파일을 <b>한 번 읽고 나서</b> 거절했다
- * (2026-09-23 4차 독립 리뷰 I5). 검사와 읽기가 갈라지면, 새로 생긴 경로마다 검사를 잊는다.
- */
-/**
- * 관리 대상 파일의 부모 중 <b>지금 없는</b> 디렉터리들. 우리가 쓰면서 만들게 되는 것이다.
- *
- * <p>파일 스냅샷만으로는 「비어 있는 디렉터리가 이미 있었나」를 알 수 없다. 그걸 모르면
- * 되돌리기가 남의 빈 디렉터리를 치운다(2026-09-23 4차 독립 리뷰 S3).
- */
-
-async function readManagedFile(root: string, path: string): Promise<string | undefined> {
-  await assertInsideRepository(root, path);
-  return readIfExists(join(root, path));
-}
-
-async function readIfExists(absolutePath: string): Promise<string | undefined> {
-  try {
-    return await readFile(absolutePath, "utf8");
-  } catch (error) {
-    if (isRecord(error) && error.code === "ENOENT") {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-/**
- * ★이 경로가 정말 저장소 «안»인가.
- *
- * <p>{@code join(root, path)} 는 이름을 이어 붙일 뿐이고, {@code readFile}/{@code writeFile}
- * 은 심볼릭 링크를 따라간다. {@code .ai-erd → /somewhere/else} 인 저장소에서 undo 를 돌리면
- * 남의 디렉터리 파일이 지워졌다(2026-09-22 독립 리뷰 I4). 실제 경로로 풀어서 경계를 본다.
- */
-async function assertInsideRepository(root: string, relativePath: string): Promise<void> {
-  const absolutePath = join(root, relativePath);
-  const realRoot = await realpath(root);
-  let realParent: string;
-  try {
-    realParent = await realpath(dirname(absolutePath));
-  } catch (error) {
-    if (isRecord(error) && error.code === "ENOENT") {
-      return; // 아직 없는 디렉터리는 우리가 만든다 — 링크일 수 없다.
-    }
-    throw error;
-  }
-  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) {
-    throw new Error(
-      `${relativePath} resolves outside the repository (${realParent}); refusing to touch it.`,
-    );
-  }
-  try {
-    if ((await lstat(absolutePath)).isSymbolicLink()) {
-      throw new Error(`${relativePath} is a symbolic link; refusing to write through it.`);
-    }
-  } catch (error) {
-    if (!isRecord(error) || error.code !== "ENOENT") {
-      throw error;
-    }
-  }
 }
 
 /**

@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createdChain, executeInitCommand, findGitRoot } from "../src/adapters/cli/initCommand";
+import { createdChain, executeInitCommand } from "../src/adapters/cli/initCommand";
+import { findGitRoot } from "../src/core/harness/repositoryRole";
 import { readRecord } from "../src/core/harness/initPlan";
 
 const RECORD_FILE = ".ai-erd/init-record.json";

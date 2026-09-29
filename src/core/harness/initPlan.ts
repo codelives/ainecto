@@ -897,19 +897,6 @@ function parentsOf(paths: readonly string[]): string[] {
   return [...directories].sort((left, right) => right.length - left.length);
 }
 
-/** 이 저장소에 이미 걸린 역할. 설정 파일들이 어긋나 있으면 전부 돌려준다. */
-export function detectRoles(files: FileSnapshot): Map<string, HarnessRole | undefined> {
-  const found = new Map<string, HarnessRole | undefined>();
-  for (const target of AGENT_TARGETS) {
-    const existing = files.get(target.path);
-    if (existing === undefined) {
-      continue;
-    }
-    found.set(target.path, previousRole(existing));
-  }
-  return found;
-}
-
 function previousRole(existing: string | undefined): HarnessRole | undefined {
   if (existing === undefined) {
     return undefined;
