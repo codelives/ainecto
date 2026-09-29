@@ -101,15 +101,16 @@ function alreadyPublished(name, version) {
   }
 }
 
-function publish(name, label) {
+function publish(name, note = "") {
+  const label = `${name}@${parsed.version}${note ? `  ${note}` : ""}`;
   if (!dryRun && alreadyPublished(name, parsed.version)) {
-    console.log(`\n▶ ${label}@${parsed.version}  — 이미 올라가 있어 건너뜁니다`);
+    console.log(`\n▶ ${label}  — 이미 올라가 있어 건너뜁니다`);
     return;
   }
   const args = ["publish", "--access", "public"];
   if (dryRun) args.push("--dry-run");
   if (otpArg) args.push(otpArg);
-  console.log(`\n▶ ${label}@${parsed.version}  (npm publish --access public${otpArg ? " --otp=******" : ""}${dryRun ? " --dry-run" : ""})`);
+  console.log(`\n▶ ${label}  (npm publish --access public${otpArg ? " --otp=******" : ""}${dryRun ? " --dry-run" : ""})`);
   execFileSync("npm", args, { cwd: ROOT, stdio: "inherit" });
 }
 
@@ -117,13 +118,13 @@ preflight();
 
 try {
   // 1) 주 이름 — prepack 이 typecheck·test·build 를 돌린다
-  publish(primaryName, primaryName);
+  publish(primaryName);
 
   // 2) 범위 없는 이름 — 이름만 바꿔 같은 산출물을 한 번 더 올린다
   //    ★prepack 을 다시 돌리지 않도록 --ignore-scripts 는 쓰지 않는다.
   //      같은 dist 를 그대로 싸는 것이 목적이므로 재빌드돼도 결과는 같다.
   writeFileSync(PKG, JSON.stringify({ ...parsed, name: UNSCOPED_NAME }, null, 2) + "\n");
-  publish(UNSCOPED_NAME, `${UNSCOPED_NAME}  (범위 없는 이름 — 같은 코드)`);
+  publish(UNSCOPED_NAME, "(범위 없는 이름 — 같은 코드)");
 } finally {
   // 3) 무슨 일이 있어도 package.json 을 원상복구한다.
   //    이게 없으면 실패한 퍼블리시가 저장소에 다른 이름을 남긴다.
