@@ -13,13 +13,16 @@ browser if needed.
 - Use a long command timeout (at least 6 minutes): sign-in waits up to 5 minutes for the user.
 - If `init` lists projects, ask the user which one and re-run with `--project <uuid>`. If it says
   this is not the repository root, re-run from the folder it names.
-- The role applies from a **new session**. Tell the user to start one (Claude Code: exit, then
-  `claude -c` in this folder to keep the conversation; approve the `ai-erd` server from `.mcp.json`
-  when asked). Codex: save the profile `init` prints and start with `codex -p <role>`.
+- **No restart is needed.** Right after `init`, keep working in the same session through the CLI:
+  `ai-erd` commands run from the repository read its role on every call (read `.ai-erd/HARNESS.md`,
+  then `ai-erd tools list` and `ai-erd tools call <tool> '<json>'`). Do not use MCP tools the session
+  started with for that work — they keep the role (or no role) the session started with.
+- A new session is optional and only adds the role's MCP tools (Claude Code: exit, then `claude -c`
+  in this folder to keep the conversation; approve the `ai-erd` server from `.mcp.json` when asked).
+  Codex: save the profile `init` prints and start with `codex -p <role>`.
 - **A server added during a session is not available in that session.** In our test, a server added
-  with `claude mcp add` while Claude Code was running did not attach to the running session. Do not
-  tell the user it will work right away — ask them to start a new session. `/mcp` shows what the
-  current session actually loaded.
+  with `claude mcp add` while Claude Code was running did not attach to the running session — that is
+  why the CLI is the way to keep going. `/mcp` shows what the current session actually loaded.
 - Inside the repository, `ai-erd` commands (`ai-erd tools call …`) use the repository's role
   automatically — do not pass `--role`; a different `--role` is refused.
 - Claude Code's auto mode may block running an external package with `npx`. If it does, ask the user
@@ -69,8 +72,9 @@ Anywhere else (an agent's shell, CI) it asks nothing. In both cases:
 - It stops when run from a sub-folder of a git repository, and tells you the root.
 - It writes one `ai-erd` server entry carrying `--role` into `.mcp.json` (Claude Code) and
   `.cursor/mcp.json` (Cursor), and prints the Codex profile to use (`codex -p <role>`).
-- The role applies from a **new session**; the running session keeps the role it started with.
-  Roles are a working guardrail, not a security boundary.
+- `ai-erd` commands in the repository use the new role **at once**; MCP tools pick it up in a **new
+  session** (a running session's MCP tools keep the role they started with). Roles are a working
+  guardrail, not a security boundary.
 - `ai-erd init --dry-run` shows what would change (it does not sign in or refresh a sign-in);
   `ai-erd init --undo` removes what it wrote.
 

@@ -735,13 +735,13 @@ describe("ai-erd init (files on disk)", () => {
     expect(errors.join("")).toContain("Created project fresh (p-new).");
   });
 
-  it("★역할이 바뀌면 사람이 보는 자리에 한 줄 남긴다 — 새 세션부터라는 조건까지", async () => {
+  it("★역할이 바뀌면 사람이 보는 자리에 한 줄 남긴다 — CLI 는 지금, MCP 도구는 새 세션부터라는 조건까지", async () => {
     const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
     await executeInitCommand(options(["--role", "development"], stub));
 
     const changed = withLogin(["--role", "design"], stub, "t");
     await executeInitCommand(changed.opts);
-    expect(changed.errors.join("")).toContain("Role changes from development to design for new sessions.");
+    expect(changed.errors.join("")).toContain("Role changes from development to design: `ai-erd` commands now, MCP tools from a new session.");
 
     const same = withLogin(["--role", "design"], stub, "t");
     await executeInitCommand(same.opts);
@@ -757,6 +757,10 @@ describe("ai-erd init (files on disk)", () => {
     expect(result.data.next.join("\n")).not.toContain("auth login");
     expect(result.data.next.join("\n")).toContain("claude -c");
     expect(result.data.next.join("\n")).toContain("codex -p development");
+    // ★재시작 없이 이어간다(2026-09-30) — 첫 줄이 «이 세션에서 CLI 로», 재시작은 선택이다.
+    expect(result.data.next[0]).toContain("no restart is needed");
+    expect(result.data.next.join("\n")).toContain("ai-erd tools call <tool>");
+    expect(result.data.next.join("\n")).toContain(".ai-erd/HARNESS.md");
   });
 
   it("★git 저장소의 하위 폴더에서는 멈춘다 (init·undo 모두)", async () => {

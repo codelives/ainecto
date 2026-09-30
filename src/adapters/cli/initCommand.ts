@@ -13,7 +13,7 @@ import {
   type InitPlan,
   withCreatedDirectories,
 } from "../../core/harness/initPlan";
-import { HARNESS_CONFIG_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
+import { HARNESS_CONFIG_PATH, HARNESS_DOC_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
 import { PromptCancelled, type Choice, type Prompter } from "./prompter";
 import {
@@ -222,8 +222,8 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
   await applyPlan(root, plan, args.dryRun, files);
   if (!args.dryRun && previousRole !== undefined && previousRole !== role) {
     // ★역할이 바뀐 사실을 사람이 보는 자리(에이전트 대화)에 한 줄 남긴다(설계 §13 S2).
-    //   떠 있는 세션은 그대로이고 새 세션부터다 — 그 조건까지 같이 말한다.
-    options.io.stderr.write(`Role changes from ${previousRole} to ${role} for new sessions.\n`);
+    //   셸의 `ai-erd` 는 지금부터, 떠 있는 세션의 MCP 도구는 새 세션부터다 — 그 조건까지 같이 말한다.
+    options.io.stderr.write(`Role changes from ${previousRole} to ${role}: \`ai-erd\` commands now, MCP tools from a new session.\n`);
   }
 
   options.io.stdout.write(renderSuccess(
@@ -243,14 +243,20 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
       // ★「Enforce this on the server too: ai-erd auth login …」 줄은 뺐다. init 이 이미 그 역할로
       //   로그인했으므로 참이 아니고, 남아 있으면 에이전트가 따라 쳐서 사람이 한 번 더 승인하게 된다
       //   (2026-09-29 독립 리뷰 P1-1).
+      // ★재시작 없이 이어간다(2026-09-30 사용자 결정). 셸의 `ai-erd` 는 부를 때마다 저장소 역할을 읽어
+      //   역할 헤더로 싣는다 — 서버가 요청마다 강제하므로 MCP 연결과 무관하게 이 세션에서 바로 맞다.
+      //   재시작은 «그 역할의 MCP 도구»를 더할 뿐인 선택이다.
       next: [
-        "Start a new agent session to use this role — the running session keeps the role it started with.",
+        `Keep working in this session — no restart is needed. \`ai-erd\` commands run from this repository use the ${role} role at once.`,
+        `Read ${HARNESS_DOC_PATH} first, then \`ai-erd tools list\` shows the role's tools and \`ai-erd tools call <tool> '<json>'\` calls one.`,
+        "Do not use MCP tools this session started with for this work — they keep the role (or no role) the session started with.",
+        "Optional, to add the role's MCP tools: start a new session.",
         "Claude Code: exit and run `claude -c` in this folder, then approve the \"ai-erd\" server from .mcp.json when asked.",
         `Codex: save the profile above as $CODEX_HOME/${role}.config.toml and start with \`codex -p ${role}\`.`,
         role === "design"
           // ⚠Design 은 그 변경이 «허용»된다 — 모든 역할에 같은 문장을 내보내면 거짓이 된다.
-          ? "Then ask it to change a table — a Design session may, and the change lands in AI-ERD."
-          : `Then ask it to change a table — a ${role} session will be told to stop.`,
+          ? "To check the role, change a table through `ai-erd` — Design may, and the change lands in AI-ERD."
+          : `To check the role, try changing a table through \`ai-erd\` — ${role} is told to stop.`,
         "If the new Claude Code session still has no role, run `claude mcp get ai-erd`: a local-scope \"ai-erd\" entry hides .mcp.json (remove it with `claude mcp remove ai-erd -s local`).",
         "Undo everything with: ai-erd init --undo",
       ],
