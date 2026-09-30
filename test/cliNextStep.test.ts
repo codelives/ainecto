@@ -46,9 +46,14 @@ describe("설치 직후 에이전트가 보는 출력", () => {
     await mkdir(repo);
     process.chdir(repo);
     expect(await runAinectoCli(["auth", "status", "--json"], io)).toBe(0);
-    const next = JSON.parse(out.join("")).data.next as string;
+    const data = JSON.parse(out.join("")).data as Record<string, unknown>;
+    // ★맨 앞 칸이 setup — 에이전트가 authenticated 보다 먼저 본다.
+    expect(Object.keys(data)[0]).toBe("setup");
+    expect(data.setup).toBe("incomplete");
+    const next = data.next as string;
     expect(next).toContain("ai-erd init --role <role>");
     expect(next).toContain("never pick one yourself");
+    expect(next).toContain("even if they only asked to install, update, or sign in");
   });
 
   it("역할이 있는 저장소에서는 다음 단계를 싣지 않는다", async () => {
@@ -60,5 +65,6 @@ describe("설치 직후 에이전트가 보는 출력", () => {
     process.chdir(repo);
     expect(await runAinectoCli(["auth", "status", "--json"], io)).toBe(0);
     expect(JSON.parse(out.join("")).data.next).toBeUndefined();
+    expect(JSON.parse(out.join("")).data.setup).toBeUndefined();
   });
 });

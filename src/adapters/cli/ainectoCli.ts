@@ -216,12 +216,12 @@ async function handleAuth(
 ): Promise<number> {
   if (action === "login") {
     await auth.login();
-    io.stdout.write(renderSuccess({ endpoint, authenticated: true, ...await nextStep() }, { json }));
+    io.stdout.write(renderSuccess({ ...await nextStep(), endpoint, authenticated: true }, { json }));
     return 0;
   }
   if (action === "status") {
     const token = await auth.getAccessToken();
-    io.stdout.write(renderSuccess({ endpoint, authenticated: Boolean(token), ...await nextStep() }, { json }));
+    io.stdout.write(renderSuccess({ ...await nextStep(), endpoint, authenticated: Boolean(token) }, { json }));
     return 0;
   }
   if (action === "logout") {
@@ -347,17 +347,20 @@ function requireValue(flag: string, value: string | undefined): string {
  * ★로그인은 설치의 끝이 아니다. 에이전트가 `auth status --json` 의 authenticated:true 를 보고 «설치 완료»로
  * 닫은 실측(2026-09-29, Codex)이 있다. 이 저장소에 역할이 없으면 결과에 다음 단계를 싣는다 — --json 에도.
  */
-async function nextStep(): Promise<{ next?: string }> {
+async function nextStep(): Promise<{ setup?: "incomplete"; next?: string }> {
   const found = await findRepositoryRole(process.cwd());
-  return found.kind === "none" ? { next: NEXT_STEP_INIT } : {};
+  return found.kind === "none" ? { setup: "incomplete", next: NEXT_STEP_INIT } : {};
 }
 
 /** 설치·로그인 뒤 «다음에 할 일». 도움말과 auth 결과가 같은 문장을 쓴다. */
+// ★«참고»로 읽히면 넘긴다 — Codex 가 `next` 를 받고도 «업데이트 완료»만 말했다(2026-09-30 실측).
+//   그래서 «사용자가 설치·업데이트·로그인만 부탁했어도 지금 알려라»를 지시문으로 적는다.
 const NEXT_STEP_INIT = [
-  "Setup is not finished until `ai-erd init` runs in the repository.",
-  "Next, from the repository root: `ai-erd init` (a terminal asks for the role and the project).",
-  "AI agents: ask the user which role this repository's AI sessions should have — Design, Development,",
-  "Test, or Validation — never pick one yourself, then run `ai-erd init --role <role>`.",
+  "AI-ERD setup is not finished until `ai-erd init` runs in the repository.",
+  "AI agents: tell the user this now, even if they only asked to install, update, or sign in. Then ask",
+  "which role this repository's AI sessions should have — Design, Development, Test, or Validation —",
+  "never pick one yourself, and run `ai-erd init --role <role>` from the repository root.",
+  "In a terminal: `ai-erd init` asks for the role and the project.",
 ].join("\n");
 
 function helpText(): string {
