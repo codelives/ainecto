@@ -21,9 +21,14 @@ export interface CliIO {
 }
 
 export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> {
-  let parsed: GlobalArgs = { json: argv.includes("--json"), help: false, positionals: [] };
+  let parsed: GlobalArgs = { json: argv.includes("--json"), help: false, version: false, positionals: [] };
   try {
     parsed = parseGlobalArgs(argv);
+    // ★에이전트는 설치 직후 버전부터 확인한다 — «Unknown command»로 답하면 도움말까지 못 간다(2026-09-29, Codex).
+    if (parsed.version || parsed.positionals[0] === "version") {
+      io.stdout.write(renderSuccess({ version: CLI_VERSION }, { json: parsed.json }));
+      return 0;
+    }
     if (parsed.help || parsed.positionals.length === 0) {
       io.stdout.write(helpText());
       return 0;
@@ -211,15 +216,12 @@ async function handleAuth(
 ): Promise<number> {
   if (action === "login") {
     await auth.login();
-    io.stdout.write(renderSuccess({ endpoint, authenticated: true }, { json }));
-    // ★로그인은 설치의 끝이 아니다. 에이전트가 여기서 «설치 완료»로 닫은 실측(2026-09-29, Codex)이 있다.
-    //   stdout 은 --json 소비자 몫이라 다음 단계는 stderr 로.
-    if (!json) io.stderr.write(`\n${NEXT_STEP_INIT}\n`);
+    io.stdout.write(renderSuccess({ endpoint, authenticated: true, ...await nextStep() }, { json }));
     return 0;
   }
   if (action === "status") {
     const token = await auth.getAccessToken();
-    io.stdout.write(renderSuccess({ endpoint, authenticated: Boolean(token) }, { json }));
+    io.stdout.write(renderSuccess({ endpoint, authenticated: Boolean(token), ...await nextStep() }, { json }));
     return 0;
   }
   if (action === "logout") {
@@ -283,11 +285,12 @@ interface GlobalArgs {
   role?: HarnessRole;
   json: boolean;
   help: boolean;
+  version: boolean;
   positionals: string[];
 }
 
 function parseGlobalArgs(argv: string[]): GlobalArgs {
-  const result: GlobalArgs = { json: false, help: false, positionals: [] };
+  const result: GlobalArgs = { json: false, help: false, version: false, positionals: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (!arg) {
@@ -304,6 +307,8 @@ function parseGlobalArgs(argv: string[]): GlobalArgs {
       result.json = true;
     } else if (arg === "--help" || arg === "-h") {
       result.help = true;
+    } else if (arg === "--version" || arg === "-v" || arg === "-V") {
+      result.version = true;
     } else {
       result.positionals.push(arg);
     }
@@ -338,7 +343,16 @@ function requireValue(flag: string, value: string | undefined): string {
   return value;
 }
 
-/** 설치·로그인 뒤 «다음에 할 일». 도움말과 로그인 성공이 같은 문장을 쓴다. */
+/**
+ * ★로그인은 설치의 끝이 아니다. 에이전트가 `auth status --json` 의 authenticated:true 를 보고 «설치 완료»로
+ * 닫은 실측(2026-09-29, Codex)이 있다. 이 저장소에 역할이 없으면 결과에 다음 단계를 싣는다 — --json 에도.
+ */
+async function nextStep(): Promise<{ next?: string }> {
+  const found = await findRepositoryRole(process.cwd());
+  return found.kind === "none" ? { next: NEXT_STEP_INIT } : {};
+}
+
+/** 설치·로그인 뒤 «다음에 할 일». 도움말과 auth 결과가 같은 문장을 쓴다. */
 const NEXT_STEP_INIT = [
   "Setup is not finished until `ai-erd init` runs in the repository.",
   "Next, from the repository root: `ai-erd init` (a terminal asks for the role and the project).",
