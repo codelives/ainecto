@@ -460,7 +460,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -495,7 +496,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "table_uuid": {
                           "type": "string",
@@ -546,7 +548,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "table_uuid": {
                           "type": "string",
@@ -581,7 +584,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "index_uuid": {
                           "type": "string",
@@ -608,7 +612,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -648,7 +653,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "ref_uuid": {
                           "type": "string",
@@ -675,7 +681,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -698,7 +705,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "enum_uuid": {
                           "type": "string",
@@ -725,7 +733,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -744,7 +753,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "group_uuid": {
                           "type": "string",
@@ -771,7 +781,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "group_uuid": {
                           "type": "string",
@@ -794,7 +805,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -825,7 +837,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "title": {
                           "type": "string",
@@ -898,7 +911,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -956,7 +970,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "name": {
                                 "type": "string",
@@ -1047,7 +1062,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "table_uuid": {
                           "type": "string",
@@ -1121,7 +1137,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "table_uuid": {
                                 "type": "string",
@@ -1228,7 +1245,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "table_uuid": {
                           "type": "string",
@@ -1286,7 +1304,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "table_uuid": {
                                 "type": "string",
@@ -1377,7 +1396,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "index_uuid": {
                           "type": "string",
@@ -1427,7 +1447,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "index_uuid": {
                                 "type": "string",
@@ -1511,7 +1532,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -1574,7 +1596,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "name": {
                                 "type": "string",
@@ -1672,7 +1695,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "ref_uuid": {
                           "type": "string",
@@ -1722,7 +1746,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "ref_uuid": {
                                 "type": "string",
@@ -1807,7 +1832,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -1853,7 +1879,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "name": {
                                 "type": "string",
@@ -1929,7 +1956,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "enum_uuid": {
                           "type": "string",
@@ -1979,7 +2007,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "enum_uuid": {
                                 "type": "string",
@@ -2062,7 +2091,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -2104,7 +2134,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "name": {
                                 "type": "string",
@@ -2176,7 +2207,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "group_uuid": {
                           "type": "string",
@@ -2226,7 +2258,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "group_uuid": {
                                 "type": "string",
@@ -2310,7 +2343,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "group_uuid": {
                           "type": "string",
@@ -2356,7 +2390,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "group_uuid": {
                                 "type": "string",
@@ -2436,7 +2471,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "name": {
                           "type": "string",
@@ -2490,7 +2526,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "name": {
                                 "type": "string",
@@ -2574,7 +2611,8 @@
                       "properties": {
                         "uuid": {
                           "type": "string",
-                          "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                          "maxLength": 36
                         },
                         "title": {
                           "type": "string",
@@ -2640,7 +2678,8 @@
                             "properties": {
                               "uuid": {
                                 "type": "string",
-                                "description": "Optional on create: client-generated UUID. If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target."
+                                "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
+                                "maxLength": 36
                               },
                               "title": {
                                 "type": "string",
@@ -2929,12 +2968,13 @@
                 },
                 "type": {
                   "type": "string",
-                  "description": "Document type. Creatable values: erd, markdown, diagram, openapi.",
+                  "description": "Document type. Creatable values: erd, markdown, diagram, openapi, html.",
                   "enum": [
                     "erd",
                     "markdown",
                     "diagram",
-                    "openapi"
+                    "openapi",
+                    "html"
                   ]
                 },
                 "title": {
@@ -2943,7 +2983,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page)."
                 },
                 "body": {
                   "type": "string",
@@ -3268,6 +3308,7 @@
     },
     {
       "name": "get_document",
+      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; erd → metadata only (read tables/refs via erd_list_*).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3361,12 +3402,13 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi.",
+            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html.",
             "enum": [
               "erd",
               "markdown",
               "diagram",
-              "openapi"
+              "openapi",
+              "html"
             ]
           },
           "q": {
@@ -3522,6 +3564,38 @@
       }
     },
     {
+      "name": "move_projects",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Moves",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Project UUID"
+                },
+                "targetWorkspaceUuid": {
+                  "type": "string",
+                  "description": "Destination workspace UUID (you need write access there)"
+                }
+              },
+              "required": [
+                "uuid",
+                "targetWorkspaceUuid"
+              ]
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
       "name": "request_upload_token",
       "description": "Use this for large payloads of tens of KB or more to save LLM tokens. purpose=mcp.call returns a short-lived bearer token that can call any MCP tool, including erd_apply_changes, via curl. purpose=document.create/update/append uploads document bodies directly to the upload endpoint with PUT/curl. Tokens are reusable for 5 minutes by default.",
       "inputSchema": {
@@ -3540,7 +3614,7 @@
           },
           "scopeJson": {
             "type": "string",
-            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 creatable type values 는 erd, markdown, diagram, openapi. document.update/document.append 는 documentUuid 를 포함. attachment.upload typed: {parentType:TEST_CASE|TEST_EXECUTION,parentUuid,filename,contentType,sizeBytes}."
+            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 creatable type values 는 erd, markdown, diagram, openapi, html. document.update/document.append 는 documentUuid 를 포함. attachment.upload typed: {parentType:TEST_CASE|TEST_EXECUTION,parentUuid,filename,contentType,sizeBytes}."
           },
           "maxBytes": {
             "type": "integer",
@@ -3682,7 +3756,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page)."
                 },
                 "body": {
                   "type": "string",
@@ -3858,12 +3932,13 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi.",
+            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html.",
             "enum": [
               "erd",
               "markdown",
               "diagram",
-              "openapi"
+              "openapi",
+              "html"
             ]
           },
           "projectUuid": {

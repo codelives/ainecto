@@ -19,16 +19,19 @@ export interface GeneratedCommandRoute {
 }
 
 export interface GeneratedCommandExecutionOptions {
-  env: AinectoEnv;
+  /** 라우팅할 도구 목록 — 스냅샷이거나, 스냅샷에 없는 명령이면 서버의 지금 목록. */
+  tools: readonly GeneratedToolDefinition[];
   argv: string[];
   client: McpRpcClient;
   json: boolean;
   io: ConfirmationIO & { stdout: NodeJS.WriteStream };
 }
 
-export function matchGeneratedCommand(env: AinectoEnv, argv: string[]): GeneratedCommandRoute | undefined {
+export function matchGeneratedCommand(
+  tools: readonly GeneratedToolDefinition[],
+  argv: string[],
+): GeneratedCommandRoute | undefined {
   const commandTokens = argv.filter((arg) => !arg.startsWith("-"));
-  const tools = getGeneratedTools(env);
   const entries = buildRouteEntries(tools, enrichments);
   const match = entries
     .filter((entry) => isPrefix(entry.path, commandTokens))
@@ -51,7 +54,7 @@ export function matchGeneratedCommand(env: AinectoEnv, argv: string[]): Generate
 }
 
 export async function executeGeneratedCommand(options: GeneratedCommandExecutionOptions): Promise<number> {
-  const route = matchGeneratedCommand(options.env, options.argv);
+  const route = matchGeneratedCommand(options.tools, options.argv);
   if (!route) {
     return 2;
   }

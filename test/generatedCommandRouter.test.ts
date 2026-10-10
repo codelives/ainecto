@@ -30,7 +30,7 @@ describe("generated command router", () => {
   it("keeps all dev catalog command paths reachable without alias or bespoke collisions", () => {
     expect(() => assertNoCommandCollisions("dev")).not.toThrow();
     for (const tool of devTools) {
-      expect(matchGeneratedCommand("dev", tool.commandPath)?.tool.mcpName).toBe(tool.mcpName);
+      expect(matchGeneratedCommand(devTools, tool.commandPath)?.tool.mcpName).toBe(tool.mcpName);
     }
   });
 
@@ -177,8 +177,38 @@ describe("generated command router", () => {
     expect(JSON.parse(io.stdoutText()).warnings.join("\n")).toContain("raw MCP argument contract only");
   });
 
+  it("routes a command the snapshot lacks through the server's live tool list — no CLI release per new tool", async () => {
+    const calls: Array<{ method: string; params?: { name?: string; arguments?: unknown } }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      calls.push(body);
+      const result = body.method === "tools/list"
+        ? { tools: [{ name: "html_render_preview", inputSchema: { type: "object", properties: { uuid: { type: "string" } } } }] }
+        : { ok: true };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
+    }));
+    process.env.AINECTO_TOKEN = "redacted";
+    const io = createIo();
+
+    await expect(runAinectoCli(["tools", "run", "html-render-preview", "--env", "dev", "--uuid", "d-1", "--json"], io)).resolves.toBe(0);
+    expect(calls.map((call) => call.method)).toEqual(["tools/list", "tools/call"]);
+    expect(calls[1]).toMatchObject({ params: { name: "html_render_preview", arguments: { uuid: "d-1" } } });
+  });
+
+  it("still answers «Unknown command» when neither the snapshot nor the live list has it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [] } }));
+    }));
+    process.env.AINECTO_TOKEN = "redacted";
+    const io = createIo();
+
+    await expect(runAinectoCli(["no-such", "thing", "--env", "dev"], io)).resolves.toBe(1);
+    expect(io.stderrText()).toContain('Unknown command "no-such"');
+  });
+
   it("leaves bespoke attachments upload outside generated routing", () => {
-    expect(matchGeneratedCommand("dev", ["attachments", "upload"])).toBeUndefined();
+    expect(matchGeneratedCommand(devTools, ["attachments", "upload"])).toBeUndefined();
   });
 
   it("renders enriched table output for human mode", async () => {

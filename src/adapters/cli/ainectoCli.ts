@@ -4,7 +4,8 @@ import { resolveEndpoint, assertEnv, type AinectoEnv } from "../../core/config/e
 import { parsePayloadSource } from "../../core/input/payloadSource";
 import { McpRpcClient, isToolError } from "../../core/mcp/rpcClient";
 import { renderError, renderSuccess } from "../../core/output/render";
-import { getGeneratedTools } from "../../core/catalog";
+import { getGeneratedTools, loadLiveTools } from "../../core/catalog";
+import type { GeneratedToolDefinition } from "../../core/catalog/types";
 import { runConnector } from "../mcp/connector";
 import { executeGeneratedCommand, matchGeneratedCommand } from "./generatedCommandRouter";
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
@@ -126,14 +127,29 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       return await handleAuth(action, connect(null).auth, resolved.endpoint, parsed.json, io);
     }
 
-    // 원격을 부르지 않는 것은 역할 판정 «전»에 끝낸다(0.4.2 리뷰 P2) — 깨진 저장소 안에서도 카탈로그를
-    //   볼 수 있고, 모르는 명령은 «역할을 못 읽음»이 아니라 «모르는 명령»으로 답한다.
+    const env = parsed.env ?? "prod";
+    // ★카탈로그는 서버의 지금 목록이다. 역할 판정이 실패해도(깨진 저장소) 막지 않고 스냅샷으로 답한다
+    //   (0.4.2 리뷰 P2 — 깨진 저장소 안에서도 카탈로그를 볼 수 있다).
     if (domain === "tools" && action === "catalog") {
-      return printCatalog(parsed, io);
+      return await printCatalog(parsed, io, resolved.endpoint, async () => {
+        const explicit = explicitRole();
+        return connect(await commandRole(explicit.role ?? null, explicit.source, process.cwd())).client;
+      });
     }
-    const remote = isAttachmentsUploadCommand(domain, action)
-      || matchGeneratedCommand(parsed.env ?? "prod", parsed.positionals) !== undefined
-      || (domain === "tools" && (action === "list" || action === "call"));
+    // 스냅샷에 없는 명령은 서버의 지금 목록에서 찾는다 — 서버에 새로 열린 도구를 CLI 재배포 없이 쓴다.
+    //   ★역할 없이 묻는다: 모르는 명령은 «역할을 못 읽음»이 아니라 «모르는 명령»으로 답해야 한다(0.4.2 리뷰 P2).
+    //   역할은 아래 실제 호출에 실리고, 강제는 서버가 한다.
+    let routeTools: readonly GeneratedToolDefinition[] = getGeneratedTools(env);
+    let remote = isAttachmentsUploadCommand(domain, action)
+      || (domain === "tools" && (action === "list" || action === "call"))
+      || matchGeneratedCommand(routeTools, parsed.positionals) !== undefined;
+    if (!remote) {
+      const live = await loadLiveTools(env, connect(null).client).catch(() => undefined);
+      if (live && matchGeneratedCommand(live, parsed.positionals)) {
+        routeTools = live;
+        remote = true;
+      }
+    }
     if (!remote) {
       throw new Error(domain === "tools"
         ? "Expected tools list, tools call <mcpName>, or tools catalog."
@@ -155,7 +171,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     const generatedResult = await executeGeneratedCommand({
-      env: parsed.env ?? "prod",
+      tools: routeTools,
       argv: parsed.positionals,
       client,
       json: parsed.json,
@@ -232,16 +248,30 @@ async function handleAuth(
   throw new Error("Expected auth login, auth status, or auth logout.");
 }
 
-/** `tools catalog` — 원격을 부르지 않는다(역할 판정 전에 처리). */
-function printCatalog(parsed: GlobalArgs, io: CliIO): number {
-  // ★두 카탈로그 다 «그 서버의 tools/list 를 받아 저장소에 넣은 스냅샷»이다. 예전 문구는 prod 를
-  //   「seed fixture」라고 했는데, prod 도 운영에서 받아 온 것이다(0.4.1 에서 다시 받음, 리뷰 P2).
+/**
+ * `tools catalog` — ★서버의 지금 목록을 먼저 보여 준다. 스냅샷만 보여 주면 서버에 열린 새 문서 유형(html)을
+ * 에이전트가 «CLI 에 없다»고 읽었다(2026-10-10). 못 받으면(로그인 전·오프라인·깨진 저장소) 스냅샷으로
+ * 답하되 «낡았을 수 있다»와 그 이유를 같이 싣는다 — 조용히 대체하지 않는다.
+ */
+async function printCatalog(
+  parsed: GlobalArgs,
+  io: CliIO,
+  endpoint: string,
+  liveClient: () => Promise<McpRpcClient>,
+): Promise<number> {
   const catalogEnv = parsed.env ?? "prod";
-  io.stdout.write(renderSuccess(getGeneratedTools(catalogEnv), {
-    json: parsed.json,
-    warnings: [`Local ${catalogEnv} catalog is a checked-in snapshot of that server's tools/list, `
-      + `taken when this CLI version was built; rerun sync:tools --env ${catalogEnv} to refresh it.`],
-  }));
+  try {
+    const tools = await loadLiveTools(catalogEnv, await liveClient());
+    io.stdout.write(renderSuccess(tools, { json: parsed.json }));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    io.stdout.write(renderSuccess(getGeneratedTools(catalogEnv), {
+      json: parsed.json,
+      warnings: [`Could not read the live tool list from ${endpoint} (${reason}). `
+        + `Showing the ${catalogEnv} catalog checked in when this CLI version was built — a snapshot of that `
+        + "server's tools/list that may miss newer document types and tools. Run `ai-erd auth login`, then retry."],
+    }));
+  }
   return 0;
 }
 
