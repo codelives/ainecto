@@ -32,8 +32,8 @@ To connect AiNecto without a repository role (for example before `init`), add th
 **user scope** — a local-scope entry would hide the `.mcp.json` that `init` writes:
 
 ```bash
-claude mcp add --scope user --transport http ai-erd https://ai-erd.com/mcp   # Claude Code
-codex mcp add ai-erd --url https://ai-erd.com/mcp                            # Codex
+claude mcp add --scope user --transport http ai-erd https://ainecto.com/mcp  # Claude Code
+codex mcp add ai-erd --url https://ainecto.com/mcp                           # Codex
 ```
 
 The client signs the user in on first use. That session has no role until `init` runs and a new
@@ -117,7 +117,7 @@ Every command takes `--env dev` for `https://dev.ai-erd.com/mcp`. Endpoint resol
 1. `--endpoint <url>`
 2. `AINECTO_MCP_ENDPOINT`
 3. `--env dev`
-4. production default, `https://ai-erd.com/mcp`
+4. production default, `https://ainecto.com/mcp`
 
 Endpoint URLs must use `https:`. Plain `http:` is accepted only for localhost loopback targets such
 as `127.0.0.1`. When `AINECTO_TOKEN` is set, the CLI only sends it to the default prod/dev endpoints
@@ -190,7 +190,7 @@ another `ai-erd` entry (for example Claude Code's local scope) is usually hiding
 check with `claude mcp get ai-erd`.
 
 The official MCP Registry entry (see `server.json`) lists both the remote (`streamable-http`,
-`https://ai-erd.com/mcp`) and the `@ai-erd/mcp` npm package. Registry publication requires the npm
+`https://ainecto.com/mcp`) and the `@ai-erd/mcp` npm package. Registry publication requires the npm
 package version referenced by `server.json` to include a matching `mcpName` field in `package.json`.
 
 ## Development
@@ -215,7 +215,7 @@ AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env dev --check
 ```
 
 The checked-in generated catalogs are deterministic output from `tools/list`, live-synced from
-`https://ai-erd.com/mcp` and `https://dev.ai-erd.com/mcp`. Presentation metadata lives separately in
+`https://ainecto.com/mcp` and `https://dev.ai-erd.com/mcp`. Presentation metadata lives separately in
 `src/core/catalog/enrichments.ts`. `ai-erd tools catalog` prints the local generated catalog.
 
 ### Local Tarball Smoke

@@ -15,29 +15,23 @@ export interface ResolvedEndpoint {
 /**
  * 기본 MCP 엔드포인트.
  *
- * ★2026-09-21 도메인 전환으로 ai-erd.com 이 «사람이 보는 주소»가 됐고, /mcp 는 두 도메인
- * 모두에서 동일하게 서빙된다(둘 다 같은 인스턴스). 그래서 기본값을 새 도메인으로 옮긴다.
+ * ★2026-10-11 AiNecto 복귀(2단계)로 «사람이 보는 주소»가 다시 ainecto.com 이다. /mcp 는 두 도메인
+ * 모두에서 동일하게 서빙되고(같은 인스턴스), ai-erd.com 의 기계 경로는 301 하지 않고 계속 받는다.
+ * OAuth 메타데이터(issuer·resource·authorization_servers)는 줄곧 ainecto.com 이었다 — 이제 기본 주소와 맞는다.
  *
- * ⚠단, OAuth 메타데이터는 아직 ainecto.com 을 가리킨다:
- *   WWW-Authenticate  resource_metadata=https://ainecto.com/.well-known/oauth-protected-resource/mcp
- *   protected-resource  resource=https://ainecto.com/mcp · authorization_servers=[https://ainecto.com]
- *   authorization-server  issuer=https://ainecto.com
- * issuer 는 «발급자 이름»이라 바꾸면 기존 토큰이 전부 무효가 되어 동결돼 있다(전환 계획서 §4-1).
- *
- * 이 CLI 는 issuer/resource 를 요청 호스트와 «대조하지 않고» 서버가 준 메타데이터를 그대로
- * 따라가므로 영향이 없다. ⚠엄격하게 대조하는 다른 MCP 클라이언트는 resource 불일치를
- * 문제 삼을 수 있다 — 그때는 --endpoint 나 AINECTO_MCP_ENDPOINT 로 옛 주소를 쓸 수 있다.
- *
- * 옛 주소도 계속 동작한다. 끊지 않는다.
+ * ⚠dev 는 바꾸지 않는다(dev.ai-erd.com) — 복귀 계획서 범위 밖.
  */
 const DEFAULT_ENDPOINTS: Record<AinectoEnv, string> = {
-  prod: "https://ai-erd.com/mcp",
+  prod: "https://ainecto.com/mcp",
   dev: "https://dev.ai-erd.com/mcp",
 };
 
-/** 옛 기본값 — 이미 설정에 적어둔 사용자가 있다. isDefaultEndpoint 가 이것도 «기본»으로 본다. */
+/**
+ * 옛 기본값 — 이미 설정·클라이언트에 적어둔 사용자가 있다. isDefaultEndpoint 가 이것도 «기본»으로 본다
+ * (그래서 AINECTO_TOKEN 도 이 주소에 보낸다). ai-erd.com 은 2026-09-21~10-11 의 기본값이었다.
+ */
 const LEGACY_DEFAULT_ENDPOINTS: readonly string[] = [
-  "https://ainecto.com/mcp",
+  "https://ai-erd.com/mcp",
   "https://dev.ainecto.com/mcp",
 ];
 

@@ -4,7 +4,7 @@
   "title": "AiNecto",
   "description": "AiNecto MCP connector for workspace, document, ERD, diagram, task, and attachment workflows.",
   "version": "0.4.6",
-  "websiteUrl": "https://ai-erd.com",
+  "websiteUrl": "https://ainecto.com",
   "repository": {
     "url": "https://github.com/codelives/ainecto",
     "source": "github"

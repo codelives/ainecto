@@ -11,7 +11,7 @@ Status: published — 0.4.2 on 2026-09-29 (package only)
 - Package version: `0.4.2`
 - Remote: none here — `https://ai-erd.com/mcp` is listed by `com.ai-erd/ai-erd`
 - Package: `npx -y @ai-erd/mcp` over stdio — the per-repository role bridge that `ai-erd init --role` writes
-- Homepage: `https://ai-erd.com`
+- Homepage: `https://ainecto.com`
 - Repository: `https://github.com/codelives/ainecto`
 - License metadata: `UNLICENSED`
 
@@ -105,7 +105,7 @@ Current readiness: `@ai-erd/mcp@0.4.0` is prepared locally and contains `mcpName
 | MCP.so | https://mcp.so/submit | Public GitHub server submit form; draft completion publishes automatically | User or maintainer signs in and submits GitHub repository URL. |
 | MCP.Directory | https://mcp.directory/submit | GitHub URL form; auto-pulls metadata, tools, README, npm/PyPI; review within 24 hours; can claim auto-discovered official Registry entries | Submit GitHub repo and optional npm package, or claim if auto-discovered. |
 | mcpservers.org | https://mcpservers.org/submit | Form with server name, description, GitHub/docs link, category, contact email | User or maintainer submits form; premium review is optional. |
-| Smithery | https://smithery.ai/docs/build/publish | URL publish for Streamable HTTP servers, or MCPB bundle for local stdio distribution | Use the hosted Streamable HTTP endpoint `https://ai-erd.com/mcp` (the same one `server.json#remotes` lists). |
+| Smithery | https://smithery.ai/docs/build/publish | URL publish for Streamable HTTP servers, or MCPB bundle for local stdio distribution | Use the hosted Streamable HTTP endpoint `https://ainecto.com/mcp` (the same one `server.json#remotes` lists). |
 
 ## User-Only Actions
 

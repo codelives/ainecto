@@ -15,7 +15,7 @@ import { ROLE_HEADER } from "../src/core/harness/role";
  * 토큰은 역할을 싣지 않는 한 칸이다. (2026-09-22 C1 — 「tools call 도 역할을 싣는다」는 그대로 지킨다.)
  */
 describe("저장소 역할이 셸 CLI 에 실린다", () => {
-  const ENDPOINT = "https://ai-erd.com/mcp";
+  const ENDPOINT = "https://ainecto.com/mcp";
   let home: string;
   let work: string;
   let originalHome: string | undefined;
@@ -251,7 +251,7 @@ describe("토큰 칸 — 역할 scope 토큰은 저장하지 않는다 (리뷰 P
 
   it("★scope 에 ai-erd:role: 이 든 토큰은 거절한다 — 들어가면 모든 저장소에서 토큰 역할이 헤더를 이긴다", async () => {
     const store = new FileTokenStore(dir);
-    const token = { endpoint: "https://ai-erd.com/mcp", accessToken: "t", updatedAt: "x" };
+    const token = { endpoint: "https://ainecto.com/mcp", accessToken: "t", updatedAt: "x" };
 
     await expect(store.save(token.endpoint, { ...token, scope: "mcp ai-erd:role:design" })).rejects.toThrow(/role-scoped/);
     expect(await store.load(token.endpoint)).toBeUndefined();

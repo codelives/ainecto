@@ -28,7 +28,7 @@ const BASE = {
   env: "prod",
   projectName: "Billing",
   projectUuid: "p-1",
-  endpoint: "https://ai-erd.com/mcp",
+  endpoint: "https://ainecto.com/mcp",
   cliVersion: "@ai-erd/mcp test",
 } as const;
 
@@ -114,7 +114,7 @@ describe("mcp config merge", () => {
   });
 
   it("★기본이 아닌 endpoint 만 인자로 싣는다", () => {
-    expect(buildServerEntry({ role: "design", endpoint: "https://ai-erd.com/mcp" }).args)
+    expect(buildServerEntry({ role: "design", endpoint: "https://ainecto.com/mcp" }).args)
       .not.toContain("--endpoint");
     expect(buildServerEntry({ role: "design", endpoint: "https://custom.example/mcp" }).args)
       .toEqual(["-y", "@ai-erd/mcp", "--role", "design", "--endpoint", "https://custom.example/mcp"]);
@@ -239,7 +239,7 @@ describe("marker block", () => {
     const rendered = renderHarnessDoc({
       projectName: "The {{endpoint}} project",
       projectUuid: "p-1",
-      endpoint: "https://ai-erd.com/mcp",
+      endpoint: "https://ainecto.com/mcp",
     });
 
     expect(rendered).toContain("The {{endpoint}} project");
@@ -277,7 +277,7 @@ describe("marker block", () => {
 
   it("never writes the role into prose — the config is the only source of truth", () => {
     const note = renderAgentNote();
-    const doc = renderHarnessDoc({ projectName: "Billing", projectUuid: "p-1", endpoint: "https://ai-erd.com/mcp" });
+    const doc = renderHarnessDoc({ projectName: "Billing", projectUuid: "p-1", endpoint: "https://ainecto.com/mcp" });
 
     for (const role of ["design", "development", "test", "validation"]) {
       expect(note.toLowerCase()).not.toContain(`role: ${role}`);
@@ -1307,7 +1307,7 @@ describe("9차 B6 — 구판 기록은 «없는 기록»이 아니다", () => {
   const legacyConfig = json({
     version: 1,
     project: { uuid: "p-1", name: "Billing" },
-    endpoint: "https://ai-erd.com/mcp",
+    endpoint: "https://ainecto.com/mcp",
     generatedBy: "@ai-erd/mcp 0.2.0",
     promptVersions: {},
     managed: {

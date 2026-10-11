@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fetchHarnessDocuments, AGENT_NOTE_KEY, DOC_KEY } from "../src/core/harness/documentFetch";
 import { renderAgentNote, renderHarnessDoc } from "../src/core/harness/harnessDoc";
 
-const ENDPOINT = "https://ai-erd.com/mcp";
+const ENDPOINT = "https://ainecto.com/mcp";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -29,7 +29,7 @@ describe("하네스 문서를 서버에서 받는다", () => {
 
     // ★/api/v1 이 아니다 — MCP 토큰은 REST 에서 거절된다.
     expect(vi.mocked(fetchImpl).mock.calls[0]![0])
-      .toBe("https://ai-erd.com/mcp/harness/documents?client=ai-erd-cli");
+      .toBe("https://ainecto.com/mcp/harness/documents?client=ai-erd-cli");
     expect(result.doc).toBe("server doc {{projectName}} {{projectUuid}} {{endpoint}}");
     expect(result.versions[DOC_KEY]).toBe("HARNESS.DOC@harness-r3");
     expect(result.unavailableReason).toBeUndefined();
@@ -115,7 +115,7 @@ describe("서버 본문과 패키지 기본값이 같은 채움 경로를 쓴다
 
   it("서버 본문이 있으면 그것을 채운다", () => {
     const rendered = renderHarnessDoc(values, "Project: {{projectName}} ({{projectUuid}}) at {{endpoint}}");
-    expect(rendered).toBe("Project: Billing (p-1) at https://ai-erd.com/mcp");
+    expect(rendered).toBe("Project: Billing (p-1) at https://ainecto.com/mcp");
   });
 
   it("없으면 패키지 기본값을 «같은 방식으로» 채운다", () => {

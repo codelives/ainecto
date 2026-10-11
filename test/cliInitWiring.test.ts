@@ -68,7 +68,7 @@ describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
     globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       fetched.push(url);
-      if (url === "https://ai-erd.com/mcp") {
+      if (url === "https://ainecto.com/mcp") {
         return new Response("", {
           status: 401,
           headers: { "www-authenticate": 'Bearer resource_metadata="https://auth.example/resource"' },

@@ -56,7 +56,7 @@ describe("ai-erd init — interactive (TTY)", () => {
         return { client: stub };
       },
       prompter: typed(...lines),
-      endpoint: "https://ai-erd.com/mcp",
+      endpoint: "https://ainecto.com/mcp",
       // 하네스 문서는 받지 않는다(패키지 기본값으로 간다) — 시험이 네트워크에 닿지 않게.
       fetchImpl: (async () => { throw new Error("offline in tests"); }) as unknown as typeof fetch,
       env: "prod",

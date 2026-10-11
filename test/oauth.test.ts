@@ -115,6 +115,16 @@ describe("OAuth PKCE login", () => {
     await expect(allowed.getAccessToken()).resolves.toBe("env-token");
   });
 
+  /** ★2026-10-11 기본 주소가 ainecto.com 으로 돌아갔다 — 설정에 옛 기본 ai-erd.com 을 적어둔 사람도 계속 쓴다. */
+  it.each(["https://ainecto.com/mcp", "https://ai-erd.com/mcp"])("AINECTO_TOKEN 을 %s 에 보낸다", async (endpoint) => {
+    const client = new OAuthClient({
+      endpoint,
+      tokenStore: new MemoryTokenStore(),
+      envVars: { AINECTO_TOKEN: "env-token" },
+    });
+    await expect(client.getAccessToken()).resolves.toBe("env-token");
+  });
+
   it("rejects non-https OAuth metadata endpoints unless they are loopback", async () => {
     await expect(discoverOAuthMetadata("https://dev.ai-erd.com/mcp", buildOAuthFetch({
       resourceMetadataUrl: "http://auth.example/resource",

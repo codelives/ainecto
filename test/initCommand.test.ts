@@ -59,7 +59,7 @@ describe("ai-erd init (files on disk)", () => {
       argv: rest,
       role,
       client: rpc,
-      endpoint: "https://ai-erd.com/mcp",
+      endpoint: "https://ainecto.com/mcp",
       env: "prod" as const,
       cliVersion: "@ai-erd/mcp test",
       cwd: root,
@@ -866,7 +866,7 @@ describe("★S1 이미 있던 빈 디렉터리는 우리 것으로 기록되지 
 
     const code = await executeInitCommand({
       argv: [], role: "development" as HarnessRole, client: stub,
-      endpoint: "https://ai-erd.com/mcp", env: "prod" as const,
+      endpoint: "https://ainecto.com/mcp", env: "prod" as const,
       cliVersion: "@ai-erd/mcp test", cwd: root, json: true, io,
     });
 
