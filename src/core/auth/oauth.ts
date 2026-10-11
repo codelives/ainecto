@@ -4,7 +4,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { URLSearchParams } from "node:url";
 import type { StoredTokenSet, TokenStore } from "./tokenStore";
 import { registerPublicClient, type ClientRegistrationResult } from "./clientRegistration";
-import { assertTrustedEndpointUrl, isDefaultEndpoint } from "../config/endpoints";
+import { assertTrustedEndpointUrl, fallbackTokenEndpointsFor, isDefaultEndpoint } from "../config/endpoints";
 
 /**
  * ★로그인은 서버마다 한 번이다(설계 0.4.2). 토큰은 역할을 싣지 않고, 역할은 저장소에서 와서
@@ -81,7 +81,7 @@ export class OAuthClient implements TokenProvider {
       return envToken;
     }
 
-    const stored = await this.options.tokenStore.load(this.options.endpoint);
+    const stored = await this.loadStored();
     if (!stored) {
       return undefined;
     }
@@ -103,7 +103,7 @@ export class OAuthClient implements TokenProvider {
   }
 
   async refreshAfterUnauthorized(): Promise<string | undefined> {
-    const stored = await this.options.tokenStore.load(this.options.endpoint);
+    const stored = await this.loadStored();
     if (this.options.readOnly || !stored?.refreshToken) {
       return undefined;
     }
@@ -160,8 +160,30 @@ export class OAuthClient implements TokenProvider {
     }
   }
 
+  /**
+   * ★대체로 읽는 옛 칸도 함께 지운다. 새 칸만 지우면 다음 읽기가 곧바로 옛 칸으로 대체돼
+   * «로그아웃했는데 여전히 로그인됨»이 된다. 로그인은 기계당 한 번이므로 옛 CLI 의 칸도 같이 끝난다.
+   */
   async logout(): Promise<void> {
     await this.options.tokenStore.delete(this.options.endpoint);
+    for (const fallback of fallbackTokenEndpointsFor(this.options.endpoint)) {
+      await this.options.tokenStore.delete(fallback);
+    }
+  }
+
+  /** 이 주소의 칸, 비었으면 옛 기본 주소의 칸({@link fallbackTokenEndpointsFor}). 쓰기는 늘 이 주소의 칸이다. */
+  private async loadStored(): Promise<StoredTokenSet | undefined> {
+    const own = await this.options.tokenStore.load(this.options.endpoint);
+    if (own) {
+      return own;
+    }
+    for (const fallback of fallbackTokenEndpointsFor(this.options.endpoint)) {
+      const stored = await this.options.tokenStore.load(fallback);
+      if (stored) {
+        return stored;
+      }
+    }
+    return undefined;
   }
 
   /** 부르는 쪽이 refresh token 이 있음을 이미 확인했다 — 타입이 그것을 요구한다. */

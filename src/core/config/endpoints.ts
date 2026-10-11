@@ -30,10 +30,29 @@ const DEFAULT_ENDPOINTS: Record<AinectoEnv, string> = {
  * 옛 기본값 — 이미 설정·클라이언트에 적어둔 사용자가 있다. isDefaultEndpoint 가 이것도 «기본»으로 본다
  * (그래서 AINECTO_TOKEN 도 이 주소에 보낸다). ai-erd.com 은 2026-09-21~10-11 의 기본값이었다.
  */
+const LEGACY_PROD_ENDPOINT = "https://ai-erd.com/mcp";
 const LEGACY_DEFAULT_ENDPOINTS: readonly string[] = [
-  "https://ai-erd.com/mcp",
+  LEGACY_PROD_ENDPOINT,
   "https://dev.ainecto.com/mcp",
 ];
+
+/**
+ * ★<b>토큰 칸 대체 — 판정은 여기 한 곳이다.</b> 이 주소의 칸이 비었을 때 «대신 읽을» 옛 칸.
+ *
+ * <p>토큰 칸은 주소마다 하나라(tokenStore {@code tokenKey}), 기본 주소가 ai-erd.com → ainecto.com 으로
+ * 돌아가면 ai-erd.com 칸에 로그인해 둔 사람이 새 칸에서 안 보인다. 서버의 토큰 검증은 issuer 와 고정
+ * audience(mcp-server)만 보고 요청 호스트와 무관하므로, 옛 칸의 토큰은 새 주소에서도 유효하다.
+ *
+ * <p>쌍은 «새 prod 기본 ← 옛 prod 기본» 하나뿐이다. 사용자 지정 주소(--endpoint)·dev 에는 대체가 없다.
+ * 읽기만 대체한다 — 갱신·새 로그인은 새 칸에 쓰고, 옛 칸은 지우지 않는다(옛 CLI 가 계속 쓴다).
+ */
+const TOKEN_SLOT_FALLBACKS: Readonly<Record<string, readonly string[]>> = {
+  [DEFAULT_ENDPOINTS.prod]: [LEGACY_PROD_ENDPOINT],
+};
+
+export function fallbackTokenEndpointsFor(endpoint: string): readonly string[] {
+  return TOKEN_SLOT_FALLBACKS[normalizeEndpoint(endpoint)] ?? [];
+}
 
 export function resolveEndpoint(input: EndpointResolutionInput = {}): ResolvedEndpoint {
   const envVars = input.envVars ?? process.env;
