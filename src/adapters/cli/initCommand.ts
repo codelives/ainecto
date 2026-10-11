@@ -90,7 +90,7 @@ interface InitArgs {
 }
 
 /**
- * {@code ai-erd init} — 이 저장소를 AI-ERD 하네스에 붙인다.
+ * {@code ai-erd init} — 이 저장소를 AiNecto 하네스에 붙인다.
  *
  * ★<b>지금은 비대화형 경로만 있다</b>(설계 §21-1, 1단계). 합격 시나리오는 에이전트가 셸로 이 명령을
  * 치는 것이고 거기엔 사람이 답할 TTY 가 없다. 그래서:
@@ -255,7 +255,7 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
         `Codex: save the profile above as $CODEX_HOME/${role}.config.toml and start with \`codex -p ${role}\`.`,
         role === "design"
           // ⚠Design 은 그 변경이 «허용»된다 — 모든 역할에 같은 문장을 내보내면 거짓이 된다.
-          ? "To check the role, change a table through `ai-erd` — Design may, and the change lands in AI-ERD."
+          ? "To check the role, change a table through `ai-erd` — Design may, and the change lands in AiNecto."
           : `To check the role, try changing a table through \`ai-erd\` — ${role} is told to stop.`,
         "If the new Claude Code session still has no role, run `claude mcp get ai-erd`: a local-scope \"ai-erd\" entry hides .mcp.json (remove it with `claude mcp remove ai-erd -s local`).",
         "Undo everything with: ai-erd init --undo",
@@ -315,7 +315,7 @@ async function ensureSignedIn(
   if (dryRun) {
     // (dry-run 의 accessToken 은 읽기 전용이다 — 갱신하지 않으므로 만료된 토큰도 여기로 온다.)
     throw new Error(
-      `No usable AI-ERD sign-in on this machine, and --dry-run neither refreshes it nor opens a browser.\n\n`
+      `No usable AiNecto sign-in on this machine, and --dry-run neither refreshes it nor opens a browser.\n\n`
       + `    ${loginCommand(options)}\n\n`
       + "Then run init again.",
     );
@@ -423,7 +423,7 @@ async function askProject(
   }
   const boundIndex = bound === undefined ? -1 : projects.findIndex((project) => project.uuid === bound);
   const defaultIndex = boundIndex >= 0 ? boundIndex : projects.length === 1 ? 0 : undefined;
-  const picked = await prompter.choose("Which AI-ERD project should this repository use?", choices, defaultIndex);
+  const picked = await prompter.choose("Which AiNecto project should this repository use?", choices, defaultIndex);
   return "create" in picked ? askNameAndCreate() : picked.project;
 }
 
@@ -431,7 +431,7 @@ async function askProject(
 function noProjectForRole(options: Pick<InitCommandOptions, "endpoint">, role: HarnessRole): string {
   // ⚠「--role design 으로 다시 치라」고 말하지 않는다. 그 문장은 에이전트를 «역할 전환»으로 이끈다 —
   //   역할은 사용자가 고른 것이다(2026-09-29 코드 리뷰 P1). 사람에게 묻게 하고, 원래 역할로 돌아오게 한다.
-  return `No project found in your AI-ERD account, and only a Design session can create one. `
+  return `No project found in your AiNecto account, and only a Design session can create one. `
     + `Ask the user: create the project at ${new URL(options.endpoint).origin} or in a Design session, `
     + `then run init again with --role ${role}.`;
 }
@@ -487,7 +487,7 @@ async function resolveProject(
   const name = args.projectName ?? basenameOf(root);
   if (!args.yes) {
     throw new Error(
-      `No project found in your AI-ERD account. Re-run with --yes to create "${name}", `
+      `No project found in your AiNecto account. Re-run with --yes to create "${name}", `
       + "or --project-name <name> --yes to pick the name.",
     );
   }

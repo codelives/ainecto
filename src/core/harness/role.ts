@@ -1,5 +1,5 @@
 /**
- * 세션 역할 — AI-ERD Harness 의 「하나의 세션은 하나의 역할만 가진다」를 클라이언트 쪽에서
+ * 세션 역할 — AiNecto Harness 의 「하나의 세션은 하나의 역할만 가진다」를 클라이언트 쪽에서
  * 실어 나르는 부분.
  *
  * ★0.4.2: 역할의 «저장 위치»는 하나다 — init 이 저장소에 쓴 {@code .mcp.json}·{@code .cursor/mcp.json}

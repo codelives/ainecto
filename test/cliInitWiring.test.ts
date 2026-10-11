@@ -117,7 +117,7 @@ describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
 
     expect(code).toBe(1);
     const said = stderr.join("");
-    expect(said).toContain("Opening your browser to sign in to AI-ERD. If it does not open, visit:");
+    expect(said).toContain("Opening your browser to sign in to AiNecto. If it does not open, visit:");
     expect(said).toContain("https://auth.example/authorize?");
     // ★로그인은 서버마다 한 번이다(0.4.2) — 인가 URL 에 역할 scope 가 없다.
     expect(said).not.toContain("ai-erd%3Arole");

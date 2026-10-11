@@ -101,9 +101,9 @@ export function documentContractProblem(key: string, body: string): string | und
   return undefined;
 }
 
-const DEFAULT_HARNESS_DOC = `# AI-ERD Harness
+const DEFAULT_HARNESS_DOC = `# AiNecto Harness
 
-This repository is wired to an AI-ERD project. The design source of truth lives in AI-ERD,
+This repository is wired to an AiNecto project. The design source of truth lives in AiNecto,
 not in this repository's files.
 
 - Project: **{{projectName}}** (\`{{projectUuid}}\`)
@@ -143,7 +143,7 @@ and which session should pick it up next.
 
 ## Not every change needs four sessions
 
-A small change that fits the design already recorded in AI-ERD starts at Development. The rule
+A small change that fits the design already recorded in AiNecto starts at Development. The rule
 is not "always run four steps" — it is that when a step is needed, it does not happen inside
 another role's session.
 
@@ -172,9 +172,9 @@ export function renderAgentNote(template?: string): string {
 }
 
 const DEFAULT_AGENT_NOTE = `${MARKER_BEGIN}
-## AI-ERD Harness
+## AiNecto Harness
 
-This repository uses AI-ERD as its design source of truth, and each session has one role
+This repository uses AiNecto as its design source of truth, and each session has one role
 (Design / Development / Test / Validation). Read \`{{harnessDocPath}}\` before doing work that
 touches requirements, the ERD, or architecture.
 

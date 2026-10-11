@@ -1,9 +1,9 @@
-# ai-erd — AI-ERD CLI and MCP connector
+# ai-erd — AiNecto CLI and MCP connector
 
 Published as `ai-erd`, `@ai-erd/mcp` and `@ai-erd/cli` — the same code. Command: `ai-erd`.
 
 **In a terminal, from your repository root:** `npx -y ai-erd@latest init` — it asks which role this
-repository's AI sessions should have and which AI-ERD project to use, and signs you in through the
+repository's AI sessions should have and which AiNecto project to use, and signs you in through the
 browser if needed.
 
 ## For AI agents
@@ -28,7 +28,7 @@ browser if needed.
 - Claude Code's auto mode may block running an external package with `npx`. If it does, ask the user
   to allow the command.
 
-To connect AI-ERD without a repository role (for example before `init`), add the remote server at
+To connect AiNecto without a repository role (for example before `init`), add the remote server at
 **user scope** — a local-scope entry would hide the `.mcp.json` that `init` writes:
 
 ```bash
@@ -57,7 +57,7 @@ Ctrl+C or Ctrl+D at a question cancels without writing repository files (Ctrl+D 
 sign-in you already completed stays saved, and choosing «Create a new project» creates it right away.
 Anywhere else (an agent's shell, CI) it asks nothing. In both cases:
 
-- If this machine is not signed in to AI-ERD yet, `init` opens a browser and continues once the user
+- If this machine is not signed in to AiNecto yet, `init` opens a browser and continues once the user
   approves — **once per machine** (per server), not per role. The sign-in URL is printed first (with
   `--json`, as one JSON line on stderr: `{"event":"login_url","url":…}`), and sign-in gives up after
   5 minutes. It fails at once

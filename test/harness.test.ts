@@ -154,7 +154,7 @@ describe("marker block", () => {
 
     expect(result).toContain("# My rules");
     expect(result).toContain("Do the thing.");
-    expect(result).toContain("AI-ERD Harness");
+    expect(result).toContain("AiNecto Harness");
   });
 
   it("replaces its own block instead of stacking copies", () => {
@@ -211,10 +211,10 @@ describe("marker block", () => {
       // 예제 본문은 그대로다 — 이것이 예전에 갈아 끼워지던 것이다.
       expect(after, label).toContain("EXAMPLE");
       // 우리 블록은 «따로» 붙는다.
-      expect(after, label).toContain("AI-ERD Harness");
+      expect(after, label).toContain("AiNecto Harness");
       // 그리고 그 뒤의 되돌리기는 우리 것만 걷어낸다.
       expect(removeMarkerBlock(after).content, label).toContain("EXAMPLE");
-      expect(removeMarkerBlock(after).content, label).not.toContain("AI-ERD Harness");
+      expect(removeMarkerBlock(after).content, label).not.toContain("AiNecto Harness");
     }
   });
 
@@ -230,7 +230,7 @@ describe("marker block", () => {
     // 위 판정이 «전부 거절»로 흐르지 않는지 — 안전한 쪽으로 기울되 못 쓰게 만들지 않는다.
     const file = `# Rules\n\n\`\`\`js\nconst a = 1;\n\`\`\`\n\n${MARKER_BEGIN}\nours\n${MARKER_END}\n`;
 
-    expect(upsertMarkerBlock(file, renderAgentNote())).toContain("AI-ERD Harness");
+    expect(upsertMarkerBlock(file, renderAgentNote())).toContain("AiNecto Harness");
     expect(removeMarkerBlock(file).removed).toBe(true);
   });
 
@@ -311,7 +311,7 @@ describe("init plan", () => {
   it("updates CLAUDE.md when the repository already has one", () => {
     const plan = planInit({ ...BASE, files: snapshot({ "CLAUDE.md": "# House rules\n" }) });
     expect(writtenAt(plan, "CLAUDE.md")).toContain("# House rules");
-    expect(writtenAt(plan, "CLAUDE.md")).toContain("AI-ERD Harness");
+    expect(writtenAt(plan, "CLAUDE.md")).toContain("AiNecto Harness");
   });
 
   it("gives Codex a per-session route through profiles, still one server entry", () => {
@@ -1055,7 +1055,7 @@ describe("9차 2차 리뷰 — 증거로 판정한다", () => {
   /** 우리 블록을 «이 모양으로» 옮겨 놓는다. 다섯 가지 전부 1차 수정을 뚫었다. */
   const movedInto: Array<[string, (block: string) => string]> = [
     ["닫힌 펜스 + 제목만 편집", (b) => "# Rules\n\n```md\n"
-      + b.replace("## AI-ERD Harness", "## EDITED AI-ERD Harness") + "\n```\n"],
+      + b.replace("## AiNecto Harness", "## EDITED AiNecto Harness") + "\n```\n"],
     ["인용문", (b) => `# Rules\n\n${b.split("\n").map((line) => `> ${line}`).join("\n")}\n`],
     ["바깥 마커 쌍으로 감싸기", (b) => `# Rules\n\n${MARKER_BEGIN}\n${b}\n${MARKER_END}\n`],
   ];
@@ -1088,7 +1088,7 @@ describe("9차 2차 리뷰 — 증거로 판정한다", () => {
       + `${MARKER_BEGIN}\nEXAMPLE ONLY\n${MARKER_END}` + "\n```\n";
     const before = { [AGENTS]: example };
     const files = applied(snapshot(before), planInit({ ...BASE, files: snapshot(before) }));
-    const edited = ourBlock(files, AGENTS).replace("## AI-ERD Harness", "## EDITED AI-ERD Harness");
+    const edited = ourBlock(files, AGENTS).replace("## AiNecto Harness", "## EDITED AiNecto Harness");
     const moved = new Map(files);
     moved.set(AGENTS, `# Rules\n\n\`\`\`md\n${edited}\n\`\`\`\n`);
 
@@ -1101,7 +1101,7 @@ describe("9차 2차 리뷰 — 증거로 판정한다", () => {
   it("★B2 정상 블록 옆에 «편집한 사본»이 한 벌 더 있으면 완료가 아니다", () => {
     const files = applied(snapshot({ [AGENTS]: "# Rules\n" }),
       planInit({ ...BASE, files: snapshot({ [AGENTS]: "# Rules\n" }) }));
-    const edited = ourBlock(files, AGENTS).replace("## AI-ERD Harness", "## EDITED AI-ERD Harness");
+    const edited = ourBlock(files, AGENTS).replace("## AiNecto Harness", "## EDITED AiNecto Harness");
     const both = new Map(files);
     both.set(AGENTS, `${files.get(AGENTS)}\n\`\`\`md\n${edited}\n\`\`\`\n`);
 
@@ -1216,7 +1216,7 @@ describe("9차 3차 리뷰 — 증거를 우리 블록 밖에서 센다", () => 
     // ⇒ 그다음 undo 가 사본을 남긴 채 기록을 지웠다. 2차 트리는 같은 입력에서 기록을 지켰다.
     const files = afterFirstInit();
     const block = ourBlock(files);
-    files.set(AGENTS, `${files.get(AGENTS)!.replace("## AI-ERD Harness", "## EDITED AI-ERD Harness")}`
+    files.set(AGENTS, `${files.get(AGENTS)!.replace("## AiNecto Harness", "## EDITED AiNecto Harness")}`
       + `\n\`\`\`md\n${block}\n\`\`\`\n`);
 
     const second = planInit({ ...BASE, files });

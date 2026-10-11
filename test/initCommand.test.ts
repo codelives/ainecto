@@ -87,7 +87,7 @@ describe("ai-erd init (files on disk)", () => {
     const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
     expect(mcp.mcpServers["ai-erd"].args).toEqual(["-y", "@ai-erd/mcp", "--role", "development"]);
     expect(JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).project.uuid).toBe("p-1");
-    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("AI-ERD Harness");
+    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("AiNecto Harness");
     expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(true);
   });
 
@@ -446,7 +446,7 @@ describe("ai-erd init (files on disk)", () => {
 
     const after = await readFile(agentsPath, "utf8");
     expect(after).toContain("OUTSIDE THE BLOCK");
-    expect(after).not.toContain("AI-ERD Harness");
+    expect(after).not.toContain("AiNecto Harness");
     // ★우리가 만든 MCP 파일 «둘»이 실제로 사라졌는지 디스크에서 본다. 약화된 검사가 놓친 것이다.
     expect(existsSync(join(root, ".mcp.json"))).toBe(false);
     expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(false);

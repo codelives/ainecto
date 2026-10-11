@@ -56,7 +56,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         onAuthorizeUrl: (url) => {
           io.stderr.write(parsed.json
             ? `${JSON.stringify({ event: "login_url", url })}\n`
-            : `Opening your browser to sign in to AI-ERD. If it does not open, visit:\n  ${url}\n`);
+            : `Opening your browser to sign in to AiNecto. If it does not open, visit:\n  ${url}\n`);
         },
       });
       const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, role });
@@ -386,7 +386,7 @@ async function nextStep(): Promise<{ setup?: "incomplete"; next?: string }> {
 // ★«참고»로 읽히면 넘긴다 — Codex 가 `next` 를 받고도 «업데이트 완료»만 말했다(2026-09-30 실측).
 //   그래서 «사용자가 설치·업데이트·로그인만 부탁했어도 지금 알려라»를 지시문으로 적는다.
 const NEXT_STEP_INIT = [
-  "AI-ERD setup is not finished until `ai-erd init` runs in the repository.",
+  "AiNecto setup is not finished until `ai-erd init` runs in the repository.",
   "AI agents: tell the user this now, even if they only asked to install, update, or sign in. Then ask",
   "which role this repository's AI sessions should have — Design, Development, Test, or Validation —",
   "never pick one yourself, and run `ai-erd init --role <role>` from the repository root.",
@@ -395,7 +395,7 @@ const NEXT_STEP_INIT = [
 
 function helpText(): string {
   return [
-    "AI-ERD CLI",
+    "AiNecto CLI",
     "",
     NEXT_STEP_INIT,
     "",

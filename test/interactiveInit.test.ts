@@ -219,7 +219,7 @@ describe("ai-erd init — interactive (TTY)", () => {
 
     expect(await result).toBe(0);
     expect(prompts()).not.toContain("Which role");
-    expect(prompts()).not.toContain("Which AI-ERD project");
+    expect(prompts()).not.toContain("Which AiNecto project");
     expect(await roleInMcpJson()).toBe("validation");
   });
 });

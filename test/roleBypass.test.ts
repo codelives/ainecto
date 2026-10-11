@@ -234,7 +234,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(1);
     const said = errors.join("");
     expect(said).toContain("inside the git repository at");
-    expect(said).toContain("Ask the user how that AI-ERD setting should look");
+    expect(said).toContain("Ask the user how that AiNecto setting should look");
     expect(said).not.toContain("then run `ai-erd init --role <role>` in");
   });
 

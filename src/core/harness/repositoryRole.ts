@@ -165,7 +165,7 @@ export async function askTheUserToFixRole(dir: string, reason: string): Promise<
   const roles = HARNESS_ROLES.join(", ");
   if (gitRoot !== undefined && !samePath(await realOrResolved(gitRoot), await realOrResolved(dir))) {
     return `Cannot tell this folder's AI session role: ${reason} (in ${dir}, inside the git repository at ${gitRoot}). `
-      + "Ask the user how that AI-ERD setting should look — `ai-erd init` only sets up a repository root "
+      + "Ask the user how that AiNecto setting should look — `ai-erd init` only sets up a repository root "
       + `(${gitRoot}).`;
   }
   return `Cannot tell this repository's AI session role: ${reason} (in ${dir}). `

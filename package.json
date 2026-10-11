@@ -1,7 +1,7 @@
 {
   "name": "@ai-erd/mcp",
   "version": "0.4.6",
-  "description": "AI-ERD CLI — connect your coding agent to AI-ERD. Set up a repository with: npx -y ai-erd@latest init (agents: ask the user for the role first).",
+  "description": "AiNecto CLI — connect your coding agent to AiNecto. Set up a repository with: npx -y ai-erd@latest init (agents: ask the user for the role first).",
   "mcpName": "io.github.codelives/ainecto",
   "type": "module",
   "private": false,
