@@ -118,8 +118,13 @@ describe("OAuth PKCE login", () => {
     await expect(allowed.getAccessToken()).resolves.toBe("env-token");
   });
 
-  /** ★2026-10-11 기본 주소가 ainecto.com 으로 돌아갔다 — 설정에 옛 기본 ai-erd.com 을 적어둔 사람도 계속 쓴다. */
-  it.each(["https://ainecto.com/mcp", "https://ai-erd.com/mcp"])("AINECTO_TOKEN 을 %s 에 보낸다", async (endpoint) => {
+  /** ★2026-10-11 기본 주소가 ainecto.com·dev.ainecto.com 으로 옮겼다 — 설정에 옛 기본(ai-erd.com·dev.ai-erd.com)을 적어둔 사람도 계속 쓴다. */
+  it.each([
+    "https://ainecto.com/mcp",
+    "https://ai-erd.com/mcp",
+    "https://dev.ainecto.com/mcp",
+    "https://dev.ai-erd.com/mcp",
+  ])("AINECTO_TOKEN 을 %s 에 보낸다", async (endpoint) => {
     const client = new OAuthClient({
       endpoint,
       tokenStore: new MemoryTokenStore(),
@@ -332,12 +337,16 @@ describe("stored token expiry", () => {
 });
 
 /**
- * ★기본 주소가 ai-erd.com → ainecto.com 으로 돌아가도(2026-10-11) 옛 칸의 로그인을 잃지 않는다.
- * 실제 파일 저장소(~/.ainecto/tokens.json 과 같은 구현)로 확인한다.
+ * ★기본 주소가 ai-erd.com → ainecto.com, dev.ai-erd.com → dev.ainecto.com 으로 옮겨도(2026-10-11)
+ * 옛 칸의 로그인을 잃지 않는다. 실제 파일 저장소(~/.ainecto/tokens.json 과 같은 구현)로 확인한다.
+ * OTHERS = 다른 env 의 새·옛 주소 — env 를 건너 대체하지 않는다.
  */
-describe("token slot fallback (ai-erd.com → ainecto.com)", () => {
-  const NEW = "https://ainecto.com/mcp";
-  const OLD = "https://ai-erd.com/mcp";
+describe.each([
+  { env: "prod", NEW: "https://ainecto.com/mcp", OLD: "https://ai-erd.com/mcp",
+    OTHERS: ["https://dev.ainecto.com/mcp", "https://dev.ai-erd.com/mcp"] },
+  { env: "dev", NEW: "https://dev.ainecto.com/mcp", OLD: "https://dev.ai-erd.com/mcp",
+    OTHERS: ["https://ainecto.com/mcp", "https://ai-erd.com/mcp"] },
+])("token slot fallback ($env: $OLD → $NEW)", ({ NEW, OLD, OTHERS }) => {
   let dir: string;
   let store: FileTokenStore;
 
@@ -377,7 +386,7 @@ describe("token slot fallback (ai-erd.com → ainecto.com)", () => {
     expect((await store.load(NEW))?.accessToken).toBe("access-token");
   });
 
-  it.each(["https://custom.example/mcp", "https://dev.ai-erd.com/mcp", OLD])("%s 에는 대체가 없다", async (endpoint) => {
+  it.each(["https://custom.example/mcp", ...OTHERS, OLD])("%s 에는 대체가 없다", async (endpoint) => {
     await store.save(OLD, token(OLD, "old"));
     await store.save(NEW, token(NEW, "new"));
     const expected = endpoint === OLD ? "old" : undefined;

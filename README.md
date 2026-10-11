@@ -149,7 +149,7 @@ shows them with its own prefix, for example `mcp__ainecto__list_projects` in Cla
 (`mcp__ai-erd__…` for a 0.4.x setup); the CLI does not use that prefix. A tool name that starts with
 the server's older `mcp__ainecto__` prefix is still accepted.
 
-Every command takes `--env dev` for `https://dev.ai-erd.com/mcp`. Endpoint resolution priority:
+Every command takes `--env dev` for `https://dev.ainecto.com/mcp`. Endpoint resolution priority:
 
 1. `--endpoint <url>`
 2. `AINECTO_MCP_ENDPOINT`
@@ -266,7 +266,7 @@ AINECTO_CATALOG_SYNC_TOKEN=... npm run sync:tools -- --env dev --check
 ```
 
 The checked-in generated catalogs are deterministic output from `tools/list`, live-synced from
-`https://ainecto.com/mcp` and `https://dev.ai-erd.com/mcp`. Presentation metadata lives separately in
+`https://ainecto.com/mcp` and `https://dev.ainecto.com/mcp`. Presentation metadata lives separately in
 `src/core/catalog/enrichments.ts`. `ainecto tools catalog` prints the local generated catalog.
 
 ### Local Tarball Smoke

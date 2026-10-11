@@ -19,21 +19,22 @@ export interface ResolvedEndpoint {
  * 모두에서 동일하게 서빙되고(같은 인스턴스), ai-erd.com 의 기계 경로는 301 하지 않고 계속 받는다.
  * OAuth 메타데이터(issuer·resource·authorization_servers)는 줄곧 ainecto.com 이었다 — 이제 기본 주소와 맞는다.
  *
- * ⚠dev 는 바꾸지 않는다(dev.ai-erd.com) — 복귀 계획서 범위 밖.
+ * dev 도 2026-10-11 같은 날 dev.ai-erd.com → dev.ainecto.com 으로 옮겼다(두 도메인이 같은 dev 인스턴스).
  */
 const DEFAULT_ENDPOINTS: Record<AinectoEnv, string> = {
   prod: "https://ainecto.com/mcp",
-  dev: "https://dev.ai-erd.com/mcp",
+  dev: "https://dev.ainecto.com/mcp",
 };
 
 /**
  * 옛 기본값 — 이미 설정·클라이언트에 적어둔 사용자가 있다. isDefaultEndpoint 가 이것도 «기본»으로 본다
- * (그래서 AINECTO_TOKEN 도 이 주소에 보낸다). ai-erd.com 은 2026-09-21~10-11 의 기본값이었다.
+ * (그래서 AINECTO_TOKEN 도 이 주소에 보낸다). ai-erd.com·dev.ai-erd.com 은 2026-09-21~10-11 의 기본값이었다.
  */
 const LEGACY_PROD_ENDPOINT = "https://ai-erd.com/mcp";
+const LEGACY_DEV_ENDPOINT = "https://dev.ai-erd.com/mcp";
 const LEGACY_DEFAULT_ENDPOINTS: readonly string[] = [
   LEGACY_PROD_ENDPOINT,
-  "https://dev.ainecto.com/mcp",
+  LEGACY_DEV_ENDPOINT,
 ];
 
 /**
@@ -43,11 +44,12 @@ const LEGACY_DEFAULT_ENDPOINTS: readonly string[] = [
  * 돌아가면 ai-erd.com 칸에 로그인해 둔 사람이 새 칸에서 안 보인다. 서버의 토큰 검증은 issuer 와 고정
  * audience(mcp-server)만 보고 요청 호스트와 무관하므로, 옛 칸의 토큰은 새 주소에서도 유효하다.
  *
- * <p>쌍은 «새 prod 기본 ← 옛 prod 기본» 하나뿐이다. 사용자 지정 주소(--endpoint)·dev 에는 대체가 없다.
+ * <p>쌍은 «새 기본 ← 옛 기본» env 마다 하나다(prod·dev). 사용자 지정 주소(--endpoint)·옛 주소 자신에는 대체가 없다.
  * 읽기만 대체한다 — 갱신·새 로그인은 새 칸에 쓰고, 옛 칸은 지우지 않는다(옛 CLI 가 계속 쓴다).
  */
 const TOKEN_SLOT_FALLBACKS: Readonly<Record<string, readonly string[]>> = {
   [DEFAULT_ENDPOINTS.prod]: [LEGACY_PROD_ENDPOINT],
+  [DEFAULT_ENDPOINTS.dev]: [LEGACY_DEV_ENDPOINT],
 };
 
 export function fallbackTokenEndpointsFor(endpoint: string): readonly string[] {

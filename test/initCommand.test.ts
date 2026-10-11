@@ -525,7 +525,7 @@ describe("ai-erd init (files on disk)", () => {
     await expect(executeInitCommand({
       ...options(["--role", "development"], stub),
       env: "dev" as const,
-      endpoint: "https://dev.ai-erd.com/mcp",
+      endpoint: "https://dev.ainecto.com/mcp",
     })).rejects.toThrow(/ainecto auth login --env dev/);
   });
 
