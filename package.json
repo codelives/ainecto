@@ -1,7 +1,7 @@
 {
-  "name": "@ai-erd/mcp",
-  "version": "0.4.6",
-  "description": "AiNecto CLI — connect your coding agent to AiNecto. Set up a repository with: npx -y ai-erd@latest init (agents: ask the user for the role first).",
+  "name": "@ainecto/mcp",
+  "version": "0.5.0",
+  "description": "AiNecto CLI — connect your coding agent to AiNecto. Set up a repository with: npx -y ainecto@latest init (agents: ask the user for the role first).",
   "mcpName": "io.github.codelives/ainecto",
   "type": "module",
   "private": false,
@@ -16,7 +16,8 @@
   },
   "bin": {
     "mcp": "dist/bin/mcp.js",
-    "ai-erd": "dist/bin/ai-erd.js",
+    "ainecto": "dist/bin/ainecto.js",
+    "ai-erd": "dist/bin/ainecto.js",
     "ai-erd-mcp": "dist/bin/mcp.js"
   },
   "files": [

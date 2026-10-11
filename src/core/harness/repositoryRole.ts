@@ -1,14 +1,15 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
-import { AGENT_TARGETS, PACKAGE_NAME, readRoleFromEntry, SERVER_NAME } from "./agentTargets";
+import { dirname, join, resolve, sep } from "node:path";
+import { AGENT_TARGETS, isOurBridge, LEGACY_SERVER_NAME, readRoleFromEntry, SERVER_NAME } from "./agentTargets";
 import { HARNESS_ROLES, type HarnessRole } from "./role";
 
 /**
  * ★저장소 역할의 SSOT (설계 0.4.2 §2-1).
  *
- * <p>역할이 «저장된 곳»은 하나다 — init 이 쓴 {@code .mcp.json}·{@code .cursor/mcp.json} 의 {@code ai-erd}
- * 항목의 {@code --role}. 에이전트가 실제로 읽는 값이 그것이므로 다른 곳({@code .ai-erd/config.json} 등)에
+ * <p>역할이 «저장된 곳»은 하나다 — init 이 쓴 {@code .mcp.json}·{@code .cursor/mcp.json} 의 {@code ainecto}
+ * 항목(0.4.x 가 쓴 {@code ai-erd} 항목도)의 {@code --role}. 에이전트가 실제로 읽는 값이 그것이므로 다른 곳
+ * ({@code .ainecto/config.json} 등)에
  * 두 번째 기록을 두지 않는다. init 의 역할 추론과 셸 CLI 의 역할 결정이 모두 이 모듈을 지난다.
  */
 
@@ -22,9 +23,9 @@ export type RepositoryRole =
 export interface RolesInFiles {
   /** 중복 없는 역할. 둘 이상이면 설정끼리 어긋난 것이다. */
   roles: HarnessRole[];
-  /** 읽기 문제(우리 브리지인데 --role 이 없거나 모르는 값, `ai-erd` 가 든 깨진 JSON). */
+  /** 읽기 문제(우리 브리지인데 --role 이 없거나 모르는 값, `ainecto`·`ai-erd` 가 든 깨진 JSON). */
   problems: string[];
-  /** 어느 파일이든 우리 브리지 항목(또는 읽기 문제)이 있었나 — 이 폴더가 «ai-erd 폴더»인가. */
+  /** 어느 파일이든 우리 브리지 항목(또는 읽기 문제)이 있었나 — 이 폴더가 «init 된 폴더»인가. */
   found: boolean;
 }
 
@@ -40,49 +41,49 @@ export type ConfigRole =
  *
  * <p>멈출 이유는 좁게 둔다(0.4.2 리뷰 P1-3) — 사람의 설정을 잘못 읽어 모든 명령을 막으면 안 된다.
  * <ul>
- *   <li>{@code ai-erd} 항목이 «우리 브리지»가 아니면(mcp-remote·url 방식 등) 역할 없음이다.</li>
- *   <li>JSON 이 깨졌어도 원문에 {@code ai-erd} 가 없으면 우리와 무관한 파일이다 — 건너뛴다.</li>
+ *   <li>{@code ainecto}(또는 옛 {@code ai-erd}) 항목이 «우리 브리지»가 아니면(mcp-remote·url 방식 등) 역할 없음이다.</li>
+ *   <li>JSON 이 깨졌어도 원문에 두 이름이 없으면 우리와 무관한 파일이다 — 건너뛴다.</li>
  *   <li>우리 브리지인데 {@code --role} 이 없거나 모르는 값이면 멈춘다 — 역할을 모르는 채로 «제한 없음»으로
  *       가지 않는다.</li>
+ *   <li>★두 이름 모두 우리 브리지인데 역할이 다르면 멈춘다 — 옛 CLI(0.4.x)가 새 CLI 뒤에 init 하면 생긴다.
+ *       그 세션은 두 역할의 서버를 함께 본다.</li>
  * </ul>
  */
 export function readConfigRole(path: string, content: string | undefined): ConfigRole {
   if (content === undefined || !content.trim()) {
     return { kind: "absent" };
   }
-  let entry: unknown;
+  let servers: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(content) as { mcpServers?: Record<string, unknown> } | null;
-    entry = parsed?.mcpServers?.[SERVER_NAME];
+    const parsed = JSON.parse(content) as { mcpServers?: unknown } | null;
+    const raw = parsed?.mcpServers;
+    servers = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   } catch {
-    return content.includes(SERVER_NAME)
+    return content.includes(SERVER_NAME) || content.includes(LEGACY_SERVER_NAME)
       ? { kind: "problem", reason: `${path} is not valid JSON` }
       : { kind: "absent" };
   }
-  if (entry === undefined || !isOurBridge(entry)) {
-    return { kind: "absent" };
+  const roles: HarnessRole[] = [];
+  for (const key of [SERVER_NAME, LEGACY_SERVER_NAME]) {
+    const entry = servers[key];
+    if (!isOurBridge(entry)) {
+      continue;
+    }
+    const role = readRoleFromEntry(entry);
+    if (role === undefined) {
+      return { kind: "problem", reason: `${path} has the "${key}" bridge without a valid --role` };
+    }
+    if (!roles.includes(role)) {
+      roles.push(role);
+    }
   }
-  const role = readRoleFromEntry(entry);
-  return role === undefined
-    ? { kind: "problem", reason: `${path} has the "${SERVER_NAME}" bridge without a valid --role` }
-    : { kind: "role", role };
-}
-
-/**
- * 이 항목이 우리 브리지({@code npx -y @ai-erd/mcp …}, 전역 설치한 {@code ai-erd}·{@code ai-erd-mcp})인가.
- * {@code --role} 을 싣는 것도 우리 브리지뿐이다.
- */
-function isOurBridge(entry: unknown): boolean {
-  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-    return false;
+  if (roles.length > 1) {
+    return {
+      kind: "problem",
+      reason: `${path} has both the "${SERVER_NAME}" and the "${LEGACY_SERVER_NAME}" bridge with different roles (${roles.join(", ")})`,
+    };
   }
-  const { command, args } = entry as { command?: unknown; args?: unknown };
-  const argList = Array.isArray(args) ? args.filter((arg): arg is string => typeof arg === "string") : [];
-  if (argList.some((arg) => arg === PACKAGE_NAME || arg.startsWith(`${PACKAGE_NAME}@`) || arg === "--role")) {
-    return true;
-  }
-  const bin = typeof command === "string" ? basename(command) : "";
-  return bin === "ai-erd" || bin === "ai-erd-mcp";
+  return roles.length === 0 ? { kind: "absent" } : { kind: "role", role: roles[0]! };
 }
 
 /**
@@ -165,12 +166,12 @@ export async function askTheUserToFixRole(dir: string, reason: string): Promise<
   const roles = HARNESS_ROLES.join(", ");
   if (gitRoot !== undefined && !samePath(await realOrResolved(gitRoot), await realOrResolved(dir))) {
     return `Cannot tell this folder's AI session role: ${reason} (in ${dir}, inside the git repository at ${gitRoot}). `
-      + "Ask the user how that AiNecto setting should look — `ai-erd init` only sets up a repository root "
+      + "Ask the user how that AiNecto setting should look — `ainecto init` only sets up a repository root "
       + `(${gitRoot}).`;
   }
   return `Cannot tell this repository's AI session role: ${reason} (in ${dir}). `
     + `Ask the user which role this repository's AI sessions should have (${roles}), `
-    + `then run \`ai-erd init --role <role>\` in ${dir}.`;
+    + `then run \`ainecto init --role <role>\` in ${dir}.`;
 }
 
 async function realOrResolved(path: string): Promise<string> {
@@ -249,7 +250,7 @@ export async function readIfExists(absolutePath: string): Promise<string | undef
  * ★이 경로가 정말 저장소 «안»인가.
  *
  * <p>{@code join(root, path)} 는 이름을 이어 붙일 뿐이고, {@code readFile}/{@code writeFile}
- * 은 심볼릭 링크를 따라간다. {@code .ai-erd → /somewhere/else} 인 저장소에서 undo 를 돌리면
+ * 은 심볼릭 링크를 따라간다. {@code .ainecto → /somewhere/else} 인 저장소에서 undo 를 돌리면
  * 남의 디렉터리 파일이 지워졌다(2026-09-22 독립 리뷰 I4). 실제 경로로 풀어서 경계를 본다.
  */
 export async function assertInsideRepository(root: string, relativePath: string): Promise<void> {

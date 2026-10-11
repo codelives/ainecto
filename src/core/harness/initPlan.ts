@@ -38,7 +38,7 @@ import {
 } from "./initRecord";
 import { createHash } from "node:crypto";
 import { readConfigRole } from "./repositoryRole";
-import { ROLE_ENV_VAR, type HarnessRole } from "./role";
+import { LEGACY_ROLE_ENV_VAR, ROLE_ENV_VAR, type HarnessRole } from "./role";
 
 /**
  * init 이 «무엇을 쓸지»를 순수하게 계산한다. 파일을 읽지도 쓰지도 않는다.
@@ -90,7 +90,7 @@ export interface InitPlan {
   /** Codex 에서 세션마다 역할을 바꾸는 법(프로필). 되돌리기 계획에는 없다. */
   codexProfile?: string[];
   notes: string[];
-  /** init 계획이 남기는 기록. {@code .ai-erd/init-record.json} 에 저장된다. */
+  /** init 계획이 남기는 기록. {@code .ainecto/init-record.json} 에 저장된다. */
   record?: InitRecord;
   /**
    * ★<b>아무것도 하지 말아야 하는 이유.</b> 있으면 부르는 쪽이 멈추고 이 문장을 보여 준다.
@@ -305,7 +305,7 @@ export function planInit(input: PlanInitInput): InitPlan {
       return prior;
     }
     delete record.files[path];
-    notes.push(`${path}: it changed outside ai-erd, so the older backup was dropped and this is the new baseline.`);
+    notes.push(`${path}: it changed outside ainecto, so the older backup was dropped and this is the new baseline.`);
     return undefined;
   };
 
@@ -388,7 +388,7 @@ export function planInit(input: PlanInitInput): InitPlan {
       //   둘이 된다 — 그 상태의 undo 는 «새로 더한 것만» 걷어내고 완료로 처리했다(9차 B2).
       //   ⇒ 이 파일은 손대지 않고 기록도 그대로 둔다. 자리를 되돌리는 것은 사람 몫이다.
       notes.push(
-        `${target.path}: this file has an ai-erd marker block that is not where ai-erd can find `
+        `${target.path}: this file has an ainecto marker block that is not where ainecto can find `
         + "it again (inside a code fence, a quote, or edited). Left untouched and the earlier "
         + "backup kept — move that block back to the top level, or remove it, then run again.",
       );
@@ -403,7 +403,7 @@ export function planInit(input: PlanInitInput): InitPlan {
     }
     const original = prior?.original ?? ownedText(blockNow);
     if (prior === undefined && original.at !== "absent") {
-      notes.push(`${target.path}: an existing ai-erd block was saved and will be restored by --undo`);
+      notes.push(`${target.path}: an existing ainecto block was saved and will be restored by --undo`);
     }
     record.files[target.path] = {
       scope: "block",
@@ -453,7 +453,7 @@ export function planInit(input: PlanInitInput): InitPlan {
         : ownedJson(currentValue, presentNow);
       originalFields[field] = next;
       if (priorOriginal !== undefined && !sameOwned(next, priorOriginal)) {
-        notes.push(`${HARNESS_CONFIG_PATH}: you changed ${field} — ai-erd now treats your value as the one to put back.`);
+        notes.push(`${HARNESS_CONFIG_PATH}: you changed ${field} — ainecto now treats your value as the one to put back.`);
       }
     }
     const mergedConfig = serialize({ ...(theirConfig ?? {}), ...ourFields });
@@ -538,7 +538,7 @@ export function planUndo(input: PlanUndoInput): InitPlan {
   const notes: string[] = [];
   const tail = () => {
     notes.push(`Codex keeps its own global config — remove it with: ${codexRemoveCommand()}`);
-    notes.push(`If you set ${ROLE_ENV_VAR} anywhere, unset it too.`);
+    notes.push(`If you set ${ROLE_ENV_VAR} (or the older ${LEGACY_ROLE_ENV_VAR}) anywhere, unset it too.`);
   };
 
   if (state.state === "absent") {
@@ -662,7 +662,7 @@ function undoEntry(path: string, contract: FileContract, existing: string): Outc
     return {
       kind: "done",
       note: contract.original.at === "absent"
-        ? `${path}: the "${SERVER_NAME}" entry ai-erd added is already gone.`
+        ? `${path}: the "${SERVER_NAME}" entry ainecto added is already gone.`
         : `${path}: your original "${SERVER_NAME}" entry is already back in place.`,
     };
   }
@@ -702,7 +702,7 @@ function undoBlock(path: string, contract: FileContract, existing: string): Outc
   if (unexplainedMarkers(existing, contract) > 0) {
     return {
       kind: "unresolved",
-      note: `${path}: this file has an ai-erd marker block that --undo cannot account for `
+      note: `${path}: this file has an ainecto marker block that --undo cannot account for `
         + "(inside a code fence, a quote, or edited). Remove it by hand, then run --undo again.",
     };
   }
@@ -710,8 +710,8 @@ function undoBlock(path: string, contract: FileContract, existing: string): Outc
     return {
       kind: "done",
       note: contract.original.at === "absent"
-        ? `${path}: the ai-erd block is already gone.`
-        : `${path}: the ai-erd block that was there before is already back in place.`,
+        ? `${path}: the ainecto block is already gone.`
+        : `${path}: the ainecto block that was there before is already back in place.`,
     };
   }
   if (current === undefined && contract.original.at === "text") {
@@ -720,12 +720,12 @@ function undoBlock(path: string, contract: FileContract, existing: string): Outc
     const body = existing.trim()
       ? `${existing.replace(/\s*$/, "")}\n\n${contract.original.text}\n`
       : `${contract.original.text}\n`;
-    return { kind: "write", content: body, note: `${path}: restored the ai-erd block that was there before.` };
+    return { kind: "write", content: body, note: `${path}: restored the ainecto block that was there before.` };
   }
   if (!sameOwned(currentOwned, contract.written)) {
     return {
       kind: "unresolved",
-      note: `${path}: the ai-erd block was edited after init — left in place. `
+      note: `${path}: the ainecto block was edited after init — left in place. `
         + "Remove the block by hand if you meant to, then run --undo again.",
     };
   }
@@ -740,7 +740,7 @@ function undoBlock(path: string, contract: FileContract, existing: string): Outc
   if (!result.removed) {
     return {
       kind: "unresolved",
-      note: `${path}: the ai-erd block could not be removed — it is still in the file. `
+      note: `${path}: the ainecto block could not be removed — it is still in the file. `
         + "Remove it by hand, then run --undo again.",
     };
   }
@@ -751,7 +751,7 @@ function undoBlock(path: string, contract: FileContract, existing: string): Outc
     kind: "write",
     content: result.content,
     note: contract.original.at === "text"
-      ? `${path}: restored the ai-erd block that was there before.`
+      ? `${path}: restored the ainecto block that was there before.`
       : undefined,
   };
 }
@@ -788,7 +788,7 @@ function undoFields(path: string, contract: FileContract, existing: string): Out
     // ★「손대지 않음」은 «복구 완료»가 아니다. 판단 재료가 없으면 백업을 지킨다(8차 I3).
     return {
       kind: "unresolved",
-      note: `${path} is not a JSON object any more, so ai-erd could not take its fields back out — `
+      note: `${path} is not a JSON object any more, so ainecto could not take its fields back out — `
         + "the backup is kept. Fix the file and run --undo again.",
     };
   }
@@ -800,7 +800,7 @@ function undoFields(path: string, contract: FileContract, existing: string): Out
   if (contractProblem !== undefined) {
     return {
       kind: "unresolved",
-      note: `${path}: ai-erd's record of the fields it wrote ${contractProblem}, so its fields `
+      note: `${path}: ainecto's record of the fields it wrote ${contractProblem}, so its fields `
         + "were left in place — the backup is kept. Restore that record, or remove the fields by hand.",
     };
   }
@@ -818,7 +818,7 @@ function undoFields(path: string, contract: FileContract, existing: string): Out
       //   「우리 것이 아니다」도 근거가 없으므로 완료로 바꾸지 않는다(9차 B1).
       return {
         kind: "unresolved",
-        note: `${path}: ai-erd has no record of what it wrote for ${field}, so its fields were `
+        note: `${path}: ainecto has no record of what it wrote for ${field}, so its fields were `
           + "left in place — the backup is kept. Restore that record, or remove the field by hand.",
       };
     }
@@ -836,7 +836,7 @@ function undoFields(path: string, contract: FileContract, existing: string): Out
     if (original === undefined || (original.at !== "json" && original.at !== "absent")) {
       return {
         kind: "unresolved",
-        note: `${path}: ai-erd cannot tell what was in ${field} before it wrote there, so the `
+        note: `${path}: ainecto cannot tell what was in ${field} before it wrote there, so the `
           + "file was left as it is — the backup is kept. Remove the field by hand if you meant to.",
       };
     }
@@ -860,7 +860,7 @@ function undoFields(path: string, contract: FileContract, existing: string): Out
     : {
       kind: "write",
       content: body,
-      note: note ?? `${path}: removed what ai-erd wrote and kept the rest.`,
+      note: note ?? `${path}: removed what ainecto wrote and kept the rest.`,
     };
 }
 

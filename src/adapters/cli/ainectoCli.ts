@@ -11,8 +11,8 @@ import { executeGeneratedCommand, matchGeneratedCommand } from "./generatedComma
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
 import { executeInitCommand } from "./initCommand";
 import { createReadlinePrompter, isInteractive } from "./prompter";
-import { CLI_VERSION } from "../../core/version";
-import { assertRole, resolveRole, type HarnessRole } from "../../core/harness/role";
+import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
+import { assertRole, resolveRole, type HarnessRole, type ResolvedRole } from "../../core/harness/role";
 import { askTheUserToFixRole, findRepositoryRole } from "../../core/harness/repositoryRole";
 
 export interface CliIO {
@@ -36,7 +36,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     const resolved = resolveEndpoint({ env: parsed.env, endpoint: parsed.endpoint });
-    // 플래그·환경변수로 «명시한» 역할. ★auth 는 이것을 읽지 않는다 — 잘못된 AI_ERD_ROLE 이 로그인을
+    // 플래그·환경변수로 «명시한» 역할. ★auth 는 이것을 읽지 않는다 — 잘못된 AINECTO_ROLE 이 로그인을
     //   막지 않게(0.4.2 리뷰 P2). 저장소 역할과의 판정은 아래 한 곳에서 한다.
     const explicitRole = () => resolveRole({ role: parsed.role });
     const tokenStore = new FileTokenStore();
@@ -100,7 +100,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
                 return undefined;
               }
             },
-            // 로그인한다 — `ai-erd auth login` 과 같은 함수다. 서버마다 한 번이다(0.4.2).
+            // 로그인한다 — `ainecto auth login` 과 같은 함수다. 서버마다 한 번이다(0.4.2).
             login: async () => {
               await auth.login();
             },
@@ -110,7 +110,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         prompter: isInteractive(io, parsed.json) ? createReadlinePrompter(io) : undefined,
         endpoint: resolved.endpoint,
         env: resolved.env,
-        cliVersion: `@ai-erd/mcp ${CLI_VERSION}`,
+        cliVersion: `${PACKAGE_NAME} ${CLI_VERSION}`,
         cwd: process.cwd(),
         json: parsed.json,
         io,
@@ -133,7 +133,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     if (domain === "tools" && action === "catalog") {
       return await printCatalog(parsed, io, resolved.endpoint, async () => {
         const explicit = explicitRole();
-        return connect(await commandRole(explicit.role ?? null, explicit.source, process.cwd())).client;
+        return connect(await commandRole(explicit, process.cwd())).client;
       });
     }
     // 스냅샷에 없는 명령은 서버의 지금 목록에서 찾는다 — 서버에 새로 열린 도구를 CLI 재배포 없이 쓴다.
@@ -159,7 +159,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     // ★여기부터 원격을 부르는 명령은 «저장소 역할»로 간다(설계 0.4.2 §2-2). mcp·init·auth 는 위에서
     //   끝났다 — 역할이 어긋난 저장소 안에서도 로그인·브리지·init 은 막히지 않는다.
     const explicit = explicitRole();
-    const { client } = connect(await commandRole(explicit.role ?? null, explicit.source, process.cwd()));
+    const { client } = connect(await commandRole(explicit, process.cwd()));
 
     if (isAttachmentsUploadCommand(domain, action)) {
       return await executeAttachmentsUploadCommand({
@@ -196,16 +196,13 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
 /**
  * ★셸 명령의 역할 — 한 곳(설계 0.4.2 §2-2).
  *
- * <p>저장소(cwd 에서 위로, ai-erd 항목이 있는 첫 폴더)에 역할 R 이 있으면 R 로 간다. 명시한 역할이 R 과
- * 다르면 거절한다 — 역할을 바꾸는 길은 `ai-erd init --role` 하나이고 사용자가 고른다. 저장소를 못
+ * <p>저장소(cwd 에서 위로, 우리 브리지 항목이 있는 첫 폴더)에 역할 R 이 있으면 R 로 간다. 명시한 역할이 R 과
+ * 다르면 거절한다 — 역할을 바꾸는 길은 `ainecto init --role` 하나이고 사용자가 고른다. 저장소를 못
  * 읽으면(어긋남·읽기 문제) 멈추고 사용자에게 물으라고 한다 — 모르는 채로 «제한 없음»으로 가지 않는다.
  * 저장소 밖이면 명시한 역할(없으면 역할 없음 = 제한 없음, 현행).
  */
-export async function commandRole(
-  explicitRole: HarnessRole | null,
-  source: "flag" | "env" | "none",
-  cwd: string,
-): Promise<HarnessRole | null> {
+export async function commandRole(explicit: ResolvedRole, cwd: string): Promise<HarnessRole | null> {
+  const explicitRole = explicit.role ?? null;
   const found = await findRepositoryRole(cwd);
   if (found.kind === "conflict") {
     throw new Error(await askTheUserToFixRole(found.dir, found.reason));
@@ -214,10 +211,11 @@ export async function commandRole(
     return explicitRole;
   }
   if (explicitRole !== null && explicitRole !== found.role) {
-    const given = source === "env" ? `AI_ERD_ROLE=${explicitRole}` : `--role ${explicitRole}`;
+    // 사용자가 실제로 둔 이름으로 말한다 — AINECTO_ROLE 인지 옛 AI_ERD_ROLE 인지.
+    const given = explicit.source === "env" ? `${explicit.envVar}=${explicitRole}` : `--role ${explicitRole}`;
     throw new Error(
       `This repository's AI sessions have the role ${found.role} (set in ${found.dir}). `
-      + `${given} does not match — the role changes only with \`ai-erd init --role <role>\`, after asking the user.`,
+      + `${given} does not match — the role changes only with \`ainecto init --role <role>\`, after asking the user.`,
     );
   }
   return found.role;
@@ -269,7 +267,7 @@ async function printCatalog(
       json: parsed.json,
       warnings: [`Could not read the live tool list from ${endpoint} (${reason}). `
         + `Showing the ${catalogEnv} catalog checked in when this CLI version was built — a snapshot of that `
-        + "server's tools/list that may miss newer document types and tools. Run `ai-erd auth login`, then retry."],
+        + "server's tools/list that may miss newer document types and tools. Run `ainecto auth login`, then retry."],
     }));
   }
   return 0;
@@ -386,11 +384,11 @@ async function nextStep(): Promise<{ setup?: "incomplete"; next?: string }> {
 // ★«참고»로 읽히면 넘긴다 — Codex 가 `next` 를 받고도 «업데이트 완료»만 말했다(2026-09-30 실측).
 //   그래서 «사용자가 설치·업데이트·로그인만 부탁했어도 지금 알려라»를 지시문으로 적는다.
 const NEXT_STEP_INIT = [
-  "AiNecto setup is not finished until `ai-erd init` runs in the repository.",
+  "AiNecto setup is not finished until `npx -y ainecto@latest init` runs in the repository.",
   "AI agents: tell the user this now, even if they only asked to install, update, or sign in. Then ask",
   "which role this repository's AI sessions should have — Design, Development, Test, or Validation —",
-  "never pick one yourself, and run `ai-erd init --role <role>` from the repository root.",
-  "In a terminal: `ai-erd init` asks for the role and the project.",
+  "never pick one yourself, and run `npx -y ainecto@latest init --role <role>` from the repository root.",
+  "In a terminal: `npx -y ainecto@latest init` asks for the role and the project.",
 ].join("\n");
 
 function helpText(): string {
@@ -400,17 +398,19 @@ function helpText(): string {
     NEXT_STEP_INIT,
     "",
     "Usage:",
-    "  ai-erd auth login|status|logout [--env prod|dev] [--json]   (one sign-in per machine)",
-    "  ai-erd tools list [--env prod|dev] [--endpoint URL] [--json]",
-    "  ai-erd tools call <mcpName> [-f payload.json|@-] [inline-json] [--json]",
-    "  ai-erd attachments upload --document-uuid <uuid> <file...> [--json]",
-    "  ai-erd <generated-command> [flags] [-f payload.json] [--yes] [--json]",
-    "  ai-erd mcp [--env prod|dev] [--endpoint URL] [--role design|development|test|validation]",
+    "  ainecto auth login|status|logout [--env prod|dev] [--json]   (one sign-in per machine)",
+    "  ainecto tools list [--env prod|dev] [--endpoint URL] [--json]",
+    "  ainecto tools call <mcpName> [-f payload.json|@-] [inline-json] [--json]",
+    "  ainecto attachments upload --document-uuid <uuid> <file...> [--json]",
+    "  ainecto <generated-command> [flags] [-f payload.json] [--yes] [--json]",
+    "  ainecto mcp [--env prod|dev] [--endpoint URL] [--role design|development|test|validation]",
     "",
     "Harness:",
-    "  ai-erd init [--role <design|development|test|validation>] [--project <uuid>] [--dry-run]",
+    "  ainecto init [--role <design|development|test|validation>] [--project <uuid>] [--dry-run]",
     "      In a terminal, asks for the role and project when they are not given.",
-    "  ai-erd init --undo",
+    "  ainecto init --undo",
+    "",
+    "`ai-erd` (the older name) is the same command and still works.",
     "",
   ].join("\n");
 }

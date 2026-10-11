@@ -60,7 +60,7 @@ describe("ai-erd init — interactive (TTY)", () => {
       // 하네스 문서는 받지 않는다(패키지 기본값으로 간다) — 시험이 네트워크에 닿지 않게.
       fetchImpl: (async () => { throw new Error("offline in tests"); }) as unknown as typeof fetch,
       env: "prod",
-      cliVersion: "@ai-erd/mcp test",
+      cliVersion: "@ainecto/mcp test",
       cwd: root,
       json: true,
       io,
@@ -70,12 +70,12 @@ describe("ai-erd init — interactive (TTY)", () => {
 
   async function roleInMcpJson(): Promise<string> {
     const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
-    const args = mcp.mcpServers["ai-erd"].args as string[];
+    const args = mcp.mcpServers["ainecto"].args as string[];
     return args[args.indexOf("--role") + 1]!;
   }
 
   async function boundProject(): Promise<string> {
-    return JSON.parse(await readFile(join(root, ".ai-erd/config.json"), "utf8")).project.uuid;
+    return JSON.parse(await readFile(join(root, ".ainecto/config.json"), "utf8")).project.uuid;
   }
 
   const prompts = () => said.join("");
@@ -170,7 +170,7 @@ describe("ai-erd init — interactive (TTY)", () => {
     expect(connectedAs).toEqual([]);
     expect(calls).toEqual([]);
     expect(existsSync(join(root, ".mcp.json"))).toBe(false);
-    expect(existsSync(join(root, ".ai-erd"))).toBe(false);
+    expect(existsSync(join(root, ".ainecto"))).toBe(false);
   });
 
   it("★cancelling at the project question writes nothing either", async () => {
@@ -198,7 +198,7 @@ describe("ai-erd init — interactive (TTY)", () => {
     // Cursor 설정만 손으로 다른 역할로 바꿔 둔다.
     const cursor = join(root, ".cursor/mcp.json");
     const parsed = JSON.parse(await readFile(cursor, "utf8"));
-    const args = parsed.mcpServers["ai-erd"].args as string[];
+    const args = parsed.mcpServers["ainecto"].args as string[];
     args[args.indexOf("--role") + 1] = "test";
     await writeFile(cursor, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
     said.length = 0;

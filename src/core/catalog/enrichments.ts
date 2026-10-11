@@ -6,7 +6,7 @@ export const enrichments = [
     outputHint: "table",
     tableColumns: ["uuid", "name", "projectKey", "workspaceUuid", "updatedAt"],
     displayName: "List projects",
-    examples: ["ai-erd projects list --env dev"],
+    examples: ["ainecto projects list --env dev"],
   },
   {
     mcpName: "list_workspaces",

@@ -1,7 +1,6 @@
 import type { TokenProvider } from "../auth/oauth";
-import { PACKAGE_NAME } from "../harness/agentTargets";
 import { ROLE_HEADER, type HarnessRole } from "../harness/role";
-import { CLI_VERSION } from "../version";
+import { CLI_VERSION, PACKAGE_NAME } from "../version";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";

@@ -3,6 +3,9 @@
 Date: 2026-07-10 KST (updated 2026-09-29 for 0.4.0)
 Status: published — 0.4.2 on 2026-09-29 (package only)
 
+> 2026-10-11 (0.5.0): the npm package is `@ainecto/mcp` again (the `@ai-erd/*` names stay as aliases).
+> The current procedure is in README «MCP Registry»; the notes below are the 0.4.x record.
+
 ## Proposed Identity
 
 - Registry name: `io.github.codelives/ainecto`

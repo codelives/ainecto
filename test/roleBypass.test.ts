@@ -22,6 +22,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
   let originalCwd: string;
   let originalFetch: typeof fetch;
   let originalEnvRole: string | undefined;
+  let originalNewEnvRole: string | undefined;
   const sent: Array<Record<string, string>> = [];
   const errors: string[] = [];
 
@@ -44,11 +45,12 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     await writeFile(join(home, ".ainecto", "tokens.json"), JSON.stringify(file), "utf8");
   }
 
-  /** init 이 쓰는 모양 그대로의 MCP 항목. */
-  async function repo(dir: string, role: string | null, file = ".mcp.json") {
+  /** init 이 쓰는 모양 그대로의 MCP 항목. {@code legacy} 면 0.4.x 가 쓴 모양(키 "ai-erd" · @ai-erd/mcp). */
+  async function repo(dir: string, role: string | null, file = ".mcp.json", legacy = false) {
     await mkdir(join(dir, file, ".."), { recursive: true });
-    const args = ["-y", "@ai-erd/mcp", ...(role ? ["--role", role] : [])];
-    await writeFile(join(dir, file), JSON.stringify({ mcpServers: { "ai-erd": { command: "npx", args } } }), "utf8");
+    const args = ["-y", legacy ? "@ai-erd/mcp" : "@ainecto/mcp", ...(role ? ["--role", role] : [])];
+    const key = legacy ? "ai-erd" : "ainecto";
+    await writeFile(join(dir, file), JSON.stringify({ mcpServers: { [key]: { command: "npx", args } } }), "utf8");
   }
 
   beforeEach(async () => {
@@ -57,7 +59,9 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     originalHome = process.env.HOME;
     process.env.HOME = home;
     originalEnvRole = process.env.AI_ERD_ROLE;
+    originalNewEnvRole = process.env.AINECTO_ROLE;
     delete process.env.AI_ERD_ROLE;
+    delete process.env.AINECTO_ROLE;
     originalCwd = process.cwd();
     process.chdir(work);
     sent.length = 0;
@@ -79,6 +83,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     process.chdir(originalCwd);
     if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
     if (originalEnvRole === undefined) delete process.env.AI_ERD_ROLE; else process.env.AI_ERD_ROLE = originalEnvRole;
+    if (originalNewEnvRole === undefined) delete process.env.AINECTO_ROLE; else process.env.AINECTO_ROLE = originalNewEnvRole;
     await rm(home, { recursive: true, force: true });
     await rm(work, { recursive: true, force: true });
   });
@@ -87,7 +92,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
 
   async function roleIn(file: string): Promise<string> {
     const parsed = JSON.parse(await readFile(join(work, file), "utf8"));
-    const args = parsed.mcpServers["ai-erd"].args as string[];
+    const args = parsed.mcpServers["ainecto"].args as string[];
     return args[args.indexOf("--role") + 1]!;
   }
 
@@ -129,16 +134,41 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     expect(code).toBe(1);
     expect(sent).toEqual([]);
     expect(errors.join("")).toContain("have the role development");
-    expect(errors.join("")).toContain("ai-erd init --role <role>");
+    expect(errors.join("")).toContain("ainecto init --role <role>");
   });
 
-  it("AI_ERD_ROLE 도 같은 규칙이다", async () => {
+  it("AINECTO_ROLE 도 같은 규칙이다", async () => {
+    await repo(work, "development");
+    process.env.AINECTO_ROLE = "design";
+
+    expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(1);
+    expect(sent).toEqual([]);
+    expect(errors.join("")).toContain("AINECTO_ROLE=design does not match");
+  });
+
+  it("옛 이름 AI_ERD_ROLE 도 읽고, 같은 규칙이다", async () => {
     await repo(work, "development");
     process.env.AI_ERD_ROLE = "design";
 
     expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(1);
     expect(sent).toEqual([]);
     expect(errors.join("")).toContain("AI_ERD_ROLE=design does not match");
+  });
+
+  it("★둘 다 있으면 AINECTO_ROLE 이 이긴다 — 그 값이 저장소와 맞으면 옛 값과 달라도 간다", async () => {
+    await repo(work, "development");
+    process.env.AINECTO_ROLE = "development";
+    process.env.AI_ERD_ROLE = "design";
+
+    expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(0);
+    expect(roleHeader()).toBe("development");
+  });
+
+  it("★0.4.x 가 쓴 저장소(키 \"ai-erd\" · @ai-erd/mcp)의 역할도 헤더로 간다", async () => {
+    await repo(work, "test", ".mcp.json", true);
+
+    expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(0);
+    expect(roleHeader()).toBe("test");
   });
 
   it("같은 역할을 명시하면 그대로 간다", async () => {
@@ -235,7 +265,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     const said = errors.join("");
     expect(said).toContain("inside the git repository at");
     expect(said).toContain("Ask the user how that AiNecto setting should look");
-    expect(said).not.toContain("then run `ai-erd init --role <role>` in");
+    expect(said).not.toContain("then run `ainecto init --role <role>` in");
   });
 
   it("auth 에 --role 을 주면 알리고 진행한다 (로그인은 서버마다 한 번)", async () => {

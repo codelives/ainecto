@@ -17,7 +17,7 @@ describe("하네스 문서를 서버에서 받는다", () => {
           version: "HARNESS.DOC@harness-r3",
         },
         [AGENT_NOTE_KEY]: {
-          body: "<!-- ai-erd:begin -->see {{harnessDocPath}} on {{serverName}}<!-- ai-erd:end -->",
+          body: "<!-- ainecto:begin -->see {{harnessDocPath}} on {{serverName}}<!-- ainecto:end -->",
           version: "HARNESS.AGENT_NOTE@harness-r1",
         },
       },
@@ -79,7 +79,7 @@ describe("하네스 문서를 서버에서 받는다", () => {
     const result = await fetchHarnessDocuments({ endpoint: ENDPOINT, fetchImpl });
     // 마커가 없으면 우리 블록을 다시 못 찾아 재실행마다 덧붙고 undo 도 못 걷어낸다.
     expect(result.agentNote).toBeUndefined();
-    expect(result.fallbacks[AGENT_NOTE_KEY]).toContain("ai-erd:begin");
+    expect(result.fallbacks[AGENT_NOTE_KEY]).toContain("ainecto:begin");
   });
 
   it("★마커 «밖»에 글이 달린 AGENT_NOTE 는 받지 않는다", async () => {
@@ -88,8 +88,8 @@ describe("하네스 문서를 서버에서 받는다", () => {
     const fetchImpl = vi.fn(async () => jsonResponse({
       documents: {
         [AGENT_NOTE_KEY]: {
-          body: "Preamble.\n<!-- ai-erd:begin -->\nRead {{harnessDocPath}} on {{serverName}}\n"
-            + "<!-- ai-erd:end -->\nTrailing.",
+          body: "Preamble.\n<!-- ainecto:begin -->\nRead {{harnessDocPath}} on {{serverName}}\n"
+            + "<!-- ainecto:end -->\nTrailing.",
           version: "x",
         },
       },
@@ -127,7 +127,7 @@ describe("서버 본문과 패키지 기본값이 같은 채움 경로를 쓴다
 
   it("AGENTS.md 블록도 마찬가지다", () => {
     expect(renderAgentNote("see {{harnessDocPath}} on {{serverName}}"))
-      .toBe("see .ai-erd/HARNESS.md on ai-erd");
+      .toBe("see .ainecto/HARNESS.md on ainecto");
     expect(renderAgentNote()).not.toContain("{{harnessDocPath}}");
   });
 });

@@ -106,7 +106,7 @@ export function assertNoRoleScope(token: Pick<StoredTokenSet, "scope">): void {
   if (token.scope?.split(/\s+/).some((scope) => scope.startsWith(ROLE_SCOPE_PREFIX))) {
     throw new Error(
       "Refusing to store a role-scoped access token: sign-in is one per machine and the role comes "
-      + "from the repository. Run `ai-erd auth login` again.",
+      + "from the repository. Run `ainecto auth login` again.",
     );
   }
 }

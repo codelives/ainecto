@@ -29,7 +29,7 @@ const BASE = {
   projectName: "Billing",
   projectUuid: "p-1",
   endpoint: "https://ainecto.com/mcp",
-  cliVersion: "@ai-erd/mcp test",
+  cliVersion: "@ainecto/mcp test",
 } as const;
 
 function snapshot(entries: Record<string, string | undefined>) {
@@ -40,7 +40,7 @@ function writtenAt(plan: ReturnType<typeof planInit>, path: string): string | un
   return plan.writes.find((write) => write.path === path)?.content;
 }
 
-const RECORD_FILE = ".ai-erd/init-record.json";
+const RECORD_FILE = ".ainecto/init-record.json";
 
 /**
  * 되돌리기 기록. ★<b>한 파일의 사실이 한 항목에 모였다</b> — 평행한 map 아홉 개가 아니다.
@@ -65,7 +65,7 @@ function applied(
 describe("role resolution", () => {
   it("takes the flag first, then the environment", () => {
     expect(resolveRole({ role: "design" })).toEqual({ role: "design", source: "flag" });
-    expect(resolveRole({ envVars: { [ROLE_ENV_VAR]: "test" } })).toEqual({ role: "test", source: "env" });
+    expect(resolveRole({ envVars: { [ROLE_ENV_VAR]: "test" } })).toEqual({ role: "test", source: "env", envVar: "AINECTO_ROLE" });
     expect(resolveRole({ envVars: {} })).toEqual({ source: "none" });
   });
 
@@ -82,14 +82,14 @@ describe("mcp config merge", () => {
     const parsed = JSON.parse(merged.content);
 
     expect(Object.keys(parsed.mcpServers)).toEqual([SERVER_NAME]);
-    expect(parsed.mcpServers[SERVER_NAME].args).toEqual(["-y", "@ai-erd/mcp", "--role", "development"]);
+    expect(parsed.mcpServers[SERVER_NAME].args).toEqual(["-y", "@ainecto/mcp", "--role", "development"]);
     expect(readRoleFromEntry(parsed.mcpServers[SERVER_NAME])).toBe("development");
   });
 
   it("adds --env only when it is not the default", () => {
     expect(buildServerEntry({ role: "design", env: "prod" }).args).not.toContain("--env");
     expect(buildServerEntry({ role: "design", env: "dev" }).args).toEqual(
-      ["-y", "@ai-erd/mcp", "--role", "design", "--env", "dev"],
+      ["-y", "@ainecto/mcp", "--role", "design", "--env", "dev"],
     );
   });
 
@@ -117,7 +117,7 @@ describe("mcp config merge", () => {
     expect(buildServerEntry({ role: "design", endpoint: "https://ainecto.com/mcp" }).args)
       .not.toContain("--endpoint");
     expect(buildServerEntry({ role: "design", endpoint: "https://custom.example/mcp" }).args)
-      .toEqual(["-y", "@ai-erd/mcp", "--role", "design", "--endpoint", "https://custom.example/mcp"]);
+      .toEqual(["-y", "@ainecto/mcp", "--role", "design", "--endpoint", "https://custom.example/mcp"]);
   });
 
   it("refuses to overwrite a config it cannot parse", () => {
@@ -162,7 +162,7 @@ describe("marker block", () => {
     const twice = upsertMarkerBlock(once, renderAgentNote());
 
     expect(twice).toBe(once);
-    expect(twice.match(/ai-erd:begin/g)).toHaveLength(1);
+    expect(twice.match(/ainecto:begin/g)).toHaveLength(1);
   });
 
   it("removes its block and leaves the rest", () => {
@@ -171,14 +171,14 @@ describe("marker block", () => {
 
     expect(result.removed).toBe(true);
     expect(result.content).toContain("Do the thing.");
-    expect(result.content).not.toContain("ai-erd:begin");
+    expect(result.content).not.toContain("ainecto:begin");
   });
 
   it("refuses to touch a file whose markers do not pair up", () => {
     // 여는 표식만 남았다 = 사람이 손으로 잘랐거나 예제로 적어 뒀다.
     // ★예전엔 «못 본 척»하고 뒤에 새 블록을 붙였는데, 그러면 begin 둘 · end 하나가 되어
     //   다음 실행에서 둘이 이어지며 사이의 사용자 글이 사라졌다(독립 리뷰 I3).
-    const damaged = "<!-- ai-erd:begin -->\nUSER TEXT MUST SURVIVE\n";
+    const damaged = "<!-- ainecto:begin -->\nUSER TEXT MUST SURVIVE\n";
 
     expect(() => upsertMarkerBlock(damaged, renderAgentNote())).toThrow(/unbalanced/);
     expect(() => removeMarkerBlock(damaged)).toThrow(/unbalanced/);
@@ -293,9 +293,9 @@ describe("init plan", () => {
 
     expect(paths).toContain(".mcp.json");
     expect(paths).toContain(".cursor/mcp.json");
-    expect(paths).toContain(".ai-erd/HARNESS.md");
-    expect(paths).toContain(".ai-erd/config.json");
-    expect(JSON.parse(writtenAt(plan, ".ai-erd/config.json")!).project)
+    expect(paths).toContain(".ainecto/HARNESS.md");
+    expect(paths).toContain(".ainecto/config.json");
+    expect(JSON.parse(writtenAt(plan, ".ainecto/config.json")!).project)
       .toEqual({ uuid: "p-1", name: "Billing" });
   });
 
@@ -320,7 +320,7 @@ describe("init plan", () => {
     const lines = codexProfileSetup({ role: "design" }).join("\n");
 
     expect(lines).toContain("$CODEX_HOME/design.config.toml");
-    expect(lines).toContain("[mcp_servers.ai-erd]");
+    expect(lines).toContain("[mcp_servers.ainecto]");
     expect(lines).toContain('"--role","design"'.replace(/"/g, '"'));
     expect(lines).toContain("codex -p design");
     expect(lines).toContain("replaces the global one");
@@ -382,8 +382,8 @@ describe("undo", () => {
 
     expect(undone[".mcp.json"]).toBe(before[".mcp.json"]);
     expect(undone["AGENTS.md"]).toBe(before["AGENTS.md"]);
-    expect(undo.deletes).toContain(".ai-erd/HARNESS.md");
-    expect(undo.deletes).toContain(".ai-erd/config.json");
+    expect(undo.deletes).toContain(".ainecto/HARNESS.md");
+    expect(undo.deletes).toContain(".ainecto/config.json");
   });
 
   it("deletes files it created outright, and keeps ones it only edited", () => {
@@ -399,33 +399,33 @@ describe("undo", () => {
 
   it("keeps files that existed before init, even when the name is ours", () => {
     // ★이름이 같다는 이유로 남의 파일을 지우던 것이 I2 였다.
-    const before = { ".ai-erd/HARNESS.md": "mine\n", ".ai-erd/config.json": "{}\n" };
+    const before = { ".ainecto/HARNESS.md": "mine\n", ".ainecto/config.json": "{}\n" };
     const init = planInit({ ...BASE, files: snapshot(before) });
     const after = snapshot(Object.fromEntries(init.writes.map((w) => [w.path, w.content])));
 
     const undo = planUndo({ files: after });
 
-    expect(undo.deletes).not.toContain(".ai-erd/HARNESS.md");
+    expect(undo.deletes).not.toContain(".ainecto/HARNESS.md");
     expect(undo.notes.join(" ")).toContain("existed before init");
   });
 
-  it("puts back a user's own ai-erd entry instead of deleting it", () => {
+  it("puts back a user's own ainecto entry instead of deleting it", () => {
     const mine = { command: "old", args: ["x"], env: { MY_SETTING: "preserve" } };
-    const before = { ".mcp.json": `${JSON.stringify({ mcpServers: { "ai-erd": mine } }, null, 2)}\n` };
+    const before = { ".mcp.json": `${JSON.stringify({ mcpServers: { "ainecto": mine } }, null, 2)}\n` };
     const init = planInit({ ...BASE, files: snapshot(before) });
     const after = snapshot(Object.fromEntries(init.writes.map((w) => [w.path, w.content])));
 
     const undo = planUndo({ files: after });
     const restored = JSON.parse(undo.writes.find((w) => w.path === ".mcp.json")!.content);
 
-    expect(restored.mcpServers["ai-erd"]).toEqual(mine);
+    expect(restored.mcpServers["ainecto"]).toEqual(mine);
     expect(undo.deletes).not.toContain(".mcp.json");
   });
 
   it("★기록이 없으면 아무것도 지우지 않는다", () => {
     // init 을 한 적 없는 저장소의 사용자 항목까지 지우던 것이 I2 의 첫 행이다.
     const mine = { command: "mine", args: ["x"] };
-    const files = snapshot({ ".mcp.json": `${JSON.stringify({ mcpServers: { "ai-erd": mine } }, null, 2)}\n` });
+    const files = snapshot({ ".mcp.json": `${JSON.stringify({ mcpServers: { "ainecto": mine } }, null, 2)}\n` });
 
     const undo = planUndo({ files });
 
@@ -437,29 +437,29 @@ describe("undo", () => {
   it("★사용자 항목이 우연히 역할 인자를 갖고 있어도 남의 것이다", () => {
     // 예전엔 「args 에 역할이 있으면 우리 것」으로 보고 백업하지 않았다.
     const mine = { command: "mine", args: ["--role", "design"], env: { MY_SETTING: "preserve" } };
-    const before = { ".mcp.json": `${JSON.stringify({ mcpServers: { "ai-erd": mine } }, null, 2)}\n` };
+    const before = { ".mcp.json": `${JSON.stringify({ mcpServers: { "ainecto": mine } }, null, 2)}\n` };
     const init = planInit({ ...BASE, files: snapshot(before) });
     const after = snapshot(Object.fromEntries(init.writes.map((w) => [w.path, w.content])));
 
     const undo = planUndo({ files: after });
     const restored = JSON.parse(undo.writes.find((w) => w.path === ".mcp.json")!.content);
 
-    expect(restored.mcpServers["ai-erd"]).toEqual(mine);
+    expect(restored.mcpServers["ainecto"]).toEqual(mine);
   });
 
   it("★이미 있던 HARNESS.md 는 원본으로 되돌린다", () => {
-    const before = { ".ai-erd/HARNESS.md": "MY OWN NOTES\n" };
+    const before = { ".ainecto/HARNESS.md": "MY OWN NOTES\n" };
     const init = planInit({ ...BASE, files: snapshot(before) });
     const after = snapshot(Object.fromEntries(init.writes.map((w) => [w.path, w.content])));
 
     const undo = planUndo({ files: after });
 
-    expect(undo.writes.find((w) => w.path === ".ai-erd/HARNESS.md")?.content).toBe("MY OWN NOTES\n");
-    expect(undo.deletes).not.toContain(".ai-erd/HARNESS.md");
+    expect(undo.writes.find((w) => w.path === ".ainecto/HARNESS.md")?.content).toBe("MY OWN NOTES\n");
+    expect(undo.deletes).not.toContain(".ainecto/HARNESS.md");
   });
 
   it("★이미 있던 규칙 블록도 원본으로 되돌린다", () => {
-    const mineBlock = "<!-- ai-erd:begin -->\nMY OWN RULES\n<!-- ai-erd:end -->";
+    const mineBlock = "<!-- ainecto:begin -->\nMY OWN RULES\n<!-- ainecto:end -->";
     const before = { "AGENTS.md": `# Rules\n\n${mineBlock}\n` };
     const init = planInit({ ...BASE, files: snapshot(before) });
     const after = snapshot(Object.fromEntries(init.writes.map((w) => [w.path, w.content])));
@@ -472,11 +472,11 @@ describe("undo", () => {
   it("★우리가 만든 파일도 사용자가 고쳤으면 지우지 않는다", () => {
     const init = planInit({ ...BASE, files: snapshot({}) });
     const written = Object.fromEntries(init.writes.map((w) => [w.path, w.content]));
-    written[".ai-erd/HARNESS.md"] = `${written[".ai-erd/HARNESS.md"]}\n\n내가 덧붙인 줄\n`;
+    written[".ainecto/HARNESS.md"] = `${written[".ainecto/HARNESS.md"]}\n\n내가 덧붙인 줄\n`;
 
     const undo = planUndo({ files: snapshot(written) });
 
-    expect(undo.deletes).not.toContain(".ai-erd/HARNESS.md");
+    expect(undo.deletes).not.toContain(".ainecto/HARNESS.md");
     expect(undo.notes.join(" ")).toContain("edited after init");
   });
 
@@ -509,7 +509,7 @@ describe("tool response reading", () => {
  * 한 번 돌려서 맞는 것과, 네 번 돌려도 같은 곳에 서 있는 것은 다른 사실이다.
  */
 describe("6차 독립 리뷰 — 복구 계약", () => {
-  const CONFIG = ".ai-erd/config.json";
+  const CONFIG = ".ainecto/config.json";
 
   const json = (body: unknown) => `${JSON.stringify(body, null, 2)}\n`;
 
@@ -533,7 +533,7 @@ describe("6차 독립 리뷰 — 복구 계약", () => {
     // 사용자가 config 에 자기 칸을 더하고, 우리 MCP 항목도 손댔다(= 해소 안 된 충돌).
     files.set(CONFIG, json({ ...JSON.parse(files.get(CONFIG)!), mine: "keep-me" }));
     const mcp = JSON.parse(files.get(".mcp.json")!);
-    mcp.mcpServers["ai-erd"].args = [...mcp.mcpServers["ai-erd"].args, "--mine"];
+    mcp.mcpServers["ainecto"].args = [...mcp.mcpServers["ainecto"].args, "--mine"];
     files.set(".mcp.json", json(mcp));
 
     // 1차 — 충돌이 남았으니 기록을 «줄여서» 남긴다. 사용자 칸은 그대로.
@@ -551,10 +551,10 @@ describe("6차 독립 리뷰 — 복구 계약", () => {
   });
 
   it("★I2 손으로 원본 파일을 되돌려 놨으면 끝난 것으로 본다", () => {
-    const before = { ".ai-erd/HARNESS.md": "my own harness notes\n" };
+    const before = { ".ainecto/HARNESS.md": "my own harness notes\n" };
     const init = planInit({ ...BASE, files: snapshot(before) });
     const files = applied(snapshot(before), init);
-    files.set(".ai-erd/HARNESS.md", before[".ai-erd/HARNESS.md"]);
+    files.set(".ainecto/HARNESS.md", before[".ainecto/HARNESS.md"]);
 
     const undo = planUndo({ files });
 
@@ -589,9 +589,9 @@ describe("6차 독립 리뷰 — 복구 계약", () => {
   });
 
   it("★I2 되돌린 상태에서 네 번 더 돌려도 같은 곳에 선다", () => {
-    const before = { ".ai-erd/HARNESS.md": "mine\n" };
+    const before = { ".ainecto/HARNESS.md": "mine\n" };
     let files = applied(snapshot(before), planInit({ ...BASE, files: snapshot(before) }));
-    files.set(".ai-erd/HARNESS.md", before[".ai-erd/HARNESS.md"]);
+    files.set(".ainecto/HARNESS.md", before[".ainecto/HARNESS.md"]);
 
     const seen: string[] = [];
     for (let round = 0; round < 4; round += 1) {
@@ -602,7 +602,7 @@ describe("6차 독립 리뷰 — 복구 계약", () => {
     // ⚠「상태가 안 변한다」만으로는 모자란다 — «안정적이지만 영영 미해결»도 안 변한다.
     //   수렴의 증거는 <b>할 일이 없어진 것</b>이다: 기록이 사라지고 원본만 남았다.
     expect(new Set(seen.slice(1)).size).toBe(1);
-    expect(files.get(".ai-erd/HARNESS.md")).toBe(before[".ai-erd/HARNESS.md"]);
+    expect(files.get(".ainecto/HARNESS.md")).toBe(before[".ainecto/HARNESS.md"]);
     expect(recordOf(files)).toBeUndefined();
     expect(files.get(CONFIG)).toBeUndefined();
   });
@@ -610,16 +610,16 @@ describe("6차 독립 리뷰 — 복구 계약", () => {
   it("★I3 기록보다 «지금 파일»이 최신이면 그것을 새 원본으로 삼는다", () => {
     const a = { command: "A", args: ["--a"] };
     const b = { command: "B", args: ["--b"] };
-    const before = { ".mcp.json": json({ mcpServers: { "ai-erd": a } }) };
+    const before = { ".mcp.json": json({ mcpServers: { "ainecto": a } }) };
     let files = applied(snapshot(before), planInit({ ...BASE, files: snapshot(before) }));
     // 사용자가 우리 항목을 자기 것 B 로 갈아 끼웠다(= 완료된 기록이 낡았다).
-    files.set(".mcp.json", json({ mcpServers: { "ai-erd": b } }));
+    files.set(".mcp.json", json({ mcpServers: { "ainecto": b } }));
 
     files = applied(files, planInit({ ...BASE, files }));
     const undo = planUndo({ files });
 
     const restored = JSON.parse(undo.writes.find((w) => w.path === ".mcp.json")!.content);
-    expect(restored.mcpServers["ai-erd"]).toEqual(b);
+    expect(restored.mcpServers["ainecto"]).toEqual(b);
   });
 
   it("★I4 열린 코드펜스로 끝나는 파일에는 블록을 넣지 않는다", () => {
@@ -664,7 +664,7 @@ describe("6차 독립 리뷰 — 복구 계약", () => {
  *   병합해서 쓴다. 여기 시험은 그 «불변식»을 고정한다 — 우리 파일은 통째로, 남의 파일은 조각만.
  */
 describe("7차 독립 리뷰 — 우리 파일과 남의 파일", () => {
-  const CONFIG = ".ai-erd/config.json";
+  const CONFIG = ".ainecto/config.json";
   const json = (body: unknown) => `${JSON.stringify(body, null, 2)}\n`;
 
 
@@ -727,7 +727,7 @@ describe("7차 독립 리뷰 — 우리 파일과 남의 파일", () => {
   });
 
   it("★I5 저장된 null 백업이 «백업 없음»으로 바뀌지 않는다", () => {
-    const before = { ".mcp.json": json({ mcpServers: { "ai-erd": null, other: { url: "u" } } }) };
+    const before = { ".mcp.json": json({ mcpServers: { "ainecto": null, other: { url: "u" } } }) };
     const init = planInit({ ...BASE, files: snapshot(before) });
     const files = applied(snapshot(before), init);
     // 사용자가 우리 항목을 손으로 지웠다 — 목표는 «null 로 되돌리기»이고 「없음」이 아니다.
@@ -736,17 +736,17 @@ describe("7차 독립 리뷰 — 우리 파일과 남의 파일", () => {
     const undone = applied(files, planUndo({ files }));
     const servers = JSON.parse(undone.get(".mcp.json")!).mcpServers;
 
-    expect(Object.prototype.hasOwnProperty.call(servers, "ai-erd")).toBe(true);
-    expect(servers["ai-erd"]).toBeNull();
+    expect(Object.prototype.hasOwnProperty.call(servers, "ainecto")).toBe(true);
+    expect(servers["ainecto"]).toBeNull();
   });
 
   it("★I5 객체와 «그 객체의 JSON 문자열»을 같은 것으로 보지 않는다", () => {
     const mine = { command: "mine", args: ["x"] };
-    const before = { ".mcp.json": json({ mcpServers: { "ai-erd": mine } }) };
+    const before = { ".mcp.json": json({ mcpServers: { "ainecto": mine } }) };
     const init = planInit({ ...BASE, files: snapshot(before) });
     const files = applied(snapshot(before), init);
     // 타입만 다른 값 — 문자열이다. 「원본 복구 완료」로 보면 객체 백업을 잃는다.
-    files.set(".mcp.json", json({ mcpServers: { "ai-erd": JSON.stringify(mine) } }));
+    files.set(".mcp.json", json({ mcpServers: { "ainecto": JSON.stringify(mine) } }));
 
     const undo = planUndo({ files });
 
@@ -789,12 +789,12 @@ describe("7차 독립 리뷰 — 우리 파일과 남의 파일", () => {
 
   it("★S2 안내대로 지운 뒤에는 원본을 도로 넣는다 — 같은 안내를 반복하지 않는다", () => {
     const mine = { command: "mine", args: ["x"] };
-    const before = { ".mcp.json": json({ mcpServers: { "ai-erd": mine } }) };
+    const before = { ".mcp.json": json({ mcpServers: { "ainecto": mine } }) };
     const init = planInit({ ...BASE, files: snapshot(before) });
     let files = applied(snapshot(before), init);
     // 우리 항목을 «편집»하면 undo 는 손으로 지우라고 한다.
     const edited = JSON.parse(files.get(".mcp.json")!);
-    edited.mcpServers["ai-erd"].env = { MINE: "1" };
+    edited.mcpServers["ainecto"].env = { MINE: "1" };
     files.set(".mcp.json", json(edited));
     expect(planUndo({ files }).notes.join(" ")).toContain("Remove it by hand");
 
@@ -802,7 +802,7 @@ describe("7차 독립 리뷰 — 우리 파일과 남의 파일", () => {
     files.set(".mcp.json", json({ mcpServers: {} }));
     files = applied(files, planUndo({ files }));
 
-    expect(JSON.parse(files.get(".mcp.json")!).mcpServers["ai-erd"]).toEqual(mine);
+    expect(JSON.parse(files.get(".mcp.json")!).mcpServers["ainecto"]).toEqual(mine);
     expect(recordOf(files)).toBeUndefined();
   });
 });
@@ -819,7 +819,7 @@ describe("7차 독립 리뷰 — 우리 파일과 남의 파일", () => {
  * </ul>
  */
 describe("9차 독립 리뷰 — 반쯤 맞는 기록과 옮겨진 블록", () => {
-  const CONFIG = ".ai-erd/config.json";
+  const CONFIG = ".ainecto/config.json";
   const json = (body: unknown) => `${JSON.stringify(body, null, 2)}\n`;
 
   /** 기록 파일을 «손으로 고친» 상태를 만든다 — 사용자·다른 도구·병합 사고가 하는 일이다. */
@@ -917,7 +917,7 @@ describe("9차 독립 리뷰 — 반쯤 맞는 기록과 옮겨진 블록", () =
 
     const second = planInit({ ...BASE, files });
 
-    expect(second.notes.join(" ")).toContain("not where ai-erd can find it again");
+    expect(second.notes.join(" ")).toContain("not where ainecto can find it again");
     expect(second.writes.find((write) => write.path === "AGENTS.md")).toBeUndefined();
     // ★사용자 원본 블록의 백업이 살아 있어야 한다. 예전엔 여기서 버려졌다.
     expect(second.record?.files["AGENTS.md"]?.original).toEqual({ at: "text", text: mineBlock });
@@ -968,7 +968,7 @@ describe("9차 독립 리뷰 — 반쯤 맞는 기록과 옮겨진 블록", () =
  * 원본이 {@code text} 로 바뀐 기록 하나가 실제로 config 를 비우고 기록을 지웠다.
  */
 describe("9차 2차 리뷰 — 증거로 판정한다", () => {
-  const CONFIG = ".ai-erd/config.json";
+  const CONFIG = ".ainecto/config.json";
   const AGENTS = "AGENTS.md";
   const json = (body: unknown) => `${JSON.stringify(body, null, 2)}\n`;
 
@@ -1147,7 +1147,7 @@ describe("9차 2차 리뷰 — 증거로 판정한다", () => {
  */
 describe("9차 3차 리뷰 — 증거를 우리 블록 밖에서 센다", () => {
   const AGENTS = "AGENTS.md";
-  const CONFIG = ".ai-erd/config.json";
+  const CONFIG = ".ainecto/config.json";
   const json = (body: unknown) => `${JSON.stringify(body, null, 2)}\n`;
   const USER_BLOCK = `${MARKER_BEGIN}\nORIGINAL USER BLOCK\n${MARKER_END}`;
 
@@ -1179,9 +1179,9 @@ describe("9차 3차 리뷰 — 증거를 우리 블록 밖에서 센다", () => 
   });
 
   const mangled: Array<[string, (block: string) => string]> = [
-    ["양쪽에 공백", (b) => b.replace("ai-erd:begin", "ai-erd: begin").replace("ai-erd:end", "ai-erd: end")],
-    ["양쪽 대문자", (b) => b.replace("ai-erd:begin", "AI-ERD:BEGIN").replace("ai-erd:end", "AI-ERD:END")],
-    ["마커를 줄로 쪼갬", (b) => b.replace("<!-- ai-erd:begin -->", "<!--\nai-erd:begin\n-->")],
+    ["양쪽에 공백", (b) => b.replace("ainecto:begin", "ainecto: begin").replace("ainecto:end", "ainecto: end")],
+    ["양쪽 대문자", (b) => b.replace("ainecto:begin", "AINECTO:BEGIN").replace("ainecto:end", "AINECTO:END")],
+    ["마커를 줄로 쪼갬", (b) => b.replace("<!-- ainecto:begin -->", "<!--\nainecto:begin\n-->")],
     ["양쪽 마커 삭제", (b) => b.replace(`${MARKER_BEGIN}\n`, "").replace(`\n${MARKER_END}`, "")],
   ];
 
@@ -1300,7 +1300,7 @@ describe("9차 3차 리뷰 — 증거를 우리 블록 밖에서 센다", () => 
  * {@code generatedBy}(우리 CLI 만 적는 칸) 또는 {@code managed.lastWritten} 안의 config 자기 경로.
  */
 describe("9차 B6 — 구판 기록은 «없는 기록»이 아니다", () => {
-  const CONFIG = ".ai-erd/config.json";
+  const CONFIG = ".ainecto/config.json";
   const json = (body: unknown) => `${JSON.stringify(body, null, 2)}\n`;
 
   /** 구판(6차 이전) CLI 가 실제로 쓴 모양: 우리 칸 + managed 가 한 파일에 있다. */

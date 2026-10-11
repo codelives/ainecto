@@ -14,6 +14,13 @@ import {
   withCreatedDirectories,
 } from "../../core/harness/initPlan";
 import { HARNESS_CONFIG_PATH, HARNESS_DOC_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
+import {
+  adoptLegacyLayout,
+  LEGACY_RECORD_PATH,
+  LEGACY_SNAPSHOT_PATHS,
+  withLegacyMoves,
+} from "../../core/harness/legacyLayout";
+import { LEGACY_SERVER_NAME, SERVER_NAME } from "../../core/harness/agentTargets";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
 import { PromptCancelled, type Choice, type Prompter } from "./prompter";
 import {
@@ -38,7 +45,7 @@ export interface InitConnection {
 
 export interface InitCommandOptions {
   argv: string[];
-  /** 전역 `--role` / AI_ERD_ROLE 에서 온 역할. init 은 이것을 따로 파싱하지 않는다. */
+  /** 전역 `--role` / AINECTO_ROLE(옛 AI_ERD_ROLE) 에서 온 역할. init 은 이것을 따로 파싱하지 않는다. */
   role?: HarnessRole;
   /**
    * 이미 만든 연결(시험·역할이 미리 정해진 호출). {@link connect} 가 있으면 그쪽이 이긴다.
@@ -62,10 +69,10 @@ export interface InitCommandOptions {
    */
   accessToken?: () => Promise<string | undefined>;
   /**
-   * 이 역할로 브라우저 로그인을 한다(= {@code ai-erd auth login} 과 같은 함수). 없으면 init 은 예전처럼
+   * 이 역할로 브라우저 로그인을 한다(= {@code ainecto auth login} 과 같은 함수). 없으면 init 은 예전처럼
    * 로그인하지 않고 401 을 안내로 바꾼다.
    *
-   * <p>★init 은 사람이나 에이전트가 «명시적으로» 친 명령이라 여기서 로그인한다. 브리지({@code ai-erd mcp})는
+   * <p>★init 은 사람이나 에이전트가 «명시적으로» 친 명령이라 여기서 로그인한다. 브리지({@code ainecto mcp})는
    * 여전히 자동 로그인하지 않는다 — 세션 한가운데서 창이 뜨면 안 된다(설계 §8-4).
    */
   login?: () => Promise<void>;
@@ -90,7 +97,7 @@ interface InitArgs {
 }
 
 /**
- * {@code ai-erd init} — 이 저장소를 AiNecto 하네스에 붙인다.
+ * {@code ainecto init} — 이 저장소를 AiNecto 하네스에 붙인다.
  *
  * ★<b>지금은 비대화형 경로만 있다</b>(설계 §21-1, 1단계). 합격 시나리오는 에이전트가 셸로 이 명령을
  * 치는 것이고 거기엔 사람이 답할 TTY 가 없다. 그래서:
@@ -125,11 +132,23 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
   // ★하위 폴더에서 치면 멈춘다. 그 자리에 .mcp.json 을 쓰면 에이전트는 루트에서 그것을 못 본다 —
   //   역할이 걸린 줄 알고 걸리지 않는다. undo 도 같은 이유로 루트에서만 한다(기록이 루트에 있다).
   const rootNotes = await repositoryRootNotes(root);
-  const files = await readSnapshot(root);
+  // ★디스크(옛 폴더 포함)와 계획이 보는 스냅샷(새 경로만)을 가른다. 0.4.x 의 .ai-erd/ 는 계획에 «새 경로에 놓인
+  //   것처럼» 보이고, 적용이 그것을 옮긴다(legacyLayout). 적용의 «그새 바뀌었나» 검사는 디스크 스냅샷으로 한다.
+  const disk = await readSnapshot(root);
+  const layout = adoptLegacyLayout(disk);
+  const files = layout.files;
 
   if (args.undo) {
-    const plan = planUndo({ files });
-    await applyPlan(root, plan, args.dryRun, files, false);
+    if (layout.refusal !== undefined) {
+      // 읽어 내지 못한 기록으로는 아무것도 지우지 않는다 — 손상 기록을 만난 undo 와 같은 출력이다.
+      options.io.stdout.write(renderSuccess(
+        { action: args.dryRun ? "undo (dry-run)" : "undo", updated: [], removed: [], notes: [...rootNotes, layout.refusal] },
+        { json: options.json },
+      ));
+      return 0;
+    }
+    const plan = withLegacyMoves(planUndo({ files }), layout);
+    await applyPlan(root, plan, args.dryRun, disk, false);
     options.io.stdout.write(renderSuccess(
       {
         action: args.dryRun ? "undo (dry-run)" : "undo",
@@ -146,7 +165,7 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
   //   0개인 저장소에서 «원격에 프로젝트를 만든 뒤» 「아무것도 바꾸지 않았다」는 예외를 냈다
   //   (9차 1차 리뷰 B7). 로컬 쓰기가 0이라는 것과 부수효과가 0이라는 것은 다른 사실이다.
   //   ★묻기 «전»에도 본다 — 다 물어 놓고 거절하지 않는다.
-  const refusal = initRefusal(files);
+  const refusal = layout.refusal ?? initRefusal(files);
   if (refusal !== undefined) {
     throw new Error(refusal);
   }
@@ -198,11 +217,13 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
     : await fetchHarnessDocuments({
       endpoint: options.endpoint,
       accessToken: await options.accessToken?.(),
+      // ⛔이 이름은 바꾸지 않는다 — 서버가 문서의 클라이언트별 변형 키(HARNESS.DOC.AI_ERD_CLI 등)를 이것으로
+      //   찾는다. 사람에게 안 보이는 서버 쪽 식별자다(역할 헤더·scope 와 같은 이유, 2026-10-11).
       client: "ai-erd-cli",
       fetchImpl: options.fetchImpl,
     });
 
-  const plan = planInit({
+  const plan = withLegacyMoves(planInit({
     role,
     env: options.env,
     projectName: project.name,
@@ -211,7 +232,7 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
     cliVersion: options.cliVersion,
     files,
     documents,
-  });
+  }), layout);
   if (plan.refusal !== undefined) {
     // ★계획이 「멈춰라」고 하면 멈춘다. 이 판정을 부르는 쪽이 안 보면 그 판정은 «없는» 것이고,
     //   그 경우 읽어 내지 못한 기록을 백업 없이 덮는다(2026-09-27 8차 독립 리뷰 I1).
@@ -219,11 +240,11 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
     //   경로가 생겨선 안 된다. 같은 함수를 쓰므로 두 답이 갈리지 않는다.
     throw new Error(plan.refusal);
   }
-  await applyPlan(root, plan, args.dryRun, files);
+  await applyPlan(root, plan, args.dryRun, disk);
   if (!args.dryRun && previousRole !== undefined && previousRole !== role) {
     // ★역할이 바뀐 사실을 사람이 보는 자리(에이전트 대화)에 한 줄 남긴다(설계 §13 S2).
-    //   셸의 `ai-erd` 는 지금부터, 떠 있는 세션의 MCP 도구는 새 세션부터다 — 그 조건까지 같이 말한다.
-    options.io.stderr.write(`Role changes from ${previousRole} to ${role}: \`ai-erd\` commands now, MCP tools from a new session.\n`);
+    //   셸의 `ainecto` 는 지금부터, 떠 있는 세션의 MCP 도구는 새 세션부터다 — 그 조건까지 같이 말한다.
+    options.io.stderr.write(`Role changes from ${previousRole} to ${role}: \`ainecto\` commands now, MCP tools from a new session.\n`);
   }
 
   options.io.stdout.write(renderSuccess(
@@ -233,6 +254,8 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
       project: { uuid: project.uuid, name: project.name },
       endpoint: options.endpoint,
       written: plan.writes.map((write) => `${write.existed ? "updated" : "created"} ${write.path}`),
+      // 옛 폴더(.ai-erd/)를 옮길 때만 생긴다 — 지운 것을 말하지 않으면 사용자는 옛 파일이 어디 갔는지 모른다.
+      ...(plan.deletes.length > 0 ? { removed: plan.deletes } : {}),
       codex: `Codex keeps a single global config, so init does not touch it. Run: ${plan.codexCommand}`,
       codexPerSession: plan.codexProfile,
       codexEnvFallback: `Without a profile, start the session with ${ROLE_ENV_VAR}=${role}.`,
@@ -240,25 +263,29 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
       //   사용자가 영영 못 찾게 된다. ★요청 자체의 실패와 «문서별» 되돌림을 둘 다 적는다
       //   (2026-09-23 독립 재리뷰 I5: HTTP 200 으로 온 빈 문서가 조용히 패키지 판이 됐다).
       notes: [...rootNotes, ...plan.notes, ...fallbackNotes(documents)],
-      // ★「Enforce this on the server too: ai-erd auth login …」 줄은 뺐다. init 이 이미 그 역할로
+      // ★「Enforce this on the server too: ainecto auth login …」 줄은 뺐다. init 이 이미 그 역할로
       //   로그인했으므로 참이 아니고, 남아 있으면 에이전트가 따라 쳐서 사람이 한 번 더 승인하게 된다
       //   (2026-09-29 독립 리뷰 P1-1).
-      // ★재시작 없이 이어간다(2026-09-30 사용자 결정). 셸의 `ai-erd` 는 부를 때마다 저장소 역할을 읽어
+      // ★재시작 없이 이어간다(2026-09-30 사용자 결정). 셸의 `ainecto` 는 부를 때마다 저장소 역할을 읽어
       //   역할 헤더로 싣는다 — 서버가 요청마다 강제하므로 MCP 연결과 무관하게 이 세션에서 바로 맞다.
       //   재시작은 «그 역할의 MCP 도구»를 더할 뿐인 선택이다.
       next: [
-        `Keep working in this session — no restart is needed. \`ai-erd\` commands run from this repository use the ${role} role at once.`,
-        `Read ${HARNESS_DOC_PATH} first, then \`ai-erd tools list\` shows the role's tools and \`ai-erd tools call <tool> '<json>'\` calls one.`,
+        `Keep working in this session — no restart is needed. \`ainecto\` commands run from this repository use the ${role} role at once.`,
+        `Read ${HARNESS_DOC_PATH} first, then \`ainecto tools list\` shows the role's tools and \`ainecto tools call <tool> '<json>'\` calls one.`,
         "Do not use MCP tools this session started with for this work — they keep the role (or no role) the session started with.",
         "Optional, to add the role's MCP tools: start a new session.",
-        "Claude Code: exit and run `claude -c` in this folder, then approve the \"ai-erd\" server from .mcp.json when asked.",
+        `Claude Code: exit and run \`claude -c\` in this folder, then approve the "${SERVER_NAME}" server from .mcp.json when asked.`,
         `Codex: save the profile above as $CODEX_HOME/${role}.config.toml and start with \`codex -p ${role}\`.`,
         role === "design"
           // ⚠Design 은 그 변경이 «허용»된다 — 모든 역할에 같은 문장을 내보내면 거짓이 된다.
-          ? "To check the role, change a table through `ai-erd` — Design may, and the change lands in AiNecto."
-          : `To check the role, try changing a table through \`ai-erd\` — ${role} is told to stop.`,
-        "If the new Claude Code session still has no role, run `claude mcp get ai-erd`: a local-scope \"ai-erd\" entry hides .mcp.json (remove it with `claude mcp remove ai-erd -s local`).",
-        "Undo everything with: ai-erd init --undo",
+          ? "To check the role, change a table through `ainecto` — Design may, and the change lands in AiNecto."
+          : `To check the role, try changing a table through \`ainecto\` — ${role} is told to stop.`,
+        `If the new Claude Code session still has no role, run \`claude mcp get ${SERVER_NAME}\`: a local-scope "${SERVER_NAME}" entry hides .mcp.json (remove it with \`claude mcp remove ${SERVER_NAME} -s local\`).`,
+        // ★서버 이름이 바뀌었다(0.5.0). 예전에 같은 이름("ai-erd")이라 .mcp.json 이 덮던 사용자·Codex 전역 항목이
+        //   이제는 «따로» 붙어, 그 세션이 역할 없는 서버를 하나 더 본다. 그 항목을 지우는 법을 같이 말한다.
+        `If you added AiNecto earlier as "${LEGACY_SERVER_NAME}" (Claude Code user scope, or Codex), remove it — `
+          + `it no longer hides behind this "${SERVER_NAME}" entry: \`claude mcp remove ${LEGACY_SERVER_NAME} -s user\`, \`codex mcp remove ${LEGACY_SERVER_NAME}\`.`,
+        "Undo everything with: ainecto init --undo",
       ],
     },
     { json: options.json },
@@ -294,7 +321,7 @@ function fallbackNotes(documents: HarnessDocuments): string[] {
 /**
  * ★<b>원격을 부르기 전에 로그인을 확인한다.</b> 그 역할의 토큰이 없으면(만료 + refresh 없음 포함)
  * 브라우저 로그인을 하고 이어서 진행한다(합격 시나리오 4 — 예전엔 401 로 멈추고
- * {@code ai-erd auth login} 을 치라고 했다).
+ * {@code ainecto auth login} 을 치라고 했다).
  *
  * <p>⚠{@code --dry-run} 은 브라우저를 띄우지 않는다 — 「아무것도 바꾸지 않는다」는 약속에 사용자의
  * 로그인 상태도 든다. 로그인 명령을 알려 주고 멈춘다.
@@ -511,7 +538,7 @@ async function listProjects(options: ConnectedOptions): Promise<Array<{ uuid: st
  * (2026-09-23 살아 있는 서버로 처음 돌려 보고 발견).
  *
  * <p>⚠401 을 받았다고 «다시» 브라우저를 띄우지는 않는다. 로그인 트리거는 하나로 둔다(설계 §8-1).
- * 브리지({@code ai-erd mcp})는 애초에 자동 로그인하지 않는다 — 세션 한가운데서 창이 뜨면 안 된다.
+ * 브리지({@code ainecto mcp})는 애초에 자동 로그인하지 않는다 — 세션 한가운데서 창이 뜨면 안 된다.
  */
 async function callOrExplainSignIn<T>(
   options: InitCommandOptions,
@@ -544,7 +571,7 @@ function loginCommand(options: Pick<InitCommandOptions, "env" | "endpoint">): st
     ? (options.env === "prod" ? "" : ` --env ${options.env}`)
     : ` --endpoint ${options.endpoint}`;
   // 로그인은 서버마다 한 번이다(0.4.2) — 역할을 싣지 않는다.
-  return `ai-erd auth login${target}`;
+  return `ainecto auth login${target}`;
 }
 
 function isUnauthorized(error: unknown): boolean {
@@ -627,7 +654,7 @@ function boundProjectUuid(config: string | undefined): string | undefined {
  */
 async function readSnapshot(root: string): Promise<Map<string, string | undefined>> {
   const snapshot = new Map<string, string | undefined>();
-  for (const path of MANAGED_PATHS) {
+  for (const path of [...MANAGED_PATHS, ...LEGACY_SNAPSHOT_PATHS]) {
     snapshot.set(path, await readManagedFile(root, path));
   }
   return snapshot;
@@ -670,7 +697,8 @@ async function applyPlan(
     // ★되돌리기에서는 기록을 건드리는 일이 «작업 전체»의 마지막이다. 4차에서 config 를 쓰기
     //   목록의 뒤로 옮겼지만, 쓰기가 다 끝난 «뒤에» 삭제가 온다. 그래서 삭제가 실패하면 기록은
     //   이미 옛 파일로 돌아가 있고 되돌릴 근거가 없었다(2026-09-23 5차 독립 리뷰 I1).
-    const isRecord = (path: string) => !recordFirst && path === HARNESS_RECORD_PATH;
+    // ★옛 폴더의 기록(옮기는 중)도 기록이다 — undo 에서 그것을 먼저 지우면 뒤에서 실패할 때 근거가 없다.
+    const isRecord = (path: string) => !recordFirst && (path === HARNESS_RECORD_PATH || path === LEGACY_RECORD_PATH);
     const recordWrites = plan.writes.filter((write) => isRecord(write.path));
     const recordDeletes = plan.deletes.filter((path) => isRecord(path));
     /**
@@ -905,7 +933,7 @@ function requireValue(flag: string, value: string | undefined): string {
 
 function basenameOf(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? "ai-erd-project";
+  return parts[parts.length - 1] ?? "ainecto-project";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

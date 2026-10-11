@@ -5,7 +5,7 @@ import type { GeneratedToolDefinition, JsonSchema, McpToolListItem, PayloadMode,
  * 서버가 도구 이름 앞에 달던 prefix.
  *
  * ★2026-09-22 부터 서버는 이 prefix 를 «떼고» 내보낸다 — MCP 클라이언트가 자기 서버 별칭을
- * 한 번 더 얹기 때문에, 서버까지 붙이면 `mcp__ai-erd__mcp__ainecto__list_projects` 가 된다.
+ * 한 번 더 얹기 때문에, 서버까지 붙이면 `mcp__ainecto__mcp__ainecto__list_projects` 가 된다.
  * 그래서 여기서는 prefix 를 «있으면 뗀다»로만 다룬다. 옛 카탈로그(이미 받아 둔 generated.*.ts)
  * 에는 긴 이름이 남아 있고 서버가 그것도 계속 받아주므로, 두 형태가 함께 산다.
  */

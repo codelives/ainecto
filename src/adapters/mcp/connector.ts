@@ -7,7 +7,7 @@ import type { Readable, Writable } from "node:stream";
 
 export interface ConnectorOptions {
   endpoint: string;
-  /** 브리지의 역할 — MCP 설정의 `--role` 인자나 `AI_ERD_ROLE` 에서만 온다. 없으면 null. */
+  /** 브리지의 역할 — MCP 설정의 `--role` 인자나 `AINECTO_ROLE`(옛 `AI_ERD_ROLE`) 에서만 온다. 없으면 null. */
   role: HarnessRole | null;
   input: Readable;
   output: Writable;

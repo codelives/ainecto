@@ -51,7 +51,7 @@ describe("설치 직후 에이전트가 보는 출력", () => {
     expect(Object.keys(data)[0]).toBe("setup");
     expect(data.setup).toBe("incomplete");
     const next = data.next as string;
-    expect(next).toContain("ai-erd init --role <role>");
+    expect(next).toContain("npx -y ainecto@latest init --role <role>");
     expect(next).toContain("never pick one yourself");
     expect(next).toContain("even if they only asked to install, update, or sign in");
   });
@@ -60,7 +60,7 @@ describe("설치 직후 에이전트가 보는 출력", () => {
     const repo = join(home, "repo");
     await mkdir(repo);
     await writeFile(join(repo, ".mcp.json"), JSON.stringify({
-      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "@ai-erd/mcp", "--role", "design"] } },
+      mcpServers: { "ainecto": { command: "npx", args: ["-y", "@ainecto/mcp", "--role", "design"] } },
     }));
     process.chdir(repo);
     expect(await runAinectoCli(["auth", "status", "--json"], io)).toBe(0);

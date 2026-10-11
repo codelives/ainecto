@@ -1,4 +1,6 @@
+import { basename } from "node:path";
 import { isDefaultEndpointFor } from "../config/endpoints";
+import { LEGACY_PACKAGE_NAME, PACKAGE_NAME } from "../version";
 import { HARNESS_ROLES, type HarnessRole } from "./role";
 
 /**
@@ -21,9 +23,22 @@ import { HARNESS_ROLES, type HarnessRole } from "./role";
  */
 
 /** 설정에 쓰는 서버 이름. ⛔env 에 따라 바꾸지 않는다 — 도구 접두사가 흔들리고 --undo 가 못 찾는다. */
-export const SERVER_NAME = "ai-erd";
+export const SERVER_NAME = "ainecto";
 
-export const PACKAGE_NAME = "@ai-erd/mcp";
+/**
+ * 0.4.x 가 쓰던 서버 이름(2026-10-11 AiNecto 복귀로 바뀌었다). ★이미 init 된 저장소에 남아 있다.
+ *
+ * <p>읽을 때는 «우리 브리지»일 때만 우리 항목으로 본다({@link isOurBridge}) — 같은 이름의 url·mcp-remote
+ * 항목은 사용자가 직접 넣은 것이다. 쓸 때는 언제나 {@link SERVER_NAME} 로 쓰고, 옛 이름의 우리 브리지는
+ * 지운다 — 한 파일에 우리 항목이 둘이면 한 세션이 두 역할을 보게 된다(«한 세션 한 역할»이 깨진다).
+ *
+ * <p>★<b>왜 «옛 키를 새 키로 교체»인가.</b> init 기록의 항목 계약은 «항목 값»만 들고 키 이름을 들지 않는다.
+ * 그래서 옛 키 아래의 값을 «우리 항목»으로 읽어 주기만 하면 0.4.x 의 기록이 그대로 맞는다 — 기록 형식도,
+ * 마이그레이션 단계도 늘지 않는다. ⚠한 가지 어긋남: 0.4.x init «전»부터 사용자가 {@code "ai-erd"} 에 두었던
+ * 항목을 백업해 둔 저장소를 새 CLI 로 재init 한 뒤 --undo 하면, 그 원본은 {@code "ainecto"} 키로 돌아온다
+ * (키 이름을 기록하지 않으므로). 재init 없이 바로 --undo 하면 옛 키 그대로 돌아온다.
+ */
+export const LEGACY_SERVER_NAME = "ai-erd";
 
 export interface AgentTarget {
   id: "claude-code" | "cursor";
@@ -108,18 +123,65 @@ export function readServerEntry(existing: string | undefined): unknown {
     return undefined;
   }
   try {
-    const parsed = JSON.parse(existing) as { mcpServers?: Record<string, unknown> };
-    return parsed?.mcpServers?.[SERVER_NAME];
+    const parsed = JSON.parse(existing) as { mcpServers?: unknown };
+    const servers = parsed?.mcpServers;
+    return isRecord(servers) ? servers[ourKeyIn(servers) ?? SERVER_NAME] : undefined;
   } catch {
     return undefined;
   }
 }
 
+/**
+ * 이 {@code mcpServers} 에서 «우리 항목»이 사는 키. 새 키가 먼저이고, 없으면 옛 키의 우리 브리지.
+ * 둘 다 아니면 undefined.
+ */
+export function ourKeyIn(servers: Record<string, unknown>): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(servers, SERVER_NAME)) {
+    return SERVER_NAME;
+  }
+  return isOurBridge(servers[LEGACY_SERVER_NAME]) ? LEGACY_SERVER_NAME : undefined;
+}
+
+/** 이 옛 키의 항목이 우리 브리지인가 — 맞으면 우리가 지워도 되는 우리 항목이다. */
+function legacyBridgeIn(servers: Record<string, unknown>): boolean {
+  return isOurBridge(servers[LEGACY_SERVER_NAME]);
+}
+
+/**
+ * 이 항목이 우리 브리지({@code npx -y @ainecto/mcp …} · 0.4.x 의 {@code npx -y @ai-erd/mcp …} · 전역 설치한
+ * {@code ainecto}·{@code ai-erd}·{@code ai-erd-mcp})인가. {@code --role} 을 싣는 것도 우리 브리지뿐이다.
+ */
+export function isOurBridge(entry: unknown): boolean {
+  if (!isRecord(entry)) {
+    return false;
+  }
+  const { command, args } = entry as { command?: unknown; args?: unknown };
+  const argList = Array.isArray(args) ? args.filter((arg): arg is string => typeof arg === "string") : [];
+  const isOurPackage = (arg: string) => [PACKAGE_NAME, LEGACY_PACKAGE_NAME]
+    .some((name) => arg === name || arg.startsWith(`${name}@`));
+  if (argList.some((arg) => isOurPackage(arg) || arg === "--role")) {
+    return true;
+  }
+  const bin = typeof command === "string" ? basename(command) : "";
+  return OUR_BINS.includes(bin);
+}
+
+/**
+ * 전역 설치한 우리 명령 이름(package.json bin 중 브리지를 띄울 수 있는 것). ⚠{@code mcp} 는 넣지 않는다 —
+ * 흔한 이름이라 남의 명령일 수 있고, 우리 브리지로 오인하면 «역할 없는 브리지»로 읽혀 모든 명령이 멈춘다.
+ */
+const OUR_BINS: readonly string[] = ["ainecto", "ai-erd", "ai-erd-mcp"];
+
 export function mergeServerEntry(existing: string | undefined, entry: McpServerEntry): MergeResult {
   const root = parseConfigObject(existing);
   const servers = readServers(root);
-  const replaced = Object.prototype.hasOwnProperty.call(servers, SERVER_NAME);
-  const replacedEntry = replaced ? servers[SERVER_NAME] : undefined;
+  const ourKey = ourKeyIn(servers);
+  const replaced = ourKey !== undefined;
+  const replacedEntry = ourKey === undefined ? undefined : servers[ourKey];
+  // ★옛 키의 우리 브리지는 지운다 — 새 키 옆에 남으면 한 세션이 두 역할의 서버를 본다.
+  if (legacyBridgeIn(servers)) {
+    delete servers[LEGACY_SERVER_NAME];
+  }
   servers[SERVER_NAME] = entry;
   return { content: stringify({ ...root, mcpServers: servers }), replaced, replacedEntry };
 }
@@ -150,13 +212,18 @@ export function removeServerEntry(existing: string | undefined, restore?: Restor
   }
   const root = parseConfigObject(existing);
   const servers = readServers(root);
-  const removed = Object.prototype.hasOwnProperty.call(servers, SERVER_NAME);
+  // 우리 항목이 사는 키 — 0.4.x 가 쓰고 재init 하지 않은 저장소에서는 옛 키다.
+  const ourKey = ourKeyIn(servers);
+  const removed = ourKey !== undefined;
   if (restore !== undefined) {
     // ★우리가 밀어낸 사용자 항목을 도로 넣는다. 지우는 것이 아니라 «되돌리는» 것이다.
-    servers[SERVER_NAME] = restore.value;
+    //   우리 항목이 있던 키에 넣는다 — 옛 키에서 밀어낸 것은 옛 키로 돌아간다.
+    servers[ourKey ?? SERVER_NAME] = restore.value;
     return { content: stringify({ ...root, mcpServers: servers }), removed, emptied: false };
   }
-  delete servers[SERVER_NAME];
+  if (ourKey !== undefined) {
+    delete servers[ourKey];
+  }
   const otherKeys = Object.keys(root).filter((key) => key !== "mcpServers");
   const emptied = Object.keys(servers).length === 0 && otherKeys.length === 0;
   return { content: stringify({ ...root, mcpServers: servers }), removed, emptied };
