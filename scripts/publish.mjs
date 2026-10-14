@@ -1,21 +1,17 @@
 #!/usr/bin/env node
 /**
- * 같은 코드를 «여섯 이름»으로 퍼블리시한다 — 새 이름 셋(2026-10-11 AiNecto 복귀)과 옛 이름 셋(별칭 유지).
+ * 같은 코드를 «세 이름»으로 퍼블리시한다.
  *
  *   @ainecto/mcp   주 이름 — MCP Registry(server.json)가 가리키는 패키지. init 이 쓰는
  *                  `npx -y @ainecto/mcp --role …` 도 이것이다(범위 뗀 이름 `mcp` = 브리지 bin).
- *                  0.3.0 에서 deprecate 했던 이름을 되살린다(옛 판의 deprecate 문구는 사람이 고친다 — README).
  *   ainecto        범위 없는 이름 — `npx -y ainecto@latest init`. 이름과 같은 bin `ainecto`(CLI)가 실행된다.
  *   @ainecto/cli   에이전트가 짐작할 또 하나의 이름 — bin 을 `{"ainecto"}` «하나»로 줄여 올린다.
- *   @ai-erd/mcp · ai-erd · @ai-erd/cli
- *                  0.4.x 의 이름. ★같은 코드를 계속 올린다(사용자 결정) — 옛 설정·문서·에이전트 기억이 이 이름을
- *                  부른다. 이 판으로 init 해도 저장소에는 새 이름(`npx -y @ainecto/mcp`)이 적힌다.
  *
- * ★`@…/cli` 둘은 bin 을 «하나»로 줄인 매니페스트로 올린다. npx 는 범위 뗀 이름(`cli`)과 같은 bin 을 찾고,
+ * ★`@ainecto/cli` 는 bin 을 «하나»로 줄인 매니페스트로 올린다. npx 는 범위 뗀 이름(`cli`)과 같은 bin 을 찾고,
  *   없으면 bin 이 하나뿐일 때 그것을 실행한다. `cli` 같은 흔한 이름의 bin 을 사용자 PATH 에 깔지 않으려는 길이다.
  *
- * ★왜 여러 이름인가(2026-09-29 실측): 새 세션의 에이전트가 «CLI 로 설치해줘»에 npm 에서 `ai-erd`·
- *   `@ai-erd/cli` 부터 찾았고 404 를 받았다. 에이전트가 먼저 떠올리는 이름에 같은 코드가 있어야 한다.
+ * ★왜 여러 이름인가(2026-09-29 실측): 새 세션의 에이전트가 «CLI 로 설치해줘»에 npm 에서 `<이름>`·
+ *   `@<이름>/cli` 부터 찾았고 404 를 받았다. 에이전트가 먼저 떠올리는 이름에 같은 코드가 있어야 한다.
  *
  * ★prepack(typecheck·test·build)은 «한 번만» 돈다. 예전엔 이름마다 npm publish 가 prepack 을 다시
  *   돌려, 이름이 여럿이면 시험·빌드가 여러 번 돌고 그 사이에 2FA 코드가 만료되기 쉬웠다. 지금은:
@@ -40,11 +36,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG = join(ROOT, "package.json");
 /** 주 이름. MCP Registry 와 init 이 쓰는 `npx -y @ainecto/mcp` 가 이것이다(src/core/version.ts PACKAGE_NAME 과 같다). */
 const PRIMARY_NAME = "@ainecto/mcp";
-/** 브리지 bin. 범위 뗀 주 이름(`mcp`)과 같아야 `npx -y @ainecto/mcp`(옛 `@ai-erd/mcp` 도) 가 브리지를 실행한다. */
+/** 브리지 bin. 범위 뗀 주 이름(`mcp`)과 같아야 `npx -y @ainecto/mcp` 가 브리지를 실행한다. */
 const BRIDGE_BIN = "mcp";
-/** CLI 실행 파일의 bin 이름 — 새 이름과 옛 이름. 같은 파일을 가리킨다. */
+/** CLI 실행 파일의 bin 이름. */
 const CLI_BIN = "ainecto";
-const LEGACY_CLI_BIN = "ai-erd";
 
 const dryRun = process.argv.includes("--dry-run");
 /** 2FA 일회용 코드. npm 은 publish 마다 요구하고 코드는 금방 만료된다. */
@@ -60,20 +55,17 @@ if (primaryName !== PRIMARY_NAME || !parsed.bin?.[BRIDGE_BIN]) {
   process.exit(1);
 }
 // ★범위 없는 이름과 `@…/cli` 는 CLI bin 이 있어야 한다(npx 가 이름과 같은 bin, 또는 하나뿐인 bin 을 실행한다).
-for (const bin of [CLI_BIN, LEGACY_CLI_BIN]) {
-  if (!parsed.bin[bin]) {
-    console.error(`package.json bin 에 "${bin}" 가 없습니다 — \`npx ${bin}\` 이 CLI 를 실행하지 못합니다.`);
-    process.exit(1);
-  }
+if (!parsed.bin[CLI_BIN]) {
+  console.error(`package.json bin 에 "${CLI_BIN}" 가 없습니다 — \`npx ${CLI_BIN}\` 이 CLI 를 실행하지 못합니다.`);
+  process.exit(1);
 }
 /**
  * 이름별로 싣는 bin. ★퍼블리시할 때만 줄인다 — 저장소의 package.json 은 원본 그대로다.
- *   @ainecto/mcp · @ai-erd/mcp : 원본 전부 {mcp, ainecto, ai-erd, ai-erd-mcp}
- *   ainecto · ai-erd           : `mcp` 를 뺀 것 {ainecto, ai-erd, ai-erd-mcp} — `mcp` 같은 흔한 이름을 이 패키지로
- *                                사용자 PATH 에 깔지 않는다. npx 는 이름과 같은 bin 을 고르므로 동작은 같다.
- *   @ainecto/cli               : {ainecto} 하나 · @ai-erd/cli : {ai-erd} 하나
- *                                — npx 는 범위 뗀 이름(`cli`)의 bin 이 없으면 하나뿐인 bin 을 실행한다.
- * ⚠여섯 이름 모두 `ainecto`·`ai-erd` 중 하나 이상을 싣는다 — 둘 이상 전역 설치하면 명령 이름이 부딪친다(README).
+ *   @ainecto/mcp : 원본 전부 {mcp, ainecto}
+ *   ainecto      : `mcp` 를 뺀 것 {ainecto} — `mcp` 같은 흔한 이름을 이 패키지로 사용자 PATH 에 깔지 않는다.
+ *                  npx 는 이름과 같은 bin 을 고르므로 동작은 같다.
+ *   @ainecto/cli : {ainecto} 하나 — npx 는 범위 뗀 이름(`cli`)의 bin 이 없으면 하나뿐인 bin 을 실행한다.
+ * ⚠세 이름 모두 `ainecto` 를 싣는다 — 둘 이상 전역 설치하면 명령 이름이 부딪친다(README).
  */
 const withoutBridge = Object.fromEntries(Object.entries(parsed.bin).filter(([name]) => name !== BRIDGE_BIN));
 const only = (bin) => ({ [bin]: parsed.bin[bin] });
@@ -82,9 +74,6 @@ const RELEASES = [
   { name: PRIMARY_NAME, bin: parsed.bin },
   { name: "ainecto", bin: withoutBridge },
   { name: "@ainecto/cli", bin: only(CLI_BIN) },
-  { name: "@ai-erd/mcp", bin: parsed.bin },
-  { name: "ai-erd", bin: withoutBridge },
-  { name: "@ai-erd/cli", bin: only(LEGACY_CLI_BIN) },
 ];
 
 /**
@@ -109,7 +98,7 @@ function preflight() {
   }
   console.log(`  npm 계정: ${who}`);
 
-  // ★스코프가 둘이다(@ainecto · @ai-erd). 하나라도 못 쓰면 «여섯 중 몇 개만 올라간» 상태로 끝난다 — 먼저 본다.
+  // ★스코프를 못 쓰면 «세 중 몇 개만 올라간» 상태로 끝난다 — 먼저 본다.
   const scopes = [...new Set(RELEASES.map((release) => release.name)
     .filter((name) => name.startsWith("@"))
     .map((name) => name.slice(1).split("/")[0]))];
@@ -189,7 +178,7 @@ function buildOnce() {
 
 /**
  * ★Ctrl+C 에도 package.json 을 원복한다. 핸들러가 없으면 SIGINT 가 이 프로세스를 즉시 죽여 finally 가
- * 돌지 않는다 — 저장소에 다른 이름(ainecto·@ai-erd/cli 등)의 매니페스트가 남는다(0.4.1 최종 리뷰 P1).
+ * 돌지 않는다 — 저장소에 다른 이름(ainecto·@ainecto/cli 등)의 매니페스트가 남는다(0.4.1 최종 리뷰 P1).
  * 핸들러를 두면: 같은 프로세스 그룹의 자식(npm)이 SIGINT 로 끝나고 → execFileSync 가 던지고 → finally 가
  * 원복한 뒤 → 130 으로 끝난다.
  */

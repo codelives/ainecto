@@ -24,12 +24,12 @@ describe("하네스 문서를 서버에서 받는다", () => {
     })) as unknown as typeof fetch;
 
     const result = await fetchHarnessDocuments({
-      endpoint: ENDPOINT, accessToken: "t", client: "ai-erd-cli", fetchImpl,
+      endpoint: ENDPOINT, accessToken: "t", client: "ainecto-cli", fetchImpl,
     });
 
     // ★/api/v1 이 아니다 — MCP 토큰은 REST 에서 거절된다.
     expect(vi.mocked(fetchImpl).mock.calls[0]![0])
-      .toBe("https://ainecto.com/mcp/harness/documents?client=ai-erd-cli");
+      .toBe("https://ainecto.com/mcp/harness/documents?client=ainecto-cli");
     expect(result.doc).toBe("server doc {{projectName}} {{projectUuid}} {{endpoint}}");
     expect(result.versions[DOC_KEY]).toBe("HARNESS.DOC@harness-r3");
     expect(result.unavailableReason).toBeUndefined();

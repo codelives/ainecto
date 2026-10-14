@@ -12,7 +12,7 @@ import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./a
 import { executeInitCommand } from "./initCommand";
 import { createReadlinePrompter, isInteractive } from "./prompter";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
-import { assertRole, resolveRole, type HarnessRole, type ResolvedRole } from "../../core/harness/role";
+import { assertRole, resolveRole, ROLE_ENV_VAR, type HarnessRole, type ResolvedRole } from "../../core/harness/role";
 import { askTheUserToFixRole, findRepositoryRole } from "../../core/harness/repositoryRole";
 
 export interface CliIO {
@@ -211,8 +211,7 @@ export async function commandRole(explicit: ResolvedRole, cwd: string): Promise<
     return explicitRole;
   }
   if (explicitRole !== null && explicitRole !== found.role) {
-    // 사용자가 실제로 둔 이름으로 말한다 — AINECTO_ROLE 인지 옛 AI_ERD_ROLE 인지.
-    const given = explicit.source === "env" ? `${explicit.envVar}=${explicitRole}` : `--role ${explicitRole}`;
+    const given = explicit.source === "env" ? `${ROLE_ENV_VAR}=${explicitRole}` : `--role ${explicitRole}`;
     throw new Error(
       `This repository's AI sessions have the role ${found.role} (set in ${found.dir}). `
       + `${given} does not match — the role changes only with \`ainecto init --role <role>\`, after asking the user.`,
@@ -409,8 +408,6 @@ function helpText(): string {
     "  ainecto init [--role <design|development|test|validation>] [--project <uuid>] [--dry-run]",
     "      In a terminal, asks for the role and project when they are not given.",
     "  ainecto init --undo",
-    "",
-    "`ai-erd` (the older name) is the same command and still works.",
     "",
   ].join("\n");
 }

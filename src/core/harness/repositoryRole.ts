@@ -1,14 +1,14 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { AGENT_TARGETS, isOurBridge, LEGACY_SERVER_NAME, readRoleFromEntry, SERVER_NAME } from "./agentTargets";
+import { AGENT_TARGETS, isOurBridge, readRoleFromEntry, SERVER_NAME } from "./agentTargets";
 import { HARNESS_ROLES, type HarnessRole } from "./role";
 
 /**
  * ★저장소 역할의 SSOT (설계 0.4.2 §2-1).
  *
  * <p>역할이 «저장된 곳»은 하나다 — init 이 쓴 {@code .mcp.json}·{@code .cursor/mcp.json} 의 {@code ainecto}
- * 항목(0.4.x 가 쓴 {@code ai-erd} 항목도)의 {@code --role}. 에이전트가 실제로 읽는 값이 그것이므로 다른 곳
+ * 항목의 {@code --role}. 에이전트가 실제로 읽는 값이 그것이므로 다른 곳
  * ({@code .ainecto/config.json} 등)에
  * 두 번째 기록을 두지 않는다. init 의 역할 추론과 셸 CLI 의 역할 결정이 모두 이 모듈을 지난다.
  */
@@ -23,7 +23,7 @@ export type RepositoryRole =
 export interface RolesInFiles {
   /** 중복 없는 역할. 둘 이상이면 설정끼리 어긋난 것이다. */
   roles: HarnessRole[];
-  /** 읽기 문제(우리 브리지인데 --role 이 없거나 모르는 값, `ainecto`·`ai-erd` 가 든 깨진 JSON). */
+  /** 읽기 문제(우리 브리지인데 --role 이 없거나 모르는 값, `ainecto` 가 든 깨진 JSON). */
   problems: string[];
   /** 어느 파일이든 우리 브리지 항목(또는 읽기 문제)이 있었나 — 이 폴더가 «init 된 폴더»인가. */
   found: boolean;
@@ -41,12 +41,10 @@ export type ConfigRole =
  *
  * <p>멈출 이유는 좁게 둔다(0.4.2 리뷰 P1-3) — 사람의 설정을 잘못 읽어 모든 명령을 막으면 안 된다.
  * <ul>
- *   <li>{@code ainecto}(또는 옛 {@code ai-erd}) 항목이 «우리 브리지»가 아니면(mcp-remote·url 방식 등) 역할 없음이다.</li>
- *   <li>JSON 이 깨졌어도 원문에 두 이름이 없으면 우리와 무관한 파일이다 — 건너뛴다.</li>
+ *   <li>{@code ainecto} 항목이 «우리 브리지»가 아니면(mcp-remote·url 방식 등) 역할 없음이다.</li>
+ *   <li>JSON 이 깨졌어도 원문에 그 이름이 없으면 우리와 무관한 파일이다 — 건너뛴다.</li>
  *   <li>우리 브리지인데 {@code --role} 이 없거나 모르는 값이면 멈춘다 — 역할을 모르는 채로 «제한 없음»으로
  *       가지 않는다.</li>
- *   <li>★두 이름 모두 우리 브리지인데 역할이 다르면 멈춘다 — 옛 CLI(0.4.x)가 새 CLI 뒤에 init 하면 생긴다.
- *       그 세션은 두 역할의 서버를 함께 본다.</li>
  * </ul>
  */
 export function readConfigRole(path: string, content: string | undefined): ConfigRole {
@@ -59,31 +57,19 @@ export function readConfigRole(path: string, content: string | undefined): Confi
     const raw = parsed?.mcpServers;
     servers = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   } catch {
-    return content.includes(SERVER_NAME) || content.includes(LEGACY_SERVER_NAME)
+    return content.includes(SERVER_NAME)
       ? { kind: "problem", reason: `${path} is not valid JSON` }
       : { kind: "absent" };
   }
-  const roles: HarnessRole[] = [];
-  for (const key of [SERVER_NAME, LEGACY_SERVER_NAME]) {
-    const entry = servers[key];
-    if (!isOurBridge(entry)) {
-      continue;
-    }
-    const role = readRoleFromEntry(entry);
-    if (role === undefined) {
-      return { kind: "problem", reason: `${path} has the "${key}" bridge without a valid --role` };
-    }
-    if (!roles.includes(role)) {
-      roles.push(role);
-    }
+  const entry = servers[SERVER_NAME];
+  if (!isOurBridge(entry)) {
+    return { kind: "absent" };
   }
-  if (roles.length > 1) {
-    return {
-      kind: "problem",
-      reason: `${path} has both the "${SERVER_NAME}" and the "${LEGACY_SERVER_NAME}" bridge with different roles (${roles.join(", ")})`,
-    };
+  const role = readRoleFromEntry(entry);
+  if (role === undefined) {
+    return { kind: "problem", reason: `${path} has the "${SERVER_NAME}" bridge without a valid --role` };
   }
-  return roles.length === 0 ? { kind: "absent" } : { kind: "role", role: roles[0]! };
+  return { kind: "role", role };
 }
 
 /**
@@ -111,7 +97,7 @@ export function rolesInFiles(files: ReadonlyMap<string, string | undefined>): Ro
  * (리뷰 P1-a — 중첩 저장소는 가까운 쪽, git 아닌 하위 폴더·worktree 도 같은 규칙).
  *
  * <p>⚠홈 폴더 자체는 보지 않는다. {@code ~/.cursor/mcp.json} 은 Cursor 의 «전역» 설정이다(실측: 역할 없는
- * {@code ai-erd} 항목이 있었다). ★비교는 «실제 경로»로 한다 — macOS 의 {@code /var} 와 {@code /private/var}
+ * 우리 항목이 있었다). ★비교는 «실제 경로»로 한다 — macOS 의 {@code /var} 와 {@code /private/var}
  * 처럼 링크로 갈라진 같은 폴더를 문자열로 비교하면 홈을 못 알아본다(0.4.2 리뷰 P1-1). Windows 는 대소문자를
  * 가리지 않는다.
  *

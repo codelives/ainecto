@@ -34,7 +34,7 @@ const { runAinectoCli } = await import("../src/adapters/cli/ainectoCli");
  * initCommand 시험은 login·accessToken 을 직접 주입하므로, ainectoCli 가 그것을 실제로 넘기는지는
  * 여기서만 보인다.
  */
-describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
+describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
   let home: string;
   let repo: string;
   let originalHome: string | undefined;
@@ -52,8 +52,8 @@ describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
   } as unknown as Parameters<typeof runAinectoCli>[1];
 
   beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), "ai-erd-home-"));
-    repo = await mkdtemp(join(tmpdir(), "ai-erd-repo-"));
+    home = await mkdtemp(join(tmpdir(), "ainecto-home-"));
+    repo = await mkdtemp(join(tmpdir(), "ainecto-repo-"));
     originalHome = process.env.HOME;
     originalToken = process.env.AINECTO_TOKEN;
     delete process.env.AINECTO_TOKEN;
@@ -120,7 +120,7 @@ describe("ai-erd init wiring (ainectoCli → OAuthClient)", () => {
     expect(said).toContain("Opening your browser to sign in to AiNecto. If it does not open, visit:");
     expect(said).toContain("https://auth.example/authorize?");
     // ★로그인은 서버마다 한 번이다(0.4.2) — 인가 URL 에 역할 scope 가 없다.
-    expect(said).not.toContain("ai-erd%3Arole");
+    expect(said).not.toContain("ainecto%3Arole");
     // 브라우저 여는 명령이 불렸고, 그것이 실패하자 기다리지 않고 끝났다.
     expect(spawned).toHaveLength(1);
     expect(said).toContain("Could not open a browser on this machine");

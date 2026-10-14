@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
 
 /**
- * 2026-09-29 Codex 실측 — «ai-erd cli 설치해줘»에 전역 설치 → `ai-erd --version`(Unknown command) →
- * `ai-erd auth status --json`(authenticated) 를 보고 «설치 완료»로 닫았다. init 도 역할 질문도 없었다.
+ * 2026-09-29 Codex 실측 — «CLI 설치해줘»에 전역 설치 → `<cli> --version`(Unknown command) →
+ * `<cli> auth status --json`(authenticated) 를 보고 «설치 완료»로 닫았다. init 도 역할 질문도 없었다.
  * 에이전트가 읽는 곳은 README 가 아니라 이 출력들이라, 여기에 다음 단계가 있어야 한다.
  */
 describe("설치 직후 에이전트가 보는 출력", () => {
@@ -22,7 +22,7 @@ describe("설치 직후 에이전트가 보는 출력", () => {
   } as unknown as Parameters<typeof runAinectoCli>[1];
 
   beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), "ai-erd-home-"));
+    home = await mkdtemp(join(tmpdir(), "ainecto-home-"));
     originalHome = process.env.HOME;
     process.env.HOME = home;
     originalCwd = process.cwd();

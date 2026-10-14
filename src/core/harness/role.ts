@@ -3,13 +3,12 @@
  * 실어 나르는 부분.
  *
  * ★0.4.2: 역할의 «저장 위치»는 하나다 — init 이 저장소에 쓴 {@code .mcp.json}·{@code .cursor/mcp.json}
- *   의 {@code ainecto} 항목(0.4.x 가 쓴 {@code ai-erd} 항목도)의 {@code --role}(판정은 {@code repositoryRole.ts} 한 곳). 로그인은 서버마다
+ *   의 {@code ainecto} 항목의 {@code --role}(판정은 {@code repositoryRole.ts} 한 곳). 로그인은 서버마다
  *   한 번이고 토큰은 역할을 싣지 않는다. 역할은 요청마다 {@link ROLE_HEADER} 로 실리고, 서버는 그 헤더로
  *   도구 목록·거절·인자 판정을 전부 적용한다. 역할은 작업 가드레일이지 보안 경계가 아니다(2026-09-29
  *   사용자 결정 Q1) — 같은 토큰으로 헤더를 빼면 제한이 없다.
  *
  *   - 브리지({@code ainecto mcp}): ① {@code --role} 인자(init 이 MCP 설정에 쓴다) ② {@code AINECTO_ROLE}
- *     (옛 이름 {@code AI_ERD_ROLE} 도 읽는다)
  *     (Codex 처럼 설정이 전역뿐인 에이전트). 세션 시작 때 정해지고 세션 동안 바뀌지 않는다.
  *   - 셸 명령({@code ainecto tools call …} 등): 저장소 역할. ①② 를 주면 저장소 역할과 같아야 한다(다르면 거절).
  *   - 저장소 밖: 역할 없음 = 제한 없음.
@@ -33,24 +32,15 @@ export type HarnessRole = (typeof HARNESS_ROLES)[number];
  * <p>0.4.2 부터 로그인은 이 scope 를 요구하지 않는다. 남은 쓰임은 하나 — 역할 없는 토큰 칸에
  * 이 scope 가 든 토큰을 «저장하지 않는» 가드({@code tokenStore.assertNoRoleScope}).
  */
-// ⛔이름을 바꾸지 않는다(2026-10-11 사용자 결정) — 서버·발급된 토큰과 맞물린 값이고 사람에게 안 보인다.
-export const ROLE_SCOPE_PREFIX = "ai-erd:role:";
+export const ROLE_SCOPE_PREFIX = "ainecto:role:";
 
 /**
  * 서버가 읽는 헤더 이름. 서버의 McpSessionRoleResolver.ROLE_HEADER 와 같아야 한다.
- * ⛔이름을 바꾸지 않는다(2026-10-11 사용자 결정) — 사람에게 안 보이고, 옛 CLI 도 계속 이 헤더를 보낸다.
  */
-export const ROLE_HEADER = "X-AI-ERD-Role";
+export const ROLE_HEADER = "X-AiNecto-Role";
 
 /** 설정이 전역뿐인 에이전트(Codex 등)를 위한 환경변수. */
 export const ROLE_ENV_VAR = "AINECTO_ROLE";
-
-/**
- * 0.4.x 의 이름. ★계속 읽는다 — Codex 셸 프로필 등 사용자 기계에 이미 박혀 있다.
- * 둘 다 있으면 {@link ROLE_ENV_VAR} 가 이긴다(새 이름을 적은 쪽이 나중의 뜻이다). 그 값이 저장소 역할과
- * 어긋나면 셸 명령은 기존 «역할 충돌» 규칙대로 거절한다(ainectoCli.commandRole).
- */
-export const LEGACY_ROLE_ENV_VAR = "AI_ERD_ROLE";
 
 export interface RoleResolutionInput {
   role?: string;
@@ -60,8 +50,6 @@ export interface RoleResolutionInput {
 export interface ResolvedRole {
   role?: HarnessRole;
   source: "flag" | "env" | "none";
-  /** {@code source==="env"} 일 때 값을 읽은 환경변수 이름 — 거절 문장이 사용자가 실제로 둔 이름을 말하게. */
-  envVar?: string;
 }
 
 export function resolveRole(input: RoleResolutionInput = {}): ResolvedRole {
@@ -69,11 +57,9 @@ export function resolveRole(input: RoleResolutionInput = {}): ResolvedRole {
     return { role: assertRole(input.role), source: "flag" };
   }
   const envVars = input.envVars ?? process.env;
-  for (const envVar of [ROLE_ENV_VAR, LEGACY_ROLE_ENV_VAR]) {
-    const fromEnv = envVars[envVar];
-    if (fromEnv && fromEnv.trim()) {
-      return { role: assertRole(fromEnv), source: "env", envVar };
-    }
+  const fromEnv = envVars[ROLE_ENV_VAR];
+  if (fromEnv && fromEnv.trim()) {
+    return { role: assertRole(fromEnv), source: "env" };
   }
   return { source: "none" };
 }

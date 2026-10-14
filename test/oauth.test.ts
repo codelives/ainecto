@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   OAuthClient,
   OAuthLoginError,
@@ -9,10 +9,7 @@ import {
   getBrowserOpenCommand,
   launchBrowser,
 } from "../src/core/auth/oauth";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { FileTokenStore, type StoredTokenSet, type TokenStore } from "../src/core/auth/tokenStore";
+import type { StoredTokenSet, TokenStore } from "../src/core/auth/tokenStore";
 
 class MemoryTokenStore implements TokenStore {
   token: StoredTokenSet | undefined;
@@ -49,7 +46,7 @@ describe("OAuth PKCE login", () => {
       await fetch(`${redirectUri}?code=auth-code&state=${state}`);
     });
     const client = new OAuthClient({
-      endpoint: "https://dev.ai-erd.com/mcp",
+      endpoint: "https://dev.ainecto.com/mcp",
       tokenStore: store,
       fetchImpl,
       openBrowser,
@@ -64,7 +61,7 @@ describe("OAuth PKCE login", () => {
   it("rejects loopback callbacks with missing or mismatched state", async () => {
     const tokenEndpointCalls: string[] = [];
     const client = new OAuthClient({
-      endpoint: "https://dev.ai-erd.com/mcp",
+      endpoint: "https://dev.ainecto.com/mcp",
       tokenStore: new MemoryTokenStore(),
       fetchImpl: buildOAuthFetch({
         onTokenRequest: (body) => tokenEndpointCalls.push(body),
@@ -81,7 +78,7 @@ describe("OAuth PKCE login", () => {
   });
 
   it("fails discovery when authorization metadata does not advertise PKCE S256", async () => {
-    await expect(discoverOAuthMetadata("https://dev.ai-erd.com/mcp", buildOAuthFetch({
+    await expect(discoverOAuthMetadata("https://dev.ainecto.com/mcp", buildOAuthFetch({
       codeChallengeMethodsSupported: ["plain"],
     }))).rejects.toThrow("PKCE S256");
   });
@@ -89,7 +86,7 @@ describe("OAuth PKCE login", () => {
   it("does not open the browser when S256 support is missing", async () => {
     const openBrowser = vi.fn();
     const client = new OAuthClient({
-      endpoint: "https://dev.ai-erd.com/mcp",
+      endpoint: "https://dev.ainecto.com/mcp",
       tokenStore: new MemoryTokenStore(),
       fetchImpl: buildOAuthFetch({ codeChallengeMethodsSupported: [] }),
       openBrowser,
@@ -118,12 +115,9 @@ describe("OAuth PKCE login", () => {
     await expect(allowed.getAccessToken()).resolves.toBe("env-token");
   });
 
-  /** ★2026-10-11 기본 주소가 ainecto.com·dev.ainecto.com 으로 옮겼다 — 설정에 옛 기본(ai-erd.com·dev.ai-erd.com)을 적어둔 사람도 계속 쓴다. */
   it.each([
     "https://ainecto.com/mcp",
-    "https://ai-erd.com/mcp",
     "https://dev.ainecto.com/mcp",
-    "https://dev.ai-erd.com/mcp",
   ])("AINECTO_TOKEN 을 %s 에 보낸다", async (endpoint) => {
     const client = new OAuthClient({
       endpoint,
@@ -134,11 +128,11 @@ describe("OAuth PKCE login", () => {
   });
 
   it("rejects non-https OAuth metadata endpoints unless they are loopback", async () => {
-    await expect(discoverOAuthMetadata("https://dev.ai-erd.com/mcp", buildOAuthFetch({
+    await expect(discoverOAuthMetadata("https://dev.ainecto.com/mcp", buildOAuthFetch({
       resourceMetadataUrl: "http://auth.example/resource",
     }))).rejects.toThrow("must use https");
 
-    await expect(discoverOAuthMetadata("https://dev.ai-erd.com/mcp", buildOAuthFetch({
+    await expect(discoverOAuthMetadata("https://dev.ainecto.com/mcp", buildOAuthFetch({
       authorizationServer: "http://127.0.0.1:9000",
       metadataBaseUrl: "http://127.0.0.1:9000",
     }))).resolves.toMatchObject({
@@ -161,7 +155,7 @@ describe("OAuth PKCE login", () => {
  * 예전엔 URL 을 어디에도 안 찍고, 한도가 없고, 브라우저를 못 열어도 몰랐다.
  */
 describe("non-interactive sign-in", () => {
-  const ENDPOINT = "https://dev.ai-erd.com/mcp";
+  const ENDPOINT = "https://dev.ainecto.com/mcp";
 
   it("announces the authorize URL before it tries to open a browser", async () => {
     const order: string[] = [];
@@ -298,7 +292,7 @@ describe("launchBrowser", () => {
 });
 
 describe("stored token expiry", () => {
-  const ENDPOINT = "https://dev.ai-erd.com/mcp";
+  const ENDPOINT = "https://dev.ainecto.com/mcp";
 
   function clientWith(token: Partial<StoredTokenSet>) {
     const store = new MemoryTokenStore();
@@ -336,82 +330,6 @@ describe("stored token expiry", () => {
   });
 });
 
-/**
- * ★기본 주소가 ai-erd.com → ainecto.com, dev.ai-erd.com → dev.ainecto.com 으로 옮겨도(2026-10-11)
- * 옛 칸의 로그인을 잃지 않는다. 실제 파일 저장소(~/.ainecto/tokens.json 과 같은 구현)로 확인한다.
- * OTHERS = 다른 env 의 새·옛 주소 — env 를 건너 대체하지 않는다.
- */
-describe.each([
-  { env: "prod", NEW: "https://ainecto.com/mcp", OLD: "https://ai-erd.com/mcp",
-    OTHERS: ["https://dev.ainecto.com/mcp", "https://dev.ai-erd.com/mcp"] },
-  { env: "dev", NEW: "https://dev.ainecto.com/mcp", OLD: "https://dev.ai-erd.com/mcp",
-    OTHERS: ["https://ainecto.com/mcp", "https://ai-erd.com/mcp"] },
-])("token slot fallback ($env: $OLD → $NEW)", ({ NEW, OLD, OTHERS }) => {
-  let dir: string;
-  let store: FileTokenStore;
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "ainecto-slot-"));
-    store = new FileTokenStore(dir);
-  });
-  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
-
-  const token = (endpoint: string, accessToken: string, extra: Partial<StoredTokenSet> = {}): StoredTokenSet =>
-    ({ endpoint, accessToken, updatedAt: "x", ...extra });
-  const client = (endpoint: string) =>
-    new OAuthClient({ endpoint, tokenStore: store, envVars: {}, fetchImpl: buildOAuthFetch({ mcpUrl: endpoint }) });
-
-  it("새 칸이 비고 옛 칸이 있으면 옛 칸을 읽는다", async () => {
-    await store.save(OLD, token(OLD, "old"));
-    await expect(client(NEW).getAccessToken()).resolves.toBe("old");
-  });
-
-  it("새 칸이 있으면 새 칸이 우선이다", async () => {
-    await store.save(OLD, token(OLD, "old"));
-    await store.save(NEW, token(NEW, "new"));
-    await expect(client(NEW).getAccessToken()).resolves.toBe("new");
-  });
-
-  it("옛 칸의 토큰을 갱신하면 새 칸에 쓰고, 옛 칸은 그대로 둔다", async () => {
-    await store.save(OLD, token(OLD, "old", { expiresAt: Date.now() - 1_000, refreshToken: "r" }));
-    await expect(client(NEW).getAccessToken()).resolves.toBe("access-token");
-    expect((await store.load(NEW))?.accessToken).toBe("access-token");
-    expect((await store.load(NEW))?.endpoint).toBe(NEW);
-    expect((await store.load(OLD))?.accessToken).toBe("old");
-  });
-
-  it("401 뒤 갱신도 옛 칸에서 읽어 새 칸에 쓴다", async () => {
-    await store.save(OLD, token(OLD, "old", { refreshToken: "r" }));
-    await expect(client(NEW).refreshAfterUnauthorized()).resolves.toBe("access-token");
-    expect((await store.load(NEW))?.accessToken).toBe("access-token");
-  });
-
-  it.each(["https://custom.example/mcp", ...OTHERS, OLD])("%s 에는 대체가 없다", async (endpoint) => {
-    await store.save(OLD, token(OLD, "old"));
-    await store.save(NEW, token(NEW, "new"));
-    const expected = endpoint === OLD ? "old" : undefined;
-    await expect(client(endpoint).getAccessToken()).resolves.toBe(expected);
-  });
-
-  it("logout 은 새 칸과 대체로 읽는 옛 칸을 함께 지운다 — 안 그러면 곧바로 옛 칸이 읽힌다", async () => {
-    await store.save(OLD, token(OLD, "old"));
-    await store.save(NEW, token(NEW, "new"));
-    await client(NEW).logout();
-    await expect(store.load(NEW)).resolves.toBeUndefined();
-    await expect(store.load(OLD)).resolves.toBeUndefined();
-    await expect(client(NEW).getAccessToken()).resolves.toBeUndefined();
-  });
-
-  it("사용자 지정 주소의 logout 은 그 칸만 지운다", async () => {
-    const custom = "https://custom.example/mcp";
-    await store.save(OLD, token(OLD, "old"));
-    await store.save(custom, token(custom, "c"));
-    await client(custom).logout();
-    await expect(store.load(custom)).resolves.toBeUndefined();
-    expect((await store.load(OLD))?.accessToken).toBe("old");
-  });
-});
-
 function buildOAuthFetch(options: {
   codeChallengeMethodsSupported?: string[];
   onTokenRequest?: (body: string) => void;
@@ -426,7 +344,7 @@ function buildOAuthFetch(options: {
   const metadataBaseUrl = options.metadataBaseUrl ?? "https://auth.example";
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    if (url === (options.mcpUrl ?? "https://dev.ai-erd.com/mcp")) {
+    if (url === (options.mcpUrl ?? "https://dev.ainecto.com/mcp")) {
       return new Response("", {
         status: 401,
         headers: {

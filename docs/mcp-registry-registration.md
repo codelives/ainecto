@@ -1,35 +1,27 @@
 # MCP Registry Registration Prep
 
-Date: 2026-07-10 KST (updated 2026-09-29 for 0.4.0)
-Status: published — 0.4.2 on 2026-09-29 (package only)
-
-> 2026-10-11 (0.5.0): the npm package is `@ainecto/mcp` again (the `@ai-erd/*` names stay as aliases).
-> The current procedure is in README «MCP Registry»; the notes below are the 0.4.x record.
+Date: 2026-07-10 KST (updated 2026-10-14 for 0.6.0)
+Status: published (package only). The current procedure is in README «MCP Registry».
 
 ## Proposed Identity
 
 - Registry name: `io.github.codelives/ainecto`
 - Namespace auth path: GitHub organization namespace `io.github.codelives/*`
-- npm package: `@ai-erd/mcp` (the old name `@ainecto/mcp` is deprecated since 0.3.0)
-- Package version: `0.4.2`
-- Remote: none here — `https://ai-erd.com/mcp` is listed by `com.ai-erd/ai-erd`
-- Package: `npx -y @ai-erd/mcp` over stdio — the per-repository role bridge that `ai-erd init --role` writes
+- npm package: `@ainecto/mcp`
+- Package version: see `server.json` (same as `package.json#version`)
+- Remote: none here — the entry lists only the package
+- Package: `npx -y @ainecto/mcp` over stdio — the per-repository role bridge that `ainecto init --role` writes
 - Homepage: `https://ainecto.com`
 - Repository: `https://github.com/codelives/ainecto`
 - License metadata: `UNLICENSED`
 
 The repository contains `server.json` at the package root. Its `name` must match `package.json#mcpName`.
 
-### Why `server.json` has no remote (2026-09-29)
+### Why `server.json` has no remote
 
-The remote `https://ai-erd.com/mcp` is already listed by another entry we own,
-`com.ai-erd/ai-erd` (1.0.0, published 2025-12-29 under the ai-erd.com domain namespace). The Registry
-lets one remote URL belong to only one server, so publishing it here fails with
-`remote URL … is already used by server com.ai-erd/ai-erd`. This entry lists only the package:
-the per-repository role bridge that `ai-erd init --role` writes.
-
-Folding both into `com.ai-erd/ai-erd` needs `package.json#mcpName` changed to that name (a new npm
-release) and ai-erd.com domain auth (`mcp-publisher login dns|http --domain ai-erd.com`).
+The Registry lets one remote URL belong to only one server. This entry lists only the package: the
+per-repository role bridge that `ainecto init --role` writes. Listing `https://ainecto.com/mcp` as a
+remote needs ainecto.com domain auth (`mcp-publisher login dns|http --domain ainecto.com`).
 
 ### Publishing under `io.github.codelives/*` (2026-09-29)
 
@@ -96,7 +88,7 @@ mcp-publisher publish
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.codelives/ainecto"
 ```
 
-Current readiness: `@ai-erd/mcp@0.4.0` is prepared locally and contains `mcpName: "io.github.codelives/ainecto"`. npm publish is pending user approval before Registry publication.
+Before Registry publication, the `@ainecto/mcp` version in `server.json` must be on npm and contain `mcpName: "io.github.codelives/ainecto"`.
 
 ## Community Directory Mapping
 
@@ -108,7 +100,7 @@ Current readiness: `@ai-erd/mcp@0.4.0` is prepared locally and contains `mcpName
 | MCP.so | https://mcp.so/submit | Public GitHub server submit form; draft completion publishes automatically | User or maintainer signs in and submits GitHub repository URL. |
 | MCP.Directory | https://mcp.directory/submit | GitHub URL form; auto-pulls metadata, tools, README, npm/PyPI; review within 24 hours; can claim auto-discovered official Registry entries | Submit GitHub repo and optional npm package, or claim if auto-discovered. |
 | mcpservers.org | https://mcpservers.org/submit | Form with server name, description, GitHub/docs link, category, contact email | User or maintainer submits form; premium review is optional. |
-| Smithery | https://smithery.ai/docs/build/publish | URL publish for Streamable HTTP servers, or MCPB bundle for local stdio distribution | Use the hosted Streamable HTTP endpoint `https://ainecto.com/mcp` (the same one `server.json#remotes` lists). |
+| Smithery | https://smithery.ai/docs/build/publish | URL publish for Streamable HTTP servers, or MCPB bundle for local stdio distribution | Use the hosted Streamable HTTP endpoint `https://ainecto.com/mcp`. |
 
 ## User-Only Actions
 

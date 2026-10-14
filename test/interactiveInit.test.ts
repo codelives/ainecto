@@ -10,11 +10,11 @@ import type { McpRpcClient } from "../src/core/mcp/rpcClient";
 import type { HarnessRole } from "../src/core/harness/role";
 
 /**
- * 0.4.1 최소 대화형(설계 §21-4). 사람이 터미널에서 `ai-erd init` 만 치면 역할·프로젝트를 번호로 묻는다.
+ * 0.4.1 최소 대화형(설계 §21-4). 사람이 터미널에서 `ainecto init` 만 치면 역할·프로젝트를 번호로 묻는다.
  * ★입력은 실제 readline 프롬프터에 «파이프»로 넣는다 — 여러 줄을 한 번에 넣어도 질문마다 한 줄씩 받는지,
  * 입력이 끝나면(EOF) 취소되는지까지 같이 본다.
  */
-describe("ai-erd init — interactive (TTY)", () => {
+describe("ainecto init — interactive (TTY)", () => {
   let root: string;
   const out: string[] = [];
   const said: string[] = [];
@@ -81,7 +81,7 @@ describe("ai-erd init — interactive (TTY)", () => {
   const prompts = () => said.join("");
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "ai-erd-tty-"));
+    root = await mkdtemp(join(tmpdir(), "ainecto-tty-"));
     out.length = 0;
     said.length = 0;
   });

@@ -14,7 +14,7 @@ describe("attachments upload command", () => {
   let previousCwd: string;
   beforeEach(() => {
     previousCwd = process.cwd();
-    isolatedCwd = mkdtempSync(isolationJoin(isolationTmpdir(), "ai-erd-cwd-"));
+    isolatedCwd = mkdtempSync(isolationJoin(isolationTmpdir(), "ainecto-cwd-"));
     process.chdir(isolatedCwd);
   });
   afterEach(() => {

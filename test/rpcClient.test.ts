@@ -10,11 +10,11 @@ describe("McpRpcClient", () => {
     }) as unknown as typeof fetch;
 
     await new McpRpcClient({ endpoint: "https://ainecto.com/mcp", fetchImpl, role: "development" }).toolsList();
-    expect(seen[0]).toMatchObject({ "x-ai-erd-role": "development" });
+    expect(seen[0]).toMatchObject({ "x-ainecto-role": "development" });
 
     // 역할이 없으면 헤더도 없다 — 하네스를 안 쓰는 연결은 종전 그대로다.
     await new McpRpcClient({ endpoint: "https://ainecto.com/mcp", fetchImpl, role: null }).toolsList();
-    expect(Object.keys(seen[1]!)).not.toContain("x-ai-erd-role");
+    expect(Object.keys(seen[1]!)).not.toContain("x-ainecto-role");
   });
 
   it("sends JSON-RPC requests with bearer auth", async () => {
@@ -25,7 +25,7 @@ describe("McpRpcClient", () => {
     })));
     const client = new McpRpcClient({
       role: null,
-      endpoint: "https://dev.ai-erd.com/mcp",
+      endpoint: "https://dev.ainecto.com/mcp",
       fetchImpl,
       tokenProvider: {
         getAccessToken: async () => "redacted-token",
@@ -34,7 +34,7 @@ describe("McpRpcClient", () => {
     });
 
     await expect(client.toolsList()).resolves.toEqual([]);
-    expect(fetchImpl).toHaveBeenCalledWith("https://dev.ai-erd.com/mcp", expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith("https://dev.ainecto.com/mcp", expect.objectContaining({
       method: "POST",
       headers: expect.objectContaining({ authorization: "Bearer redacted-token" }),
     }));
@@ -51,7 +51,7 @@ describe("McpRpcClient", () => {
     const refreshAfterUnauthorized = vi.fn(async () => "fresh-token");
     const client = new McpRpcClient({
       role: null,
-      endpoint: "https://dev.ai-erd.com/mcp",
+      endpoint: "https://dev.ainecto.com/mcp",
       fetchImpl,
       tokenProvider: {
         getAccessToken: async () => "old-token",
@@ -61,7 +61,7 @@ describe("McpRpcClient", () => {
 
     await expect(client.request("initialize", {})).resolves.toEqual({ ok: true });
     expect(refreshAfterUnauthorized).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenLastCalledWith("https://dev.ai-erd.com/mcp", expect.objectContaining({
+    expect(fetchImpl).toHaveBeenLastCalledWith("https://dev.ainecto.com/mcp", expect.objectContaining({
       headers: expect.objectContaining({ authorization: "Bearer fresh-token" }),
     }));
   });
@@ -70,7 +70,7 @@ describe("McpRpcClient", () => {
     const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
     const client = new McpRpcClient({
       role: null,
-      endpoint: "https://dev.ai-erd.com/mcp",
+      endpoint: "https://dev.ainecto.com/mcp",
       fetchImpl,
       envVars: {},
     });
@@ -86,7 +86,7 @@ describe("McpRpcClient", () => {
     const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
     const client = new McpRpcClient({
       role: null,
-      endpoint: "https://dev.ai-erd.com/mcp",
+      endpoint: "https://dev.ainecto.com/mcp",
       fetchImpl,
       envVars: { AINECTO_CLI_DEBUG: "1" },
     });

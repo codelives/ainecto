@@ -1,6 +1,248 @@
 {
   "tools": [
     {
+      "name": "create_comments",
+      "description": "Add comments, questions, or replies to a document. Anyone who can read the document may comment and reply. Set parentCommentId to reply to a top-level comment. To mention people, get their userId and displayName from list_mention_candidates, write @<displayName> in the body, and list their userIds in mentionUserIds (clientMutationId is then required). Items are applied in order and each one commits on its own; results report each item (ok, or status and error).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID the comments belong to"
+          },
+          "items": {
+            "type": "array",
+            "description": "Comments to add, applied in order",
+            "items": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "description": "Comment text (plain text, 1..10000 characters). To mention someone, include @<displayName> exactly as returned by mcp__ainecto__list_mention_candidates.",
+                  "minLength": 1,
+                  "maxLength": 10000
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "Top-level comments only: COMMENT (default) or QUESTION. A QUESTION can later be resolved with mcp__ainecto__resolve_comments.",
+                  "enum": [
+                    "COMMENT",
+                    "QUESTION"
+                  ]
+                },
+                "parentCommentId": {
+                  "type": "integer",
+                  "description": "Reply to this top-level comment id (from mcp__ainecto__list_comments). Replies are one level deep: replying to a reply is rejected.",
+                  "minimum": 1
+                },
+                "mentionUserIds": {
+                  "type": "array",
+                  "description": "userIds to mention (from mcp__ainecto__list_mention_candidates). Each one's @<displayName> must appear in body; newly mentioned people get a notification email.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "maxItems": 20,
+                  "uniqueItems": true
+                },
+                "clientMutationId": {
+                  "type": "string",
+                  "description": "Idempotency key (visible ASCII, at most 128 characters). Required when mentionUserIds is not empty; reuse the same value when retrying the same item so the mention email is not sent twice.",
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "body"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          },
+          "mailLanguage": {
+            "type": "string",
+            "description": "Language of the mention notification email. Defaults to en.",
+            "enum": [
+              "en",
+              "ko"
+            ]
+          }
+        },
+        "required": [
+          "documentUuid",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_comments",
+      "description": "Delete your own comments on a document. Only the author can delete. A resolved question and a top-level comment that still has replies cannot be deleted. Each id is applied on its own; results report each id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID the comments belong to"
+          },
+          "ids": {
+            "type": "array",
+            "description": "Comment ids to delete (from mcp__ainecto__list_comments)",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "documentUuid",
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_comments",
+      "description": "List the active comments on a document, oldest first, including replies (a reply has parentCommentId set; replies are one level deep). Each comment has id, kind (COMMENT or QUESTION), body, author, mentions (userId, label and position in the body), and for questions questionState (UNANSWERED, ANSWERED, RESOLVED) and resolvedAt. Anyone who can read the document can list its comments.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID the comments belong to"
+          }
+        },
+        "required": [
+          "documentUuid"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_mention_candidates",
+      "description": "List the people you can mention in comments on a document: userId and displayName. Only people who can read the document are listed. To mention someone, write @<displayName> exactly in the comment body and pass their userId in mentionUserIds of create_comments or update_comments. Page with nextCursor while hasMore is true.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID the comments belong to"
+          },
+          "query": {
+            "type": "string",
+            "description": "Name filter, 0..100 characters. Omit or leave empty for the first page of everyone.",
+            "maxLength": 100
+          },
+          "cursor": {
+            "type": "string",
+            "description": "nextCursor from the previous page (same documentUuid and query)."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size, 1..50. Defaults to 20.",
+            "minimum": 1,
+            "maximum": 50
+          }
+        },
+        "required": [
+          "documentUuid"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "resolve_comments",
+      "description": "Mark questions on a document as resolved. Only top-level comments with kind QUESTION can be resolved, and it needs edit access to the document (readers can comment but cannot resolve). Resolving cannot be undone. Each id is applied on its own; results report each id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID the comments belong to"
+          },
+          "ids": {
+            "type": "array",
+            "description": "Question ids to resolve (top-level comments with kind QUESTION)",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "documentUuid",
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_comments",
+      "description": "Edit your own comments on a document. Only the author can edit, and only while they can still read the document. A resolved question and a top-level comment that already has replies are locked. Items are applied in order and each one commits on its own; results report each item.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID the comments belong to"
+          },
+          "items": {
+            "type": "array",
+            "description": "Edits, applied in order",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "description": "Comment id (from mcp__ainecto__list_comments)",
+                  "minimum": 1
+                },
+                "body": {
+                  "type": "string",
+                  "description": "New comment text (replaces the old text).",
+                  "minLength": 1,
+                  "maxLength": 10000
+                },
+                "mentionUserIds": {
+                  "type": "array",
+                  "description": "The complete set of userIds mentioned after the edit; omit to remove all mentions. Each one's @<displayName> must appear in body. Only people who were not mentioned before get a notification email.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "maxItems": 20,
+                  "uniqueItems": true
+                },
+                "clientMutationId": {
+                  "type": "string",
+                  "description": "Idempotency key (visible ASCII, at most 128 characters). Required when mentionUserIds is not empty; reuse the same value when retrying the same item so the mention email is not sent twice.",
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "id",
+                "body"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          },
+          "mailLanguage": {
+            "type": "string",
+            "description": "Language of the mention notification email. Defaults to en.",
+            "enum": [
+              "en",
+              "ko"
+            ]
+          }
+        },
+        "required": [
+          "documentUuid",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "diagram_apply_changes",
       "description": "Required single-call mutation path for diagram node/edge/group create/update/delete changes. Put nodes, edges, and groups in one request and call this once. Do not look for type-specific diagram CUD tools; this tool is the only diagram CUD entry point.",
       "inputSchema": {
@@ -131,7 +373,12 @@
                 },
                 "bridgeType": {
                   "type": "string",
-                  "description": "Bridge type"
+                  "description": "Omit (null) for a plain node-to-node edge. Set only when a group is an endpoint: GROUP_TO_GROUP|NODE_TO_GROUP|GROUP_TO_NODE",
+                  "enum": [
+                    "GROUP_TO_GROUP",
+                    "NODE_TO_GROUP",
+                    "GROUP_TO_NODE"
+                  ]
                 },
                 "strokeColor": {
                   "type": "string",
@@ -2968,13 +3215,14 @@
                 },
                 "type": {
                   "type": "string",
-                  "description": "Document type. Creatable values: erd, markdown, diagram, openapi, html.",
+                  "description": "Document type. Creatable values: erd, markdown, diagram, openapi, html, file.",
                   "enum": [
                     "erd",
                     "markdown",
                     "diagram",
                     "openapi",
-                    "html"
+                    "html",
+                    "file"
                   ]
                 },
                 "title": {
@@ -2983,7 +3231,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page)."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only)."
                 },
                 "body": {
                   "type": "string",
@@ -3308,7 +3556,7 @@
     },
     {
       "name": "get_document",
-      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; erd → metadata only (read tables/refs via erd_list_*).",
+      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; erd → metadata only (read tables/refs via erd_list_*).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3402,13 +3650,14 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html.",
+            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html, file.",
             "enum": [
               "erd",
               "markdown",
               "diagram",
               "openapi",
-              "html"
+              "html",
+              "file"
             ]
           },
           "q": {
@@ -3614,7 +3863,7 @@
           },
           "scopeJson": {
             "type": "string",
-            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 creatable type values 는 erd, markdown, diagram, openapi, html. document.update/document.append 는 documentUuid 를 포함. attachment.upload typed: {parentType:TEST_CASE|TEST_EXECUTION,parentUuid,filename,contentType,sizeBytes}."
+            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 creatable type values 는 erd, markdown, diagram, openapi, html, file. document.update/document.append 는 documentUuid 를 포함. type=file 은 filename 도 포함(확장자로 형식 판정) — PUT 의 Content-Type 은 파일 MIME, 본문은 파일 바이트. attachment.upload: {documentUuid, filename}; storageKey 는 서버가 발급 scope 에 넣는다."
           },
           "maxBytes": {
             "type": "integer",
@@ -3756,7 +4005,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page)."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB)."
                 },
                 "body": {
                   "type": "string",
@@ -3932,13 +4181,14 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html.",
+            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html, file.",
             "enum": [
               "erd",
               "markdown",
               "diagram",
               "openapi",
-              "html"
+              "html",
+              "file"
             ]
           },
           "projectUuid": {

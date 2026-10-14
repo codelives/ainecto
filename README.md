@@ -1,8 +1,6 @@
 # ainecto — AiNecto CLI and MCP connector
 
 Published as `ainecto`, `@ainecto/mcp` and `@ainecto/cli` — the same code. Command: `ainecto`.
-The older names (`ai-erd`, `@ai-erd/mcp`, `@ai-erd/cli`, command `ai-erd`) still get the same code and
-still work.
 
 **In a terminal, from your repository root:** `npx -y ainecto@latest init` — it asks which role this
 repository's AI sessions should have and which AiNecto project to use, and signs you in through the
@@ -41,34 +39,6 @@ codex mcp add ainecto --url https://ainecto.com/mcp                           # 
 
 The client signs the user in on first use. That session has no role until `init` runs and a new
 session starts.
-
-## Upgrading from ai-erd (0.4.x)
-
-Version 0.5.0 renamed what `init` writes into a repository. A repository set up by 0.4.x keeps
-working: the CLI reads the `ai-erd` server entry, the `.ai-erd/` folder, the `<!-- ai-erd:begin -->`
-block and `AI_ERD_ROLE` as its own. Running `npx -y ainecto@latest init` again moves them to the new
-names — nothing is left behind twice:
-
-| 0.4.x | 0.5.0 |
-| --- | --- |
-| server entry `"ai-erd"` (`npx -y @ai-erd/mcp --role …`) | `"ainecto"` (`npx -y @ainecto/mcp --role …`) — the old entry is replaced |
-| folder `.ai-erd/` (`HARNESS.md`, `config.json`, `init-record.json`) | `.ainecto/` — moved, and the old folder removed if 0.4.x created it |
-| block `<!-- ai-erd:begin -->` … `<!-- ai-erd:end -->` | `<!-- ainecto:begin -->` … — replaced in place |
-| `AI_ERD_ROLE` | `AINECTO_ROLE` — both are read; when both are set, `AINECTO_ROLE` wins |
-
-`ainecto init --undo` still puts back what was there before the 0.4.x `init`, with or without that
-second `init`. Not renamed: the role header and OAuth scope the server reads, and the sign-in on
-this machine.
-
-- If you added AiNecto earlier as `ai-erd` at Claude Code **user** scope or in Codex, remove it
-  (`claude mcp remove ai-erd -s user`, `codex mcp remove ai-erd`) and add it as `ainecto` as above:
-  under a different name it no longer hides behind the repository's entry.
-- Claude Code shows the tools as `mcp__ainecto__…` instead of `mcp__ai-erd__…` — update any allow
-  list that names the old prefix.
-- An `ai-erd` 0.4.x installed globally does not know the new names: inside a repository set up by
-  0.5.0 it finds no role (so no restriction), and running its `init` there adds a second entry, block
-  and folder. Update it (`npm install -g ai-erd@latest` gets this same code). If that already
-  happened, 0.5.0 stops and says how to undo it (`npx -y -p @ai-erd/mcp@0.4.6 ai-erd init --undo`).
 
 ## Set up a repository (roles)
 
@@ -112,10 +82,9 @@ Anywhere else (an agent's shell, CI) it asks nothing. In both cases:
 ## Commands
 
 Prefer `npx -y ainecto@latest <command>`. To install once instead, use `npm install -g ainecto` — but
-install only **one** of `ainecto`, `@ainecto/mcp`, `@ainecto/cli`, `ai-erd`, `@ai-erd/mcp` and
-`@ai-erd/cli` globally: they are the same code and ship the same commands, so a second global install
-conflicts. (`ainecto` and `ai-erd` carry both commands, `ainecto` and `ai-erd`; `@ainecto/cli` carries
-only `ainecto`, `@ai-erd/cli` only `ai-erd`.)
+install only **one** of `ainecto`, `@ainecto/mcp` and `@ainecto/cli` globally: they are the same code
+and all ship the `ainecto` command, so a second global install conflicts. (`@ainecto/mcp` also carries
+`mcp`, the bridge.)
 
 ```bash
 ainecto auth login          # once per machine (and per --env); not per role
@@ -131,22 +100,19 @@ ainecto projects list
 ainecto erd apply-changes -f erd-operations.json --yes
 ```
 
-`ai-erd` is the same command under its older name — every `ainecto …` line works as `ai-erd …`.
-
 **The role comes from the repository.** Inside a folder set up with `ainecto init` (the command looks
-from the current folder upward for the first `.mcp.json`/`.cursor/mcp.json` with an `ainecto` entry —
-or, from 0.4.x, an `ai-erd` entry), every command uses that folder's role without `--role`. A `--role`
-or `AINECTO_ROLE` (or `AI_ERD_ROLE`) that differs from it is refused — the role changes only with
-`ainecto init --role <role>`, after asking the user. If the role there cannot be read (the
-`@ainecto/mcp` bridge entry without a valid `--role`, configs that disagree, an `ainecto` and an
-`ai-erd` bridge with different roles, broken JSON that mentions `ainecto` or `ai-erd`, a link that
-points outside the folder), the command stops. An entry that is not this bridge (for example an HTTP
+from the current folder upward for the first `.mcp.json`/`.cursor/mcp.json` with an `ainecto` entry),
+every command uses that folder's role without `--role`. A `--role` or `AINECTO_ROLE` that differs from
+it is refused — the role changes only with `ainecto init --role <role>`, after asking the user. If the
+role there cannot be read (the `@ainecto/mcp` bridge entry without a valid `--role`, configs that
+disagree, broken JSON that mentions `ainecto`, a link that points outside the folder), the command
+stops. An entry that is not this bridge (for example an HTTP
 `url` or `mcp-remote` entry) means no role there. Your home folder itself is never read as a
 repository (`~/.cursor/mcp.json` is Cursor's global config). Outside such a folder there is no role
 (no restriction), and `--role` narrows it.
 Tool names are the server's own names (`list_projects`, `erd_apply_changes`, …). Your AI client
-shows them with its own prefix, for example `mcp__ainecto__list_projects` in Claude Code
-(`mcp__ai-erd__…` for a 0.4.x setup); the CLI does not use that prefix. A tool name that starts with
+shows them with its own prefix, for example `mcp__ainecto__list_projects` in Claude Code; the CLI
+does not use that prefix. A tool name that starts with
 the server's older `mcp__ainecto__` prefix is still accepted.
 
 Every command takes `--env dev` for `https://dev.ainecto.com/mcp`. Endpoint resolution priority:
@@ -160,10 +126,8 @@ Endpoint URLs must use `https:`. Plain `http:` is accepted only for localhost lo
 as `127.0.0.1`. When `AINECTO_TOKEN` is set, the CLI only sends it to the default prod/dev endpoints
 unless `AINECTO_ALLOW_CUSTOM_ENDPOINT_TOKEN=1` is set for an explicitly trusted custom endpoint.
 
-The commands are `ainecto` and `ai-erd` (the same CLI), `ai-erd-mcp`, and `mcp` (which
-`npx -y @ainecto/mcp` runs). The `AINECTO_*` environment variables above are the **only** names for
-those settings — there is no `AI_ERD_*` equivalent, so do not guess one. (The one `AI_ERD_*` variable
-is `AI_ERD_ROLE`, the older name of `AINECTO_ROLE`.)
+The commands are `ainecto` and `mcp` (which `npx -y @ainecto/mcp` runs). The `AINECTO_*` environment
+variables above are the **only** names for those settings — do not guess another prefix.
 
 ## Generated Friendly Commands
 
@@ -205,7 +169,7 @@ The package doubles as a stdio-to-HTTP proxy for the resolved `/mcp` endpoint. I
 `initialize`, `tools/list`, and `tools/call`, does not rewrite remote schemas, and does not interpret
 local file references. It uses this machine's one sign-in (`ainecto auth login`, or the sign-in
 `ainecto init` performs) and never opens a browser on its own. Its role comes only from `--role` (or
-`AINECTO_ROLE`, or the older `AI_ERD_ROLE`) and is sent with every request; the server applies it.
+`AINECTO_ROLE`) and is sent with every request; the server applies it.
 
 This is the entry `ainecto init` writes into a repository's MCP config — you normally do not add it
 by hand:
@@ -223,8 +187,8 @@ by hand:
 
 A bridge without a role has no restriction. If a session inside a set-up repository still has no role,
 another `ainecto` entry (for example Claude Code's local scope) is usually hiding the one `init` wrote —
-check with `claude mcp get ainecto`. An entry under another name (an older `ai-erd` one, say) does not
-hide it but adds a second server with no role — remove it.
+check with `claude mcp get ainecto`. An entry under another name does not hide it but adds a second
+server with no role — remove it.
 
 ### MCP Registry
 
@@ -236,13 +200,10 @@ Registration is done by a person:
 1. `npm run release -- --otp=<code>` (below) so that `@ainecto/mcp@<version>` is on npm.
 2. GitHub org namespace login as a `codelives` org **Owner** — a classic PAT with only `read:org`
    works where the browser login did not: `MCP_GITHUB_TOKEN=<pat> mcp-publisher login github`.
-3. `mcp-publisher publish` from this folder. The new version simply replaces the package identifier
-   (`@ai-erd/mcp` up to 0.4.x → `@ainecto/mcp`); the server name does not change.
+3. `mcp-publisher publish` from this folder.
 
-Leave the other entry, `com.ai-erd/ai-erd` (the remote `https://ai-erd.com/mcp`, ai-erd.com domain
-namespace), as it is. One remote URL can belong to one server only; listing `https://ainecto.com/mcp`
-as a remote here, or a `com.ainecto/*` name, would need ainecto.com domain auth
-(`mcp-publisher login dns|http --domain ainecto.com`) and is not part of this release.
+Listing `https://ainecto.com/mcp` as a remote here, or a `com.ainecto/*` name, would need ainecto.com
+domain auth (`mcp-publisher login dns|http --domain ainecto.com`) and is not part of this release.
 
 ## Development
 
@@ -251,7 +212,7 @@ npm install
 npm run typecheck
 npm test
 npm run build
-npm link            # puts `ainecto` (and `ai-erd`) on your PATH
+npm link            # puts `ainecto` on your PATH
 ```
 
 ### Catalog Sync
@@ -304,15 +265,10 @@ temp file, and stored upload file unless `--keep` is supplied.
 ### Releasing
 
 `npm run release -- --otp=<code>` runs typecheck, test and build once, then publishes that build under
-six names: `@ainecto/mcp` (primary), `ainecto`, `@ainecto/cli` (only the `ainecto` command), and the
-older `@ai-erd/mcp`, `ai-erd`, `@ai-erd/cli` (only the `ai-erd` command). `--dry-run` shows what would
-go out. An already-published name is skipped, so a retry after an expired code is safe.
-
-Before the first 0.5.0 release, by hand: the npm account needs write access to both the `@ainecto` and
-`@ai-erd` orgs (the script checks), and `@ainecto/mcp` versions up to 0.3.0 still carry the 2026-09-29
-deprecation «moved to @ai-erd/mcp» — replace it, for example
-`npm deprecate "@ainecto/mcp@<=0.3.0" "Old version — use @ainecto/mcp@latest"` (new versions are not
-deprecated). Do not unpublish any name.
+three names: `@ainecto/mcp` (primary), `ainecto`, and `@ainecto/cli` (only the `ainecto` command).
+`--dry-run` shows what would go out. An already-published name is skipped, so a retry after an expired
+code is safe. The npm account needs write access to the `@ainecto` org (the script checks). Do not
+unpublish any name.
 
 ## Known Limitations
 

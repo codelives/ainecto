@@ -27,7 +27,7 @@ import type { HarnessRole } from "../src/core/harness/role";
  * 계획이 아니라 «실제로 디스크에 무엇이 생기는가»를 본다.
  * 네트워크는 안 탄다 — 프로젝트 조회만 가짜 client 로 바꾼다.
  */
-describe("ai-erd init (files on disk)", () => {
+describe("ainecto init (files on disk)", () => {
   let root: string;
   const out: string[] = [];
 
@@ -69,7 +69,7 @@ describe("ai-erd init (files on disk)", () => {
   }
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "ai-erd-init-"));
+    root = await mkdtemp(join(tmpdir(), "ainecto-init-"));
     out.length = 0;
   });
 
@@ -157,7 +157,7 @@ describe("ai-erd init (files on disk)", () => {
   });
 
   it("★심볼릭 링크로 저장소 밖 파일을 고치지 않는다", async () => {
-    const outside = await mkdtemp(join(tmpdir(), "ai-erd-outside-"));
+    const outside = await mkdtemp(join(tmpdir(), "ainecto-outside-"));
     await writeFile(join(outside, "rules.md"), "NOT OURS\n", "utf8");
     await symlink(join(outside, "rules.md"), join(root, "AGENTS.md"));
     const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
@@ -169,7 +169,7 @@ describe("ai-erd init (files on disk)", () => {
   });
 
   it("★.ainecto 가 저장소 밖을 가리켜도 그곳 파일이 남는다", async () => {
-    const outside = await mkdtemp(join(tmpdir(), "ai-erd-outside-"));
+    const outside = await mkdtemp(join(tmpdir(), "ainecto-outside-"));
     await writeFile(join(outside, "config.json"), "MINE\n", "utf8");
     await writeFile(join(outside, "HARNESS.md"), "MINE\n", "utf8");
     await symlink(outside, join(root, ".ainecto"));
@@ -455,8 +455,8 @@ describe("ai-erd init (files on disk)", () => {
   it("★B7 손상된 기록이면 «원격을 건드리기 전에» 멈춘다", async () => {
     // 9차 1차 리뷰 B7 — 프로젝트가 0개인 저장소에서 원격에 프로젝트를 «만든 뒤»
     // 「아무것도 바꾸지 않았다」는 예외가 났다. 로컬 쓰기 0 과 부수효과 0 은 다른 사실이다.
-    await mkdir(join(root, ".ai-erd"), { recursive: true });
-    await writeFile(join(root, ".ai-erd/init-record.json"), "{ not json", "utf8");
+    await mkdir(join(root, ".ainecto"), { recursive: true });
+    await writeFile(join(root, ".ainecto/init-record.json"), "{ not json", "utf8");
     const { stub, calls } = client([], { uuid: "p-new", name: "New" });
 
     await expect(executeInitCommand(options(["--role", "design", "--yes"], stub)))
@@ -466,19 +466,20 @@ describe("ai-erd init (files on disk)", () => {
     expect(calls).toEqual([]);
     expect(existsSync(join(root, ".mcp.json"))).toBe(false);
     // 손상된 기록은 그대로 둔다 — 그 안에 못 읽은 백업이 있을 수 있다.
-    expect(await readFile(join(root, ".ai-erd/init-record.json"), "utf8")).toBe("{ not json");
+    expect(await readFile(join(root, ".ainecto/init-record.json"), "utf8")).toBe("{ not json");
   });
 
-  it("★B7 구판 기록이면 그것도 원격 전에 멈춘다", async () => {
-    await mkdir(join(root, ".ai-erd"), { recursive: true });
-    await writeFile(join(root, ".ai-erd/config.json"), `${JSON.stringify({
-      generatedBy: "@ai-erd/mcp 0.2.0",
-      managed: { created: [".mcp.json"], originals: { "AGENTS.md": "USER ORIGINAL" } },
+  it("★B7 다른 판의 기록이면 그것도 원격 전에 멈춘다", async () => {
+    await mkdir(join(root, ".ainecto"), { recursive: true });
+    await writeFile(join(root, ".ainecto/init-record.json"), `${JSON.stringify({
+      kind: "ainecto/init-record",
+      version: 999,
+      files: {},
     }, null, 2)}\n`, "utf8");
     const { stub, calls } = client([], { uuid: "p-new", name: "New" });
 
     await expect(executeInitCommand(options(["--role", "design", "--yes"], stub)))
-      .rejects.toThrow(/an older version of this CLI/);
+      .rejects.toThrow(/another version of this CLI/);
 
     expect(calls).toEqual([]);
     expect(existsSync(join(root, ".mcp.json"))).toBe(false);
@@ -849,7 +850,7 @@ describe("★S1 이미 있던 빈 디렉터리는 우리 것으로 기록되지 
   } as unknown as { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream };
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "ai-erd-dirs-"));
+    root = await mkdtemp(join(tmpdir(), "ainecto-dirs-"));
     out.length = 0;
   });
   afterEach(async () => {

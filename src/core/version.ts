@@ -13,12 +13,9 @@ export const CLI_VERSION: string =
  * MCP {@code clientInfo}, User-Agent, init 기록의 {@code generatedBy} 가 모두 이것을 쓴다.
  * {@code package.json} 의 name·{@code server.json} 의 패키지 식별자와 같아야 한다(시험이 대조한다).
  *
- * <p>옛 이름 {@code @ai-erd/mcp}·{@code ai-erd}·{@code @ai-erd/cli} 에도 같은 코드가 올라가지만
- * (scripts/publish.mjs), 그 판으로 init 해도 새 이름을 쓴다 — 새 저장소 설정이 옛 이름에 묶이지 않게.
+ * <p>다른 이름 {@code ainecto}·{@code @ainecto/cli} 에도 같은 코드가 올라가지만(scripts/publish.mjs),
+ * 그 판으로 init 해도 이 이름을 쓴다.
  */
 export const PACKAGE_NAME = "@ainecto/mcp";
-
-/** 0.4.x 의 주 이름. 이미 깔린 저장소의 MCP 설정에 남아 있다 — «우리 브리지»로 알아볼 때만 쓴다. */
-export const LEGACY_PACKAGE_NAME = "@ai-erd/mcp";
 
 export const CLI_USER_AGENT = `${PACKAGE_NAME} ${CLI_VERSION}`;

@@ -30,7 +30,7 @@ describe("실패는 전부 한 곳에서 그려진다", () => {
   let originalCwd: string;
 
   beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), "ai-erd-home-"));
+    home = await mkdtemp(join(tmpdir(), "ainecto-home-"));
     originalHome = process.env.HOME;
     process.env.HOME = home;
     // ★저장소 역할 탐색(0.4.2)은 cwd 에서 위로 올라간다. 이 저장소의 조상 폴더에 사람의 설정이 있어도

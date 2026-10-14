@@ -1,4 +1,4 @@
-import { HARNESS_CONFIG_PATH, HARNESS_RECORD_PATH, LEGACY_HARNESS_DIR } from "./harnessDoc";
+import { HARNESS_RECORD_PATH } from "./harnessDoc";
 
 /**
  * 되돌리기 «기록»의 형식과 그 <b>상태 판정</b>. ★이 파일의 책임은 하나다 —
@@ -24,12 +24,6 @@ import { HARNESS_CONFIG_PATH, HARNESS_RECORD_PATH, LEGACY_HARNESS_DIR } from "./
 
 /** 기록 파일의 신원. 사용자가 같은 이름으로 둔 파일을 실행 근거로 삼지 않는다. */
 export const RECORD_KIND = "ainecto/init-record";
-
-/**
- * 0.4.x 가 쓴 신원. ★형식(판 2)은 같으므로 그대로 읽는다 — 다시 쓸 때는 {@link RECORD_KIND} 로 쓴다.
- * (그 기록 안의 경로 키를 새 폴더로 옮기는 일은 {@code legacyLayout.ts} 가 한다.)
- */
-export const LEGACY_RECORD_KIND = "ai-erd/init-record";
 
 /** 이 판이 읽고 쓰는 형식. 모르는 판은 «손상»이 아니라 «지원하지 않음»이다. */
 export const RECORD_VERSION = 2;
@@ -144,9 +138,7 @@ export type RecordState =
  * <p>⛔관용을 베풀지 않는다. 한 칸이라도 계약을 벗어나면 «손상»이다 — 그 기록으로 파일을 지우는
  * 것이 되돌리기가 하는 일이고, 판단 재료가 반쯤 맞는 상태로 그 일을 해선 안 된다.
  */
-export function readRecord(content: string | undefined, recordPath: string = HARNESS_RECORD_PATH): RecordState {
-  // ⚠이 함수 안의 문장은 {@code recordPath} 를 쓴다 — 옛 폴더의 기록을 읽을 때 사용자가 고칠 파일을 바로 가리키게.
-  const HARNESS_RECORD_PATH = recordPath;
+export function readRecord(content: string | undefined): RecordState {
   if (content === undefined) {
     return { state: "absent" };
   }
@@ -159,7 +151,7 @@ export function readRecord(content: string | undefined, recordPath: string = HAR
   if (!isObject(parsed)) {
     return { state: "corrupt", reason: `${HARNESS_RECORD_PATH} is not a JSON object` };
   }
-  if (parsed.kind !== RECORD_KIND && parsed.kind !== LEGACY_RECORD_KIND) {
+  if (parsed.kind !== RECORD_KIND) {
     return {
       state: "corrupt",
       reason: `${HARNESS_RECORD_PATH} exists but is not an AiNecto init record (kind=`
@@ -202,73 +194,6 @@ export function readRecord(content: string | undefined, recordPath: string = HAR
       createdDirectories: directories === undefined ? [] : [...directories],
     },
   };
-}
-
-/**
- * 구판(7차 이전)이 기록을 두던 자리 — {@code .ai-erd/config.json}(지금 {@code .ainecto/config.json}) 의 {@code managed} 칸.
- * 그 칸에 들어 있던 «평행한 map» 이름들이다. 하나라도 있으면 우리 구판이 쓴 기록이다.
- *
- * <p>★<b>사용자가 적은 {@code managed} 와 구별해야 한다</b>(7차 독립 리뷰 I2: config 의
- * {@code managed} 칸은 기본적으로 사용자 것이다). 그래서 이름만 보지 않고 «그 안의 모양»을 본다.
- */
-const LEGACY_MANAGED_KEYS = [
-  "created", "originals", "lastWritten", "lastWrittenFragment", "lastWrittenBody",
-  "replacedEntries", "replacedBlocks", "blockAdded", "foreignMarkers",
-] as const;
-
-/**
- * 이 config 안에 «구판이 쓴 기록»이 들어 있나.
- *
- * <p>★<b>없는 것과 못 읽는 것은 다르다</b>(9차 1차 리뷰 B6). 기록을 우리 파일로 내보낸 뒤,
- * 구판이 config 에 남긴 기록이 있는 저장소에서 되돌리기가 <b>「이전 init 기록이 없다」</b>고
- * 안내했다 — 그 config 안에 사용자 원본 백업이 그대로 들어 있는데도. 그러면 사용자는
- * 「되돌릴 것이 없구나」로 읽고 그 백업을 영영 쓰지 않는다.
- */
-export function legacyManagedRecord(configContent: string | undefined): boolean {
-  if (configContent === undefined) {
-    return false;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(configContent);
-  } catch {
-    return false;
-  }
-  if (!isObject(parsed) || !isObject(parsed.managed)) {
-    return false;
-  }
-  const managed = parsed.managed;
-  const hasLegacyShape = LEGACY_MANAGED_KEYS.some(
-    (key) => Object.prototype.hasOwnProperty.call(managed, key),
-  );
-  if (!hasLegacyShape) {
-    return false;
-  }
-  // ★<b>모양만으로는 «사용자가 적은 칸»과 구별되지 않는다</b> — 두 판정이 맞부딪힌 자리다
-  //   (7차 I2 「config 의 managed 는 사용자 것이다」 ↔ 9차 B6 「구판 기록을 없는 것으로 안내한다」).
-  //   그래서 구판이 «함께 쓴 것»을 본다: 구판은 managed 를 혼자 쓰지 않았다.
-  //     · generatedBy — 우리 CLI 만 적는 칸(cliVersion)
-  //     · managed.lastWritten 안의 «config 자기 경로» — 구판이 자기 지문을 거기 넣었다
-  //   둘 중 하나라도 있으면 우리 구판이 쓴 파일이고, 없으면 사용자 것으로 둔다.
-  if (typeof parsed.generatedBy === "string") {
-    return true;
-  }
-  const lastWritten = managed.lastWritten;
-  // 구판은 0.4.x 폴더(.ai-erd/)에서만 돌았다 — 자기 경로도 그 이름으로 적혀 있다.
-  return isObject(lastWritten)
-    && [HARNESS_CONFIG_PATH, `${LEGACY_HARNESS_DIR}/config.json`]
-      .some((path) => Object.prototype.hasOwnProperty.call(lastWritten, path));
-}
-
-/** 구판 기록을 만난 사람에게 할 말. ★자동 마이그레이션을 «하지 않는다»는 사실도 말한다. */
-export function legacyManagedNotice(configPath: string): string {
-  return `${configPath} holds an init record written by an older version of this CLI `
-    + `(a "managed" field). This version keeps its record in ${HARNESS_RECORD_PATH} and cannot `
-    + "read that one, so your saved originals are still in there and nothing was changed. "
-    // ★`-p` 가 있어야 한다. `npx @ai-erd/mcp@0.2 ai-erd …` 는 패키지의 기본 bin(`mcp` — 브리지)을
-    //   실행하고 뒤의 말을 그 인자로 넘긴다(0.4.1 리뷰 P2). 버전은 «그 기록을 쓴 판»(0.2)을 가리킨다.
-    + "Undo with the version that wrote it (for example: npx -y -p @ai-erd/mcp@0.2 ai-erd init --undo), "
-    + "then run this version again.";
 }
 
 /** 기록 파일의 저장 모양. ★지문을 담지 않는다 — 자기 해시를 담은 문서의 해시라는 순환이 생긴다. */

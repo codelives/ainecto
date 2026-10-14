@@ -26,8 +26,6 @@ import {
   ABSENT,
   emptyRecord,
   fieldsContractProblem,
-  legacyManagedNotice,
-  legacyManagedRecord,
   readRecord,
   serializeRecord,
   stableStringify,
@@ -38,7 +36,7 @@ import {
 } from "./initRecord";
 import { createHash } from "node:crypto";
 import { readConfigRole } from "./repositoryRole";
-import { LEGACY_ROLE_ENV_VAR, ROLE_ENV_VAR, type HarnessRole } from "./role";
+import { ROLE_ENV_VAR, type HarnessRole } from "./role";
 
 /**
  * init 이 «무엇을 쓸지»를 순수하게 계산한다. 파일을 읽지도 쓰지도 않는다.
@@ -246,11 +244,6 @@ export function initRefusal(files: FileSnapshot, previous?: RecordState): string
     // ★읽어 내지 못한 기록을 덮으면 그 안의 «남의 원본 백업»이 사라진다. 읽기를 거절했으면
     //   쓰기도 거절해야 한다(8차 독립 리뷰 I1).
     return `${state.reason}. Nothing was changed — move that file aside (or restore it) and run again.`;
-  }
-  if (state.state === "absent" && legacyManagedRecord(files.get(HARNESS_CONFIG_PATH))) {
-    // ★구판이 config 에 남긴 기록이다. 우리는 그것을 이행할 수 없고, 덮으면 그 안의 사용자
-    //   원본이 «읽을 수는 있지만 쓸 수 없는» 글이 된다 — 아무도 다시 꺼내지 않는다(9차 B6).
-    return legacyManagedNotice(HARNESS_CONFIG_PATH);
   }
   const carried = state.state === "valid" ? state.record : emptyRecord();
   for (const [path, contract] of Object.entries(carried.files)) {
@@ -538,18 +531,13 @@ export function planUndo(input: PlanUndoInput): InitPlan {
   const notes: string[] = [];
   const tail = () => {
     notes.push(`Codex keeps its own global config — remove it with: ${codexRemoveCommand()}`);
-    notes.push(`If you set ${ROLE_ENV_VAR} (or the older ${LEGACY_ROLE_ENV_VAR}) anywhere, unset it too.`);
+    notes.push(`If you set ${ROLE_ENV_VAR} anywhere, unset it too.`);
   };
 
   if (state.state === "absent") {
     // ★기록이 없으면 «아무것도» 되돌리지 않는다. 예전엔 이름이 우리 것이면 지웠는데,
     //   init 을 한 적도 없는 저장소의 사용자 항목까지 지웠다(독립 재리뷰 I2).
-    //   ⚠단 «없다»와 «구판이 다른 자리에 남겼다»는 다른 사실이다. 구판 기록이 있는 저장소에서
-    //   「이전 init 기록이 없다」고 말하면, 그 config 안의 사용자 백업을 아무도 다시 꺼내지
-    //   않는다 — 되돌릴 것이 없다고 읽기 때문이다(9차 1차 리뷰 B6).
-    notes.push(legacyManagedRecord(input.files.get(HARNESS_CONFIG_PATH))
-      ? legacyManagedNotice(HARNESS_CONFIG_PATH)
-      : `No record of a previous init in ${HARNESS_RECORD_PATH} — no local file was changed.`);
+    notes.push(`No record of a previous init in ${HARNESS_RECORD_PATH} — no local file was changed.`);
     tail();
     return { writes, deletes, codexCommand: codexRemoveCommand(), notes };
   }

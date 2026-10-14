@@ -14,13 +14,7 @@ import {
   withCreatedDirectories,
 } from "../../core/harness/initPlan";
 import { HARNESS_CONFIG_PATH, HARNESS_DOC_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
-import {
-  adoptLegacyLayout,
-  LEGACY_RECORD_PATH,
-  LEGACY_SNAPSHOT_PATHS,
-  withLegacyMoves,
-} from "../../core/harness/legacyLayout";
-import { LEGACY_SERVER_NAME, SERVER_NAME } from "../../core/harness/agentTargets";
+import { SERVER_NAME } from "../../core/harness/agentTargets";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
 import { PromptCancelled, type Choice, type Prompter } from "./prompter";
 import {
@@ -45,7 +39,7 @@ export interface InitConnection {
 
 export interface InitCommandOptions {
   argv: string[];
-  /** 전역 `--role` / AINECTO_ROLE(옛 AI_ERD_ROLE) 에서 온 역할. init 은 이것을 따로 파싱하지 않는다. */
+  /** 전역 `--role` / AINECTO_ROLE 에서 온 역할. init 은 이것을 따로 파싱하지 않는다. */
   role?: HarnessRole;
   /**
    * 이미 만든 연결(시험·역할이 미리 정해진 호출). {@link connect} 가 있으면 그쪽이 이긴다.
@@ -132,23 +126,11 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
   // ★하위 폴더에서 치면 멈춘다. 그 자리에 .mcp.json 을 쓰면 에이전트는 루트에서 그것을 못 본다 —
   //   역할이 걸린 줄 알고 걸리지 않는다. undo 도 같은 이유로 루트에서만 한다(기록이 루트에 있다).
   const rootNotes = await repositoryRootNotes(root);
-  // ★디스크(옛 폴더 포함)와 계획이 보는 스냅샷(새 경로만)을 가른다. 0.4.x 의 .ai-erd/ 는 계획에 «새 경로에 놓인
-  //   것처럼» 보이고, 적용이 그것을 옮긴다(legacyLayout). 적용의 «그새 바뀌었나» 검사는 디스크 스냅샷으로 한다.
-  const disk = await readSnapshot(root);
-  const layout = adoptLegacyLayout(disk);
-  const files = layout.files;
+  const files = await readSnapshot(root);
 
   if (args.undo) {
-    if (layout.refusal !== undefined) {
-      // 읽어 내지 못한 기록으로는 아무것도 지우지 않는다 — 손상 기록을 만난 undo 와 같은 출력이다.
-      options.io.stdout.write(renderSuccess(
-        { action: args.dryRun ? "undo (dry-run)" : "undo", updated: [], removed: [], notes: [...rootNotes, layout.refusal] },
-        { json: options.json },
-      ));
-      return 0;
-    }
-    const plan = withLegacyMoves(planUndo({ files }), layout);
-    await applyPlan(root, plan, args.dryRun, disk, false);
+    const plan = planUndo({ files });
+    await applyPlan(root, plan, args.dryRun, files, false);
     options.io.stdout.write(renderSuccess(
       {
         action: args.dryRun ? "undo (dry-run)" : "undo",
@@ -165,7 +147,7 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
   //   0개인 저장소에서 «원격에 프로젝트를 만든 뒤» 「아무것도 바꾸지 않았다」는 예외를 냈다
   //   (9차 1차 리뷰 B7). 로컬 쓰기가 0이라는 것과 부수효과가 0이라는 것은 다른 사실이다.
   //   ★묻기 «전»에도 본다 — 다 물어 놓고 거절하지 않는다.
-  const refusal = layout.refusal ?? initRefusal(files);
+  const refusal = initRefusal(files);
   if (refusal !== undefined) {
     throw new Error(refusal);
   }
@@ -217,13 +199,12 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
     : await fetchHarnessDocuments({
       endpoint: options.endpoint,
       accessToken: await options.accessToken?.(),
-      // ⛔이 이름은 바꾸지 않는다 — 서버가 문서의 클라이언트별 변형 키(HARNESS.DOC.AI_ERD_CLI 등)를 이것으로
-      //   찾는다. 사람에게 안 보이는 서버 쪽 식별자다(역할 헤더·scope 와 같은 이유, 2026-10-11).
-      client: "ai-erd-cli",
+      // 서버가 문서의 클라이언트별 변형 키를 이 이름으로 찾는다.
+      client: "ainecto-cli",
       fetchImpl: options.fetchImpl,
     });
 
-  const plan = withLegacyMoves(planInit({
+  const plan = planInit({
     role,
     env: options.env,
     projectName: project.name,
@@ -232,7 +213,7 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
     cliVersion: options.cliVersion,
     files,
     documents,
-  }), layout);
+  });
   if (plan.refusal !== undefined) {
     // ★계획이 「멈춰라」고 하면 멈춘다. 이 판정을 부르는 쪽이 안 보면 그 판정은 «없는» 것이고,
     //   그 경우 읽어 내지 못한 기록을 백업 없이 덮는다(2026-09-27 8차 독립 리뷰 I1).
@@ -240,7 +221,7 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
     //   경로가 생겨선 안 된다. 같은 함수를 쓰므로 두 답이 갈리지 않는다.
     throw new Error(plan.refusal);
   }
-  await applyPlan(root, plan, args.dryRun, disk);
+  await applyPlan(root, plan, args.dryRun, files);
   if (!args.dryRun && previousRole !== undefined && previousRole !== role) {
     // ★역할이 바뀐 사실을 사람이 보는 자리(에이전트 대화)에 한 줄 남긴다(설계 §13 S2).
     //   셸의 `ainecto` 는 지금부터, 떠 있는 세션의 MCP 도구는 새 세션부터다 — 그 조건까지 같이 말한다.
@@ -254,8 +235,6 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
       project: { uuid: project.uuid, name: project.name },
       endpoint: options.endpoint,
       written: plan.writes.map((write) => `${write.existed ? "updated" : "created"} ${write.path}`),
-      // 옛 폴더(.ai-erd/)를 옮길 때만 생긴다 — 지운 것을 말하지 않으면 사용자는 옛 파일이 어디 갔는지 모른다.
-      ...(plan.deletes.length > 0 ? { removed: plan.deletes } : {}),
       codex: `Codex keeps a single global config, so init does not touch it. Run: ${plan.codexCommand}`,
       codexPerSession: plan.codexProfile,
       codexEnvFallback: `Without a profile, start the session with ${ROLE_ENV_VAR}=${role}.`,
@@ -281,10 +260,6 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
           ? "To check the role, change a table through `ainecto` — Design may, and the change lands in AiNecto."
           : `To check the role, try changing a table through \`ainecto\` — ${role} is told to stop.`,
         `If the new Claude Code session still has no role, run \`claude mcp get ${SERVER_NAME}\`: a local-scope "${SERVER_NAME}" entry hides .mcp.json (remove it with \`claude mcp remove ${SERVER_NAME} -s local\`).`,
-        // ★서버 이름이 바뀌었다(0.5.0). 예전에 같은 이름("ai-erd")이라 .mcp.json 이 덮던 사용자·Codex 전역 항목이
-        //   이제는 «따로» 붙어, 그 세션이 역할 없는 서버를 하나 더 본다. 그 항목을 지우는 법을 같이 말한다.
-        `If you added AiNecto earlier as "${LEGACY_SERVER_NAME}" (Claude Code user scope, or Codex), remove it — `
-          + `it no longer hides behind this "${SERVER_NAME}" entry: \`claude mcp remove ${LEGACY_SERVER_NAME} -s user\`, \`codex mcp remove ${LEGACY_SERVER_NAME}\`.`,
         "Undo everything with: ainecto init --undo",
       ],
     },
@@ -654,7 +629,7 @@ function boundProjectUuid(config: string | undefined): string | undefined {
  */
 async function readSnapshot(root: string): Promise<Map<string, string | undefined>> {
   const snapshot = new Map<string, string | undefined>();
-  for (const path of [...MANAGED_PATHS, ...LEGACY_SNAPSHOT_PATHS]) {
+  for (const path of MANAGED_PATHS) {
     snapshot.set(path, await readManagedFile(root, path));
   }
   return snapshot;
@@ -691,14 +666,13 @@ async function applyPlan(
   }
   const applied: string[] = [];
   try {
-    // ★<b>복구 기록을 먼저 쓴다.</b> 예전엔 관리 기록(.ai-erd/config.json)이 «마지막» 쓰기였다.
+    // ★<b>복구 기록을 먼저 쓴다.</b> 예전엔 관리 기록(config.json)이 «마지막» 쓰기였다.
     //   그래서 중간에 실패하면 이미 바뀐 파일이 있는데 기록이 없어 undo 가 아무것도 못 되돌렸다
     //   (2026-09-23 독립 재리뷰 I11). 되돌릴 수 있게 만드는 것이 첫 일이다.
     // ★되돌리기에서는 기록을 건드리는 일이 «작업 전체»의 마지막이다. 4차에서 config 를 쓰기
     //   목록의 뒤로 옮겼지만, 쓰기가 다 끝난 «뒤에» 삭제가 온다. 그래서 삭제가 실패하면 기록은
     //   이미 옛 파일로 돌아가 있고 되돌릴 근거가 없었다(2026-09-23 5차 독립 리뷰 I1).
-    // ★옛 폴더의 기록(옮기는 중)도 기록이다 — undo 에서 그것을 먼저 지우면 뒤에서 실패할 때 근거가 없다.
-    const isRecord = (path: string) => !recordFirst && (path === HARNESS_RECORD_PATH || path === LEGACY_RECORD_PATH);
+    const isRecord = (path: string) => !recordFirst && path === HARNESS_RECORD_PATH;
     const recordWrites = plan.writes.filter((write) => isRecord(write.path));
     const recordDeletes = plan.deletes.filter((path) => isRecord(path));
     /**

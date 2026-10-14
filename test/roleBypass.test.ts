@@ -22,7 +22,6 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
   let originalCwd: string;
   let originalFetch: typeof fetch;
   let originalEnvRole: string | undefined;
-  let originalNewEnvRole: string | undefined;
   const sent: Array<Record<string, string>> = [];
   const errors: string[] = [];
 
@@ -45,22 +44,19 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     await writeFile(join(home, ".ainecto", "tokens.json"), JSON.stringify(file), "utf8");
   }
 
-  /** init 이 쓰는 모양 그대로의 MCP 항목. {@code legacy} 면 0.4.x 가 쓴 모양(키 "ai-erd" · @ai-erd/mcp). */
-  async function repo(dir: string, role: string | null, file = ".mcp.json", legacy = false) {
+  /** init 이 쓰는 모양 그대로의 MCP 항목. */
+  async function repo(dir: string, role: string | null, file = ".mcp.json") {
     await mkdir(join(dir, file, ".."), { recursive: true });
-    const args = ["-y", legacy ? "@ai-erd/mcp" : "@ainecto/mcp", ...(role ? ["--role", role] : [])];
-    const key = legacy ? "ai-erd" : "ainecto";
-    await writeFile(join(dir, file), JSON.stringify({ mcpServers: { [key]: { command: "npx", args } } }), "utf8");
+    const args = ["-y", "@ainecto/mcp", ...(role ? ["--role", role] : [])];
+    await writeFile(join(dir, file), JSON.stringify({ mcpServers: { ainecto: { command: "npx", args } } }), "utf8");
   }
 
   beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), "ai-erd-home-"));
-    work = await mkdtemp(join(tmpdir(), "ai-erd-work-"));
+    home = await mkdtemp(join(tmpdir(), "ainecto-home-"));
+    work = await mkdtemp(join(tmpdir(), "ainecto-work-"));
     originalHome = process.env.HOME;
     process.env.HOME = home;
-    originalEnvRole = process.env.AI_ERD_ROLE;
-    originalNewEnvRole = process.env.AINECTO_ROLE;
-    delete process.env.AI_ERD_ROLE;
+    originalEnvRole = process.env.AINECTO_ROLE;
     delete process.env.AINECTO_ROLE;
     originalCwd = process.cwd();
     process.chdir(work);
@@ -82,8 +78,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     globalThis.fetch = originalFetch;
     process.chdir(originalCwd);
     if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
-    if (originalEnvRole === undefined) delete process.env.AI_ERD_ROLE; else process.env.AI_ERD_ROLE = originalEnvRole;
-    if (originalNewEnvRole === undefined) delete process.env.AINECTO_ROLE; else process.env.AINECTO_ROLE = originalNewEnvRole;
+    if (originalEnvRole === undefined) delete process.env.AINECTO_ROLE; else process.env.AINECTO_ROLE = originalEnvRole;
     await rm(home, { recursive: true, force: true });
     await rm(work, { recursive: true, force: true });
   });
@@ -106,7 +101,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     expect(sent[0]!.authorization).toBe("Bearer seeded-token");
   });
 
-  it("하위 폴더에서도 — cwd 에서 위로, ai-erd 항목이 있는 첫 폴더", async () => {
+  it("하위 폴더에서도 — cwd 에서 위로, ainecto 항목이 있는 첫 폴더", async () => {
     await repo(work, "test");
     const deep = join(work, "packages", "api", "src");
     await mkdir(deep, { recursive: true });
@@ -146,31 +141,6 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     expect(errors.join("")).toContain("AINECTO_ROLE=design does not match");
   });
 
-  it("옛 이름 AI_ERD_ROLE 도 읽고, 같은 규칙이다", async () => {
-    await repo(work, "development");
-    process.env.AI_ERD_ROLE = "design";
-
-    expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(1);
-    expect(sent).toEqual([]);
-    expect(errors.join("")).toContain("AI_ERD_ROLE=design does not match");
-  });
-
-  it("★둘 다 있으면 AINECTO_ROLE 이 이긴다 — 그 값이 저장소와 맞으면 옛 값과 달라도 간다", async () => {
-    await repo(work, "development");
-    process.env.AINECTO_ROLE = "development";
-    process.env.AI_ERD_ROLE = "design";
-
-    expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(0);
-    expect(roleHeader()).toBe("development");
-  });
-
-  it("★0.4.x 가 쓴 저장소(키 \"ai-erd\" · @ai-erd/mcp)의 역할도 헤더로 간다", async () => {
-    await repo(work, "test", ".mcp.json", true);
-
-    expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(0);
-    expect(roleHeader()).toBe("test");
-  });
-
   it("같은 역할을 명시하면 그대로 간다", async () => {
     await repo(work, "development");
 
@@ -188,7 +158,7 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     expect(roleHeader()).toBe("test");
   });
 
-  it("★역할을 못 읽는 저장소(--role 없는 ai-erd 항목)는 «제한 없음»으로 떨어지지 않고 멈춘다", async () => {
+  it("★역할을 못 읽는 저장소(--role 없는 ainecto 항목)는 «제한 없음»으로 떨어지지 않고 멈춘다", async () => {
     await repo(work, null);
 
     expect(await runAinectoCli(["tools", "call", "list_projects", "{}", "--json"], io)).toBe(1);
@@ -241,8 +211,8 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
     expect(await roleIn(".mcp.json")).toBe("design");
   });
 
-  it("잘못된 AI_ERD_ROLE 이 로그인(auth)을 막지 않는다", async () => {
-    process.env.AI_ERD_ROLE = "designer";
+  it("잘못된 AINECTO_ROLE 이 로그인(auth)을 막지 않는다", async () => {
+    process.env.AINECTO_ROLE = "designer";
     expect(await runAinectoCli(["auth", "status", "--json"], io)).toBe(0);
   });
 
@@ -276,14 +246,14 @@ describe("저장소 역할이 셸 CLI 에 실린다", () => {
 
 describe("토큰 칸 — 역할 scope 토큰은 저장하지 않는다 (리뷰 P0-1 가드)", () => {
   let dir: string;
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "ai-erd-store-")); });
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "ainecto-store-")); });
   afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 
-  it("★scope 에 ai-erd:role: 이 든 토큰은 거절한다 — 들어가면 모든 저장소에서 토큰 역할이 헤더를 이긴다", async () => {
+  it("★scope 에 ainecto:role: 이 든 토큰은 거절한다 — 들어가면 모든 저장소에서 토큰 역할이 헤더를 이긴다", async () => {
     const store = new FileTokenStore(dir);
     const token = { endpoint: "https://ainecto.com/mcp", accessToken: "t", updatedAt: "x" };
 
-    await expect(store.save(token.endpoint, { ...token, scope: "mcp ai-erd:role:design" })).rejects.toThrow(/role-scoped/);
+    await expect(store.save(token.endpoint, { ...token, scope: "mcp ainecto:role:design" })).rejects.toThrow(/role-scoped/);
     expect(await store.load(token.endpoint)).toBeUndefined();
     await store.save(token.endpoint, { ...token, scope: "mcp" });
     expect((await store.load(token.endpoint))?.accessToken).toBe("t");
@@ -292,13 +262,13 @@ describe("토큰 칸 — 역할 scope 토큰은 저장하지 않는다 (리뷰 P
 
 describe("findRepositoryRole", () => {
   let root: string;
-  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "ai-erd-find-")); });
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "ainecto-find-")); });
   afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
   it("★홈 폴더 자체는 보지 않는다 — ~/.cursor/mcp.json 은 Cursor 전역 설정이다", async () => {
-    // 실측(2026-09-29): 사람의 ~/.cursor/mcp.json 에 역할 없는 ai-erd 항목이 있었고, 홈을 보면 모든 폴더가 멈췄다.
+    // 실측(2026-09-29): 사람의 ~/.cursor/mcp.json 에 역할 없는 ainecto 항목이 있었고, 홈을 보면 모든 폴더가 멈췄다.
     await mkdir(join(root, ".cursor"), { recursive: true });
-    await writeFile(join(root, ".cursor/mcp.json"), JSON.stringify({ mcpServers: { "ai-erd": { url: "https://ai-erd.com/mcp" } } }), "utf8");
+    await writeFile(join(root, ".cursor/mcp.json"), JSON.stringify({ mcpServers: { ainecto: { url: "https://ainecto.com/mcp" } } }), "utf8");
     const project = join(root, "projects", "x");
     await mkdir(project, { recursive: true });
 
@@ -310,7 +280,7 @@ describe("findRepositoryRole", () => {
     // 다른 쪽이면 문자열 비교로는 홈을 못 알아보고 홈의 전역 설정(~/.cursor/mcp.json)을 저장소 역할로 읽었다.
     await mkdir(join(root, ".cursor"), { recursive: true });
     await writeFile(join(root, ".cursor/mcp.json"), JSON.stringify({
-      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "@ai-erd/mcp", "--role", "design"] } },
+      mcpServers: { ainecto: { command: "npx", args: ["-y", "@ainecto/mcp", "--role", "design"] } },
     }), "utf8");
     const project = join(root, "projects", "x");
     await mkdir(project, { recursive: true });
@@ -322,7 +292,7 @@ describe("findRepositoryRole", () => {
   });
 
   it("저장소 밖을 가리키는 링크는 읽지 않고 멈춘다", async () => {
-    const outside = await mkdtemp(join(tmpdir(), "ai-erd-outside-"));
+    const outside = await mkdtemp(join(tmpdir(), "ainecto-outside-"));
     await writeFile(join(outside, "mcp.json"), JSON.stringify({ mcpServers: {} }), "utf8");
     const project = join(root, "p");
     await mkdir(project, { recursive: true });
@@ -333,21 +303,21 @@ describe("findRepositoryRole", () => {
     await rm(outside, { recursive: true, force: true });
   });
 
-  it("깨진 JSON 은 원문에 ai-erd 가 있을 때만 멈추고, 아니면 우리와 무관한 파일로 건너뛴다", async () => {
+  it("깨진 JSON 은 원문에 ainecto 가 있을 때만 멈추고, 아니면 우리와 무관한 파일로 건너뛴다", async () => {
     await writeFile(join(root, ".mcp.json"), "{ not json", "utf8");
     expect(await findRepositoryRole(root, "/nonexistent-home")).toEqual({ kind: "none" });
 
-    await writeFile(join(root, ".mcp.json"), '{ "mcpServers": { "ai-erd": ', "utf8");
+    await writeFile(join(root, ".mcp.json"), '{ "mcpServers": { "ainecto": ', "utf8");
     expect((await findRepositoryRole(root, "/nonexistent-home")).kind).toBe("conflict");
   });
 
-  it("★ai-erd 항목이 우리 브리지가 아니면(mcp-remote·url) 역할 없음이다 — 멈추지 않는다", async () => {
+  it("★ainecto 항목이 우리 브리지가 아니면(mcp-remote·url) 역할 없음이다 — 멈추지 않는다", async () => {
     await writeFile(join(root, ".mcp.json"), JSON.stringify({
-      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "mcp-remote", "https://ai-erd.com/mcp"] } },
+      mcpServers: { ainecto: { command: "npx", args: ["-y", "mcp-remote", "https://ainecto.com/mcp"] } },
     }), "utf8");
     await mkdir(join(root, ".cursor"), { recursive: true });
     await writeFile(join(root, ".cursor/mcp.json"), JSON.stringify({
-      mcpServers: { "ai-erd": { url: "https://ai-erd.com/mcp" } },
+      mcpServers: { ainecto: { url: "https://ainecto.com/mcp" } },
     }), "utf8");
 
     expect(await findRepositoryRole(root, "/nonexistent-home")).toEqual({ kind: "none" });
@@ -355,14 +325,14 @@ describe("findRepositoryRole", () => {
 
   it("우리 브리지인데 --role 이 없거나 모르는 값이면 멈춘다", async () => {
     await writeFile(join(root, ".mcp.json"), JSON.stringify({
-      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "@ai-erd/mcp@0.4.2", "--role", "designer"] } },
+      mcpServers: { ainecto: { command: "npx", args: ["-y", "@ainecto/mcp@0.5.0", "--role", "designer"] } },
     }), "utf8");
     expect((await findRepositoryRole(root, "/nonexistent-home")).kind).toBe("conflict");
   });
 
   it("★폴더 «안»을 가리키는 링크는 읽는다 (.cursor/mcp.json → ../.mcp.json)", async () => {
     await writeFile(join(root, ".mcp.json"), JSON.stringify({
-      mcpServers: { "ai-erd": { command: "npx", args: ["-y", "@ai-erd/mcp", "--role", "test"] } },
+      mcpServers: { ainecto: { command: "npx", args: ["-y", "@ainecto/mcp", "--role", "test"] } },
     }), "utf8");
     await mkdir(join(root, ".cursor"), { recursive: true });
     await symlink("../.mcp.json", join(root, ".cursor/mcp.json"));
