@@ -9,6 +9,7 @@ import type { GeneratedToolDefinition } from "../../core/catalog/types";
 import { runConnector } from "../mcp/connector";
 import { executeGeneratedCommand, matchGeneratedCommand } from "./generatedCommandRouter";
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
+import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands";
 import { executeInitCommand } from "./initCommand";
 import { createReadlinePrompter, isInteractive } from "./prompter";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
@@ -141,6 +142,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     //   역할은 아래 실제 호출에 실리고, 강제는 서버가 한다.
     let routeTools: readonly GeneratedToolDefinition[] = getGeneratedTools(env);
     let remote = isAttachmentsUploadCommand(domain, action)
+      || isInboxPollCommand(domain, action)
       || (domain === "tools" && (action === "list" || action === "call"))
       || matchGeneratedCommand(routeTools, parsed.positionals) !== undefined;
     if (!remote) {
@@ -168,6 +170,10 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         json: parsed.json,
         io,
       });
+    }
+
+    if (isInboxPollCommand(domain, action)) {
+      return await executeInboxPollCommand({ domain, action, argv: rest, client, json: parsed.json, io });
     }
 
     const generatedResult = await executeGeneratedCommand({
@@ -401,6 +407,10 @@ function helpText(): string {
     "  ainecto tools list [--env prod|dev] [--endpoint URL] [--json]",
     "  ainecto tools call <mcpName> [-f payload.json|@-] [inline-json] [--json]",
     "  ainecto attachments upload --document-uuid <uuid> <file...> [--json]",
+    "  ainecto notifications poll --cursor-file <path> [--kinds A,B] [--project <uuid>] [--direct-only] [--limit N] [--json]",
+    "  ainecto notifications ack --cursor-file <path>     (after the agent handled the polled batch)",
+    "  ainecto agent-todos poll [--only-new --seen-file <path>] [--json]",
+    "      poll exit codes: 0 new items · 3 nothing new · 1 error · 2 usage error",
     "  ainecto <generated-command> [flags] [-f payload.json] [--yes] [--json]",
     "  ainecto mcp [--env prod|dev] [--endpoint URL] [--role design|development|test|validation]",
     "",

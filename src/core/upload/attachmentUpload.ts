@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { McpRpcClient } from "../mcp/rpcClient";
+import { unwrapMcpToolPayload } from "../mcp/toolPayload";
 
 export interface AttachmentUploadFileInput {
   path: string;
@@ -306,23 +307,6 @@ function validatePutResult(
       expected: metadata.sizeBytes,
       actual: putResult.sizeBytes,
     });
-  }
-}
-
-function unwrapMcpToolPayload(value: unknown): unknown {
-  if (!isRecord(value) || !Array.isArray(value.content)) {
-    return value;
-  }
-  const text = value.content
-    .map((item) => isRecord(item) && typeof item.text === "string" ? item.text : "")
-    .find((itemText) => itemText.trim().startsWith("{"));
-  if (!text) {
-    return value;
-  }
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return value;
   }
 }
 

@@ -159,6 +159,24 @@ ainecto attachments upload --document-uuid <documentUuid> ./diagram.png ./notes.
 The generated `request_upload_token` and `upload_attachments` paths remain raw MCP argument-contract
 commands and do not read local files.
 
+Inbox polling — for a scheduler (cron, launchd) that wakes an agent only when something is new. Exit
+codes: `0` new items, `3` nothing new, `1` error, `2` usage error. `notifications poll` saves the batch
+to the cursor file before printing it and prints the same batch again until `notifications ack` (run
+it only after the agent handled the batch). `agent-todos poll --only-new` exits 0 only for to-dos it
+has not seen before (kept in the seen file).
+
+```bash
+ainecto notifications poll --direct-only --cursor-file ~/.ainecto/inbox.cursor --json > /tmp/inbox.json \
+  && claude -p "Summarize these AiNecto notifications: $(cat /tmp/inbox.json)" \
+  && ainecto notifications ack --cursor-file ~/.ainecto/inbox.cursor
+ainecto agent-todos poll --only-new --seen-file ~/.ainecto/todos.seen --json > /tmp/todos.json \
+  && claude -p "Review these AiNecto to-dos and only summarize them: $(cat /tmp/todos.json)"
+```
+
+The server tools behind them (`list_notifications`, `list_agent_todos`, `update_agent_todos`,
+`list_history`) are generated commands too (`ainecto notifications list`, `ainecto agent-todos list`,
+`ainecto agent-todos update -f …`, `ainecto history list`) once the server exposes them.
+
 ## Connector Mode
 
 ```bash
