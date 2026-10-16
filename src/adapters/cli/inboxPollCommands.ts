@@ -1,9 +1,11 @@
 /**
  * 알림·할 일 «폴링» 명령 — 사람이 cron/launchd 에 걸어 «새 것이 있을 때만» 에이전트를 깨우게 한다(사건 기록 S2, 설계 §6-4 (5)).
  *
- *   ainecto notifications poll --cursor-file <path> [--kinds A,B] [--project <uuid>] [--direct-only] [--limit N] [--json]
+ *   ainecto notifications poll --cursor-file <path> [--kinds A,B] [--workspace <uuid>] [--project <uuid>]... [--direct-only] [--limit N] [--json]
  *   ainecto notifications ack  --cursor-file <path> [--json]
- *   ainecto agent-todos poll [--only-new --seen-file <path>] [--json]
+ *   ainecto agent-todos poll [--workspace <uuid>] [--project <uuid>]... [--only-new --seen-file <path>] [--json]
+ *
+ * --project 는 여러 번 줄 수 있다(여러 프로젝트). --workspace 와 함께 주면 서버가 교집합을 준다.
  *
  * ★종료 코드: 0 = 새 항목 있음 · 3 = 새 항목 없음 · 1 = 오류 · 2 = 사용법 오류(기존 0/1/2 와 충돌하지 않는다).
  *
@@ -63,10 +65,20 @@ export async function executeInboxPollCommand(options: InboxCommandOptions): Pro
 
 // ── 알림 ────────────────────────────────────────────────────────────────
 
-interface PollFilter {
+/** 범위 필터 — 알림·할 일 공용. projectUuids 는 정렬·중복 제거된 집합(없으면 undefined). */
+interface ScopeFilter {
+  workspaceUuid?: string;
+  projectUuids?: string[];
+}
+
+interface PollFilter extends ScopeFilter {
   kinds?: string[];
-  projectUuid?: string;
   directOnly: boolean;
+}
+
+/** 0.7.0 커서 파일의 필터 모양 — 프로젝트가 하나뿐이던 때. 읽을 때 PollFilter 로 바꾼다. */
+interface LegacyPollFilter extends PollFilter {
+  projectUuid?: string;
 }
 
 /** 커서 파일 — 보류 중인 배치(ack 전)와 그 필터. 서버 위치는 서버가 기억한다(파일은 «아직 확인 안 한 것» 만 든다). */
@@ -79,11 +91,11 @@ interface CursorFile {
 }
 
 async function notificationsPoll(options: InboxCommandOptions): Promise<number> {
-  const flags = parseFlags(options.argv, ["--cursor-file", "--kinds", "--project", "--limit"], ["--direct-only"]);
+  const flags = parseFlags(options.argv, ["--cursor-file", "--kinds", "--workspace", "--project", "--limit"], ["--direct-only"]);
   const cursorPath = requireFlag(flags, "--cursor-file", "notifications poll");
   const filter: PollFilter = {
     kinds: flags.values["--kinds"]?.split(",").map((kind) => kind.trim()).filter(Boolean).sort(),
-    projectUuid: flags.values["--project"],
+    ...scopeFilter(flags),
     directOnly: flags.switches.has("--direct-only"),
   };
   if (filter.kinds?.length === 0) filter.kinds = undefined;
@@ -104,7 +116,7 @@ async function notificationsPoll(options: InboxCommandOptions): Promise<number> 
   const result = await callTool(options.client, LIST_NOTIFICATIONS, {
     cursor: "saved",
     ...(filter.kinds ? { kinds: filter.kinds } : {}),
-    ...(filter.projectUuid ? { projectUuid: filter.projectUuid } : {}),
+    ...scopeArgs(filter),
     ...(filter.directOnly ? { directOnly: true } : {}),
     ...(limit !== undefined ? { limit } : {}),
   });
@@ -140,7 +152,7 @@ async function notificationsAck(options: InboxCommandOptions): Promise<number> {
     cursor: "saved",
     ack: saved.ackToken,
     ...(saved.filter.kinds ? { kinds: saved.filter.kinds } : {}),
-    ...(saved.filter.projectUuid ? { projectUuid: saved.filter.projectUuid } : {}),
+    ...scopeArgs(saved.filter),
     ...(saved.filter.directOnly ? { directOnly: true } : {}),
     limit: 1,
   });
@@ -153,7 +165,8 @@ async function notificationsAck(options: InboxCommandOptions): Promise<number> {
 // ── 할 일 ────────────────────────────────────────────────────────────────
 
 async function agentTodosPoll(options: InboxCommandOptions): Promise<number> {
-  const flags = parseFlags(options.argv, ["--seen-file"], ["--only-new"]);
+  const flags = parseFlags(options.argv, ["--workspace", "--project", "--seen-file"], ["--only-new"]);
+  const scope = scopeArgs(scopeFilter(flags));
   const onlyNew = flags.switches.has("--only-new");
   const seenPath = flags.values["--seen-file"];
   if (onlyNew && !seenPath) {
@@ -162,7 +175,7 @@ async function agentTodosPoll(options: InboxCommandOptions): Promise<number> {
   const items: Array<Record<string, unknown>> = [];
   let after: string | undefined;
   for (let page = 0; page < 20; page += 1) {
-    const result = await callTool(options.client, LIST_AGENT_TODOS, { state: ["OPEN"], limit: 50, ...(after ? { after } : {}) });
+    const result = await callTool(options.client, LIST_AGENT_TODOS, { state: ["OPEN"], ...scope, limit: 50, ...(after ? { after } : {}) });
     const pageItems = Array.isArray(result.items) ? result.items.filter(isRecord) : [];
     items.push(...pageItems);
     const last = pageItems[pageItems.length - 1];
@@ -199,12 +212,38 @@ async function callTool(client: McpRpcClient, name: string, args: Record<string,
 }
 
 interface ParsedFlags {
+  /** 값 플래그의 마지막 값. */
   values: Record<string, string | undefined>;
+  /** 값 플래그의 모든 값(반복 가능한 플래그용, 준 순서). */
+  lists: Record<string, string[]>;
   switches: Set<string>;
+}
+
+/** --workspace(1개) · --project(반복) → 범위 필터. 프로젝트는 정렬·중복 제거 — 같은 집합이면 같은 필터. */
+function scopeFilter(flags: ParsedFlags): ScopeFilter {
+  const projects = [...new Set(flags.lists["--project"] ?? [])].sort();
+  return {
+    ...(flags.values["--workspace"] ? { workspaceUuid: flags.values["--workspace"] } : {}),
+    ...(projects.length ? { projectUuids: projects } : {}),
+  };
+}
+
+/**
+ * 범위 필터 → 서버 인자. ★준 것만 키로 싣는다(옛 서버는 모르는 필드를 거절한다).
+ * 프로젝트 1개는 문자열(옛 서버 호환), 2개 이상은 배열.
+ */
+function scopeArgs(filter: ScopeFilter): Record<string, unknown> {
+  const projects = filter.projectUuids ?? [];
+  return {
+    ...(filter.workspaceUuid ? { workspaceUuid: filter.workspaceUuid } : {}),
+    ...(projects.length === 1 ? { projectUuid: projects[0] } : {}),
+    ...(projects.length > 1 ? { projectUuid: projects } : {}),
+  };
 }
 
 function parseFlags(argv: string[], valueFlags: string[], switchFlags: string[]): ParsedFlags {
   const values: Record<string, string | undefined> = {};
+  const lists: Record<string, string[]> = {};
   const switches = new Set<string>();
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -215,6 +254,7 @@ function parseFlags(argv: string[], valueFlags: string[], switchFlags: string[])
         throw new CliCommandError("FLAG_REQUIRES_VALUE", `${arg} requires a value.`, { flag: arg });
       }
       values[arg] = value;
+      (lists[arg] ??= []).push(value);
       index += 1;
     } else if (switchFlags.includes(arg)) {
       switches.add(arg);
@@ -222,7 +262,7 @@ function parseFlags(argv: string[], valueFlags: string[], switchFlags: string[])
       throw new CliCommandError("UNKNOWN_FLAG", `Unknown argument ${arg}.`, { flag: arg });
     }
   }
-  return { values, switches };
+  return { values, lists, switches };
 }
 
 function requireFlag(flags: ParsedFlags, flag: string, command: string): string {
@@ -240,8 +280,16 @@ function positiveInt(flag: string, value: string | undefined): number {
 
 function sameFilter(a: PollFilter, b: PollFilter): boolean {
   return JSON.stringify(a.kinds ?? []) === JSON.stringify(b.kinds ?? [])
-    && (a.projectUuid ?? "") === (b.projectUuid ?? "")
+    && (a.workspaceUuid ?? "") === (b.workspaceUuid ?? "")
+    && JSON.stringify(a.projectUuids ?? []) === JSON.stringify(b.projectUuids ?? [])
     && a.directOnly === b.directOnly;
+}
+
+/** 0.7.0 파일의 projectUuid(문자열 1개)를 projectUuids 집합으로 — 옛 보류 배치도 같은 필터로 알아보고 ack 한다. */
+function normalizeSavedFilter(saved: LegacyPollFilter): PollFilter {
+  const { projectUuid, ...rest } = saved;
+  if (rest.projectUuids?.length || !projectUuid) return rest;
+  return { ...rest, projectUuids: [projectUuid] };
 }
 
 async function readCursorFile(path: string): Promise<CursorFile | undefined> {
@@ -253,7 +301,7 @@ async function readCursorFile(path: string): Promise<CursorFile | undefined> {
   try {
     const parsed = JSON.parse(text) as CursorFile;
     if (parsed?.v !== 1 || !isRecord(parsed.filter)) throw new Error("shape");
-    return parsed;
+    return { ...parsed, filter: normalizeSavedFilter(parsed.filter) };
   } catch {
     throw new CliCommandError("INVALID_CURSOR_FILE", `${path} is not a cursor file written by ainecto notifications poll.`, { cursorFile: path });
   }

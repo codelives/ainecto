@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -97,6 +97,59 @@ describe("inbox poll commands", () => {
     expect(JSON.parse(third.out()).data.items).toEqual([{ todoId: "t2" }]);
 
     expect(await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--only-new"], io())).toBe(2);
+  });
+
+  it("scope filters: one --project is a string, several are an array, no --workspace means no key", async () => {
+    replies.push(tool({ items: [], stream: "s" }));
+    await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", join(cwd, "one.cursor"), "--project", "p1"], io());
+    expect(calls[0]?.arguments).toEqual({ cursor: "saved", projectUuid: "p1" });
+
+    replies.push(tool({ items: [], stream: "s" }));
+    await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", join(cwd, "many.cursor"),
+      "--workspace", "w1", "--project", "p2", "--project", "p1", "--project", "p2"], io());
+    expect(calls[1]?.arguments).toEqual({ cursor: "saved", workspaceUuid: "w1", projectUuid: ["p1", "p2"] });
+
+    replies.push(tool({ items: [], hasMore: false }));
+    await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--project", "p1"], io());
+    expect(calls[2]?.arguments).toEqual({ state: ["OPEN"], projectUuid: "p1", limit: 50 });
+
+    replies.push(tool({ items: [], hasMore: false }));
+    await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--workspace", "w1", "--project", "p1", "--project", "p2"], io());
+    expect(calls[3]?.arguments).toEqual({ state: ["OPEN"], workspaceUuid: "w1", projectUuid: ["p1", "p2"], limit: 50 });
+    expect(calls[3]?.arguments).not.toHaveProperty("kinds");
+  });
+
+  it("a pending batch is replayed for the same scope set in any order, refused for another scope, and acked with its scope", async () => {
+    const cursor = join(cwd, "scope.cursor");
+    replies.push(tool({ items: [{ id: "n1", seq: 1 }], ackToken: "a1", stream: "s" }));
+    expect(await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", cursor,
+      "--workspace", "w1", "--project", "p1", "--project", "p2"], io())).toBe(0);
+
+    // 같은 집합(순서만 다름) — 보류 배치를 다시 낸다, 서버에 묻지 않는다.
+    expect(await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", cursor,
+      "--workspace", "w1", "--project", "p2", "--project", "p1"], io())).toBe(0);
+    expect(calls).toHaveLength(1);
+
+    for (const scope of [["--project", "p1", "--project", "p2"], ["--workspace", "w1", "--project", "p1"], ["--workspace", "w2", "--project", "p1", "--project", "p2"]]) {
+      const other = io();
+      expect(await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", cursor, ...scope], other)).toBe(1);
+      expect(other.err()).toContain("different filter");
+    }
+    expect(calls).toHaveLength(1);
+
+    replies.push(tool({ items: [], stream: "s" }));
+    expect(await runAinectoCli(["notifications", "ack", "--env", "dev", "--cursor-file", cursor], io())).toBe(0);
+    expect(calls[1]?.arguments).toEqual({ cursor: "saved", ack: "a1", workspaceUuid: "w1", projectUuid: ["p1", "p2"], limit: 1 });
+  });
+
+  it("a 0.7.0 cursor file with a single projectUuid still matches --project and acks with it", async () => {
+    const cursor = join(cwd, "legacy.cursor");
+    writeFileSync(cursor, JSON.stringify({ v: 1, filter: { projectUuid: "p1", directOnly: false }, stream: "s", ackToken: "a1", pendingItems: [{ id: "n1" }] }));
+    expect(await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", cursor, "--project", "p1"], io())).toBe(0);
+    expect(calls).toHaveLength(0);
+    replies.push(tool({ items: [], stream: "s" }));
+    expect(await runAinectoCli(["notifications", "ack", "--env", "dev", "--cursor-file", cursor], io())).toBe(0);
+    expect(calls[0]?.arguments).toEqual({ cursor: "saved", ack: "a1", projectUuid: "p1", limit: 1 });
   });
 
   it("a tool error exits 1 with the server's reason", async () => {
