@@ -32,7 +32,7 @@
                 },
                 "parentCommentId": {
                   "type": "integer",
-                  "description": "Reply to this top-level comment id (from mcp__ainecto__list_comments). Replies are one level deep: replying to a reply is rejected.",
+                  "description": "Reply to this top-level comment id (from mcp__ainecto__list_comments). Replies are one level deep: replying to a reply is rejected. The thread's original author and earlier repliers get a notification email (except people mentioned in this reply, who get the mention email instead).",
                   "minimum": 1
                 },
                 "mentionUserIds": {
@@ -59,7 +59,7 @@
           },
           "mailLanguage": {
             "type": "string",
-            "description": "Language of the mention notification email. Defaults to en.",
+            "description": "Language of the comment notification email (mention or reply). Defaults to en.",
             "enum": [
               "en",
               "ko"
@@ -228,7 +228,7 @@
           },
           "mailLanguage": {
             "type": "string",
-            "description": "Language of the mention notification email. Defaults to en.",
+            "description": "Language of the comment notification email (mention or reply). Defaults to en.",
             "enum": [
               "en",
               "ko"
@@ -3154,6 +3154,282 @@
         "required": [
           "documentUuid"
         ]
+      }
+    },
+    {
+      "name": "get_my_work_summary",
+      "description": "One-call summary of what is waiting for the signed-in user in AiNecto — call it when the user asks things like \"do I have anything to do?\", \"anything new?\", \"anything to review?\" or \"did anyone ask me something?\". Returns notifications {unread (not yet read by the person, newest 100 counted; unreadCapped when there are more), unreadByKind, newForThisConnection (not yet acknowledged by this connection — the same number as the line at the end of tool results)}, mentionsToRead {items the person has not read that mention them, each with target title and url}, and todos {open, leaseExpired, inProgress, items: questions and requests waiting for the user's agent}. For details use list_notifications and list_agent_todos; to read the document and its comments use get_document with the target uuid. Read-only: nothing is marked read or acknowledged.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workspaceUuids": {
+            "type": "array",
+            "description": "Only items in any of these workspaces.",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "projectUuids": {
+            "type": "array",
+            "description": "Only items in any of these projects. Use it when the user names a project or the project you are working in is clear. With workspaceUuids too, both must match. A workspace or project you cannot see matches nothing.",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "projectUuid": {
+            "type": "string",
+            "description": "Older single-value form of projectUuids."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_agent_todos",
+      "description": "List the to-dos that ask the signed-in user's agent to act now (for example a question that mentions the user). This is the current state, not a feed: a to-do you have not finished comes back on every call until it is completed, dismissed, or closed because the person did it themselves. Each item has todoId, kind, obligation, openedAt, summary, target (title and url), action and state. To work on one, claim it with update_agent_todos and complete it with a one-line note. Actions that affect other people (assigning, approving, inviting) need the user's confirmation first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "array",
+            "description": "OPEN (default): to-dos you can take, including ones whose lease expired. MINE: to-dos currently leased (claimed) and not expired.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "OPEN",
+                "MINE"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "kinds": {
+            "type": "array",
+            "description": "Only these kinds.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "COMMENT_MENTIONED",
+                "COMMENT_REPLIED",
+                "QUESTION_ANSWERED",
+                "QUESTION_RESOLVED",
+                "QUESTION_MENTIONED"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "workspaceUuids": {
+            "type": "array",
+            "description": "Only to-dos in any of these workspaces.",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "projectUuids": {
+            "type": "array",
+            "description": "Only to-dos in any of these projects. Use it when the user names a project or the project you are working in is clear. With workspaceUuids too, both must match. A workspace or project you cannot see matches nothing.",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "projectUuid": {
+            "type": "string",
+            "description": "Older single-value form of projectUuids."
+          },
+          "after": {
+            "type": "string",
+            "description": "todoId of the last item of the previous page."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Items per call, default 20."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_history",
+      "description": "List recent activity (who did what, people and agents) in a workspace, a project, or on one resource, newest first. Give at least one of workspaceUuid, projectUuid, or resourceType with resourceUuid; you need editor access or higher in that scope. This is a list to refresh, not a gap-free feed: to see what is new, read the first page again and skip ids you have already seen; to get each new notification exactly once use list_notifications. Each item has id, kind, at, lastAt, coalesceCount, actor, target (title and url only when you can read it now), changes and summary.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workspaceUuid": {
+            "type": "string",
+            "description": "Activity in this workspace."
+          },
+          "projectUuid": {
+            "type": "string",
+            "description": "Activity in this project."
+          },
+          "resourceType": {
+            "type": "string",
+            "description": "With resourceUuid: activity on one resource.",
+            "enum": [
+              "DOCUMENT",
+              "PROJECT"
+            ]
+          },
+          "resourceUuid": {
+            "type": "string",
+            "description": "UUID of the resource named by resourceType."
+          },
+          "kinds": {
+            "type": "array",
+            "description": "Only these kinds.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "COMMENT_MENTIONED",
+                "COMMENT_REPLIED",
+                "QUESTION_ANSWERED",
+                "QUESTION_RESOLVED",
+                "QUESTION_MENTIONED"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "actorType": {
+            "type": "string",
+            "description": "Only people (USER) or only agents (AGENT).",
+            "enum": [
+              "USER",
+              "AGENT"
+            ]
+          },
+          "before": {
+            "type": "string",
+            "description": "nextCursor of the previous page (older items)."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Items per call, default 20."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_notifications",
+      "description": "Read new notifications for the signed-in user, oldest first and without gaps — for an agent that checks the inbox periodically. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person; open to-dos are in list_agent_todos. Calls closer than 30 seconds apart (except a call that carries ack) return retryAfterSeconds instead of items.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Where to read from. \"saved\" (default): after what this connection last acknowledged for this same filter. \"latest\": from now on (moves the saved position to now). \"earliest\": everything still kept (90 days). Or a nextCursor from a previous response: read after it without using or changing the saved position."
+          },
+          "ack": {
+            "type": "string",
+            "description": "The ackToken of the previous response. Send it with the same filter once you have handled (or safely stored) that batch; only then does the saved position move past it. Without it, the same batch is returned again."
+          },
+          "kinds": {
+            "type": "array",
+            "description": "Only these notification kinds.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "COMMENT_MENTIONED",
+                "COMMENT_REPLIED",
+                "QUESTION_ANSWERED",
+                "QUESTION_RESOLVED",
+                "QUESTION_MENTIONED"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "workspaceUuids": {
+            "type": "array",
+            "description": "Only notifications in any of these workspaces.",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "projectUuids": {
+            "type": "array",
+            "description": "Only notifications in any of these projects. Use it when the user names a project or the project you are working in is clear. With workspaceUuids too, both must match. A workspace or project you cannot see matches nothing.",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "projectUuid": {
+            "type": "string",
+            "description": "Older single-value form of projectUuids."
+          },
+          "directOnly": {
+            "type": "boolean",
+            "description": "Only notifications that point at you directly (mentions, questions to you)."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Items per call, default 20."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_agent_todos",
+      "description": "Claim, renew, complete, release, or dismiss the signed-in user's agent to-dos. Only the session holding the current leaseToken may renew, release, or complete a claimed to-do — even another session of the same connection gets CLAIMED_BY_OTHER. Results are per item: {todoId, ok: true, state, leaseToken?, claimExpiresAt?} or {todoId, ok: false, error} with error one of CLAIMED_BY_OTHER, LEASE_LOST, ALREADY_DONE, CLOSED_BY_HUMAN, SUPERSEDED, ACCESS_LOST, NOT_FOUND, INVALID — on CLOSED_BY_HUMAN or SUPERSEDED stop working on it. Retrying the same complete or dismiss returns ok again. There is no tool to mark the person's notifications read.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "To-dos to update; each item is applied and reported on its own.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "todoId": {
+                  "type": "string",
+                  "description": "todoId from list_agent_todos."
+                },
+                "action": {
+                  "type": "string",
+                  "description": "claim: take it (returns leaseToken, valid 30 minutes). renew: extend your lease. complete: done (with leaseToken if you claimed it; without one only while it is still OPEN). release: give it back. dismiss: not a to-do.",
+                  "enum": [
+                    "claim",
+                    "renew",
+                    "complete",
+                    "release",
+                    "dismiss"
+                  ]
+                },
+                "leaseToken": {
+                  "type": "string",
+                  "description": "Required for renew and release, and for complete or dismiss of a to-do you claimed."
+                },
+                "note": {
+                  "type": "string",
+                  "description": "For complete or dismiss: one line on what you did (at most 500 characters, no document bodies). The person sees it in the inbox.",
+                  "maxLength": 500
+                }
+              },
+              "required": [
+                "todoId",
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
       }
     },
     {
