@@ -1,11 +1,11 @@
 /**
  * 알림·할 일 «폴링» 명령 — 사람이 cron/launchd 에 걸어 «새 것이 있을 때만» 에이전트를 깨우게 한다(사건 기록 S2, 설계 §6-4 (5)).
  *
- *   ainecto notifications poll --cursor-file <path> [--kinds A,B] [--workspace <uuid>] [--project <uuid>]... [--direct-only] [--limit N] [--json]
+ *   ainecto notifications poll --cursor-file <path> [--kinds A,B] [--workspace <uuid>]... [--project <uuid>]... [--direct-only] [--limit N] [--json]
  *   ainecto notifications ack  --cursor-file <path> [--json]
- *   ainecto agent-todos poll [--workspace <uuid>] [--project <uuid>]... [--only-new --seen-file <path>] [--json]
+ *   ainecto agent-todos poll [--workspace <uuid>]... [--project <uuid>]... [--only-new --seen-file <path>] [--json]
  *
- * --project 는 여러 번 줄 수 있다(여러 프로젝트). --workspace 와 함께 주면 서버가 교집합을 준다.
+ * --workspace · --project 는 여러 번 줄 수 있다. 같은 축 안은 OR, 축 사이는 AND(서버가 판정).
  *
  * ★종료 코드: 0 = 새 항목 있음 · 3 = 새 항목 없음 · 1 = 오류 · 2 = 사용법 오류(기존 0/1/2 와 충돌하지 않는다).
  *
@@ -65,9 +65,9 @@ export async function executeInboxPollCommand(options: InboxCommandOptions): Pro
 
 // ── 알림 ────────────────────────────────────────────────────────────────
 
-/** 범위 필터 — 알림·할 일 공용. projectUuids 는 정렬·중복 제거된 집합(없으면 undefined). */
+/** 범위 필터 — 알림·할 일 공용. 두 축 모두 정렬·중복 제거된 집합(비면 undefined). */
 interface ScopeFilter {
-  workspaceUuid?: string;
+  workspaceUuids?: string[];
   projectUuids?: string[];
 }
 
@@ -219,25 +219,31 @@ interface ParsedFlags {
   switches: Set<string>;
 }
 
-/** --workspace(1개) · --project(반복) → 범위 필터. 프로젝트는 정렬·중복 제거 — 같은 집합이면 같은 필터. */
+/** --workspace · --project(둘 다 반복) → 범위 필터. 정렬·중복 제거 — 같은 집합이면 같은 필터. */
 function scopeFilter(flags: ParsedFlags): ScopeFilter {
-  const projects = [...new Set(flags.lists["--project"] ?? [])].sort();
+  const workspaces = uuidSet(flags.lists["--workspace"]);
+  const projects = uuidSet(flags.lists["--project"]);
   return {
-    ...(flags.values["--workspace"] ? { workspaceUuid: flags.values["--workspace"] } : {}),
+    ...(workspaces.length ? { workspaceUuids: workspaces } : {}),
     ...(projects.length ? { projectUuids: projects } : {}),
   };
 }
 
+function uuidSet(values: string[] | undefined): string[] {
+  return [...new Set(values ?? [])].sort();
+}
+
 /**
- * 범위 필터 → 서버 인자. ★준 것만 키로 싣는다(옛 서버는 모르는 필드를 거절한다).
- * 프로젝트 1개는 문자열(옛 서버 호환), 2개 이상은 배열.
+ * 범위 필터 → 서버 인자 workspaceUuids · projectUuids(배열). ★준 축만 키로 싣는다(옛 서버는 모르는 필드를 거절한다).
+ * 단 프로젝트 1개뿐이고 워크스페이스가 없으면 옛 단수 projectUuid 문자열 — 옛 서버도 아는 모양(이 경우만).
  */
 function scopeArgs(filter: ScopeFilter): Record<string, unknown> {
+  const workspaces = filter.workspaceUuids ?? [];
   const projects = filter.projectUuids ?? [];
+  if (workspaces.length === 0 && projects.length === 1) return { projectUuid: projects[0] };
   return {
-    ...(filter.workspaceUuid ? { workspaceUuid: filter.workspaceUuid } : {}),
-    ...(projects.length === 1 ? { projectUuid: projects[0] } : {}),
-    ...(projects.length > 1 ? { projectUuid: projects } : {}),
+    ...(workspaces.length ? { workspaceUuids: workspaces } : {}),
+    ...(projects.length ? { projectUuids: projects } : {}),
   };
 }
 
@@ -280,7 +286,7 @@ function positiveInt(flag: string, value: string | undefined): number {
 
 function sameFilter(a: PollFilter, b: PollFilter): boolean {
   return JSON.stringify(a.kinds ?? []) === JSON.stringify(b.kinds ?? [])
-    && (a.workspaceUuid ?? "") === (b.workspaceUuid ?? "")
+    && JSON.stringify(a.workspaceUuids ?? []) === JSON.stringify(b.workspaceUuids ?? [])
     && JSON.stringify(a.projectUuids ?? []) === JSON.stringify(b.projectUuids ?? [])
     && a.directOnly === b.directOnly;
 }

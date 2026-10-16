@@ -163,8 +163,8 @@ Inbox polling — for a scheduler (cron, launchd) that wakes an agent only when 
 codes: `0` new items, `3` nothing new, `1` error, `2` usage error. `notifications poll` saves the batch
 to the cursor file before printing it and prints the same batch again until `notifications ack` (run
 it only after the agent handled the batch). `agent-todos poll --only-new` exits 0 only for to-dos it
-has not seen before (kept in the seen file). Both take `--workspace <uuid>` and `--project <uuid>`
-(repeat it for several projects; with both, the server returns the intersection). Each filter is its
+has not seen before (kept in the seen file). Both take `--workspace <uuid>` and `--project <uuid>`,
+each repeatable: any of the given workspaces AND any of the given projects. Each filter is its
 own notification stream, so use one cursor file per filter.
 
 ```bash

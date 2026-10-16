@@ -99,38 +99,49 @@ describe("inbox poll commands", () => {
     expect(await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--only-new"], io())).toBe(2);
   });
 
-  it("scope filters: one --project is a string, several are an array, no --workspace means no key", async () => {
+  it("scope filters: workspaceUuids/projectUuids arrays, only given axes, a lone project without workspace is the legacy string", async () => {
     replies.push(tool({ items: [], stream: "s" }));
     await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", join(cwd, "one.cursor"), "--project", "p1"], io());
     expect(calls[0]?.arguments).toEqual({ cursor: "saved", projectUuid: "p1" });
 
     replies.push(tool({ items: [], stream: "s" }));
     await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", join(cwd, "many.cursor"),
-      "--workspace", "w1", "--project", "p2", "--project", "p1", "--project", "p2"], io());
-    expect(calls[1]?.arguments).toEqual({ cursor: "saved", workspaceUuid: "w1", projectUuid: ["p1", "p2"] });
+      "--workspace", "w2", "--workspace", "w1", "--project", "p2", "--project", "p1", "--project", "p2"], io());
+    expect(calls[1]?.arguments).toEqual({ cursor: "saved", workspaceUuids: ["w1", "w2"], projectUuids: ["p1", "p2"] });
+
+    replies.push(tool({ items: [], stream: "s" }));
+    await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", join(cwd, "ws.cursor"), "--workspace", "w1", "--project", "p1"], io());
+    expect(calls[2]?.arguments).toEqual({ cursor: "saved", workspaceUuids: ["w1"], projectUuids: ["p1"] });
 
     replies.push(tool({ items: [], hasMore: false }));
     await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--project", "p1"], io());
-    expect(calls[2]?.arguments).toEqual({ state: ["OPEN"], projectUuid: "p1", limit: 50 });
+    expect(calls[3]?.arguments).toEqual({ state: ["OPEN"], projectUuid: "p1", limit: 50 });
 
     replies.push(tool({ items: [], hasMore: false }));
-    await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--workspace", "w1", "--project", "p1", "--project", "p2"], io());
-    expect(calls[3]?.arguments).toEqual({ state: ["OPEN"], workspaceUuid: "w1", projectUuid: ["p1", "p2"], limit: 50 });
-    expect(calls[3]?.arguments).not.toHaveProperty("kinds");
+    await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--workspace", "w1"], io());
+    expect(calls[4]?.arguments).toEqual({ state: ["OPEN"], workspaceUuids: ["w1"], limit: 50 });
+
+    replies.push(tool({ items: [], hasMore: false }));
+    await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--project", "p2", "--project", "p1"], io());
+    expect(calls[5]?.arguments).toEqual({ state: ["OPEN"], projectUuids: ["p1", "p2"], limit: 50 });
   });
 
-  it("a pending batch is replayed for the same scope set in any order, refused for another scope, and acked with its scope", async () => {
+  it("a pending batch is replayed for the same scope sets in any order, refused for another scope, and acked with its scope", async () => {
     const cursor = join(cwd, "scope.cursor");
     replies.push(tool({ items: [{ id: "n1", seq: 1 }], ackToken: "a1", stream: "s" }));
     expect(await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", cursor,
-      "--workspace", "w1", "--project", "p1", "--project", "p2"], io())).toBe(0);
+      "--workspace", "w1", "--workspace", "w2", "--project", "p1", "--project", "p2"], io())).toBe(0);
 
-    // 같은 집합(순서만 다름) — 보류 배치를 다시 낸다, 서버에 묻지 않는다.
+    // 같은 집합(순서·중복만 다름) — 보류 배치를 다시 낸다, 서버에 묻지 않는다.
     expect(await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", cursor,
-      "--workspace", "w1", "--project", "p2", "--project", "p1"], io())).toBe(0);
+      "--workspace", "w2", "--workspace", "w1", "--workspace", "w2", "--project", "p2", "--project", "p1"], io())).toBe(0);
     expect(calls).toHaveLength(1);
 
-    for (const scope of [["--project", "p1", "--project", "p2"], ["--workspace", "w1", "--project", "p1"], ["--workspace", "w2", "--project", "p1", "--project", "p2"]]) {
+    for (const scope of [
+      ["--project", "p1", "--project", "p2"],
+      ["--workspace", "w1", "--workspace", "w2", "--project", "p1"],
+      ["--workspace", "w1", "--project", "p1", "--project", "p2"],
+    ]) {
       const other = io();
       expect(await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", cursor, ...scope], other)).toBe(1);
       expect(other.err()).toContain("different filter");
@@ -139,7 +150,7 @@ describe("inbox poll commands", () => {
 
     replies.push(tool({ items: [], stream: "s" }));
     expect(await runAinectoCli(["notifications", "ack", "--env", "dev", "--cursor-file", cursor], io())).toBe(0);
-    expect(calls[1]?.arguments).toEqual({ cursor: "saved", ack: "a1", workspaceUuid: "w1", projectUuid: ["p1", "p2"], limit: 1 });
+    expect(calls[1]?.arguments).toEqual({ cursor: "saved", ack: "a1", workspaceUuids: ["w1", "w2"], projectUuids: ["p1", "p2"], limit: 1 });
   });
 
   it("a 0.7.0 cursor file with a single projectUuid still matches --project and acks with it", async () => {
