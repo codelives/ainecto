@@ -18,6 +18,10 @@ export async function runStdioBridge(options: StdioBridgeOptions): Promise<void>
     }
     try {
       const request = parseJsonRpcRequest(line);
+      if (request.method === "initialize") {
+        // 호스트 에이전트의 고정 이름 — 이 세션의 모든 요청에 X-AiNecto-Agent 로 실린다(initialize 자신 포함).
+        options.client.useAgent(clientInfoName(request.params));
+      }
       const response = await options.client.sendRaw(request);
       if (response && request.id !== undefined) {
         options.output.write(`${JSON.stringify(response)}\n`);
@@ -44,6 +48,10 @@ function parseJsonRpcRequest(line: string): JsonRpcRequest {
     method: parsed.method,
     params: parsed.params,
   };
+}
+
+function clientInfoName(params: unknown): unknown {
+  return isRecord(params) && isRecord(params.clientInfo) ? params.clientInfo.name : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

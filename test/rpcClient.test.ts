@@ -1,7 +1,34 @@
 import { describe, expect, it, vi } from "vitest";
-import { McpRpcClient } from "../src/core/mcp/rpcClient";
+import { agentHeaderValue, MAX_AGENT_NAME_LENGTH, McpRpcClient } from "../src/core/mcp/rpcClient";
 
 describe("McpRpcClient", () => {
+  it("names its channel on every request and carries the agent only once the bridge learned it", async () => {
+    const seen: Array<Record<string, string>> = [];
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push((init?.headers ?? {}) as Record<string, string>);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [] } }));
+    }) as unknown as typeof fetch;
+
+    // 직접 명령 — cli, 에이전트 헤더 없음(셸을 누가 돌렸는지 모른다).
+    await new McpRpcClient({ endpoint: "https://ainecto.com/mcp", fetchImpl, role: null, channel: "cli" }).toolsList();
+    expect(seen[0]).toMatchObject({ "x-ainecto-channel": "cli" });
+    expect(Object.keys(seen[0]!)).not.toContain("x-ainecto-agent");
+
+    const bridge = new McpRpcClient({ endpoint: "https://ainecto.com/mcp", fetchImpl, role: null, channel: "mcp" });
+    bridge.useAgent("claude-code");
+    await bridge.toolsList();
+    expect(seen[1]).toMatchObject({ "x-ainecto-channel": "mcp", "x-ainecto-agent": "claude-code" });
+  });
+
+  it("keeps the agent header a printable ASCII name of at most 100 characters", () => {
+    expect(agentHeaderValue(" codex-mcp-client ")).toBe("codex-mcp-client");
+    expect(agentHeaderValue("cursor\u00e9\n-vscode")).toBe("cursor-vscode");
+    expect(agentHeaderValue("x".repeat(150))).toHaveLength(MAX_AGENT_NAME_LENGTH);
+    expect(agentHeaderValue("\u00e9\u00e9")).toBeUndefined();
+    expect(agentHeaderValue(42)).toBeUndefined();
+    expect(agentHeaderValue(undefined)).toBeUndefined();
+  });
+
   it("carries the session role on every request, and omits it when unscoped", async () => {
     const seen: Array<Record<string, string>> = [];
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -9,11 +36,11 @@ describe("McpRpcClient", () => {
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [] } }));
     }) as unknown as typeof fetch;
 
-    await new McpRpcClient({ endpoint: "https://ainecto.com/mcp", fetchImpl, role: "development" }).toolsList();
+    await new McpRpcClient({ endpoint: "https://ainecto.com/mcp", fetchImpl, role: "development", channel: "cli" }).toolsList();
     expect(seen[0]).toMatchObject({ "x-ainecto-role": "development" });
 
     // 역할이 없으면 헤더도 없다 — 하네스를 안 쓰는 연결은 종전 그대로다.
-    await new McpRpcClient({ endpoint: "https://ainecto.com/mcp", fetchImpl, role: null }).toolsList();
+    await new McpRpcClient({ endpoint: "https://ainecto.com/mcp", fetchImpl, role: null, channel: "cli" }).toolsList();
     expect(Object.keys(seen[1]!)).not.toContain("x-ainecto-role");
   });
 
@@ -25,6 +52,7 @@ describe("McpRpcClient", () => {
     })));
     const client = new McpRpcClient({
       role: null,
+      channel: "cli",
       endpoint: "https://dev.ainecto.com/mcp",
       fetchImpl,
       tokenProvider: {
@@ -51,6 +79,7 @@ describe("McpRpcClient", () => {
     const refreshAfterUnauthorized = vi.fn(async () => "fresh-token");
     const client = new McpRpcClient({
       role: null,
+      channel: "cli",
       endpoint: "https://dev.ainecto.com/mcp",
       fetchImpl,
       tokenProvider: {
@@ -70,6 +99,7 @@ describe("McpRpcClient", () => {
     const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
     const client = new McpRpcClient({
       role: null,
+      channel: "cli",
       endpoint: "https://dev.ainecto.com/mcp",
       fetchImpl,
       envVars: {},
@@ -86,6 +116,7 @@ describe("McpRpcClient", () => {
     const fetchImpl = vi.fn(async () => new Response("access_token=leaked", { status: 500 }));
     const client = new McpRpcClient({
       role: null,
+      channel: "cli",
       endpoint: "https://dev.ainecto.com/mcp",
       fetchImpl,
       envVars: { AINECTO_CLI_DEBUG: "1" },

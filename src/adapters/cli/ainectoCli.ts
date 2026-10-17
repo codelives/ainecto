@@ -60,7 +60,8 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
             : `Opening your browser to sign in to AiNecto. If it does not open, visit:\n  ${url}\n`);
         },
       });
-      const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, role });
+      // 직접 명령 — 채널 cli. 에이전트 이름은 싣지 않는다(셸을 누가 돌렸는지 모른다 → 서버는 unknown).
+      const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, role, channel: "cli" });
       return { auth, client };
     };
     const [domain, action, ...rest] = parsed.positionals;

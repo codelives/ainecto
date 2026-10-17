@@ -27,6 +27,18 @@ export interface JsonRpcFailure {
 
 export type JsonRpcResponse = JsonRpcSuccess | JsonRpcFailure;
 
+/**
+ * 분석용 요청 헤더(GA4 서버 계측 C23). 서버의 ExecutionChannel.HEADER · AgentTypeResolver.HEADER 와 같아야 한다.
+ * 서버는 /mcp 필터에서 한 번만 읽고, 모르는 값이면 요청을 막지 않는다(분석 값일 뿐이다).
+ */
+export const CHANNEL_HEADER = "X-AiNecto-Channel";
+export const AGENT_HEADER = "X-AiNecto-Agent";
+/** 서버 AgentTypeResolver.MAX_NAME_LENGTH 와 같다. */
+export const MAX_AGENT_NAME_LENGTH = 100;
+
+/** 이 클라이언트가 서버에 밝히는 길 — 직접 명령(`ainecto tools call …`) = cli, 에이전트의 MCP 브리지 = mcp. */
+export type ExecutionChannel = "cli" | "mcp";
+
 export interface McpRpcClientOptions {
   endpoint: string;
   tokenProvider?: TokenProvider;
@@ -38,6 +50,11 @@ export interface McpRpcClientOptions {
    * 값이 있으면 모든 요청의 {@code X-AiNecto-Role} 헤더로 실린다 — 강제는 서버가 한다.
    */
   role: HarnessRole | null;
+  /**
+   * 요청의 길. ★필수다 — 빠뜨리면 서버가 직접 명령을 MCP 로 센다. 그 빠뜨림을 타입이 잡는다.
+   * 모든 요청의 {@code X-AiNecto-Channel} 헤더로 실린다.
+   */
+  channel: ExecutionChannel;
 }
 
 export class McpRpcError extends Error {
@@ -53,9 +70,18 @@ export class McpRpcError extends Error {
 export class McpRpcClient {
   private readonly fetchImpl: typeof fetch;
   private nextId = 1;
+  private agent: string | undefined;
 
   constructor(private readonly options: McpRpcClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  /**
+   * 브리지 전용 — 호스트 에이전트가 보낸 {@code initialize} 의 {@code clientInfo.name}(프로그램 고정 이름).
+   * 이후 모든 요청의 {@code X-AiNecto-Agent} 헤더로 싣는다. 직접 명령은 부르지 않는다(누가 셸을 돌렸는지 모른다).
+   */
+  useAgent(clientName: unknown): void {
+    this.agent = agentHeaderValue(clientName);
   }
 
   initialize(): Promise<unknown> {
@@ -136,6 +162,10 @@ export class McpRpcClient {
     if (this.options.role) {
       headers[ROLE_HEADER.toLowerCase()] = this.options.role;
     }
+    headers[CHANNEL_HEADER.toLowerCase()] = this.options.channel;
+    if (this.agent) {
+      headers[AGENT_HEADER.toLowerCase()] = this.agent;
+    }
     return this.fetchImpl(this.options.endpoint, {
       method: "POST",
       headers,
@@ -151,6 +181,18 @@ export class McpRpcClient {
  */
 export function isToolError(result: unknown): boolean {
   return isRecord(result) && result.isError === true;
+}
+
+/**
+ * 헤더에 실을 수 있는 이름 — 인쇄 가능한 ASCII 만(그 밖의 글자는 fetch 가 헤더로 거절한다), 앞뒤 공백 제거,
+ * 최대 {@link MAX_AGENT_NAME_LENGTH}자. 남는 것이 없으면 싣지 않는다(서버는 unknown 으로 센다).
+ */
+export function agentHeaderValue(clientName: unknown): string | undefined {
+  if (typeof clientName !== "string") {
+    return undefined;
+  }
+  const printable = clientName.replace(/[^\x20-\x7E]/g, "").trim().slice(0, MAX_AGENT_NAME_LENGTH).trim();
+  return printable || undefined;
 }
 
 function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {

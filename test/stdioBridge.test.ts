@@ -14,7 +14,7 @@ describe("stdio bridge", () => {
         result: { ok: true },
       }));
     });
-    const client = new McpRpcClient({ endpoint: "https://dev.ainecto.com/mcp", fetchImpl, role: null });
+    const client = new McpRpcClient({ endpoint: "https://dev.ainecto.com/mcp", fetchImpl, role: null, channel: "mcp" });
     const input = new PassThrough();
     const output = new PassThrough();
     const chunks: string[] = [];
@@ -46,5 +46,27 @@ describe("stdio bridge", () => {
       id: 1,
       result: { ok: true },
     }));
+  });
+
+  it("reads the host agent's clientInfo.name from initialize and sends it on every request after it", async () => {
+    const headers: Array<Record<string, string>> = [];
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      headers.push((init?.headers ?? {}) as Record<string, string>);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }));
+    });
+    const client = new McpRpcClient({ endpoint: "https://dev.ainecto.com/mcp", fetchImpl, role: null, channel: "mcp" });
+    const input = new PassThrough();
+    input.end([
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2025-06-18", clientInfo: { name: "claude-code", version: "2.1.0" } } }),
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "identity_get_self" } }),
+    ].join("\n") + "\n");
+
+    await runStdioBridge({ input, output: new PassThrough(), errorOutput: new PassThrough(), client });
+
+    expect(headers).toHaveLength(2);
+    for (const sent of headers) {
+      expect(sent).toMatchObject({ "x-ainecto-channel": "mcp", "x-ainecto-agent": "claude-code" });
+    }
   });
 });

@@ -22,6 +22,8 @@ export async function runConnector(options: ConnectorOptions): Promise<void> {
     endpoint: options.endpoint,
     tokenProvider: auth,
     role: options.role,
+    // 에이전트의 MCP 연결 — 에이전트 이름은 브리지가 호스트의 initialize 에서 읽어 싣는다.
+    channel: "mcp",
   });
   await runStdioBridge({
     input: options.input,
