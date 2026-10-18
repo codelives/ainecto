@@ -3713,7 +3713,7 @@
     },
     {
       "name": "kanban_card_action",
-      "description": "Do one workflow action on a kanban card, the same as the buttons in the web app. ★Before assign (to someone other than the signed-in user), approve or quick_done, show the user what will happen and get their explicit confirmation — these change other people's work and notify them. Actions: assign / unassign; accept / decline (only the assignee — accepting closes the assignment to-do); start (To Do → In Progress, assignee after accepting); request_review (→ In Review); approve (→ Done) / request_changes (→ In Progress) by the requester or a reviewer; quick_done (To Do → Done); reopen (Done → In Progress); block / unblock; archive / unarchive; set_requester; watch / unwatch (yourself). Doing the action is what closes the matching card to-dos — update_agent_todos cannot complete them. Returns the card after the action (status, assignment state, allowedActions) and reasonCommentId when a reason was saved.",
+      "description": "Do one workflow action on a kanban card, the same as the buttons in the web app. ★Before assign (to someone other than the signed-in user), approve or quick_done, show the user what will happen and get their explicit confirmation — these change other people's work and notify them. Actions: assign / unassign; accept / decline (only the assignee — accepting closes the assignment to-do); start (To Do → In Progress; anyone who can edit the board, or the assignee — not while an assignment is waiting to be accepted); request_review (→ In Review); approve (→ Done) / request_changes (→ In Progress) by the requester or a reviewer; quick_done (To Do → Done); reopen (Done → In Progress); block / unblock; archive / unarchive; set_requester; watch / unwatch (yourself). Doing the action is what closes the matching card to-dos — update_agent_todos cannot complete them. Returns the card after the action (status, assignment state, allowedActions) and reasonCommentId when a reason was saved.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3754,7 +3754,7 @@
           },
           "responderIds": {
             "type": "array",
-            "description": "block: who should answer (people who can read the board).",
+            "description": "block: who should answer (people who can read the board). Omit to keep the card's current responders.",
             "items": {
               "type": "string"
             },
