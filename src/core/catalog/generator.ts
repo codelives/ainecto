@@ -27,7 +27,6 @@ const DESTRUCTIVE_PREFIXES = [
   "move_",
   "erd_delete_",
   "erd_remove_",
-  "task_delete_",
   "testcase_delete_",
 ];
 
@@ -68,7 +67,7 @@ export function inferGroup(strippedName: string): ToolGroup {
   if (strippedName.startsWith("testcase_")) return "testcase";
   if (strippedName.startsWith("markdown_")) return "markdown";
   if (strippedName.includes("attachment") || strippedName.includes("upload")) return "attachment";
-  if (strippedName.startsWith("task_")) return "task";
+  if (strippedName.startsWith("kanban_")) return "kanban";
   if (strippedName.includes("workspace")) return "workspace";
   if (strippedName.includes("document")) return "document";
   return "generic";

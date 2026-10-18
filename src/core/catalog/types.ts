@@ -6,7 +6,7 @@ export type ToolGroup =
   | "document"
   | "erd"
   | "flow"
-  | "task"
+  | "kanban"
   | "testcase"
   | "markdown"
   | "attachment";

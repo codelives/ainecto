@@ -63,18 +63,6 @@ export const enrichments = [
     displayName: "List ERD table groups",
   },
   {
-    mcpName: "task_list_tasks",
-    outputHint: "table",
-    tableColumns: ["uuid", "title", "statusUuid", "assigneeId", "updatedAt"],
-    displayName: "List tasks",
-  },
-  {
-    mcpName: "task_list_statuses",
-    outputHint: "table",
-    tableColumns: ["uuid", "name", "displayOrder"],
-    displayName: "List task statuses",
-  },
-  {
     mcpName: "enable_shares",
     aliases: ["shares enable"],
     displayName: "Enable shares",

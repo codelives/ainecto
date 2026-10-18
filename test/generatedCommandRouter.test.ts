@@ -39,21 +39,21 @@ describe("generated command router", () => {
     vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       calls.push(body);
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tasks: [] } }));
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { cards: [] } }));
     }));
     process.env.AINECTO_TOKEN = "redacted";
     const io = createIo();
 
     await expect(runAinectoCli([
-      "task",
-      "list-tasks",
+      "kanban",
+      "list-cards",
       "--env",
       "dev",
-      "--document-uuid",
-      "doc-1",
-      "--statusUuid",
-      "status-1",
-      "--include-archived",
+      "--board-uuid",
+      "board-1",
+      "--projectUuid",
+      "project-1",
+      "--include-done",
       "false",
       "--limit",
       "2",
@@ -64,11 +64,11 @@ describe("generated command router", () => {
     expect(calls[0]).toMatchObject({
       method: "tools/call",
       params: {
-        name: "mcp__ainecto__task_list_tasks",
+        name: "kanban_list_cards",
         arguments: {
-          documentUuid: "doc-1",
-          statusUuid: "status-1",
-          includeArchived: false,
+          boardUuid: "board-1",
+          projectUuid: "project-1",
+          includeDone: false,
           limit: 2,
         },
       },
@@ -79,7 +79,7 @@ describe("generated command router", () => {
   it("fails generated commands with missing required scalar flags", async () => {
     const io = createIo();
 
-    await expect(runAinectoCli(["task", "list-tasks", "--env", "dev", "--json"], io)).resolves.toBe(1);
+    await expect(runAinectoCli(["kanban", "card-action", "--env", "dev", "--json"], io)).resolves.toBe(1);
     expect(JSON.parse(io.stderrText())).toMatchObject({
       ok: false,
       error: {
@@ -94,7 +94,7 @@ describe("generated command router", () => {
     process.env.AINECTO_TOKEN = "redacted";
     const io = createIo();
 
-    await expect(runAinectoCli(["task", "list-tasks", "--env", "dev", "--document-uuid", "--json"], io)).resolves.toBe(1);
+    await expect(runAinectoCli(["kanban", "card-action", "--env", "dev", "--card-uuid", "--json"], io)).resolves.toBe(1);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(JSON.parse(io.stderrText())).toMatchObject({
       ok: false,
@@ -150,7 +150,7 @@ describe("generated command router", () => {
     expect(io.stderrText()).toContain("Run destructive command documents delete?");
     expect(calls[0]).toMatchObject({
       params: {
-        name: "mcp__ainecto__delete_documents",
+        name: "delete_documents",
         arguments: { uuids: ["doc-1"] },
       },
     });
@@ -170,7 +170,7 @@ describe("generated command router", () => {
 
     expect(calls[0]).toMatchObject({
       params: {
-        name: "mcp__ainecto__request_upload_token",
+        name: "request_upload_token",
         arguments: { purpose: "mcp.call" },
       },
     });
