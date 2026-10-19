@@ -11,6 +11,9 @@ import { executeGeneratedCommand, matchGeneratedCommand } from "./generatedComma
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
 import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands";
 import { executeInitCommand } from "./initCommand";
+import { executeSetupCommand } from "./setupCommand";
+import { systemCommandRunner } from "../../core/setup/commandRunner";
+import { homedir } from "node:os";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
 import { LEGACY_ROLE_NOTICE, legacyRoleInput } from "../../core/harness/legacyRole";
 
@@ -51,9 +54,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       const auth = new OAuthClient({
         endpoint: resolved.endpoint,
         tokenStore,
-        // ★init --dry-run 은 토큰을 갱신하지도 않는다 — 「아무것도 바꾸지 않는다」에 로그인 상태도 든다.
-        //   (init 의 플래그는 positional 로 흘러온다.)
-        readOnly: parsed.positionals[0] === "init" && parsed.positionals.includes("--dry-run"),
+        // ★init·setup --dry-run 은 토큰을 갱신하지도 않는다 — 「아무것도 바꾸지 않는다」에 로그인 상태도 든다.
+        //   (하위 명령의 플래그는 positional 로 흘러온다.)
+        readOnly: (domain === "init" || domain === "setup") && parsed.positionals.includes("--dry-run"),
         // ★URL 을 «브라우저를 열기 전에» 알린다. stdout 은 결과 전용이라 stderr 에 쓴다.
         //   --json 이면 JSON 한 줄이다(설계 §21-3 (가)). 로그인이 역할과 무관해져 role 칸은 없다(0.4.2 §2-5).
         onAuthorizeUrl: (url) => {
@@ -105,6 +108,22 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         env: resolved.env,
         cliVersion: `${PACKAGE_NAME} ${CLI_VERSION}`,
         cwd: process.cwd(),
+        json: parsed.json,
+        io,
+      });
+    }
+
+    if (domain === "setup") {
+      const { auth, client } = connect();
+      return await executeSetupCommand({
+        argv: parsed.positionals.slice(1),
+        endpoint: resolved.endpoint,
+        env: resolved.env,
+        auth,
+        client,
+        // ★외부 CLI 는 홈 폴더에서 돈다 — 지금 저장소의 local·project 범위 항목이 사용자 범위 판정에 끼지 않게.
+        runner: systemCommandRunner({ cwd: homedir() }),
+        home: homedir(),
         json: parsed.json,
         io,
       });
@@ -371,6 +390,10 @@ function helpText(): string {
     "      poll exit codes: 0 new items · 3 nothing new · 1 error · 2 usage error",
     "  ainecto <generated-command> [flags] [-f payload.json] [--yes] [--json]",
     "  ainecto mcp [--env prod|dev] [--endpoint URL]",
+    "",
+    "Setup (once per machine):",
+    "  ainecto setup [--env prod|dev] [--endpoint URL] [--dry-run] [--json]   sign in and connect Claude Code, Cursor, and Codex",
+    "  ainecto setup --undo                                                   remove those connections (sign-in stays)",
     "",
     "Harness:",
     "  ainecto init [--mcp] [--dry-run] [--json]   AiNecto rules for this repository (--mcp also writes .mcp.json and .cursor/mcp.json)",
