@@ -1,6 +1,6 @@
 {
   "name": "@ainecto/mcp",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "AiNecto CLI — connect your coding agents to AiNecto once per machine: npx -y ainecto@latest setup. Then npx -y ainecto@latest doctor shows anything missing.",
   "mcpName": "io.github.codelives/ainecto",
   "type": "module",

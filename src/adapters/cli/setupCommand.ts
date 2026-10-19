@@ -1,3 +1,4 @@
+import { usableAccessToken } from "../../core/auth/oauth";
 import { profileSettingsUrl } from "../../core/config/endpoints";
 import { renderSuccess } from "../../core/output/render";
 import type { McpRpcClient } from "../../core/mcp/rpcClient";
@@ -59,8 +60,9 @@ export async function executeSetupCommand(options: SetupCommandOptions): Promise
     return failed ? 1 : 0;
   }
 
-  // ① 로그인 — 쓸 수 있는 토큰이 없으면 브라우저 1회. dry-run 은 로그인하지 않는다.
-  let signedIn = Boolean(await options.auth.getAccessToken());
+  // ① 로그인 — 쓸 수 있는 토큰이 없으면(서버가 저장 로그인을 거절한 경우 포함) 브라우저 1회.
+  //   dry-run 은 로그인하지 않는다. ★판정은 init 과 같은 {@link usableAccessToken} 하나다.
+  let signedIn = Boolean(await usableAccessToken(options.auth));
   if (!signedIn && !args.dryRun) {
     await options.auth.login();
     options.io.stderr.write("Signed in.\n");

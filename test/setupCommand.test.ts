@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executeSetupCommand, type SetupCommandOptions } from "../src/adapters/cli/setupCommand";
+import { OAuthClient } from "../src/core/auth/oauth";
+import type { StoredTokenSet, TokenStore } from "../src/core/auth/tokenStore";
 import type { McpRpcClient } from "../src/core/mcp/rpcClient";
 import { systemCommandRunner } from "../src/core/setup/commandRunner";
 import { installFakeAgents, type FakeAgents } from "./support/fakeAgentClis";
@@ -229,5 +231,136 @@ describe("ainecto setup --undo", () => {
     await executeSetupCommand(options(["--undo"]));
     expect(statusOf("claude-code")).toBe("not connected");
     expect(statusOf("codex")).toBe("not connected");
+  });
+});
+
+/**
+ * ★리뷰 #6 F2 — 만료된 access + 서버가 폐기한 refresh 가 저장된 사용자. «실제» OAuthClient 로 본다:
+ * token endpoint 가 refresh 에 invalid_grant 를 돌려주게 통제하고, 로그인은 loopback 콜백까지 실제로 돈다.
+ */
+describe("ainecto setup — 저장 로그인이 거절된 사용자 (실제 OAuthClient)", () => {
+  type TokenMode = "invalid_grant" | "network";
+  const AUTH = "https://auth.example";
+
+  function storeWithRevokedRefresh(): TokenStore & { token: StoredTokenSet | undefined } {
+    const store = {
+      token: {
+        endpoint: ENDPOINT,
+        accessToken: "expired-access",
+        refreshToken: "revoked-refresh",
+        expiresAt: Date.now() - 60_000,
+        clientId: "ainecto-cli",
+        updatedAt: "x",
+      } as StoredTokenSet | undefined,
+      async load() { return store.token; },
+      async save(_endpoint: string, token: StoredTokenSet) { store.token = token; },
+      async delete() { store.token = undefined; },
+    };
+    return store;
+  }
+
+  function oauthFetch(mode: TokenMode, grants: string[]): typeof fetch {
+    return (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === ENDPOINT) {
+        return new Response("", { status: 401, headers: { "www-authenticate": `Bearer resource_metadata="${AUTH}/resource"` } });
+      }
+      if (url === `${AUTH}/resource`) {
+        return new Response(JSON.stringify({ authorization_servers: [AUTH] }));
+      }
+      if (url === `${AUTH}/.well-known/oauth-authorization-server`) {
+        return new Response(JSON.stringify({
+          issuer: AUTH,
+          authorization_endpoint: `${AUTH}/authorize`,
+          token_endpoint: `${AUTH}/token`,
+          code_challenge_methods_supported: ["S256"],
+        }));
+      }
+      if (url === `${AUTH}/token`) {
+        const grant = new URLSearchParams(String(init?.body)).get("grant_type") ?? "";
+        grants.push(grant);
+        if (grant === "refresh_token") {
+          if (mode === "network") throw new TypeError("fetch failed");
+          return new Response(JSON.stringify({ error: "invalid_grant", error_description: "refresh_token unknown or expired" }), { status: 400 });
+        }
+        return new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "fresh-refresh", expires_in: 3600 }));
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    }) as typeof fetch;
+  }
+
+  /** 브라우저 대신 loopback 콜백을 직접 부른다 — 사람이 승인한 것과 같은 길. */
+  const approveInBrowser = async (url: string) => {
+    const authorize = new URL(url);
+    await fetch(`${authorize.searchParams.get("redirect_uri")}?code=c&state=${authorize.searchParams.get("state")}`);
+  };
+
+  function realAuth(store: TokenStore, fetchImpl: typeof fetch, extra: { readOnly?: boolean; envVars?: NodeJS.ProcessEnv; endpoint?: string } = {}) {
+    let logins = 0;
+    const client = new OAuthClient({
+      endpoint: extra.endpoint ?? ENDPOINT,
+      tokenStore: store,
+      fetchImpl,
+      envVars: extra.envVars ?? {},
+      readOnly: extra.readOnly,
+      openBrowser: approveInBrowser,
+      loginTimeoutMs: 5_000,
+    });
+    const auth = {
+      getAccessToken: () => client.getAccessToken(),
+      login: async () => { logins += 1; return client.login(); },
+    };
+    return { auth, logins: () => logins };
+  }
+
+  it("★invalid_grant 면 로그인 1회 후 정상 연결 — 새 토큰이 저장된다", async () => {
+    const store = storeWithRevokedRefresh();
+    const grants: string[] = [];
+    const { auth, logins } = realAuth(store, oauthFetch("invalid_grant", grants));
+
+    expect(await executeSetupCommand(options([], { auth }))).toBe(0);
+
+    expect(logins()).toBe(1);
+    expect(grants).toEqual(["refresh_token", "authorization_code"]);
+    expect(store.token?.accessToken).toBe("fresh-access");
+    expect(result().setup).toBe("complete");
+    expect(result().account).toMatchObject({ signedIn: true });
+    expect(statusOf("claude-code")).toBe("connected");
+    expect(err.join("")).toContain("Signed in.");
+  });
+
+  it("★--dry-run 은 같은 상태에서도 로그인 0회 · 갱신 요청 0회 · 토큰 그대로", async () => {
+    const store = storeWithRevokedRefresh();
+    const grants: string[] = [];
+    // ainectoCli 는 setup --dry-run 에 readOnly 를 건다 — 같은 조건.
+    const { auth, logins } = realAuth(store, oauthFetch("invalid_grant", grants), { readOnly: true });
+
+    expect(await executeSetupCommand(options(["--dry-run"], { auth }))).toBe(0);
+
+    expect(logins()).toBe(0);
+    expect(grants).toEqual([]);
+    expect(store.token?.accessToken).toBe("expired-access");
+    expect(result().account).toMatchObject({ signedIn: false });
+  });
+
+  it("★네트워크 장애는 로그인으로 삼키지 않는다 — 원인 그대로 끝난다", async () => {
+    const store = storeWithRevokedRefresh();
+    const { auth, logins } = realAuth(store, oauthFetch("network", []));
+
+    await expect(executeSetupCommand(options([], { auth }))).rejects.toThrow("fetch failed");
+    expect(logins()).toBe(0);
+    expect(store.token?.accessToken).toBe("expired-access");
+  });
+
+  it("★불신 주소의 AINECTO_TOKEN 은 계속 거절 — 로그인으로 둔갑하지 않는다", async () => {
+    const store = storeWithRevokedRefresh();
+    const { auth, logins } = realAuth(store, oauthFetch("invalid_grant", []), {
+      endpoint: "https://custom.example/mcp",
+      envVars: { AINECTO_TOKEN: "env-token" },
+    });
+
+    await expect(executeSetupCommand(options([], { auth })))
+      .rejects.toThrow("AINECTO_TOKEN can only be used with the default prod/dev endpoints");
+    expect(logins()).toBe(0);
   });
 });

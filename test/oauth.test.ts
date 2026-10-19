@@ -4,10 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   OAuthClient,
   OAuthLoginError,
+  OAuthReauthRequiredError,
   createLoopbackReceiver,
   discoverOAuthMetadata,
   getBrowserOpenCommand,
   launchBrowser,
+  usableAccessToken,
 } from "../src/core/auth/oauth";
 import type { StoredTokenSet, TokenStore } from "../src/core/auth/tokenStore";
 
@@ -327,6 +329,32 @@ describe("stored token expiry", () => {
   it("an expired token with a refresh token is refreshed", async () => {
     await expect(clientWith({ expiresAt: Date.now() - 1_000, refreshToken: "r" }).getAccessToken())
       .resolves.toBe("access-token");
+  });
+});
+
+describe("refresh rejected by the server (review #6 F2)", () => {
+  const ENDPOINT = "https://dev.ainecto.com/mcp";
+
+  function clientWhoseTokenEndpoint(answer: () => Response | Promise<Response>) {
+    const store = new MemoryTokenStore();
+    store.token = { endpoint: ENDPOINT, accessToken: "stored", refreshToken: "revoked", expiresAt: Date.now() - 1_000, updatedAt: "x" };
+    const base = buildOAuthFetch();
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) =>
+      String(input) === "https://auth.example/token" ? answer() : base(input, init)) as typeof fetch;
+    return new OAuthClient({ endpoint: ENDPOINT, tokenStore: store, envVars: {}, fetchImpl });
+  }
+
+  it("★invalid_grant is a re-login signal — usableAccessToken treats it as signed out", async () => {
+    const client = clientWhoseTokenEndpoint(() => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }));
+    await expect(client.getAccessToken()).rejects.toBeInstanceOf(OAuthReauthRequiredError);
+    await expect(usableAccessToken(client)).resolves.toBeUndefined();
+  });
+
+  it("★a server error or a non-OAuth body is not a re-login signal — it is thrown as is", async () => {
+    const serverError = clientWhoseTokenEndpoint(() => new Response("bad gateway", { status: 502 }));
+    await expect(usableAccessToken(serverError)).rejects.toThrow("OAuth token exchange failed with HTTP 502.");
+    const proxy401 = clientWhoseTokenEndpoint(() => new Response("<html>401</html>", { status: 401 }));
+    await expect(usableAccessToken(proxy401)).rejects.not.toBeInstanceOf(OAuthReauthRequiredError);
   });
 });
 

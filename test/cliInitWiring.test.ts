@@ -28,6 +28,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const { runAinectoCli } = await import("../src/adapters/cli/ainectoCli");
+const { FileTokenStore } = await import("../src/core/auth/tokenStore");
 
 /**
  * init 의 «연결부»를 지나는 시험(2026-09-29 코드 리뷰 P2).
@@ -44,6 +45,8 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const fetched: string[] = [];
+  /** token endpoint 의 refresh 응답 — 서버의 폐기(invalid_grant) 또는 네트워크 장애. */
+  let refreshMode: "invalid_grant" | "network" = "invalid_grant";
 
   const io = {
     stdout: { write: (text: string) => { stdout.push(text); return true; } },
@@ -64,6 +67,7 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
     stderr.length = 0;
     fetched.length = 0;
     spawned.length = 0;
+    refreshMode = "invalid_grant";
     originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -84,6 +88,10 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
           token_endpoint: "https://auth.example/token",
           code_challenge_methods_supported: ["S256"],
         }));
+      }
+      if (url === "https://auth.example/token") {
+        if (refreshMode === "network") throw new TypeError("fetch failed");
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
       }
       throw new Error(`Unexpected fetch URL: ${url}`);
     }) as unknown as typeof fetch;
@@ -137,6 +145,49 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
     expect(stderr.join("")).toContain("ainecto auth login");
     expect(spawned).toEqual([]);
     expect(fetched).toEqual([]);
+  });
+
+  /** 만료된 access + 서버가 폐기한 refresh — 리뷰 #6 F2 의 상태. */
+  const storeRevokedSignIn = () => new FileTokenStore(join(home, ".ainecto")).save("https://ainecto.com/mcp", {
+    endpoint: "https://ainecto.com/mcp",
+    accessToken: "expired-access",
+    refreshToken: "revoked-refresh",
+    expiresAt: Date.now() - 60_000,
+    clientId: "ainecto-cli",
+    updatedAt: "x",
+  });
+
+  it("★저장 로그인이 거절되면(invalid_grant) init 이 로그인을 시작한다 — setup 과 같은 진입점", async () => {
+    await storeRevokedSignIn();
+
+    const code = await runAinectoCli(["init"], io);
+
+    expect(code).toBe(1); // 시험 기계엔 브라우저가 없다 — 로그인 «시작»까지가 연결부의 몫이다.
+    expect(fetched).toContain("https://auth.example/token");
+    expect(stderr.join("")).toContain("Opening your browser to sign in to AiNecto.");
+    expect(spawned).toHaveLength(1);
+  });
+
+  it("★갱신 중 네트워크 장애는 로그인으로 둔갑하지 않는다", async () => {
+    await storeRevokedSignIn();
+    refreshMode = "network";
+
+    const code = await runAinectoCli(["init"], io);
+
+    expect(code).toBe(1);
+    expect(stderr.join("")).toContain("fetch failed");
+    expect(stderr.join("")).not.toContain("Opening your browser");
+    expect(spawned).toEqual([]);
+  });
+
+  it("★dry-run 은 거절된 저장 로그인이 있어도 갱신·로그인하지 않는다", async () => {
+    await storeRevokedSignIn();
+
+    const code = await runAinectoCli(["init", "--dry-run", "--json"], io);
+
+    expect(code).toBe(0);
+    expect(fetched).not.toContain("https://auth.example/token");
+    expect(spawned).toEqual([]);
   });
 
   it("★AINECTO_TOKEN 을 못 쓰는 주소라는 거절은 로그인으로 둔갑하지 않는다", async () => {

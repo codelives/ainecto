@@ -1,5 +1,5 @@
 import { FileTokenStore } from "../../core/auth/tokenStore";
-import { OAuthClient } from "../../core/auth/oauth";
+import { OAuthClient, usableAccessToken } from "../../core/auth/oauth";
 import { resolveEndpoint, assertEnv, type AinectoEnv } from "../../core/config/endpoints";
 import { parsePayloadSource } from "../../core/input/payloadSource";
 import { McpRpcClient, isToolError } from "../../core/mcp/rpcClient";
@@ -89,18 +89,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         argv: parsed.positionals.slice(1),
         // 문서는 인증 후에 받는다 — 토큰이 없으면 패키지 기본값으로 가고, 그 사실을 보고한다.
         // ★«필요할 때» 가져온다. --undo 는 로컬 작업이라 토큰을 건드리지 않는다(S1).
-        // ★갱신 실패는 «토큰 없음»(→ 로그인)이지만, AINECTO_TOKEN 을 못 쓰는 주소라는 거절은 삼키지 않는다 —
-        //   삼키면 그 설정 오류가 브라우저 로그인으로 둔갑한다.
-        accessToken: async () => {
-          try {
-            return await auth.getAccessToken();
-          } catch (error) {
-            if (process.env.AINECTO_TOKEN) {
-              throw error;
-            }
-            return undefined;
-          }
-        },
+        // ★판정은 setup 과 같은 {@link usableAccessToken} 하나 — 서버가 저장 로그인을 거절했으면 «없음»(→ 로그인),
+        //   네트워크 장애·AINECTO_TOKEN 을 못 쓰는 주소라는 거절은 삼키지 않는다(브라우저 로그인으로 둔갑하지 않게).
+        accessToken: () => usableAccessToken(auth),
         // 로그인한다 — `ainecto auth login` 과 같은 함수다. 서버마다 한 번이다.
         login: async () => {
           await auth.login();

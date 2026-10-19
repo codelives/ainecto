@@ -50,6 +50,23 @@ export class OAuthLoginError extends Error {
   }
 }
 
+/**
+ * ★저장된 로그인을 인증 서버가 «더는 받지 않는다» — 갱신 요청이 {@code invalid_grant} 등으로 거절됐다
+ * (RFC 6749 §5.2: refresh token 만료·폐기, client 등록 폐기). 다시 로그인하는 것 말고는 길이 없다.
+ *
+ * <p>⚠네트워크 장애·5xx·메타데이터 실패는 이것이 아니다 — 그건 다시 로그인해도 안 고쳐지고,
+ * 로그인으로 삼키면 진짜 원인이 브라우저 창 뒤로 숨는다.
+ */
+export class OAuthReauthRequiredError extends Error {
+  constructor(readonly oauthError: string, status: number) {
+    super(`The stored sign-in was rejected by the server (${oauthError}, HTTP ${status}). Sign in again.`);
+    this.name = "OAuthReauthRequiredError";
+  }
+}
+
+/** 갱신 거절 중 «다시 로그인하라»는 뜻인 OAuth 오류 코드(RFC 6749 §5.2). */
+const REAUTH_REQUIRED_ERRORS = new Set(["invalid_grant", "invalid_client", "unauthorized_client"]);
+
 export interface OAuthMetadata {
   authorizationEndpoint: string;
   tokenEndpoint: string;
@@ -294,9 +311,41 @@ async function exchangeToken(
     body: new URLSearchParams(params),
   });
   if (!response.ok) {
-    throw new Error(`OAuth token exchange failed with HTTP ${response.status}.`);
+    const oauthError = await readOAuthErrorCode(response);
+    if (params.grant_type === "refresh_token" && oauthError !== undefined && REAUTH_REQUIRED_ERRORS.has(oauthError)) {
+      throw new OAuthReauthRequiredError(oauthError, response.status);
+    }
+    throw new Error(`OAuth token exchange failed with HTTP ${response.status}${oauthError ? ` (${oauthError})` : ""}.`);
   }
   return response.json() as Promise<Record<string, unknown>>;
+}
+
+/** 토큰 오류 응답의 {@code error} 코드. 본문이 JSON 이 아니면 없음 — 그때는 «재로그인» 으로 판정하지 않는다. */
+async function readOAuthErrorCode(response: Response): Promise<string | undefined> {
+  try {
+    const body = await response.json() as Record<string, unknown>;
+    return typeof body.error === "string" ? body.error : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * ★<b>쓸 수 있는 저장 로그인 — init·setup 의 단일 진입점.</b> 없으면 undefined(→ 부르는 쪽이 로그인한다).
+ *
+ * <p>«없음»에는 저장된 갱신 토큰을 서버가 거절한 경우({@link OAuthReauthRequiredError})도 든다 —
+ * 예전엔 setup 이 raw {@code getAccessToken} 을 불러, 그 거절이 로그인 «전에» 명령을 끝냈고 같은 setup 을
+ * 반복해도 회복하지 않았다(리뷰 #6 F2). 그 밖의 실패(네트워크·불신 주소의 AINECTO_TOKEN 거절)는 그대로 던진다.
+ */
+export async function usableAccessToken(auth: Pick<TokenProvider, "getAccessToken">): Promise<string | undefined> {
+  try {
+    return await auth.getAccessToken();
+  } catch (error) {
+    if (error instanceof OAuthReauthRequiredError) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 type TokenContext = Partial<Pick<StoredTokenSet, "refreshToken" | "tokenType" | "expiresAt" | "scope" | "clientId" | "clientSecret">>
