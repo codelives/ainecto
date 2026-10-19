@@ -2,26 +2,31 @@ import { FileTokenStore } from "../../core/auth/tokenStore";
 import { OAuthClient } from "../../core/auth/oauth";
 import { McpRpcClient } from "../../core/mcp/rpcClient";
 import { runStdioBridge } from "../../core/mcp/stdioBridge";
-import type { HarnessRole } from "../../core/harness/role";
+import { LEGACY_ROLE_NOTICE, legacyRoleInput } from "../../core/harness/legacyRole";
 import type { Readable, Writable } from "node:stream";
 
 export interface ConnectorOptions {
   endpoint: string;
-  /** 브리지의 역할 — MCP 설정의 `--role` 인자나 `AINECTO_ROLE` 에서만 온다. 없으면 null. */
-  role: HarnessRole | null;
+  /** 옛 MCP 설정의 {@code --role} 값(검사하지 않는다). 없으면 {@code AINECTO_ROLE} 를 본다 — 기록용. */
+  legacyRoleFlag?: string;
+  envVars?: NodeJS.ProcessEnv;
   input: Readable;
   output: Writable;
   errorOutput: Writable;
 }
 
 export async function runConnector(options: ConnectorOptions): Promise<void> {
-  // ★토큰은 서버마다 한 칸이다(설계 0.4.2 §2-4). 역할은 토큰이 아니라 요청 헤더로 실린다 —
-  //   브리지의 역할은 시작할 때 인자로 정해지고 세션 동안 바뀌지 않는다.
+  // ★토큰은 서버마다 한 칸이다. 세션 역할은 없다 — 도구 목록·권한은 서버가 사용자 권한으로 정한다.
+  const legacyRole = legacyRoleInput(options.legacyRoleFlag, options.envVars);
+  if (legacyRole !== undefined) {
+    // stdout 은 JSON-RPC 전용이다 — 안내는 stderr 로만.
+    options.errorOutput.write(`${LEGACY_ROLE_NOTICE}\n`);
+  }
   const auth = new OAuthClient({ endpoint: options.endpoint, tokenStore: new FileTokenStore() });
   const client = new McpRpcClient({
     endpoint: options.endpoint,
     tokenProvider: auth,
-    role: options.role,
+    legacyRole,
     // 에이전트의 MCP 연결 — 에이전트 이름은 브리지가 호스트의 initialize 에서 읽어 싣는다.
     channel: "mcp",
   });

@@ -102,9 +102,12 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
     const code = await runAinectoCli(["--role", "design", "init", "--json"], io);
 
     expect(code).toBe(1);
-    const first = stderr[0]!;
-    expect(first.endsWith("\n")).toBe(true);
-    const event = JSON.parse(first) as Record<string, unknown>;
+    // ★stderr 의 모든 줄이 JSON 이다 — 사람용 문장이 섞이지 않는다.
+    const events = stderr.map((line) => {
+      expect(line.endsWith("\n")).toBe(true);
+      return JSON.parse(line) as Record<string, unknown>;
+    });
+    const event = events.find((candidate) => candidate.event === "login_url")!;
     // ★로그인이 역할과 무관해져 role 칸은 없다(0.4.2 §2-5).
     expect(Object.keys(event).sort()).toEqual(["event", "url"]);
     expect(event.event).toBe("login_url");

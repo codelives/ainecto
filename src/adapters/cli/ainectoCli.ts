@@ -13,8 +13,8 @@ import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands
 import { executeInitCommand } from "./initCommand";
 import { createReadlinePrompter, isInteractive } from "./prompter";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
-import { assertRole, resolveRole, ROLE_ENV_VAR, type HarnessRole, type ResolvedRole } from "../../core/harness/role";
-import { askTheUserToFixRole, findRepositoryRole } from "../../core/harness/repositoryRole";
+import { assertRole, resolveRole } from "../../core/harness/role";
+import { LEGACY_ROLE_NOTICE, legacyRoleInput } from "../../core/harness/legacyRole";
 
 export interface CliIO {
   stdout: NodeJS.WriteStream;
@@ -37,15 +37,19 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     const resolved = resolveEndpoint({ env: parsed.env, endpoint: parsed.endpoint });
-    // 플래그·환경변수로 «명시한» 역할. ★auth 는 이것을 읽지 않는다 — 잘못된 AINECTO_ROLE 이 로그인을
-    //   막지 않게(0.4.2 리뷰 P2). 저장소 역할과의 판정은 아래 한 곳에서 한다.
-    const explicitRole = () => resolveRole({ role: parsed.role });
+    const [domain, action, ...rest] = parsed.positionals;
+    // ★옛 --role / AINECTO_ROLE — 세션 역할은 없어졌다(0.8.0). 값을 검사하지 않고 받아 안내 한 줄을
+    //   남기고, 원격 요청에 기록용 헤더로만 싣는다(legacyRole.ts). 브리지는 connector 가 같은 일을 한다.
+    const legacyRole = legacyRoleInput(parsed.role);
+    if (legacyRole !== undefined && domain !== "mcp") {
+      // --json 이면 stderr 도 JSON 한 줄이다(login_url 과 같은 규칙).
+      io.stderr.write(parsed.json
+        ? `${JSON.stringify({ event: "legacy_role_ignored", message: LEGACY_ROLE_NOTICE })}\n`
+        : `${LEGACY_ROLE_NOTICE}\n`);
+    }
     const tokenStore = new FileTokenStore();
-    /**
-     * 인증·RPC 클라이언트. ★토큰은 서버마다 한 칸이고(역할 없음), 역할은 RPC 헤더로만 실린다
-     * (설계 0.4.2 §2-3·§2-4). init 은 역할을 «물어서» 정할 수 있으므로 역할이 정해진 뒤 이것을 부른다.
-     */
-    const connect = (role: HarnessRole | null) => {
+    /** 인증·RPC 클라이언트. ★토큰은 서버마다 한 칸이다. */
+    const connect = () => {
       const auth = new OAuthClient({
         endpoint: resolved.endpoint,
         tokenStore,
@@ -61,16 +65,14 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         },
       });
       // 직접 명령 — 채널 cli. 에이전트 이름은 싣지 않는다(셸을 누가 돌렸는지 모른다 → 서버는 unknown).
-      const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, role, channel: "cli" });
+      const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, legacyRole, channel: "cli" });
       return { auth, client };
     };
-    const [domain, action, ...rest] = parsed.positionals;
 
     if (domain === "mcp") {
       await runConnector({
         endpoint: resolved.endpoint,
-        // 브리지의 역할은 인자·환경변수에서만 온다 — bin/mcp.ts 와 같은 규칙. 저장소를 적용하지 않는다.
-        role: explicitRole().role ?? null,
+        legacyRoleFlag: parsed.role,
         input: io.stdin,
         output: io.stdout,
         errorOutput: io.stderr,
@@ -82,9 +84,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       // ⚠init 의 플래그(--role 등)는 전역 파서가 positional 로 흘려보낸다. 그대로 넘긴다.
       return await executeInitCommand({
         argv: parsed.positionals.slice(1),
-        role: explicitRole().role,
-        connect: (role) => {
-          const { auth, client } = connect(role);
+        role: parsed.role !== undefined ? assertRole(parsed.role) : resolveRole().role,
+        connect: () => {
+          const { auth, client } = connect();
           return {
             client,
             // 문서는 인증 후에 받는다 — 토큰이 없으면 패키지 기본값으로 가고, 그 사실을 보고한다.
@@ -120,34 +122,24 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     if (domain === "auth") {
-      // 로그인은 서버마다 한 번이다 — 역할과 무관하다. 옛 문서를 따라 친 --role 은 알리고 넘어간다.
-      if (parsed.role !== undefined) {
-        io.stderr.write("Sign-in is one per machine; --role is not used by auth.\n");
-      }
       // ★await 를 빼면 이 try 가 실패를 «못 본다» — 거부 사유가 renderError 를 지나치고
       //   날것의 스택 트레이스로 나간다(2026-09-23 실물 실행에서 발견).
-      return await handleAuth(action, connect(null).auth, resolved.endpoint, parsed.json, io);
+      return await handleAuth(action, connect().auth, resolved.endpoint, parsed.json, io);
     }
 
     const env = parsed.env ?? "prod";
-    // ★카탈로그는 서버의 지금 목록이다. 역할 판정이 실패해도(깨진 저장소) 막지 않고 스냅샷으로 답한다
-    //   (0.4.2 리뷰 P2 — 깨진 저장소 안에서도 카탈로그를 볼 수 있다).
+    // ★카탈로그는 서버의 지금 목록이다. 못 받으면 스냅샷으로 답한다.
     if (domain === "tools" && action === "catalog") {
-      return await printCatalog(parsed, io, resolved.endpoint, async () => {
-        const explicit = explicitRole();
-        return connect(await commandRole(explicit, process.cwd())).client;
-      });
+      return await printCatalog(parsed, io, resolved.endpoint, async () => connect().client);
     }
     // 스냅샷에 없는 명령은 서버의 지금 목록에서 찾는다 — 서버에 새로 열린 도구를 CLI 재배포 없이 쓴다.
-    //   ★역할 없이 묻는다: 모르는 명령은 «역할을 못 읽음»이 아니라 «모르는 명령»으로 답해야 한다(0.4.2 리뷰 P2).
-    //   역할은 아래 실제 호출에 실리고, 강제는 서버가 한다.
     let routeTools: readonly GeneratedToolDefinition[] = getGeneratedTools(env);
     let remote = isAttachmentsUploadCommand(domain, action)
       || isInboxPollCommand(domain, action)
       || (domain === "tools" && (action === "list" || action === "call"))
       || matchGeneratedCommand(routeTools, parsed.positionals) !== undefined;
     if (!remote) {
-      const live = await loadLiveTools(env, connect(null).client).catch(() => undefined);
+      const live = await loadLiveTools(env, connect().client).catch(() => undefined);
       if (live && matchGeneratedCommand(live, parsed.positionals)) {
         routeTools = live;
         remote = true;
@@ -159,10 +151,8 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         : `Unknown command "${domain}".`);
     }
 
-    // ★여기부터 원격을 부르는 명령은 «저장소 역할»로 간다(설계 0.4.2 §2-2). mcp·init·auth 는 위에서
-    //   끝났다 — 역할이 어긋난 저장소 안에서도 로그인·브리지·init 은 막히지 않는다.
-    const explicit = explicitRole();
-    const { client } = connect(await commandRole(explicit, process.cwd()));
+    // ★세션 역할은 없다 — 무엇을 할 수 있는지는 서버가 사용자 권한으로 정한다.
+    const { client } = connect();
 
     if (isAttachmentsUploadCommand(domain, action)) {
       return await executeAttachmentsUploadCommand({
@@ -198,33 +188,6 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     io.stderr.write(renderError(error, { json: parsed.json }));
     return 1;
   }
-}
-
-/**
- * ★셸 명령의 역할 — 한 곳(설계 0.4.2 §2-2).
- *
- * <p>저장소(cwd 에서 위로, 우리 브리지 항목이 있는 첫 폴더)에 역할 R 이 있으면 R 로 간다. 명시한 역할이 R 과
- * 다르면 거절한다 — 역할을 바꾸는 길은 `ainecto init --role` 하나이고 사용자가 고른다. 저장소를 못
- * 읽으면(어긋남·읽기 문제) 멈추고 사용자에게 물으라고 한다 — 모르는 채로 «제한 없음»으로 가지 않는다.
- * 저장소 밖이면 명시한 역할(없으면 역할 없음 = 제한 없음, 현행).
- */
-export async function commandRole(explicit: ResolvedRole, cwd: string): Promise<HarnessRole | null> {
-  const explicitRole = explicit.role ?? null;
-  const found = await findRepositoryRole(cwd);
-  if (found.kind === "conflict") {
-    throw new Error(await askTheUserToFixRole(found.dir, found.reason));
-  }
-  if (found.kind === "none") {
-    return explicitRole;
-  }
-  if (explicitRole !== null && explicitRole !== found.role) {
-    const given = explicit.source === "env" ? `${ROLE_ENV_VAR}=${explicitRole}` : `--role ${explicitRole}`;
-    throw new Error(
-      `This repository's AI sessions have the role ${found.role} (set in ${found.dir}). `
-      + `${given} does not match — the role changes only with \`ainecto init --role <role>\`, after asking the user.`,
-    );
-  }
-  return found.role;
 }
 
 async function handleAuth(
@@ -316,7 +279,8 @@ async function handleTools(
 interface GlobalArgs {
   env?: AinectoEnv;
   endpoint?: string;
-  role?: HarnessRole;
+  /** 옛 --role — 검사하지 않는다(legacyRole.ts). */
+  role?: string;
   json: boolean;
   help: boolean;
   version: boolean;
@@ -335,8 +299,12 @@ function parseGlobalArgs(argv: string[]): GlobalArgs {
     } else if (arg === "--endpoint") {
       result.endpoint = requireValue(arg, argv[++index]);
     } else if (arg === "--role") {
-      // ★전역 플래그다. 브리지·도구 호출·로그인·init 이 모두 같은 역할을 본다.
-      result.role = assertRole(requireValue(arg, argv[++index]));
+      // ★옛 전역 플래그 — 값을 검사하지 않고 받는다(legacyRole.ts). 값 없이 끝나도 멈추지 않는다.
+      const value = argv[index + 1];
+      if (value !== undefined && !value.startsWith("--")) {
+        result.role = value;
+        index += 1;
+      }
     } else if (arg === "--json") {
       result.json = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -379,29 +347,28 @@ function requireValue(flag: string, value: string | undefined): string {
 
 /**
  * ★로그인은 설치의 끝이 아니다. 에이전트가 `auth status --json` 의 authenticated:true 를 보고 «설치 완료»로
- * 닫은 실측(2026-09-29, Codex)이 있다. 이 저장소에 역할이 없으면 결과에 다음 단계를 싣는다 — --json 에도.
+ * 닫은 실측(2026-09-29, Codex)이 있다. 그래서 auth 결과에 다음 단계를 싣는다 — --json 에도.
+ * 무엇이 남았는지는 `doctor` 한 곳이 판정한다(여기서 따로 판정하지 않는다).
  */
-async function nextStep(): Promise<{ setup?: "incomplete"; next?: string }> {
-  const found = await findRepositoryRole(process.cwd());
-  return found.kind === "none" ? { setup: "incomplete", next: NEXT_STEP_INIT } : {};
+async function nextStep(): Promise<{ next: string }> {
+  return { next: NEXT_STEP };
 }
 
 /** 설치·로그인 뒤 «다음에 할 일». 도움말과 auth 결과가 같은 문장을 쓴다. */
 // ★«참고»로 읽히면 넘긴다 — Codex 가 `next` 를 받고도 «업데이트 완료»만 말했다(2026-09-30 실측).
 //   그래서 «사용자가 설치·업데이트·로그인만 부탁했어도 지금 알려라»를 지시문으로 적는다.
-const NEXT_STEP_INIT = [
-  "AiNecto setup is not finished until `npx -y ainecto@latest init` runs in the repository.",
-  "AI agents: tell the user this now, even if they only asked to install, update, or sign in. Then ask",
-  "which role this repository's AI sessions should have — Design, Development, Test, or Validation —",
-  "never pick one yourself, and run `npx -y ainecto@latest init --role <role>` from the repository root.",
-  "In a terminal: `npx -y ainecto@latest init` asks for the role and the project.",
+const NEXT_STEP = [
+  "Connect your coding agents to AiNecto once per machine: `npx -y ainecto@latest setup`.",
+  "AI agents: tell the user this now, even if they only asked to install, update, or sign in.",
+  "To add AiNecto's working rules to a repository, run `npx -y ainecto@latest init` from its root.",
+  "`npx -y ainecto@latest doctor` shows what is still missing and the command that fixes it.",
 ].join("\n");
 
 function helpText(): string {
   return [
     "AiNecto CLI",
     "",
-    NEXT_STEP_INIT,
+    NEXT_STEP,
     "",
     "Usage:",
     "  ainecto auth login|status|logout [--env prod|dev] [--json]   (one sign-in per machine)",
@@ -414,7 +381,7 @@ function helpText(): string {
     "      --workspace and --project may repeat: any of the given workspaces AND any of the given projects",
     "      poll exit codes: 0 new items · 3 nothing new · 1 error · 2 usage error",
     "  ainecto <generated-command> [flags] [-f payload.json] [--yes] [--json]",
-    "  ainecto mcp [--env prod|dev] [--endpoint URL] [--role design|development|test|validation]",
+    "  ainecto mcp [--env prod|dev] [--endpoint URL]",
     "",
     "Harness:",
     "  ainecto init [--role <design|development|test|validation>] [--project <uuid>] [--dry-run]",

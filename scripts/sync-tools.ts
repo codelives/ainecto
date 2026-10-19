@@ -52,7 +52,7 @@ async function fetchLiveTools(env: AinectoEnv, check: boolean): Promise<McpToolL
   if (!token) {
     throw new Error("CATALOG_SYNC_AUTH_MISSING: AINECTO_CATALOG_SYNC_TOKEN or local `ainecto auth login --env <env>` credentials are required for live catalog sync.");
   }
-  const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider, role: null, channel: "cli" });
+  const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider, channel: "cli" });
   await client.initialize();
   const tools = await client.toolsList();
   return tools.map(assertMcpToolListItem);

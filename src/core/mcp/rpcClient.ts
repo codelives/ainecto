@@ -1,5 +1,5 @@
 import type { TokenProvider } from "../auth/oauth";
-import { ROLE_HEADER, type HarnessRole } from "../harness/role";
+import { LEGACY_ROLE_HEADER } from "../harness/legacyRole";
 import { CLI_VERSION, PACKAGE_NAME } from "../version";
 
 export interface JsonRpcRequest {
@@ -45,11 +45,10 @@ export interface McpRpcClientOptions {
   fetchImpl?: typeof fetch;
   envVars?: NodeJS.ProcessEnv;
   /**
-   * 세션 역할. ★필수다 — 역할이 없으면 {@code null} 을 «명시»한다(설계 0.4.2 §2-3, 리뷰 P2).
-   * 저장소 안에서 이것을 빠뜨리면 요청이 조용히 «제한 없음»으로 간다. 그 빠뜨림을 타입이 잡는다.
-   * 값이 있으면 모든 요청의 {@code X-AiNecto-Role} 헤더로 실린다 — 강제는 서버가 한다.
+   * 옛 {@code --role}/{@code AINECTO_ROLE} 값 — ★기록용이다(legacyRole.ts). 있으면 모든 요청의
+   * {@code X-AiNecto-Role} 헤더로 실리고, 서버는 판정에 쓰지 않고 로그로만 남긴다.
    */
-  role: HarnessRole | null;
+  legacyRole?: string;
   /**
    * 요청의 길. ★필수다 — 빠뜨리면 서버가 직접 명령을 MCP 로 센다. 그 빠뜨림을 타입이 잡는다.
    * 모든 요청의 {@code X-AiNecto-Channel} 헤더로 실린다.
@@ -159,8 +158,9 @@ export class McpRpcClient {
     if (token) {
       headers.authorization = `Bearer ${token}`;
     }
-    if (this.options.role) {
-      headers[ROLE_HEADER.toLowerCase()] = this.options.role;
+    const legacyRole = printableHeaderValue(this.options.legacyRole);
+    if (legacyRole) {
+      headers[LEGACY_ROLE_HEADER.toLowerCase()] = legacyRole;
     }
     headers[CHANNEL_HEADER.toLowerCase()] = this.options.channel;
     if (this.agent) {
@@ -188,10 +188,15 @@ export function isToolError(result: unknown): boolean {
  * 최대 {@link MAX_AGENT_NAME_LENGTH}자. 남는 것이 없으면 싣지 않는다(서버는 unknown 으로 센다).
  */
 export function agentHeaderValue(clientName: unknown): string | undefined {
-  if (typeof clientName !== "string") {
+  return printableHeaderValue(clientName);
+}
+
+/** 헤더에 실을 수 있는 모양으로 — 규칙은 {@link agentHeaderValue} 와 같다(이 파일의 헤더 값은 전부 이 길을 지난다). */
+function printableHeaderValue(value: unknown): string | undefined {
+  if (typeof value !== "string") {
     return undefined;
   }
-  const printable = clientName.replace(/[^\x20-\x7E]/g, "").trim().slice(0, MAX_AGENT_NAME_LENGTH).trim();
+  const printable = value.replace(/[^\x20-\x7E]/g, "").trim().slice(0, MAX_AGENT_NAME_LENGTH).trim();
   return printable || undefined;
 }
 

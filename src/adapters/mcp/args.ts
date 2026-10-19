@@ -1,10 +1,13 @@
 import { assertEnv, type AinectoEnv } from "../../core/config/endpoints";
-import { assertRole, type HarnessRole } from "../../core/harness/role";
 
 export interface McpBinArgs {
   env?: AinectoEnv;
   endpoint?: string;
-  role?: HarnessRole;
+  /**
+   * 옛 {@code --role} 값 — ★검사하지 않는다(legacyRole.ts). 0.7.x 가 쓴 저장소 설정이 이 판을 띄우므로
+   * 여기서 멈추면 그 연결이 전부 끊긴다. 값 없이 끝난 {@code --role} 도 멈추지 않고 «없음»으로 둔다.
+   */
+  legacyRole?: string;
   help: boolean;
 }
 
@@ -20,7 +23,11 @@ export function parseMcpArgs(argv: string[]): McpBinArgs {
     } else if (arg === "--endpoint") {
       result.endpoint = requireFlagValue(arg, argv[++index]);
     } else if (arg === "--role") {
-      result.role = assertRole(requireFlagValue(arg, argv[++index]));
+      const value = argv[index + 1];
+      if (value !== undefined && !value.startsWith("--")) {
+        result.legacyRole = value;
+        index += 1;
+      }
     } else if (arg === "--help" || arg === "-h") {
       result.help = true;
     } else {
