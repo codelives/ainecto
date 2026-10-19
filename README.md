@@ -174,7 +174,7 @@ This is the entry `setup` and `init --mcp` write — you normally do not add it 
   "mcpServers": {
     "ainecto": {
       "command": "npx",
-      "args": ["-y", "@ainecto/mcp@0.8.0"]
+      "args": ["-y", "@ainecto/mcp@0.8.1"]
     }
   }
 }
