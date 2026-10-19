@@ -4,13 +4,13 @@ import {
   buildServerEntry,
   entryCarriesRole,
   isOurBridge,
+  pinnedBridgeVersion,
   mergeServerEntry,
   readServerEntry,
   removeServerEntry,
   SERVER_NAME,
   type McpServerEntry,
 } from "../harness/agentTargets";
-import { PACKAGE_NAME } from "../version";
 import { lastLine, type CommandRunner } from "./commandRunner";
 
 /**
@@ -295,12 +295,12 @@ function describe(entry: ExistingEntry | undefined): Pick<AgentState, "entry" | 
   if ("url" in entry) {
     return { entry, ours: false, carriesRole: false };
   }
-  const pinned = entry.args.find((arg) => arg.startsWith(`${PACKAGE_NAME}@`));
+  const pinnedVersion = pinnedBridgeVersion(entry);
   return {
     entry,
     ours: isOurBridge(entry),
     carriesRole: entryCarriesRole(entry),
-    ...(pinned ? { pinnedVersion: pinned.slice(PACKAGE_NAME.length + 1) } : {}),
+    ...(pinnedVersion ? { pinnedVersion } : {}),
   };
 }
 

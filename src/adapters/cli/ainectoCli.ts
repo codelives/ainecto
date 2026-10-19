@@ -12,6 +12,7 @@ import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./a
 import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands";
 import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
+import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { systemCommandRunner } from "../../core/setup/commandRunner";
 import { homedir } from "node:os";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
@@ -124,6 +125,29 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         // ★외부 CLI 는 홈 폴더에서 돈다 — 지금 저장소의 local·project 범위 항목이 사용자 범위 판정에 끼지 않게.
         runner: systemCommandRunner({ cwd: homedir() }),
         home: homedir(),
+        json: parsed.json,
+        io,
+      });
+    }
+
+    if (domain === "status" || domain === "doctor") {
+      const { auth, client } = connect();
+      const run = domain === "status" ? executeStatusCommand : executeDoctorCommand;
+      return await run({
+        argv: parsed.positionals.slice(1),
+        collect: {
+          endpoint: resolved.endpoint,
+          env: resolved.env,
+          cliVersion: CLI_VERSION,
+          tokenStore,
+          auth,
+          client,
+          runner: systemCommandRunner({ cwd: homedir() }),
+          hereRunner: systemCommandRunner({ cwd: process.cwd() }),
+          home: homedir(),
+          cwd: process.cwd(),
+          envVars: process.env,
+        },
         json: parsed.json,
         io,
       });
@@ -394,6 +418,8 @@ function helpText(): string {
     "Setup (once per machine):",
     "  ainecto setup [--env prod|dev] [--endpoint URL] [--dry-run] [--json]   sign in and connect Claude Code, Cursor, and Codex",
     "  ainecto setup --undo                                                   remove those connections (sign-in stays)",
+    "  ainecto status [--json]                                                who is signed in, and what is connected (read-only)",
+    "  ainecto doctor [--json]                                                status + what is missing and the command that fixes it",
     "",
     "Harness:",
     "  ainecto init [--mcp] [--dry-run] [--json]   AiNecto rules for this repository (--mcp also writes .mcp.json and .cursor/mcp.json)",

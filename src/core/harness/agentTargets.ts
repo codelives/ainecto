@@ -62,6 +62,15 @@ export function entryCarriesRole(entry: unknown): boolean {
   return isRecord(entry) && Array.isArray(entry.args) && entry.args.includes("--role");
 }
 
+/** 이 항목이 고정한 브리지 판({@code @ainecto/mcp@X} 의 X). 고정하지 않았으면 undefined — doctor 의 «더 새 판» 판정. */
+export function pinnedBridgeVersion(entry: unknown): string | undefined {
+  if (!isRecord(entry) || !Array.isArray(entry.args)) {
+    return undefined;
+  }
+  const pinned = entry.args.find((arg): arg is string => typeof arg === "string" && arg.startsWith(`${PACKAGE_NAME}@`));
+  return pinned?.slice(PACKAGE_NAME.length + 1);
+}
+
 export interface MergeResult {
   /** 적어 넣은 결과 JSON 문자열 (끝에 줄바꿈 포함). */
   content: string;
