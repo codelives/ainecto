@@ -1,14 +1,12 @@
-import { AGENT_TARGETS, SERVER_NAME } from "./agentTargets";
-import { ROLE_ENV_VAR } from "./role";
+import { SERVER_NAME } from "./agentTargets";
 
 /**
  * 저장소에 쓰는 글. ⚠<b>사용자 노출 문자열은 영어</b>로 쓴다 — 이 저장소의 기존 관례이고
  * (help·에러 메시지가 전부 영어) 공개 npm 패키지가 남의 저장소에 써 넣는 파일이다.
  * 주석·설계 메모만 한국어다.
  *
- * ★<b>역할을 여기 적지 않는다.</b> 역할의 진실원은 MCP 서버 설정 한 곳이고, 지금 무엇인지는
- * 서버가 {@code initialize} 안내문으로 말해 준다. 이 글에도 적으면 역할을 바꿀 때마다 두
- * 곳을 맞춰야 하고, 어긋나는 순간 에이전트는 틀린 쪽을 믿는다.
+ * ★<b>권한·프로젝트를 여기 적지 않는다.</b> 세션 역할은 없고(0.8.0) 무엇을 할 수 있는지는 서버가
+ * 사용자 권한으로 정한다. 저장소에 «한 프로젝트»를 묶지도 않는다 — 에이전트가 작업마다 대상을 찾는다.
  */
 
 export const MARKER_BEGIN = "<!-- ainecto:begin -->";
@@ -43,8 +41,6 @@ export const HARNESS_CONFIG_PATH = `${HARNESS_DIR}/config.json`;
 export const HARNESS_RECORD_PATH = `${HARNESS_DIR}/init-record.json`;
 
 export interface HarnessDocInput {
-  projectName: string;
-  projectUuid: string;
   endpoint: string;
 }
 
@@ -55,11 +51,7 @@ export interface HarnessDocInput {
  * @param template 서버에서 받은 본문. 없으면 이 패키지의 기본값(= 오프라인 기본값)을 쓴다.
  */
 export function renderHarnessDoc(input: HarnessDocInput, template?: string): string {
-  return fillTemplate(template ?? DEFAULT_HARNESS_DOC, {
-    projectName: input.projectName,
-    projectUuid: input.projectUuid,
-    endpoint: input.endpoint,
-  });
+  return fillTemplate(template ?? DEFAULT_HARNESS_DOC, { endpoint: input.endpoint });
 }
 
 /**
@@ -81,23 +73,34 @@ export function fillTemplate(template: string, values: Record<string, string>): 
 export const DOC_KEY = "HARNESS.DOC";
 export const AGENT_NOTE_KEY = "HARNESS.AGENT_NOTE";
 
-/** 각 문서가 반드시 담아야 할 변수 이름 — 서버의 REQUIRED_VARIABLES 와 같은 목록이다. */
+/**
+ * 각 문서가 반드시 담아야 할 변수 이름 — 서버의 REQUIRED_VARIABLES 와 같은 목록이다.
+ * ★이 CLI 가 채우는 변수도 정확히 이것뿐이다({@link renderHarnessDoc}·{@link renderAgentNote}).
+ */
 const REQUIRED_VARIABLES: Record<string, string[]> = {
-  [DOC_KEY]: ["projectName", "projectUuid", "endpoint"],
+  [DOC_KEY]: ["endpoint"],
   [AGENT_NOTE_KEY]: ["harnessDocPath", "serverName"],
 };
 
 /**
  * 받은 본문을 저장소에 «써도 되는가». 쓰면 안 되면 그 이유, 괜찮으면 undefined.
  *
- * <p>둘을 본다: ①필수 변수가 원문에 «있는가» — 없으면 채워도 그 값이 안 들어간다.
- * ②AGENT_NOTE 라면 관리 마커가 정확히 한 쌍 있는가 — 없으면 우리 블록을 다시 찾을 수 없어
+ * <p>셋을 본다: ①필수 변수가 원문에 «있는가» — 없으면 채워도 그 값이 안 들어간다.
+ * ②이 CLI 가 «모르는» 변수가 있는가 — 있으면 못 채운 {@code {{name}}} 이 남의 저장소에 그대로 들어간다
+ * (예: 0.8.0 이 옛 서버 판의 {@code {{projectName}}} 을 받는 경우 — 그때는 패키지 기본값을 쓴다).
+ * ③AGENT_NOTE 라면 관리 마커가 정확히 한 쌍 있는가 — 없으면 우리 블록을 다시 찾을 수 없어
  * 재실행마다 덧붙고 undo 도 못 걷어낸다.
  */
 export function documentContractProblem(key: string, body: string): string | undefined {
-  for (const name of REQUIRED_VARIABLES[key] ?? []) {
+  const known = REQUIRED_VARIABLES[key] ?? [];
+  for (const name of known) {
     if (!body.includes(`{{${name}}}`)) {
       return `${key} is missing the required {{${name}}} placeholder`;
+    }
+  }
+  for (const [, name] of body.matchAll(/\{\{([a-zA-Z0-9_]+)}}/g)) {
+    if (!known.includes(name!)) {
+      return `${key} has a {{${name}}} placeholder this CLI does not fill`;
     }
   }
   if (key === AGENT_NOTE_KEY) {
@@ -108,58 +111,32 @@ export function documentContractProblem(key: string, body: string): string | und
 
 const DEFAULT_HARNESS_DOC = `# AiNecto Harness
 
-This repository is wired to an AiNecto project. The design source of truth lives in AiNecto,
-not in this repository's files.
+This repository works with AiNecto. The design source of truth — requirements, the ERD,
+diagrams, documents, and task boards — lives in AiNecto, not in this repository's files.
 
-- Project: **{{projectName}}** (\`{{projectUuid}}\`)
 - MCP endpoint: {{endpoint}}
 
-## One session, one role
+## What you can do
 
-A session picks exactly one role and keeps it for the whole session. The role comes from the
-MCP server configuration — not from this file — and it does not change during a session. The
-user picks the role; an agent applies a new one only when the user asks, and it takes effect in
-the next session. This is a working guardrail, not a security boundary. The server exposes only
-the tools that role is allowed to use, so a tool that is out of role is not merely discouraged:
-it is absent.
+Every AI session sees the same AiNecto tools. What a tool may change is decided by the signed-in
+user's AiNecto permissions on the workspace, project, or document it touches — the server refuses
+what the user may not do. A refusal is an answer: report it to the user instead of looking for a
+way around it.
 
-| Role | Owns | Must not |
-| --- | --- | --- |
-| Design | Requirements, ERD, domain and module boundaries, dependency direction, tasks | Write product or test code |
-| Development | Product code, following the approved design | Change requirements, ERD, architecture, or data ownership |
-| Test | Test scenarios and test code, running them and reading results | Change product code to make a test pass; change the design |
-| Validation | Judging the result against the design and the rules | Change anything; it reports PASS or FAIL with evidence |
+Find the project and document for the task with the tools (\`list_projects\`, \`search_documents\`,
+\`get_document\`) — this repository is not bound to one project.
 
-Every role can **read** the whole source of truth. Reading the design is how the other roles
-do their job. A session that cannot do something reports it in the session, to you.
+## When a tool is missing
 
-## When you are blocked
+If a result names a tool that is not in your tool list, this session started before that tool
+was added. Start a new session, or call it from the repository with
+\`npx -y ainecto@latest tools call <tool> '<json>'\`.
 
-If the work needs something your role cannot do, **stop and say so**. Do not look for a way
-around it: not by editing files the tools would have written, not by asking for the role to be
-changed mid-session, not by deferring the decision into the implementation.
+## Commands
 
-    The work needs a design change.
-    This is a Development Session, so I cannot make it.
-    Settle it in a Design Session, then continue here.
-
-Validation reports \`PASS\`, or \`FAIL\` with the rule violated, where it happened, the evidence,
-and which session should pick it up next.
-
-## Not every change needs four sessions
-
-A small change that fits the design already recorded in AiNecto starts at Development. The rule
-is not "always run four steps" — it is that when a step is needed, it does not happen inside
-another role's session.
-
-## Switching roles
-
-Change the role in the MCP server configuration and start a new session:
-
-${AGENT_TARGETS.map((target) => `    ${target.label.padEnd(12)} ${target.path}`).join("\n")}
-    Codex        global config — use a profile: codex -p <role>, or set ${ROLE_ENV_VAR}
-
-Or run \`ainecto init --role <design|development|test|validation>\` to rewrite them.
+    npx -y ainecto@latest setup      connect this machine's coding agents (once per machine)
+    npx -y ainecto@latest status     who is signed in, and what is connected
+    npx -y ainecto@latest doctor     what is missing, and the command that fixes it
 
 ---
 Generated by \`ainecto init\`. Remove everything it wrote with \`ainecto init --undo\`.
@@ -179,14 +156,11 @@ export function renderAgentNote(template?: string): string {
 const DEFAULT_AGENT_NOTE = `${MARKER_BEGIN}
 ## AiNecto Harness
 
-This repository uses AiNecto as its design source of truth, and each session has one role
-(Design / Development / Test / Validation). Read \`{{harnessDocPath}}\` before doing work that
-touches requirements, the ERD, or architecture.
+This repository uses AiNecto as its design source of truth. Read \`{{harnessDocPath}}\` before doing
+work that touches requirements, the ERD, or architecture.
 
-The role of this session comes from the \`{{serverName}}\` MCP server configuration that
-\`ainecto init\` wrote; the server states it in its \`initialize\` instructions and exposes only
-that role's tools. If the work needs something outside the role,
-stop and report which session is required.
+AiNecto tools come from the \`{{serverName}}\` MCP server. Every session sees the same tools; the
+signed-in user's AiNecto permissions decide what they may change, and the server refuses the rest.
 ${MARKER_END}`;
 
 /**

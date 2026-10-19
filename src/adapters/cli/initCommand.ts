@@ -1,9 +1,7 @@
 import { chmod, mkdir, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { McpRpcError, type McpRpcClient } from "../../core/mcp/rpcClient";
 import { isDefaultEndpointFor } from "../../core/config/endpoints";
 import { renderSuccess } from "../../core/output/render";
-import { HARNESS_ROLES, ROLE_ENV_VAR, type HarnessRole } from "../../core/harness/role";
 import {
   initRefusal,
   MANAGED_PATHS,
@@ -13,46 +11,18 @@ import {
   type InitPlan,
   withCreatedDirectories,
 } from "../../core/harness/initPlan";
-import { HARNESS_CONFIG_PATH, HARNESS_DOC_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
-import { SERVER_NAME } from "../../core/harness/agentTargets";
+import { AGENT_NOTE_KEY, DOC_KEY, HARNESS_DOC_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
+import { AGENT_TARGETS } from "../../core/harness/agentTargets";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
-import { PromptCancelled, type Choice, type Prompter } from "./prompter";
 import {
   assertInsideRepository,
   findGitRoot,
   readIfExists,
   readManagedFile,
-  rolesInFiles,
-} from "../../core/harness/repositoryRole";
-
-/** 역할이 딱 하나일 때만 그 역할(대화형 기본값). 없거나 어긋나 있으면 기본값이 없다. */
-function singleRole(roles: HarnessRole[]): HarnessRole | undefined {
-  return roles.length === 1 ? roles[0] : undefined;
-}
-
-/** 역할이 정해진 «뒤»에 만드는 연결. 역할이 토큰 칸과 헤더를 정하므로 역할보다 먼저 만들 수 없다. */
-export interface InitConnection {
-  client: McpRpcClient;
-  accessToken?: () => Promise<string | undefined>;
-  login?: () => Promise<void>;
-}
+} from "../../core/harness/repositoryFiles";
 
 export interface InitCommandOptions {
   argv: string[];
-  /** 전역 `--role` / AINECTO_ROLE 에서 온 역할. init 은 이것을 따로 파싱하지 않는다. */
-  role?: HarnessRole;
-  /**
-   * 이미 만든 연결(시험·역할이 미리 정해진 호출). {@link connect} 가 있으면 그쪽이 이긴다.
-   */
-  client?: McpRpcClient;
-  /**
-   * ★역할이 정해진 뒤 연결을 만든다(설계 §21-4). 대화형에서는 역할을 «물어서» 정하므로, 바깥 CLI 가
-   * 미리 클라이언트를 만들 수 없다. 저장소 역할 추론도 init 안에서 하므로 «역할이 클라이언트보다 먼저
-   * 정해진다»(I10)가 이 한 곳에서 지켜진다.
-   */
-  connect?: (role: HarnessRole) => InitConnection;
-  /** 대화형일 때만 있다(판정은 prompter.isInteractive 한 곳). 없으면 묻지 않고 빠진 값을 말하고 멈춘다. */
-  prompter?: Prompter;
   endpoint: string;
   /**
    * 문서를 받을 때 쓸 토큰을 «필요할 때» 가져온다. 없으면 패키지 기본값으로 간다.
@@ -63,8 +33,7 @@ export interface InitCommandOptions {
    */
   accessToken?: () => Promise<string | undefined>;
   /**
-   * 이 역할로 브라우저 로그인을 한다(= {@code ainecto auth login} 과 같은 함수). 없으면 init 은 예전처럼
-   * 로그인하지 않고 401 을 안내로 바꾼다.
+   * 브라우저 로그인(= {@code ainecto auth login} 과 같은 함수). 없으면 로그인하지 않는다.
    *
    * <p>★init 은 사람이나 에이전트가 «명시적으로» 친 명령이라 여기서 로그인한다. 브리지({@code ainecto mcp})는
    * 여전히 자동 로그인하지 않는다 — 세션 한가운데서 창이 뜨면 안 된다(설계 §8-4).
@@ -79,52 +48,39 @@ export interface InitCommandOptions {
   io: { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream };
 }
 
-/** 연결까지 갖춘 옵션 — 원격을 부르는 함수들은 이것만 받는다. */
-type ConnectedOptions = InitCommandOptions & { client: McpRpcClient };
-
 interface InitArgs {
-  projectUuid?: string;
-  projectName?: string;
+  /** MCP 설정 파일도 쓴다(설계 결정 #6). 없으면 «우리 브리지 항목이 이미 있는» 파일만 갱신한다. */
+  mcp: boolean;
   dryRun: boolean;
   undo: boolean;
-  yes: boolean;
+  /** 0.7.x 의 플래그 — 받아서 무시한다(멈추지 않는다). 안내 한 줄에 이름을 싣는다. */
+  ignored: string[];
 }
 
 /**
- * {@code ainecto init} — 이 저장소를 AiNecto 하네스에 붙인다.
+ * {@code ainecto init} — 이 저장소에 AiNecto 작업 규칙을 둔다(설계 §4-2, 0.8.0).
  *
- * ★<b>지금은 비대화형 경로만 있다</b>(설계 §21-1, 1단계). 합격 시나리오는 에이전트가 셸로 이 명령을
- * 치는 것이고 거기엔 사람이 답할 TTY 가 없다. 그래서:
+ * <p>★<b>저장소 규칙만 한다.</b> 세션 역할도, 프로젝트 고르기·만들기도 없다 — 도구와 권한은 서버가
+ * 사용자 권한으로 정하고, 저장소는 한 프로젝트에 묶이지 않는다. 기기 전역의 에이전트 연결은 {@code setup} 이다.
  * <ul>
- *   <li><b>빠진 값은 채우지 않고 말하고 멈춘다.</b> 역할을 기본값으로 고르지 않는다 — 사람이 고른 값이
- *       {@code --role} 로 와야 한다. 프로젝트가 여럿이면 목록을 보여 주고 «다시 실행하라»고 한다.</li>
- *   <li><b>역할이 있으면 로그인까지 한다.</b> 그 역할의 토큰이 없으면 브라우저를 띄우고(사람이 승인)
- *       이어서 진행한다.</li>
+ *   <li>쓰는 것: {@code .ainecto/HARNESS.md} · {@code AGENTS.md} 관리 블록(·{@code CLAUDE.md} 가 있으면) ·
+ *       {@code .ainecto/config.json}(v2) · 기록.</li>
+ *   <li>MCP 설정 파일은 {@code --mcp} 일 때만 — 단 우리 브리지 항목이 이미 있으면 다시 쓴다(옛 {@code --role}
+ *       제거 + 판 고정). 옛 저장소의 이행은 이 재실행 하나다.</li>
+ *   <li>{@code --dry-run} 도 서버 문서를 받는다 — 계획이 실제 실행과 같아야 한다(요구서 8장 P1).</li>
  * </ul>
- * ★<b>사람이 터미널에서 치면(대화형) 빠진 역할·프로젝트를 번호로 묻는다</b>(설계 §21-4, 0.4.1).
- * 기본값으로 역할을 고르지 않는다. 질문 중 입력이 끝나면(EOF) 아무것도 쓰지 않고 130 으로 끝난다.
- * 확인 단계·루트 질문은 2단계다(설계 §21-2).
  */
 export async function executeInitCommand(options: InitCommandOptions): Promise<number> {
-  try {
-    return await runInit(options);
-  } catch (error) {
-    if (error instanceof PromptCancelled) {
-      options.io.stderr.write(`${error.message}\n`);
-      return 130;
-    }
-    throw error;
-  } finally {
-    options.prompter?.close();
-  }
-}
-
-async function runInit(initialOptions: InitCommandOptions): Promise<number> {
-  let options = initialOptions;
   const args = parseInitArgs(options.argv);
+  if (args.ignored.length > 0) {
+    options.io.stderr.write(
+      `Ignored ${args.ignored.join(", ")}: init no longer asks for a role or a project — `
+      + "every session sees the same tools and your AiNecto permissions decide what they may change.\n",
+    );
+  }
   const root = resolve(options.cwd);
-  // ★하위 폴더에서 치면 멈춘다. 그 자리에 .mcp.json 을 쓰면 에이전트는 루트에서 그것을 못 본다 —
-  //   역할이 걸린 줄 알고 걸리지 않는다. undo 도 같은 이유로 루트에서만 한다(기록이 루트에 있다).
+  // ★하위 폴더에서 치면 멈춘다. 그 자리에 .mcp.json 을 쓰면 에이전트는 루트에서 그것을 못 본다.
+  //   undo 도 같은 이유로 루트에서만 한다(기록이 루트에 있다).
   const rootNotes = await repositoryRootNotes(root);
   const files = await readSnapshot(root);
 
@@ -143,123 +99,52 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
     return 0;
   }
 
-  // ★<b>원격을 건드리기 «전»에 기록을 본다.</b> 예전엔 이 판정이 계획 안에만 있어서, 프로젝트가
-  //   0개인 저장소에서 «원격에 프로젝트를 만든 뒤» 「아무것도 바꾸지 않았다」는 예외를 냈다
-  //   (9차 1차 리뷰 B7). 로컬 쓰기가 0이라는 것과 부수효과가 0이라는 것은 다른 사실이다.
-  //   ★묻기 «전»에도 본다 — 다 물어 놓고 거절하지 않는다.
+  // ★<b>원격을 건드리기 «전»에 기록을 본다</b>(9차 1차 리뷰 B7) — 로그인 창을 띄운 뒤 거절하지 않는다.
   const refusal = initRefusal(files);
   if (refusal !== undefined) {
     throw new Error(refusal);
   }
 
-  // ⚠명시한 --role 이 있으면 저장소 역할을 읽지 않는다 — 설정끼리 어긋난 저장소를 그 --role 이 맞춘다.
-  // ★설정끼리 역할이 어긋난 저장소: 대화형이면 «기본값 없이» 묻고, 비대화형이면 사용자에게 물으라며 멈춘다.
-  const prompter = options.prompter;
-  const role = options.role ?? (prompter
-    ? await askRole(prompter, singleRole(rolesInFiles(files).roles))
-    : currentRole(files));
-  // 설정끼리 어긋나 있으면 «이전 역할»은 하나로 말할 수 없다 — 그때는 변경 알림을 생략한다
-  // (명시한 --role 이 둘을 맞추고, 파일별 변화는 계획의 notes 가 말한다).
-  const previousRole = (() => {
-    try {
-      return currentRole(files);
-    } catch {
-      return undefined;
-    }
-  })();
-  if (!role) {
-    // ⚠「하나 고르라」고 말하지 않는다 — 이 문장을 읽는 것은 대개 에이전트이고, 역할은 사용자가 고른다
-    //   (0.4.1 최종 리뷰 P1, noProjectForRole 과 같은 어조).
-    throw new Error(
-      "No role given. Ask the user which role this repository's AI sessions should have "
-      + `(${HARNESS_ROLES.join(", ")}), then re-run with --role <role>.`,
-    );
-  }
-
-  // 역할이 정해졌으니 이제 그 역할의 연결을 만든다.
-  const connected: ConnectedOptions = connectAs(options, role);
-  options = connected;
-
-  await ensureSignedIn(connected, role, args.dryRun);
-
-  const project = await resolveProject(connected, args, files, root, role);
-  if ("choices" in project) {
-    options.io.stdout.write(renderSuccess(
-      {
-        message: "More than one project found. Re-run with --project <uuid>.",
-        projects: project.choices,
-      },
-      { json: options.json },
-    ));
-    return 1;
-  }
-
-  const documents: HarnessDocuments = args.dryRun
-    ? { versions: {}, fallbacks: {}, unavailableReason: "skipped in --dry-run" }
-    : await fetchHarnessDocuments({
+  const signedIn = await ensureSignedIn(options, args.dryRun);
+  const documents: HarnessDocuments = signedIn
+    ? await fetchHarnessDocuments({
       endpoint: options.endpoint,
       accessToken: await options.accessToken?.(),
       // 서버가 문서의 클라이언트별 변형 키를 이 이름으로 찾는다.
       client: "ainecto-cli",
       fetchImpl: options.fetchImpl,
-    });
+    })
+    : { versions: {}, fallbacks: {}, unavailableReason: args.dryRun ? "not signed in, and --dry-run does not sign in" : "not signed in" };
 
   const plan = planInit({
-    role,
     env: options.env,
-    projectName: project.name,
-    projectUuid: project.uuid,
     endpoint: options.endpoint,
+    mcp: args.mcp,
     cliVersion: options.cliVersion,
     files,
     documents,
   });
   if (plan.refusal !== undefined) {
-    // ★계획이 「멈춰라」고 하면 멈춘다. 이 판정을 부르는 쪽이 안 보면 그 판정은 «없는» 것이고,
-    //   그 경우 읽어 내지 못한 기록을 백업 없이 덮는다(2026-09-27 8차 독립 리뷰 I1).
-    //   ⚠위에서 이미 물었지만 여기서도 본다 — 계획이 거절을 «돌려주는» 이상 그것을 보지 않는
-    //   경로가 생겨선 안 된다. 같은 함수를 쓰므로 두 답이 갈리지 않는다.
+    // ★계획이 「멈춰라」고 하면 멈춘다(2026-09-27 8차 독립 리뷰 I1). 같은 함수라 위의 판정과 갈리지 않는다.
     throw new Error(plan.refusal);
   }
   await applyPlan(root, plan, args.dryRun, files);
-  if (!args.dryRun && previousRole !== undefined && previousRole !== role) {
-    // ★역할이 바뀐 사실을 사람이 보는 자리(에이전트 대화)에 한 줄 남긴다(설계 §13 S2).
-    //   셸의 `ainecto` 는 지금부터, 떠 있는 세션의 MCP 도구는 새 세션부터다 — 그 조건까지 같이 말한다.
-    options.io.stderr.write(`Role changes from ${previousRole} to ${role}: \`ainecto\` commands now, MCP tools from a new session.\n`);
-  }
 
+  const mcpWritten = plan.writes.some((write) => AGENT_TARGETS.some((target) => target.path === write.path));
   options.io.stdout.write(renderSuccess(
     {
       action: args.dryRun ? "init (dry-run)" : "init",
-      role,
-      project: { uuid: project.uuid, name: project.name },
       endpoint: options.endpoint,
       written: plan.writes.map((write) => `${write.existed ? "updated" : "created"} ${write.path}`),
-      codex: `Codex keeps a single global config, so init does not touch it. Run: ${plan.codexCommand}`,
-      codexPerSession: plan.codexProfile,
-      codexEnvFallback: `Without a profile, start the session with ${ROLE_ENV_VAR}=${role}.`,
-      // ⚠조용히 기본값으로 떨어지지 않는다 — 서버에서 규칙을 고쳐도 안 바뀌는 이유를
-      //   사용자가 영영 못 찾게 된다. ★요청 자체의 실패와 «문서별» 되돌림을 둘 다 적는다
-      //   (2026-09-23 독립 재리뷰 I5: HTTP 200 으로 온 빈 문서가 조용히 패키지 판이 됐다).
-      notes: [...rootNotes, ...plan.notes, ...fallbackNotes(documents)],
-      // ★「Enforce this on the server too: ainecto auth login …」 줄은 뺐다. init 이 이미 그 역할로
-      //   로그인했으므로 참이 아니고, 남아 있으면 에이전트가 따라 쳐서 사람이 한 번 더 승인하게 된다
-      //   (2026-09-29 독립 리뷰 P1-1).
-      // ★재시작 없이 이어간다(2026-09-30 사용자 결정). 셸의 `ainecto` 는 부를 때마다 저장소 역할을 읽어
-      //   역할 헤더로 싣는다 — 서버가 요청마다 강제하므로 MCP 연결과 무관하게 이 세션에서 바로 맞다.
-      //   재시작은 «그 역할의 MCP 도구»를 더할 뿐인 선택이다.
+      // ⚠조용히 기본값으로 떨어지지 않는다 — 서버에서 규칙을 고쳐도 안 바뀌는 이유를 사용자가 영영 못 찾는다.
+      //   ★요청 자체의 실패와 «문서별» 되돌림을 둘 다, 어느 «파일»이 그 글을 받는지까지 적는다.
+      notes: [...rootNotes, ...plan.notes, ...fallbackNotes(documents, args.dryRun)],
       next: [
-        `Keep working in this session — no restart is needed. \`ainecto\` commands run from this repository use the ${role} role at once.`,
-        `Read ${HARNESS_DOC_PATH} first, then \`ainecto tools list\` shows the role's tools and \`ainecto tools call <tool> '<json>'\` calls one.`,
-        "Do not use MCP tools this session started with for this work — they keep the role (or no role) the session started with.",
-        "Optional, to add the role's MCP tools: start a new session.",
-        `Claude Code: exit and run \`claude -c\` in this folder, then approve the "${SERVER_NAME}" server from .mcp.json when asked.`,
-        `Codex: save the profile above as $CODEX_HOME/${role}.config.toml and start with \`codex -p ${role}\`.`,
-        role === "design"
-          // ⚠Design 은 그 변경이 «허용»된다 — 모든 역할에 같은 문장을 내보내면 거짓이 된다.
-          ? "To check the role, change a table through `ainecto` — Design may, and the change lands in AiNecto."
-          : `To check the role, try changing a table through \`ainecto\` — ${role} is told to stop.`,
-        `If the new Claude Code session still has no role, run \`claude mcp get ${SERVER_NAME}\`: a local-scope "${SERVER_NAME}" entry hides .mcp.json (remove it with \`claude mcp remove ${SERVER_NAME} -s local\`).`,
+        `Read ${HARNESS_DOC_PATH} first. Every session sees the same AiNecto tools; your AiNecto permissions decide what they may change.`,
+        mcpWritten
+          ? "Claude Code and Cursor pick up the repository's MCP config in a new session."
+          : "To connect your coding agents on this machine, run `ainecto setup` once"
+            + " (or re-run init with --mcp to also write this repository's .mcp.json and .cursor/mcp.json).",
         "Undo everything with: ainecto init --undo",
       ],
     },
@@ -268,62 +153,43 @@ async function runInit(initialOptions: InitCommandOptions): Promise<number> {
   return 0;
 }
 
-/** 이 저장소에 이미 걸린 역할. 두 설정이 어긋나 있으면 «고르지 않고» 멈춘다. */
-function currentRole(files: ReadonlyMap<string, string | undefined>): HarnessRole | undefined {
-  const unique = rolesInFiles(files).roles;
-  if (unique.length > 1) {
-    throw new Error(
-      `Agent configs in this repository disagree about the session role (${unique.join(", ")}). `
-      + "Ask the user which role this repository's AI sessions should have "
-      + `(${HARNESS_ROLES.join(", ")}), then re-run with --role <role> to line them up.`,
-    );
-  }
-  return unique[0];
-}
-
-/** 패키지 기본값을 쓴 사실과 그 이유. 없으면 빈 배열. */
-function fallbackNotes(documents: HarnessDocuments): string[] {
-  const notes: string[] = [];
-  if (documents.unavailableReason) {
-    notes.push(`Harness rules came from this package, not the server (${documents.unavailableReason}).`);
-  }
-  for (const [key, reason] of Object.entries(documents.fallbacks)) {
-    notes.push(`${key} came from this package, not the server (${reason}).`);
-  }
-  return notes;
+/**
+ * 패키지 기본값을 쓴 사실과 그 이유 — ★어느 파일이 그 글을 받는지까지. 없으면 빈 배열.
+ * dry-run 이면 «실제 실행과 다를 수 있다»를 붙인다(서버 판을 못 받았으므로).
+ */
+function fallbackNotes(documents: HarnessDocuments, dryRun: boolean): string[] {
+  const filesOf: Record<string, string> = {
+    [DOC_KEY]: HARNESS_DOC_PATH,
+    [AGENT_NOTE_KEY]: "AGENTS.md / CLAUDE.md",
+  };
+  const caveat = dryRun ? " — the real run may write the server's version instead" : "";
+  const reasons: Record<string, string> = documents.unavailableReason
+    ? { [DOC_KEY]: documents.unavailableReason, [AGENT_NOTE_KEY]: documents.unavailableReason }
+    : documents.fallbacks;
+  return Object.entries(reasons).map(([key, reason]) =>
+    `${filesOf[key] ?? key}: written from this package's default ${key}, not the server's (${reason})${caveat}.`);
 }
 
 /**
- * ★<b>원격을 부르기 전에 로그인을 확인한다.</b> 그 역할의 토큰이 없으면(만료 + refresh 없음 포함)
- * 브라우저 로그인을 하고 이어서 진행한다(합격 시나리오 4 — 예전엔 401 로 멈추고
- * {@code ainecto auth login} 을 치라고 했다).
+ * ★<b>문서를 받기 전에 로그인을 확인한다.</b> 토큰이 없으면(만료 + refresh 없음 포함) 브라우저 로그인을
+ * 하고 이어서 진행한다(합격 시나리오 4). 로그인됐으면 true.
  *
- * <p>⚠{@code --dry-run} 은 브라우저를 띄우지 않는다 — 「아무것도 바꾸지 않는다」는 약속에 사용자의
- * 로그인 상태도 든다. 로그인 명령을 알려 주고 멈춘다.
- * <p>토큰은 있는데 서버가 401 을 주는 경우(폐기된 토큰)는 드물어 여기서 다루지 않는다 —
- * {@link callOrExplainSignIn} 이 안내한다. 트리거를 둘로 늘리지 않는다(설계 §8-1).
+ * <p>⚠{@code --dry-run} 은 브라우저를 띄우지도 토큰을 갱신하지도 않는다 — 「아무것도 바꾸지 않는다」는
+ * 약속에 사용자의 로그인 상태도 든다. 그때는 false 를 돌려주고, 계획은 패키지 기본값 기준임을 파일별로 적는다.
  */
-async function ensureSignedIn(
-  options: InitCommandOptions,
-  role: HarnessRole,
-  dryRun: boolean,
-): Promise<void> {
-  if (options.login === undefined) {
-    return;
-  }
+async function ensureSignedIn(options: InitCommandOptions, dryRun: boolean): Promise<boolean> {
   if (await options.accessToken?.()) {
-    return;
+    return true;
   }
-  if (dryRun) {
-    // (dry-run 의 accessToken 은 읽기 전용이다 — 갱신하지 않으므로 만료된 토큰도 여기로 온다.)
-    throw new Error(
-      `No usable AiNecto sign-in on this machine, and --dry-run neither refreshes it nor opens a browser.\n\n`
-      + `    ${loginCommand(options)}\n\n`
-      + "Then run init again.",
-    );
+  if (dryRun || options.login === undefined) {
+    if (dryRun) {
+      options.io.stderr.write(`No usable AiNecto sign-in, so this plan uses the package's default rules. Sign in with: ${loginCommand(options)}\n`);
+    }
+    return false;
   }
   await options.login();
   options.io.stderr.write("Signed in.\n");
+  return true;
 }
 
 /**
@@ -351,275 +217,16 @@ async function repositoryRootNotes(cwd: string): Promise<string[]> {
 }
 
 /**
- * 역할이 정해진 뒤의 연결. {@code connect} 가 있으면 그것으로 만들고, 없으면 이미 받은 {@code client}.
- * 둘 다 없으면 부르는 쪽의 실수다.
- */
-function connectAs(options: InitCommandOptions, role: HarnessRole): ConnectedOptions {
-  if (options.connect) {
-    const connection = options.connect(role);
-    return { ...options, ...connection };
-  }
-  if (!options.client) {
-    throw new Error("init needs either a client or a way to connect once the role is known.");
-  }
-  return { ...options, client: options.client };
-}
-
-const ROLE_CHOICES: ReadonlyArray<Choice<HarnessRole>> = [
-  { label: "Design       requirements, ERD, boundaries, tasks", value: "design" },
-  { label: "Development  product code, following the approved design", value: "development" },
-  { label: "Test         test scenarios and test code", value: "test" },
-  { label: "Validation   judges the result; changes nothing", value: "validation" },
-];
-
-/**
- * 역할을 묻는다(설계 §6-2). ★기본값이 없다 — 빈 입력은 다시 묻는다. 저장소에 이미 걸린 역할이 있을
- * 때만 그것이 기본값이다(Enter = 유지). 그 값은 사람이 전에 고른 것이지 우리가 고른 것이 아니다.
- */
-async function askRole(prompter: Prompter, current: HarnessRole | undefined): Promise<HarnessRole> {
-  const index = current === undefined ? undefined : ROLE_CHOICES.findIndex((choice) => choice.value === current);
-  return prompter.choose(
-    current === undefined
-      ? "Which role should AI sessions in this repository have?"
-      : `Which role should AI sessions in this repository have? (now: ${current})`,
-    ROLE_CHOICES,
-    index,
-  );
-}
-
-/**
- * 프로젝트를 묻는다(설계 §6-4). 「새로 만들기」는 Design 이고 dry-run 이 아닐 때만 보인다 — 다른 역할은
- * 서버가 만들기를 거부한다. 0개면: Design 은 이름을 물어 만들고(사람의 선택이 --yes 를 대신한다),
- * 다른 역할은 비대화형과 같은 안내로 멈춘다.
- */
-async function askProject(
-  options: ConnectedOptions,
-  args: InitArgs,
-  projects: Array<{ uuid: string; name: string }>,
-  bound: string | undefined,
-  root: string,
-  role: HarnessRole,
-  prompter: Prompter,
-): Promise<{ uuid: string; name: string }> {
-  const canCreate = role === "design" && !args.dryRun;
-  const askNameAndCreate = async () => {
-    const name = await prompter.text("New project name", args.projectName ?? basenameOf(root));
-    return createProject(options, name);
-  };
-  if (projects.length === 0) {
-    if (role !== "design") {
-      throw new Error(noProjectForRole(options, role));
-    }
-    if (args.dryRun) {
-      throw new Error(dryRunCannotCreate(args.projectName ?? basenameOf(root)));
-    }
-    return askNameAndCreate();
-  }
-  type ProjectPick = { project: { uuid: string; name: string } } | { create: true };
-  const choices: Array<Choice<ProjectPick>> = projects.map((project) => ({
-    label: `${project.name}  (${project.uuid})`,
-    value: { project },
-  }));
-  if (canCreate) {
-    choices.push({ label: "Create a new project", value: { create: true } });
-  }
-  const boundIndex = bound === undefined ? -1 : projects.findIndex((project) => project.uuid === bound);
-  const defaultIndex = boundIndex >= 0 ? boundIndex : projects.length === 1 ? 0 : undefined;
-  const picked = await prompter.choose("Which AiNecto project should this repository use?", choices, defaultIndex);
-  return "create" in picked ? askNameAndCreate() : picked.project;
-}
-
-/** 0개 + Design 아님의 안내. 비대화형·대화형이 같은 문장을 쓴다. */
-function noProjectForRole(options: Pick<InitCommandOptions, "endpoint">, role: HarnessRole): string {
-  // ⚠「--role design 으로 다시 치라」고 말하지 않는다. 그 문장은 에이전트를 «역할 전환»으로 이끈다 —
-  //   역할은 사용자가 고른 것이다(2026-09-29 코드 리뷰 P1). 사람에게 묻게 하고, 원래 역할로 돌아오게 한다.
-  return `No project found in your AiNecto account, and only a Design session can create one. `
-    + `Ask the user: create the project at ${new URL(options.endpoint).origin} or in a Design session, `
-    + `then run init again with --role ${role}.`;
-}
-
-function dryRunCannotCreate(name: string): string {
-  // ★dry-run 이 «원격에» 프로젝트를 만들면 그것은 dry-run 이 아니다(2026-09-22 독립 리뷰 I6).
-  return `--dry-run cannot continue: there is no project to bind, and creating "${name}" `
-    + "would be a real change. Re-run without --dry-run, or pass --project <uuid>.";
-}
-
-type ResolvedProject = { uuid: string; name: string } | { choices: Array<{ uuid: string; name: string }> };
-
-async function resolveProject(
-  options: ConnectedOptions,
-  args: InitArgs,
-  files: ReadonlyMap<string, string | undefined>,
-  root: string,
-  role: HarnessRole,
-): Promise<ResolvedProject> {
-  const projects = await listProjects(options);
-
-  if (args.projectUuid) {
-    const found = projects.find((project) => project.uuid === args.projectUuid);
-    return found ?? { uuid: args.projectUuid, name: args.projectName ?? args.projectUuid };
-  }
-
-  const bound = boundProjectUuid(files.get(HARNESS_CONFIG_PATH));
-  if (options.prompter) {
-    return askProject(options, args, projects, bound, root, role, options.prompter);
-  }
-  if (bound) {
-    const found = projects.find((project) => project.uuid === bound);
-    if (found) {
-      return found;
-    }
-  }
-
-  if (projects.length === 1) {
-    return projects[0]!;
-  }
-  if (projects.length > 1) {
-    return { choices: projects };
-  }
-
-  // 프로젝트가 하나도 없다 — 만들어야 한다.
-  // ★만들 수 있는 것은 Design 세션뿐이다(서버 McpRolePolicy: create_projects 는 Design·FULL 만).
-  //   예전엔 다른 역할로 --yes 를 주면 서버가 거부하고, 우리는 「Project creation did not return a
-  //   project uuid.」라는 엉뚱한 말로 끝났다. 원격 쓰기를 부르기 «전에» 사람이 할 일을 말한다.
-  if (role !== "design") {
-    throw new Error(noProjectForRole(options, role));
-  }
-  // ★쓰기이므로 --yes 없이는 하지 않는다.
-  const name = args.projectName ?? basenameOf(root);
-  if (!args.yes) {
-    throw new Error(
-      `No project found in your AiNecto account. Re-run with --yes to create "${name}", `
-      + "or --project-name <name> --yes to pick the name.",
-    );
-  }
-  if (args.dryRun) {
-    throw new Error(dryRunCannotCreate(name));
-  }
-  return createProject(options, name);
-}
-
-async function listProjects(options: ConnectedOptions): Promise<Array<{ uuid: string; name: string }>> {
-  const result = await callOrExplainSignIn(options, () => options.client.toolsCall("list_projects", {}));
-  return extractProjects(unwrapToolJson(result));
-}
-
-/**
- * ★<b>401 을 «무엇을 하라»로 바꾼다.</b>
+ * 이 서버에 맞는 로그인 명령 한 줄. ★<b>만드는 곳은 여기 하나다.</b>
  *
- * <p>토큰이 «없을» 때는 여기까지 오지 않는다 — {@link ensureSignedIn} 이 먼저 로그인한다.
- * 여기 오는 것은 토큰은 있는데 서버가 거절한 경우(폐기 등)와, 로그인 함수를 받지 못한 호출이다.
- * 그때 {@code MCP HTTP request failed with HTTP 401.} 한 줄만 남기면 무엇을 해야 하는지 모른다
- * (2026-09-23 살아 있는 서버로 처음 돌려 보고 발견).
- *
- * <p>⚠401 을 받았다고 «다시» 브라우저를 띄우지는 않는다. 로그인 트리거는 하나로 둔다(설계 §8-1).
- * 브리지({@code ainecto mcp})는 애초에 자동 로그인하지 않는다 — 세션 한가운데서 창이 뜨면 안 된다.
+ * <p>⚠주소든 env 든 <b>하나는 반드시</b> 실린다 — 안 실으면 dev 에서 막힌 사람이 «운영»에 로그인한다
+ * (2026-09-23 4차 독립 리뷰 S2).
  */
-async function callOrExplainSignIn<T>(
-  options: InitCommandOptions,
-  run: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    if (!isUnauthorized(error)) {
-      throw error;
-    }
-    throw new Error(
-      `Not signed in, so ${options.endpoint} refused the request (HTTP 401).\n\n`
-      + `    ${loginCommand(options)}\n\n`
-      + "Then run init again. Sign-in is one per machine; the role comes from this repository.",
-    );
-  }
-}
-
-/**
- * 이 저장소·이 서버에 맞는 로그인 명령 한 줄. ★<b>만드는 곳은 여기 하나다.</b>
- *
- * <p>⚠예전엔 「이 env 의 기본 주소면 인자를 생략」이라고만 하고 그 env 자체도 안 실었다.
- * CLI 의 기본 env 는 prod 라, dev 기본 주소에서 막힌 사람이 그 명령을 그대로 치면 «운영»
- * 슬롯에 로그인하고 같은 자리에서 또 막힌다(2026-09-23 4차 독립 리뷰 S2).
- * 주소든 env 든 <b>하나는 반드시</b> 실린다.
- */
-function loginCommand(options: Pick<InitCommandOptions, "env" | "endpoint">): string {
+export function loginCommand(options: Pick<InitCommandOptions, "env" | "endpoint">): string {
   const target = isDefaultEndpointFor(options.env, options.endpoint)
     ? (options.env === "prod" ? "" : ` --env ${options.env}`)
     : ` --endpoint ${options.endpoint}`;
-  // 로그인은 서버마다 한 번이다(0.4.2) — 역할을 싣지 않는다.
   return `ainecto auth login${target}`;
-}
-
-function isUnauthorized(error: unknown): boolean {
-  return error instanceof McpRpcError
-    && error.code === "MCP_HTTP_ERROR"
-    && (error.details as { status?: number } | undefined)?.status === 401;
-}
-
-async function createProject(options: ConnectedOptions, name: string): Promise<{ uuid: string; name: string }> {
-  const result = await callOrExplainSignIn(options, () =>
-    options.client.toolsCall("create_projects", { items: [{ name }] }));
-  const created = extractProjects(unwrapToolJson(result));
-  const first = created[0];
-  if (!first) {
-    throw new Error("Project creation did not return a project uuid.");
-  }
-  // ★원격에 생긴 것을 «바로» 알린다. 뒤에서 실패하면 결과 출력이 없어 사용자는 이 프로젝트가
-  //   생긴 줄 모른다(설계 §13 S9).
-  options.io.stderr.write(`Created project ${first.name} (${first.uuid}).\n`);
-  return first;
-}
-
-/** MCP 도구 응답은 {@code content[0].text} 에 JSON 문자열로 온다. */
-export function unwrapToolJson(result: unknown): unknown {
-  if (!isRecord(result) || !Array.isArray(result.content)) {
-    return result;
-  }
-  const first = result.content.find((item) => isRecord(item) && item.type === "text");
-  if (!isRecord(first) || typeof first.text !== "string") {
-    return result;
-  }
-  try {
-    return JSON.parse(first.text);
-  } catch {
-    return first.text;
-  }
-}
-
-/**
- * 응답 모양을 단정하지 않고 «uuid 와 name 을 가진 객체의 배열»을 찾는다.
- * ⚠도구 응답 포맷을 여기 박아 두면 서버가 한 겹 감싸는 순간 조용히 빈 목록이 된다.
- */
-export function extractProjects(value: unknown): Array<{ uuid: string; name: string }> {
-  const candidates: unknown[] = Array.isArray(value)
-    ? value
-    : isRecord(value)
-      ? ["projects", "items", "created", "data", "hits"].flatMap((key) => {
-        const nested = value[key];
-        return Array.isArray(nested) ? nested : [];
-      })
-      : [];
-  const projects: Array<{ uuid: string; name: string }> = [];
-  for (const candidate of candidates) {
-    if (isRecord(candidate) && typeof candidate.uuid === "string") {
-      projects.push({
-        uuid: candidate.uuid,
-        name: typeof candidate.name === "string" ? candidate.name : candidate.uuid,
-      });
-    }
-  }
-  return projects;
-}
-
-function boundProjectUuid(config: string | undefined): string | undefined {
-  if (!config) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(config) as { project?: { uuid?: unknown } };
-    return typeof parsed.project?.uuid === "string" ? parsed.project.uuid : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -873,22 +480,27 @@ async function fileMode(absolutePath: string): Promise<number | undefined> {
 type FileSnapshotMap = Map<string, string | undefined>;
 
 function parseInitArgs(argv: string[]): InitArgs {
-  const args: InitArgs = { dryRun: false, undo: false, yes: false };
+  const args: InitArgs = { mcp: false, dryRun: false, undo: false, ignored: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (!arg) {
       continue;
     }
-    if (arg === "--project") {
-      args.projectUuid = requireValue(arg, argv[++index]);
-    } else if (arg === "--project-name") {
-      args.projectName = requireValue(arg, argv[++index]);
+    if (arg === "--mcp") {
+      args.mcp = true;
     } else if (arg === "--dry-run") {
       args.dryRun = true;
     } else if (arg === "--undo") {
       args.undo = true;
+    } else if (arg === "--project" || arg === "--project-name") {
+      // 0.7.x — 값까지 삼키고 무시한다. 값이 없으면 플래그만.
+      const value = argv[index + 1];
+      if (value !== undefined && !value.startsWith("--")) {
+        index += 1;
+      }
+      args.ignored.push(arg);
     } else if (arg === "--yes" || arg === "-y") {
-      args.yes = true;
+      args.ignored.push(arg);
     } else if (arg === "--json") {
       // 전역 플래그 — 여기선 무시한다.
     } else {
@@ -896,18 +508,6 @@ function parseInitArgs(argv: string[]): InitArgs {
     }
   }
   return args;
-}
-
-function requireValue(flag: string, value: string | undefined): string {
-  if (!value || value.startsWith("--")) {
-    throw new Error(`${flag} requires a value.`);
-  }
-  return value;
-}
-
-function basenameOf(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? "ainecto-project";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

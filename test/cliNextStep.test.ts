@@ -6,7 +6,7 @@ import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
 
 /**
  * 2026-09-29 Codex 실측 — «CLI 설치해줘»에 전역 설치 → `<cli> --version`(Unknown command) →
- * `<cli> auth status --json`(authenticated) 를 보고 «설치 완료»로 닫았다. init 도 역할 질문도 없었다.
+ * `<cli> auth status --json`(authenticated) 를 보고 «설치 완료»로 닫았다. init 도 없었다.
  * 에이전트가 읽는 곳은 README 가 아니라 이 출력들이라, 여기에 다음 단계가 있어야 한다.
  */
 describe("설치 직후 에이전트가 보는 출력", () => {
@@ -41,22 +41,23 @@ describe("설치 직후 에이전트가 보는 출력", () => {
     expect(JSON.parse(out.join("")).data.version).toBeTypeOf("string");
   });
 
-  it("역할 없는 저장소의 auth status --json 은 다음 단계(init, 역할은 사용자에게)를 싣는다", async () => {
+  it("auth status --json 은 다음 단계(setup·init·doctor)를 싣는다 — 세션 역할은 묻지 않는다", async () => {
     const repo = join(home, "repo");
     await mkdir(repo);
     process.chdir(repo);
     expect(await runAinectoCli(["auth", "status", "--json"], io)).toBe(0);
     const data = JSON.parse(out.join("")).data as Record<string, unknown>;
-    // ★맨 앞 칸이 setup — 에이전트가 authenticated 보다 먼저 본다.
-    expect(Object.keys(data)[0]).toBe("setup");
-    expect(data.setup).toBe("incomplete");
+    // ★맨 앞 칸이 next — 에이전트가 authenticated 보다 먼저 본다.
+    expect(Object.keys(data)[0]).toBe("next");
     const next = data.next as string;
-    expect(next).toContain("npx -y ainecto@latest init --role <role>");
-    expect(next).toContain("never pick one yourself");
+    expect(next).toContain("npx -y ainecto@latest setup");
+    expect(next).toContain("npx -y ainecto@latest init");
+    expect(next).toContain("npx -y ainecto@latest doctor");
     expect(next).toContain("even if they only asked to install, update, or sign in");
+    expect(next).not.toMatch(/--role|Design|Validation/);
   });
 
-  it("역할이 있는 저장소에서는 다음 단계를 싣지 않는다", async () => {
+  it("옛 저장소(--role 이 실린 .mcp.json) 안에서도 auth status 는 막히지 않는다", async () => {
     const repo = join(home, "repo");
     await mkdir(repo);
     await writeFile(join(repo, ".mcp.json"), JSON.stringify({
@@ -64,7 +65,6 @@ describe("설치 직후 에이전트가 보는 출력", () => {
     }));
     process.chdir(repo);
     expect(await runAinectoCli(["auth", "status", "--json"], io)).toBe(0);
-    expect(JSON.parse(out.join("")).data.next).toBeUndefined();
-    expect(JSON.parse(out.join("")).data.setup).toBeUndefined();
+    expect(JSON.parse(out.join("")).data.authenticated).toBe(false);
   });
 });

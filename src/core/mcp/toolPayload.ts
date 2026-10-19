@@ -34,3 +34,28 @@ export function toolErrorText(value: unknown): string {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+/**
+ * 응답 모양을 단정하지 않고 «uuid 와 name 을 가진 객체의 배열»을 찾는다(list_projects 등).
+ * ⚠도구 응답 포맷을 여기 박아 두면 서버가 한 겹 감싸는 순간 조용히 빈 목록이 된다.
+ */
+export function extractProjects(value: unknown): Array<{ uuid: string; name: string }> {
+  const candidates: unknown[] = Array.isArray(value)
+    ? value
+    : isRecord(value)
+      ? ["projects", "items", "created", "data", "hits"].flatMap((key) => {
+        const nested = value[key];
+        return Array.isArray(nested) ? nested : [];
+      })
+      : [];
+  const projects: Array<{ uuid: string; name: string }> = [];
+  for (const candidate of candidates) {
+    if (isRecord(candidate) && typeof candidate.uuid === "string") {
+      projects.push({
+        uuid: candidate.uuid,
+        name: typeof candidate.name === "string" ? candidate.name : candidate.uuid,
+      });
+    }
+  }
+  return projects;
+}

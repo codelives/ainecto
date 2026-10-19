@@ -1,25 +1,16 @@
 import { basename } from "node:path";
 import { isDefaultEndpointFor } from "../config/endpoints";
-import { PACKAGE_NAME } from "../version";
-import { HARNESS_ROLES, type HarnessRole } from "./role";
+import { bridgePackageSpec, PACKAGE_NAME } from "../version";
 
 /**
  * 「어느 에이전트의 어느 파일에 무엇을 적는가」.
  *
- * ★<b>MCP 항목은 «하나»만 쓴다.</b> 이것이 「하나의 세션은 하나의 역할」을 강제하는 방식이다 —
- * 네 역할을 동시에 등록해 두면 개발 세션이 설계 서버도 보게 되고, 그 순간 제약은 다시
- * 「규칙을 읽고 지켜라」로 내려앉는다. 역할을 바꾸려면 이 한 항목을 고치고 세션을 다시 연다.
+ * ★<b>MCP 항목은 «하나»만 쓴다</b> — 이름 {@link SERVER_NAME}, 브리지 {@code npx -y @ainecto/mcp@<판>}.
+ * 세션 역할은 없다(0.8.0): 모든 세션이 같은 도구를 보고, 무엇을 할 수 있는지는 서버가 권한으로 정한다.
  *
- * ⚠<b>Codex 는 여기 없다.</b> Codex 의 MCP 설정은 {@code $CODEX_HOME/config.toml} 전역이라
- * 프로젝트별 파일이 없다. 프로젝트에서 친 명령이 말없이 전역 설정을 고치면 다른 저장소의
- * 세션까지 역할이 걸린다. ⇒ 우리가 고치지 않고 <b>실행할 명령을 내준다</b>.
- *
- * <p>★<b>Codex 의 세션별 역할은 «프로필»로 한다</b>(2026-09-22 실측, codex 0.153.4).
- * {@code codex -p <name>} 은 {@code $CODEX_HOME/<name>.config.toml} 을 base 위에 얹고,
- * <b>같은 서버 이름이면 프로필 쪽이 base 를 덮어쓴다</b> — 합쳐지지 않는다. 그래서 서버 항목은
- * 여전히 «하나»이고 「한 세션에 한 역할」이 그대로 성립한다.
- * ⚠구식 {@code [profiles.<name>]} 테이블은 이제 «에러로» 거부된다 — 별도 파일이어야 한다.
- * ⛔CODEX_HOME 을 프로젝트별로 바꾸는 길은 auth.json 까지 갈려 로그인을 잃으므로 택하지 않았다.
+ * <p>저장소 파일({@code .mcp.json}·{@code .cursor/mcp.json})은 {@code init --mcp} 가, 기기 전역 연결
+ * (Claude Code 사용자 범위·Cursor 전역·Codex)은 {@code setup} 이 쓴다. 둘 다 이 파일의 항목 모양과
+ * 소유 판정({@link isOurBridge})을 쓴다 — 기록 파일을 따로 두지 않는다.
  */
 
 /** 설정에 쓰는 서버 이름. ⛔env 에 따라 바꾸지 않는다 — 도구 접두사가 흔들리고 --undo 가 못 찾는다. */
@@ -38,15 +29,15 @@ export const AGENT_TARGETS: readonly AgentTarget[] = [
 ];
 
 export interface ServerEntryInput {
-  role: HarnessRole;
   /** "prod" 면 인자를 안 붙인다 — 기본값을 설정에 박으면 기본이 바뀔 때 거짓이 된다. */
   env?: "prod" | "dev";
   /**
-   * 기본이 아닌 엔드포인트. ⚠<b>이걸 빠뜨리면</b> init 은 이 주소에서 프로젝트를 찾아 적어
-   * 놓고, 정작 에이전트는 «기본 주소»에 붙는다 — 문서가 가리키는 곳과 세션이 보는 곳이
+   * 기본이 아닌 엔드포인트. ⚠<b>이걸 빠뜨리면</b> 문서가 가리키는 곳과 세션이 붙는 곳이
    * 달라진다(2026-09-22 독립 리뷰 I7).
    */
   endpoint?: string;
+  /** 브리지 패키지 지정. 기본은 이 CLI 판으로 고정한 {@link bridgePackageSpec}. */
+  packageSpec?: string;
 }
 
 export interface McpServerEntry {
@@ -54,8 +45,8 @@ export interface McpServerEntry {
   args: string[];
 }
 
-export function buildServerEntry(input: ServerEntryInput): McpServerEntry {
-  const args = ["-y", PACKAGE_NAME, "--role", input.role];
+export function buildServerEntry(input: ServerEntryInput = {}): McpServerEntry {
+  const args = ["-y", input.packageSpec ?? bridgePackageSpec()];
   if (input.env && input.env !== "prod") {
     args.push("--env", input.env);
   }
@@ -66,16 +57,18 @@ export function buildServerEntry(input: ServerEntryInput): McpServerEntry {
   return { command: "npx", args };
 }
 
-/** 설정에 적힌 항목에서 역할을 되읽는다. 설정이 곧 진실원이므로 여기서만 읽는다. */
-export function readRoleFromEntry(entry: unknown): HarnessRole | undefined {
+/** 이 항목의 브리지가 옛 {@code --role} 을 싣고 있나 — doctor 의 «옛 설정 잔존» 판정이 쓴다. */
+export function entryCarriesRole(entry: unknown): boolean {
+  return isRecord(entry) && Array.isArray(entry.args) && entry.args.includes("--role");
+}
+
+/** 이 항목이 고정한 브리지 판({@code @ainecto/mcp@X} 의 X). 고정하지 않았으면 undefined — doctor 의 «더 새 판» 판정. */
+export function pinnedBridgeVersion(entry: unknown): string | undefined {
   if (!isRecord(entry) || !Array.isArray(entry.args)) {
     return undefined;
   }
-  const index = entry.args.indexOf("--role");
-  const value = index >= 0 ? entry.args[index + 1] : undefined;
-  return typeof value === "string" && (HARNESS_ROLES as readonly string[]).includes(value)
-    ? (value as HarnessRole)
-    : undefined;
+  const pinned = entry.args.find((arg): arg is string => typeof arg === "string" && arg.startsWith(`${PACKAGE_NAME}@`));
+  return pinned?.slice(PACKAGE_NAME.length + 1);
 }
 
 export interface MergeResult {
@@ -117,8 +110,8 @@ export function readServerEntry(existing: string | undefined): unknown {
 }
 
 /**
- * 이 항목이 우리 브리지({@code npx -y @ainecto/mcp …} · 전역 설치한 {@code ainecto})인가.
- * {@code --role} 을 싣는 것도 우리 브리지뿐이다.
+ * 이 항목이 우리 브리지({@code npx -y @ainecto/mcp[@판] …} · 전역 설치한 {@code ainecto})인가.
+ * 옛 {@code --role} 을 싣는 것도 우리 브리지뿐이다(0.7.x 가 쓴 항목).
  */
 export function isOurBridge(entry: unknown): boolean {
   if (!isRecord(entry)) {
@@ -136,7 +129,7 @@ export function isOurBridge(entry: unknown): boolean {
 
 /**
  * 전역 설치한 우리 명령 이름(package.json bin 중 브리지를 띄울 수 있는 것). ⚠{@code mcp} 는 넣지 않는다 —
- * 흔한 이름이라 남의 명령일 수 있고, 우리 브리지로 오인하면 «역할 없는 브리지»로 읽혀 모든 명령이 멈춘다.
+ * 흔한 이름이라 남의 명령일 수 있고, 우리 브리지로 오인하면 남의 항목을 고쳐 쓰게 된다.
  */
 const OUR_BINS: readonly string[] = ["ainecto"];
 
@@ -187,34 +180,6 @@ export function removeServerEntry(existing: string | undefined, restore?: Restor
   const otherKeys = Object.keys(root).filter((key) => key !== "mcpServers");
   const emptied = Object.keys(servers).length === 0 && otherKeys.length === 0;
   return { content: stringify({ ...root, mcpServers: servers }), removed, emptied };
-}
-
-/** Codex 는 전역 설정뿐이라 «우리가 고치지 않는다». 사용자가 칠 명령을 내준다. */
-export function codexAddCommand(input: ServerEntryInput): string {
-  const entry = buildServerEntry(input);
-  return `codex mcp add ${SERVER_NAME} -- ${entry.command} ${entry.args.join(" ")}`;
-}
-
-/**
- * Codex 에서 역할을 세션마다 바꾸는 법. ★프로필 파일이 같은 이름의 서버를 덮어쓰므로
- * 항목은 하나로 유지된다.
- */
-export function codexProfileSetup(input: ServerEntryInput): string[] {
-  const entry = buildServerEntry(input);
-  return [
-    `Per-session roles in Codex use profiles. Put this in $CODEX_HOME/${input.role}.config.toml:`,
-    "",
-    `    [mcp_servers.${SERVER_NAME}]`,
-    `    command = "${entry.command}"`,
-    `    args = ${JSON.stringify(entry.args)}`,
-    "",
-    `Then start that session with: codex -p ${input.role}`,
-    "A profile entry with the same server name replaces the global one, so the session still sees exactly one.",
-  ];
-}
-
-export function codexRemoveCommand(): string {
-  return `codex mcp remove ${SERVER_NAME}`;
 }
 
 /**

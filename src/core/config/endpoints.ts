@@ -96,3 +96,11 @@ export function assertEnv(value: string | undefined): AinectoEnv | undefined {
   }
   throw new Error(`Invalid --env value "${value}". Expected "prod" or "dev".`);
 }
+
+/**
+ * 직무 프로필을 고치는 설정 화면 — ★이 MCP 서버와 같은 출처의 홈페이지 설정(기본 탭 = 계정).
+ * 규칙은 웹 앱과 같다(ainecto-front {@code src/lib/homepage.ts} 의 {@code /home/settings}, 같은 출처 배포).
+ */
+export function profileSettingsUrl(endpoint: string): string {
+  return `${new URL(endpoint).origin}/home/settings`;
+}

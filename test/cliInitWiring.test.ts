@@ -99,12 +99,15 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
   });
 
   it("★--json 이면 URL 안내가 stderr 의 JSON 한 줄이다 (사람용 문장이 섞이지 않는다)", async () => {
-    const code = await runAinectoCli(["--role", "design", "init", "--json"], io);
+    const code = await runAinectoCli(["init", "--json"], io);
 
     expect(code).toBe(1);
-    const first = stderr[0]!;
-    expect(first.endsWith("\n")).toBe(true);
-    const event = JSON.parse(first) as Record<string, unknown>;
+    // ★stderr 의 모든 줄이 JSON 이다 — 사람용 문장이 섞이지 않는다.
+    const events = stderr.map((line) => {
+      expect(line.endsWith("\n")).toBe(true);
+      return JSON.parse(line) as Record<string, unknown>;
+    });
+    const event = events.find((candidate) => candidate.event === "login_url")!;
     // ★로그인이 역할과 무관해져 role 칸은 없다(0.4.2 §2-5).
     expect(Object.keys(event).sort()).toEqual(["event", "url"]);
     expect(event.event).toBe("login_url");
@@ -113,7 +116,7 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
   });
 
   it("★토큰이 없으면 init 이 그 역할로 로그인을 시작하고, URL 을 stderr 에 먼저 알린다", async () => {
-    const code = await runAinectoCli(["--role", "design", "init"], io);
+    const code = await runAinectoCli(["init"], io);
 
     expect(code).toBe(1);
     const said = stderr.join("");
@@ -127,10 +130,11 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
   });
 
   it("★dry-run 은 로그인을 시작하지 않는다 (브라우저도, 인증 서버 조회도 없다)", async () => {
-    const code = await runAinectoCli(["--role", "design", "init", "--dry-run", "--json"], io);
+    const code = await runAinectoCli(["init", "--dry-run", "--json"], io);
 
-    expect(code).toBe(1);
-    expect(stderr.join("")).toContain("--dry-run neither refreshes it nor opens a browser");
+    // 로그인이 없으면 패키지 기본 문서 기준의 계획을 보여 주고 끝난다(파일별 표시는 initCommand.test).
+    expect(code).toBe(0);
+    expect(stderr.join("")).toContain("ainecto auth login");
     expect(spawned).toEqual([]);
     expect(fetched).toEqual([]);
   });
@@ -139,7 +143,7 @@ describe("ainecto init wiring (ainectoCli → OAuthClient)", () => {
     process.env.AINECTO_TOKEN = "env-token";
 
     const code = await runAinectoCli(
-      ["--role", "design", "--endpoint", "https://custom.example/mcp", "init", "--json"],
+      ["--endpoint", "https://custom.example/mcp", "init", "--json"],
       io,
     );
 

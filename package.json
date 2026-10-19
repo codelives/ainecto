@@ -1,7 +1,7 @@
 {
   "name": "@ainecto/mcp",
-  "version": "0.7.0",
-  "description": "AiNecto CLI — connect your coding agent to AiNecto. Set up a repository with: npx -y ainecto@latest init (agents: ask the user for the role first).",
+  "version": "0.8.0",
+  "description": "AiNecto CLI — connect your coding agents to AiNecto once per machine: npx -y ainecto@latest setup. Then npx -y ainecto@latest doctor shows anything missing.",
   "mcpName": "io.github.codelives/ainecto",
   "type": "module",
   "private": false,

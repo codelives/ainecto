@@ -14,7 +14,7 @@ describe("stdio bridge", () => {
         result: { ok: true },
       }));
     });
-    const client = new McpRpcClient({ endpoint: "https://dev.ainecto.com/mcp", fetchImpl, role: null, channel: "mcp" });
+    const client = new McpRpcClient({ endpoint: "https://dev.ainecto.com/mcp", fetchImpl, channel: "mcp" });
     const input = new PassThrough();
     const output = new PassThrough();
     const chunks: string[] = [];
@@ -54,7 +54,7 @@ describe("stdio bridge", () => {
       headers.push((init?.headers ?? {}) as Record<string, string>);
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }));
     });
-    const client = new McpRpcClient({ endpoint: "https://dev.ainecto.com/mcp", fetchImpl, role: null, channel: "mcp" });
+    const client = new McpRpcClient({ endpoint: "https://dev.ainecto.com/mcp", fetchImpl, channel: "mcp" });
     const input = new PassThrough();
     input.end([
       JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize",

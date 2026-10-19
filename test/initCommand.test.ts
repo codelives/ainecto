@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createdChain, executeInitCommand } from "../src/adapters/cli/initCommand";
-import { findGitRoot } from "../src/core/harness/repositoryRole";
+import { findGitRoot } from "../src/core/harness/repositoryFiles";
 import { readRecord } from "../src/core/harness/initPlan";
 
 const RECORD_FILE = ".ainecto/init-record.json";
@@ -19,13 +19,24 @@ async function recordOf(root: string) {
   return state.state === "valid" ? state.record : undefined;
 }
 
-import { McpRpcError } from "../src/core/mcp/rpcClient";
-import type { McpRpcClient } from "../src/core/mcp/rpcClient";
-import type { HarnessRole } from "../src/core/harness/role";
+import type { InitCommandOptions } from "../src/adapters/cli/initCommand";
+
+/** 서버 문서 응답 — 계약을 지킨 본문 한 벌(DOC 은 {{endpoint}} 만). */
+function serverDocuments(): typeof fetch {
+  return (async () => new Response(JSON.stringify({
+    documents: {
+      "HARNESS.DOC": { body: "SERVER DOC for {{endpoint}}\n", version: "HARNESS.DOC@r11" },
+      "HARNESS.AGENT_NOTE": {
+        body: "<!-- ainecto:begin -->\nSERVER NOTE {{harnessDocPath}} {{serverName}}\n<!-- ainecto:end -->",
+        version: "HARNESS.AGENT_NOTE@r4",
+      },
+    },
+  }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+}
 
 /**
  * 계획이 아니라 «실제로 디스크에 무엇이 생기는가»를 본다.
- * 네트워크는 안 탄다 — 프로젝트 조회만 가짜 client 로 바꾼다.
+ * 네트워크는 안 탄다 — 토큰이 없으면 문서를 받지 않고, 받을 때는 가짜 fetch 를 준다.
  */
 describe("ainecto init (files on disk)", () => {
   let root: string;
@@ -36,29 +47,9 @@ describe("ainecto init (files on disk)", () => {
     stderr: { write: () => true },
   } as unknown as { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream };
 
-  function client(projects: Array<{ uuid: string; name: string }>, created?: { uuid: string; name: string }) {
-    const calls: string[] = [];
-    const stub = {
-      toolsCall: async (name: string) => {
-        calls.push(name);
-        const payload = name === "create_projects" ? { created: [created] } : { projects };
-        return { content: [{ type: "text", text: JSON.stringify(payload) }] };
-      },
-    } as unknown as McpRpcClient;
-    return { stub, calls };
-  }
-
-  function options(argv: string[], rpc: McpRpcClient) {
-    // ★--role 은 이제 «전역» 플래그다 — 한 번 정해서 로그인·브리지·도구 호출이 같이 쓴다.
-    const roleIndex = argv.indexOf("--role");
-    const role = roleIndex >= 0 ? (argv[roleIndex + 1] as HarnessRole) : undefined;
-    const rest = roleIndex >= 0
-      ? argv.filter((_, i) => i !== roleIndex && i !== roleIndex + 1)
-      : argv;
+  function options(argv: string[]): InitCommandOptions {
     return {
-      argv: rest,
-      role,
-      client: rpc,
+      argv,
       endpoint: "https://ainecto.com/mcp",
       env: "prod" as const,
       cliVersion: "@ainecto/mcp test",
@@ -77,66 +68,117 @@ describe("ainecto init (files on disk)", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("wires a fresh repository and binds the single project it finds", async () => {
-    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
-
-    const code = await executeInitCommand(options(["--role", "development"], stub));
+  it("--mcp: wires a fresh repository without a role, pinned bridge, config v2 with no project", async () => {
+    const code = await executeInitCommand(options(["--mcp"]));
 
     expect(code).toBe(0);
-    expect(calls).toEqual(["list_projects"]);
     const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
-    expect(mcp.mcpServers["ainecto"].args).toEqual(["-y", "@ainecto/mcp", "--role", "development"]);
-    expect(JSON.parse(await readFile(join(root, ".ainecto/config.json"), "utf8")).project.uuid).toBe("p-1");
+    // (번들 밖 실행이라 판을 모른다 → 고정하지 않는다. 고정 규칙은 harness.test 가 본다.)
+    expect(mcp.mcpServers["ainecto"].args).toEqual(["-y", "@ainecto/mcp"]);
+    const config = JSON.parse(await readFile(join(root, ".ainecto/config.json"), "utf8"));
+    expect(config.version).toBe(2);
+    expect(config).not.toHaveProperty("project");
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("AiNecto Harness");
     expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(true);
   });
 
-  it("stops and lists when more than one project could be meant", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "A" }, { uuid: "p-2", name: "B" }]);
-
-    const code = await executeInitCommand(options(["--role", "design"], stub));
-
-    expect(code).toBe(1);
-    expect(out.join("")).toContain("Re-run with --project <uuid>");
-    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
-  });
-
-  it("refuses to create a project without --yes", async () => {
-    const { stub } = client([]);
-
-    await expect(executeInitCommand(options(["--role", "design"], stub))).rejects.toThrow(/--yes/);
-    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
-  });
-
-  it("creates one when told to, naming it after the directory", async () => {
-    const { stub, calls } = client([], { uuid: "p-new", name: "whatever" });
-
-    // ★프로젝트를 만들 수 있는 것은 Design 세션뿐이다(서버 정책).
-    const code = await executeInitCommand(options(["--role", "design", "--yes"], stub));
+  it("★--mcp 가 없으면 MCP 설정 파일을 쓰지 않는다 — 규칙 파일만", async () => {
+    const code = await executeInitCommand(options([]));
 
     expect(code).toBe(0);
-    expect(calls).toEqual(["list_projects", "create_projects"]);
-    expect(JSON.parse(await readFile(join(root, ".ainecto/config.json"), "utf8")).project.uuid).toBe("p-new");
+    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+    expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(false);
+    expect(existsSync(join(root, ".ainecto/HARNESS.md"))).toBe(true);
+    const result = JSON.parse(out.join("")) as { data: { next: string[] } };
+    expect(result.data.next.join("\n")).toContain("ainecto setup");
   });
 
-  it("dry-run touches nothing", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
+  it("★옛 플래그(--role 은 전역, --project·--project-name·--yes)는 멈추지 않고 «무시했다» 한 줄", async () => {
+    const errors: string[] = [];
+    const code = await executeInitCommand({
+      ...options(["--project", "p-1", "--project-name", "Billing", "--yes"]),
+      io: { stdout: io.stdout, stderr: { write: (text: string) => { errors.push(text); return true; } } } as never,
+    });
 
-    await executeInitCommand(options(["--role", "development", "--dry-run"], stub));
+    expect(code).toBe(0);
+    expect(errors.join("")).toMatch(/^Ignored --project, --project-name, --yes: init no longer asks for a role or a project/);
+  });
 
-    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+  it("★옛 저장소 이행 — init 재실행 하나로 --role 이 걷히고, 우리가 썼던 config 의 project 칸이 사라진다", async () => {
+    // 0.7.x 가 쓴 모양을 그대로 만든다: 기록 + config v1(project) + --role 실린 브리지.
+    const v07 = await import("../src/core/harness/initPlan");
+    const files = new Map<string, string | undefined>();
+    const old = v07.planInit({
+      env: "prod", endpoint: "https://ainecto.com/mcp", cliVersion: "@ainecto/mcp 0.7.0", mcp: true, files,
+    });
+    for (const write of old.writes) {
+      await mkdir(join(root, write.path, ".."), { recursive: true });
+      await writeFile(join(root, write.path), write.content, "utf8");
+    }
+    // 0.7.x 의 흔적: --role 과 project 칸(기록에도 «우리가 썼다»로 남아 있다).
+    const mcpPath = join(root, ".mcp.json");
+    const mcp = JSON.parse(await readFile(mcpPath, "utf8"));
+    mcp.mcpServers.ainecto.args = ["-y", "@ainecto/mcp", "--role", "development"];
+    await writeFile(mcpPath, `${JSON.stringify(mcp, null, 2)}\n`, "utf8");
+    const configPath = join(root, ".ainecto/config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.version = 1;
+    config.project = { uuid: "p-1", name: "Billing" };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const recordPath = join(root, RECORD_FILE);
+    const record = JSON.parse(await readFile(recordPath, "utf8"));
+    const entryContract = record.files[".mcp.json"];
+    entryContract.written = { at: "json", value: mcp.mcpServers.ainecto };
+    const configContract = record.files[".ainecto/config.json"];
+    configContract.written = { at: "text", text: `${JSON.stringify(config, null, 2)}\n` };
+    configContract.writtenFields.version = 1;
+    configContract.writtenFields.project = config.project;
+    configContract.originalFields.project = { at: "absent" };
+    // 0.7.x 의 apply 가 적었을 «우리가 만든 디렉터리».
+    record.createdDirectories = [".ainecto", ".cursor"];
+    await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+
+    // ★--mcp 없이 — 우리 브리지 항목이 있으므로 갱신된다.
+    expect(await executeInitCommand(options([]))).toBe(0);
+
+    expect(JSON.parse(await readFile(mcpPath, "utf8")).mcpServers.ainecto.args).toEqual(["-y", "@ainecto/mcp"]);
+    const after = JSON.parse(await readFile(configPath, "utf8"));
+    expect(after.version).toBe(2);
+    expect(after).not.toHaveProperty("project");
+    // 그리고 되돌리기는 여전히 저장소를 init 전으로 돌린다.
+    await executeInitCommand(options(["--undo"]));
+    expect(existsSync(mcpPath)).toBe(false);
     expect(existsSync(join(root, ".ainecto"))).toBe(false);
   });
 
-  it("keeps the role when re-run without one, and remembers the bound project", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "validation"], stub));
+  it("★옛 project 칸을 사용자가 고쳤으면 남기고 알린다", async () => {
+    await executeInitCommand(options(["--mcp"]));
+    const configPath = join(root, ".ainecto/config.json");
+    const recordPath = join(root, RECORD_FILE);
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    const record = JSON.parse(await readFile(recordPath, "utf8"));
+    // 기록상 우리는 p-1 을 썼는데, 사용자가 p-2 로 바꿔 두었다.
+    const ours = { uuid: "p-1", name: "Billing" };
+    const contract = record.files[".ainecto/config.json"];
+    contract.writtenFields.project = ours;
+    contract.originalFields.project = { at: "absent" };
+    contract.written = { at: "text", text: `${JSON.stringify({ ...config, project: ours }, null, 2)}\n` };
+    await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+    config.project = { uuid: "p-2", name: "Mine" };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    out.length = 0;
 
-    const code = await executeInitCommand(options([], stub));
+    expect(await executeInitCommand(options(["--mcp"]))).toBe(0);
 
-    expect(code).toBe(0);
-    const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
-    expect(mcp.mcpServers["ainecto"].args).toContain("validation");
+    expect(JSON.parse(await readFile(configPath, "utf8")).project).toEqual({ uuid: "p-2", name: "Mine" });
+    expect(out.join("")).toContain("you changed project");
+  });
+
+  it("dry-run touches nothing", async () => {
+    await executeInitCommand(options(["--mcp", "--dry-run"]));
+
+    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
+    expect(existsSync(join(root, ".ainecto"))).toBe(false);
   });
 
   it("gives the repository back byte for byte on --undo", async () => {
@@ -144,10 +186,9 @@ describe("ainecto init (files on disk)", () => {
     const originalAgents = "# House rules\n\nBe careful.\n";
     await writeFile(join(root, ".mcp.json"), originalMcp, "utf8");
     await writeFile(join(root, "AGENTS.md"), originalAgents, "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(await readFile(join(root, ".mcp.json"), "utf8")).toBe(originalMcp);
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(originalAgents);
@@ -160,9 +201,8 @@ describe("ainecto init (files on disk)", () => {
     const outside = await mkdtemp(join(tmpdir(), "ainecto-outside-"));
     await writeFile(join(outside, "rules.md"), "NOT OURS\n", "utf8");
     await symlink(join(outside, "rules.md"), join(root, "AGENTS.md"));
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
 
-    await expect(executeInitCommand(options(["--role", "development"], stub)))
+    await expect(executeInitCommand(options(["--mcp"])))
       .rejects.toThrow(/symbolic link|outside the repository/);
     expect(await readFile(join(outside, "rules.md"), "utf8")).toBe("NOT OURS\n");
     await rm(outside, { recursive: true, force: true });
@@ -173,15 +213,14 @@ describe("ainecto init (files on disk)", () => {
     await writeFile(join(outside, "config.json"), "MINE\n", "utf8");
     await writeFile(join(outside, "HARNESS.md"), "MINE\n", "utf8");
     await symlink(outside, join(root, ".ainecto"));
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
 
     // ★읽기도 경계 검사를 먼저 통과한다 — 남의 파일은 «읽지도» 않는다.
-    await expect(executeInitCommand(options(["--undo"], stub)))
+    await expect(executeInitCommand(options(["--undo"])))
       .rejects.toThrow(/outside the repository|symbolic link/);
     expect(await readFile(join(outside, "config.json"), "utf8")).toBe("MINE\n");
 
     // init 은 그 링크를 통해 쓰려다 경계에서 멈춘다.
-    await expect(executeInitCommand(options(["--role", "development"], stub)))
+    await expect(executeInitCommand(options(["--mcp"])))
       .rejects.toThrow(/outside the repository|symbolic link/);
     expect(await readFile(join(outside, "HARNESS.md"), "utf8")).toBe("MINE\n");
     await rm(outside, { recursive: true, force: true });
@@ -190,43 +229,32 @@ describe("ainecto init (files on disk)", () => {
   it("★남의 설정 파일 권한을 넓히지 않는다", async () => {
     const mine = `${JSON.stringify({ mcpServers: { other: { command: "x", env: { SECRET: "s" } } } }, null, 2)}\n`;
     await writeFile(join(root, ".mcp.json"), mine, { encoding: "utf8", mode: 0o600 });
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
 
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     // rename 은 inode 를 갈아치운다 — 권한을 안 옮기면 umask 기본값(보통 0644)이 된다.
     expect((await stat(join(root, ".mcp.json"))).mode & 0o777).toBe(0o600);
   });
 
-  it("★--dry-run 은 원격에 프로젝트를 만들지 않는다", async () => {
-    const { stub, calls } = client([], { uuid: "p-new", name: "x" });
-
-    await expect(executeInitCommand(options(["--role", "design", "--yes", "--dry-run"], stub)))
-      .rejects.toThrow(/--dry-run cannot continue/);
-    expect(calls).toEqual(["list_projects"]);
-  });
-
-  it("★조회를 기다리는 사이 파일이 바뀌면 덮지 않는다", async () => {
+  it("★문서를 받는 사이 파일이 바뀌면 덮지 않는다", async () => {
     await writeFile(join(root, ".mcp.json"), `${JSON.stringify({ mcpServers: {} })}\n`, "utf8");
     const mine = `${JSON.stringify({ mcpServers: { other: { url: "https://x" } } }, null, 2)}\n`;
-    const stub = {
-      toolsCall: async () => {
-        // 네트워크를 기다리는 동안 다른 사람이 같은 파일을 고쳤다.
-        await writeFile(join(root, ".mcp.json"), mine, "utf8");
-        return { content: [{ type: "text", text: JSON.stringify({ projects: [{ uuid: "p-1", name: "B" }] }) }] };
-      },
-    } as unknown as McpRpcClient;
+    const documents = serverDocuments();
+    const fetchImpl = (async (...args: Parameters<typeof fetch>) => {
+      // 네트워크를 기다리는 동안 다른 사람이 같은 파일을 고쳤다.
+      await writeFile(join(root, ".mcp.json"), mine, "utf8");
+      return documents(...args);
+    }) as typeof fetch;
 
-    await expect(executeInitCommand(options(["--role", "development"], stub)))
+    await expect(executeInitCommand({ ...options(["--mcp"]), accessToken: async () => "t", fetchImpl }))
       .rejects.toThrow(/changed while init was running/);
     expect(await readFile(join(root, ".mcp.json"), "utf8")).toBe(mine);
   });
 
   it("★기본이 아닌 endpoint 를 설정에도 싣는다", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
 
     await executeInitCommand({
-      ...options(["--role", "development"], stub),
+      ...options(["--mcp"]),
       endpoint: "https://custom.example/mcp",
     });
 
@@ -235,53 +263,11 @@ describe("ainecto init (files on disk)", () => {
     expect(mcp.mcpServers["ainecto"].args).toContain("https://custom.example/mcp");
   });
 
-  it("★로그인 안 된 채로 부르면 «무엇을 하라»고 말한다", async () => {
-    // 실물로 처음 돌려 보고 나온 것 — 새 사용자의 첫 명령이 HTTP 401 한 줄로 죽었다.
-    const stub = {
-      toolsCall: async () => {
-        throw new McpRpcError("MCP HTTP request failed with HTTP 401.", "MCP_HTTP_ERROR", { status: 401 });
-      },
-    } as unknown as McpRpcClient;
-
-    await expect(executeInitCommand(options(["--role", "development"], stub)))
-      .rejects.toThrow(/ainecto auth login$|ainecto auth login\n/m);
-    // 기본 주소면 --endpoint 를 덧붙이지 않는다 — 안 쓰는 플래그를 가르치지 않는다.
-    await expect(executeInitCommand(options(["--role", "development"], stub)))
-      .rejects.not.toThrow(/--endpoint/);
-    // 아무것도 쓰지 않았다.
-    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
-  });
-
-  it("★안내하는 로그인 명령이 «같은 서버»를 가리킨다", async () => {
-    const stub = {
-      toolsCall: async () => {
-        throw new McpRpcError("MCP HTTP request failed with HTTP 401.", "MCP_HTTP_ERROR", { status: 401 });
-      },
-    } as unknown as McpRpcClient;
-
-    await expect(executeInitCommand({
-      ...options(["--role", "test"], stub),
-      endpoint: "https://custom.example/mcp",
-    })).rejects.toThrow(/ainecto auth login --endpoint https:\/\/custom\.example\/mcp/);
-  });
-
-  it("401 이 아닌 실패는 그대로 올린다", async () => {
-    const stub = {
-      toolsCall: async () => {
-        throw new McpRpcError("MCP HTTP request failed with HTTP 503.", "MCP_HTTP_ERROR", { status: 503 });
-      },
-    } as unknown as McpRpcClient;
-
-    await expect(executeInitCommand(options(["--role", "development"], stub)))
-      .rejects.toThrow(/HTTP 503/);
-  });
-
   it("★undo 가 우리가 만든 빈 디렉터리를 남기지 않는다", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
     expect(existsSync(join(root, ".cursor"))).toBe(true);
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(existsSync(join(root, ".cursor"))).toBe(false);
     expect(existsSync(join(root, ".ainecto"))).toBe(false);
@@ -289,15 +275,14 @@ describe("ainecto init (files on disk)", () => {
 
   it("★config 를 고치면 undo 가 지우지 않는다 (자기 지문)", async () => {
     // 2026-09-23 독립 재리뷰 I7 — 지문을 문자열을 «만든 뒤»에 넣어서 파일에는 자기 지문이 없었다.
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     const configPath = join(root, ".ainecto/config.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.myOwnField = "keep me";
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(existsSync(configPath)).toBe(true);
     expect(JSON.parse(await readFile(configPath, "utf8")).myOwnField).toBe("keep me");
@@ -305,25 +290,23 @@ describe("ainecto init (files on disk)", () => {
 
   it("손대지 않은 config 는 undo 가 정상적으로 지운다", async () => {
     // 위 보호가 «전부 남김»으로 흐르지 않는지 — 안 건드렸으면 깨끗이 사라져야 한다.
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(existsSync(join(root, ".ainecto/config.json"))).toBe(false);
   });
 
   it("★우리 MCP 항목을 손대면 undo 가 남긴다", async () => {
     // 2026-09-23 독립 재리뷰 I8 — 파일 전체 지문만 보면 「우리 항목을 고쳤다」를 못 본다.
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     const mcpPath = join(root, ".mcp.json");
     const mcp = JSON.parse(await readFile(mcpPath, "utf8"));
     mcp.mcpServers["ainecto"].env = { MY_FLAG: "1" };
     await writeFile(mcpPath, `${JSON.stringify(mcp, null, 2)}\n`, "utf8");
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     const after = JSON.parse(await readFile(mcpPath, "utf8"));
     expect(after.mcpServers["ainecto"].env).toEqual({ MY_FLAG: "1" });
@@ -331,14 +314,13 @@ describe("ainecto init (files on disk)", () => {
 
   it("★우리 블록 «안에» 적은 글을 undo 가 지우지 않는다", async () => {
     await writeFile(join(root, "AGENTS.md"), "# House rules\n\nMine.\n", "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     const agentsPath = join(root, "AGENTS.md");
     const withNote = await readFile(agentsPath, "utf8");
     await writeFile(agentsPath, withNote.replace("<!-- ainecto:end -->", "MY OWN LINE\n<!-- ainecto:end -->"), "utf8");
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     const after = await readFile(agentsPath, "utf8");
     expect(after).toContain("MY OWN LINE");
@@ -348,11 +330,10 @@ describe("ainecto init (files on disk)", () => {
   it("★init 전부터 있던 HARNESS.md 의 «이후 편집»을 원본으로 덮지 않는다", async () => {
     await mkdir(join(root, ".ainecto"), { recursive: true });
     await writeFile(join(root, ".ainecto/HARNESS.md"), "my original\n", "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     await writeFile(join(root, ".ainecto/HARNESS.md"), "edited after init\n", "utf8");
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(await readFile(join(root, ".ainecto/HARNESS.md"), "utf8")).toBe("edited after init\n");
   });
@@ -362,10 +343,9 @@ describe("ainecto init (files on disk)", () => {
     // 사전 검사는 통과하지만 «쓸 때» 실패하는 상황: 쓰기 권한 없는 디렉터리.
     await mkdir(join(root, ".cursor"), { recursive: true });
     await chmod(join(root, ".cursor"), 0o555);
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
 
     try {
-      await expect(executeInitCommand(options(["--role", "development"], stub))).rejects.toThrow();
+      await expect(executeInitCommand(options(["--mcp"]))).rejects.toThrow();
       // ★실패했어도 기록이 먼저 디스크에 있다 — 그래야 undo 가 앞서 바꾼 것을 되돌린다.
       expect(existsSync(join(root, RECORD_FILE))).toBe(true);
     } finally {
@@ -375,44 +355,21 @@ describe("ainecto init (files on disk)", () => {
 
   it("★--undo 는 토큰을 건드리지 않는다", async () => {
     // 로컬 되돌리기가 네트워크에 기대면, 서버가 죽은 날 되돌릴 수가 없다(S1).
-    const { stub } = client([]);
     let asked = 0;
 
     await executeInitCommand({
-      ...options(["--undo"], stub),
+      ...options(["--undo"]),
       accessToken: async () => { asked += 1; return "t"; },
     });
 
     expect(asked).toBe(0);
   });
 
-  it("★저장소에 걸린 역할을 «인증보다 먼저» 읽는다", async () => {
-    // 2026-09-23 독립 재리뷰 I10 — 바깥 CLI 가 플래그만 보고 클라이언트를 먼저 만들어,
-    // 저장소는 development 인데 무역할 슬롯을 뒤지다 401 로 끝났다.
-    // 이제 저장소 역할은 init 이 읽고, 그 «뒤에» 그 역할로 연결을 만든다(설계 §21-4).
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "test"], stub));
-
-    const connectedAs: string[] = [];
-    const { client: _unused, ...rest } = options([], stub);
-    const code = await executeInitCommand({
-      ...rest,
-      connect: (role) => {
-        connectedAs.push(role);
-        return { client: stub };
-      },
-    });
-
-    expect(code).toBe(0);
-    expect(connectedAs).toEqual(["test"]);
-  });
-
   it("★같은 설정으로 다시 init 해도 조각 지문을 잊지 않는다", async () => {
     // 4차 독립 리뷰 I3 — 이전 기록을 베낄 때 lastWrittenFragment 만 빠져서, 내용이 같은
     // 두 번째 init 뒤에 소유권 판정이 파일 전체 지문으로 후퇴했다.
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
+    await executeInitCommand(options(["--mcp"]));
 
     const record = (await recordOf(root))!;
     // ★조각을 소유한 세 파일이 «전부» 기록에 남아 있다 — 재실행이 그것을 잊지 않는다.
@@ -442,7 +399,7 @@ describe("ainecto init (files on disk)", () => {
     // 블록 «바깥»에만 쓴 글은 보존하면서 우리 블록은 정상적으로 걷어낸다.
     const agentsPath = join(root, "AGENTS.md");
     await writeFile(agentsPath, `${await readFile(agentsPath, "utf8")}\nOUTSIDE THE BLOCK\n`, "utf8");
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     const after = await readFile(agentsPath, "utf8");
     expect(after).toContain("OUTSIDE THE BLOCK");
@@ -457,13 +414,16 @@ describe("ainecto init (files on disk)", () => {
     // 「아무것도 바꾸지 않았다」는 예외가 났다. 로컬 쓰기 0 과 부수효과 0 은 다른 사실이다.
     await mkdir(join(root, ".ainecto"), { recursive: true });
     await writeFile(join(root, ".ainecto/init-record.json"), "{ not json", "utf8");
-    const { stub, calls } = client([], { uuid: "p-new", name: "New" });
+    const remote: string[] = [];
 
-    await expect(executeInitCommand(options(["--role", "design", "--yes"], stub)))
-      .rejects.toThrow(/not valid JSON/);
+    await expect(executeInitCommand({
+      ...options(["--mcp"]),
+      accessToken: async () => { remote.push("token"); return "t"; },
+      login: async () => { remote.push("login"); },
+    })).rejects.toThrow(/not valid JSON/);
 
-    // ★원격 호출이 «하나도» 없어야 한다 — 조회도, 생성도.
-    expect(calls).toEqual([]);
+    // ★원격으로 가는 일이 «하나도» 없어야 한다 — 토큰 조회도, 로그인도.
+    expect(remote).toEqual([]);
     expect(existsSync(join(root, ".mcp.json"))).toBe(false);
     // 손상된 기록은 그대로 둔다 — 그 안에 못 읽은 백업이 있을 수 있다.
     expect(await readFile(join(root, ".ainecto/init-record.json"), "utf8")).toBe("{ not json");
@@ -476,67 +436,63 @@ describe("ainecto init (files on disk)", () => {
       version: 999,
       files: {},
     }, null, 2)}\n`, "utf8");
-    const { stub, calls } = client([], { uuid: "p-new", name: "New" });
+    const remote: string[] = [];
 
-    await expect(executeInitCommand(options(["--role", "design", "--yes"], stub)))
-      .rejects.toThrow(/another version of this CLI/);
+    await expect(executeInitCommand({
+      ...options(["--mcp"]),
+      login: async () => { remote.push("login"); },
+    })).rejects.toThrow(/another version of this CLI/);
 
-    expect(calls).toEqual([]);
+    expect(remote).toEqual([]);
     expect(existsSync(join(root, ".mcp.json"))).toBe(false);
   });
 
-  it("★역할 추론도 저장소 경계 검사를 지난다", async () => {
-    // 4차 독립 리뷰 I5 — 나중에 붙인 읽기 경로가 assertInsideRepository 없이 파일을 «한 번 읽었다».
+  it("★저장소 경계 검사가 로그인보다 먼저다", async () => {
+    // 4차 독립 리뷰 I5 — 읽기 경로가 assertInsideRepository 없이 파일을 «한 번 읽었다».
     const outside = join(root, "..", `outside-${Date.now()}.json`);
     await writeFile(outside, JSON.stringify({ mcpServers: {} }), "utf8");
     await symlink(outside, join(root, ".mcp.json"));
 
-    let connected = 0;
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    const { client: _unused, ...rest } = options([], stub);
-    await expect(executeInitCommand({ ...rest, connect: () => { connected += 1; return { client: stub }; } }))
+    let signedIn = 0;
+    await expect(executeInitCommand({ ...options(["--mcp"]), login: async () => { signedIn += 1; } }))
       .rejects.toThrow();
-    expect(connected).toBe(0);
+    expect(signedIn).toBe(0);
     await rm(outside, { force: true });
   });
 
   it("★칸 순서만 바뀐 것은 «편집»이 아니다", async () => {
     // 4차 독립 리뷰 S1 — 편집기로 열었다 저장만 해도 사용자 편집으로 잡혔다.
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     const mcpPath = join(root, ".mcp.json");
     const entry = JSON.parse(await readFile(mcpPath, "utf8")).mcpServers["ainecto"];
     const reordered = Object.fromEntries(Object.entries(entry).reverse());
     await writeFile(mcpPath, `${JSON.stringify({ mcpServers: { "ainecto": reordered } }, null, 2)}\n`, "utf8");
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(existsSync(mcpPath)).toBe(false);
   });
 
-  it("★dev 기본 주소에서 막히면 안내에 env 가 실린다", async () => {
+  it("★dev 기본 주소에서 로그인이 없으면 안내에 env 가 실린다", async () => {
     // 4차 독립 리뷰 S2 — 안내를 그대로 치면 «운영» 슬롯에 로그인하고 같은 자리에서 또 막혔다.
-    const stub = {
-      toolsCall: async () => {
-        throw new McpRpcError("MCP HTTP request failed with HTTP 401.", "MCP_HTTP_ERROR", { status: 401 });
-      },
-    } as unknown as McpRpcClient;
-
-    await expect(executeInitCommand({
-      ...options(["--role", "development"], stub),
+    const errors: string[] = [];
+    await executeInitCommand({
+      ...options(["--dry-run"]),
       env: "dev" as const,
       endpoint: "https://dev.ainecto.com/mcp",
-    })).rejects.toThrow(/ainecto auth login --env dev/);
+      accessToken: async () => undefined,
+      io: { stdout: io.stdout, stderr: { write: (text: string) => { errors.push(text); return true; } } } as never,
+    });
+    expect(errors.join("")).toContain("ainecto auth login --env dev");
   });
 
   it("★init 전부터 있던 빈 디렉터리는 undo 가 남긴다", async () => {
     // 4차 독립 리뷰 S3 — 「비었으면 치운다」는 우리 것인지를 안 본다.
     await mkdir(join(root, ".cursor"), { recursive: true });
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(existsSync(join(root, ".cursor"))).toBe(true);
     expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(false);
@@ -548,14 +504,13 @@ describe("ainecto init (files on disk)", () => {
     // 4차 독립 리뷰 I2 — 충돌을 남긴 바로 그 실행이 «원본 백업이 든» config 를 지웠다.
     await writeFile(join(root, ".mcp.json"),
       `${JSON.stringify({ mcpServers: { "ainecto": { command: "mine" } } }, null, 2)}\n`, "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     // 사용자가 우리 항목을 손댄다 → undo 는 그것을 남긴다.
     const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
     mcp.mcpServers["ainecto"].env = { MY_FLAG: "1" };
     await writeFile(join(root, ".mcp.json"), `${JSON.stringify(mcp, null, 2)}\n`, "utf8");
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     // 기록이 남아 있어야, 충돌을 풀고 다시 undo 할 때 원본을 되돌릴 수 있다.
     expect(existsSync(join(root, RECORD_FILE))).toBe(true);
@@ -567,14 +522,13 @@ describe("ainecto init (files on disk)", () => {
     // 5차 독립 리뷰 I3 — 일부만 복구된 뒤 다시 undo 하면 끝난 항목까지 충돌로 잡혀 영영 안 끝났다.
     await writeFile(join(root, ".mcp.json"),
       `${JSON.stringify({ mcpServers: { "ainecto": { command: "mine" } } }, null, 2)}\n`, "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     // 사용자가 손수 원본으로 되돌려 놓았다.
     await writeFile(join(root, ".mcp.json"),
       `${JSON.stringify({ mcpServers: { "ainecto": { command: "mine" } } }, null, 2)}\n`, "utf8");
     out.length = 0;
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(out.join("")).toContain("already back in place");
     // 끝났으므로 기록도 남지 않는다.
@@ -585,14 +539,13 @@ describe("ainecto init (files on disk)", () => {
     await writeFile(join(root, ".mcp.json"),
       `${JSON.stringify({ mcpServers: { "ainecto": { command: "mine" } } }, null, 2)}\n`, "utf8");
     await writeFile(join(root, "AGENTS.md"), "# House rules\n\nMine.\n", "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     // AGENTS 블록만 손대서 충돌로 남긴다 — MCP 는 정상 복구된다.
     const agents = join(root, "AGENTS.md");
     await writeFile(agents, (await readFile(agents, "utf8"))
       .replace("<!-- ainecto:end -->", "MINE INSIDE\n<!-- ainecto:end -->"), "utf8");
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     const record = (await recordOf(root))!;
     // 끝난 MCP 항목의 계약은 사라졌고, 아직 남은 AGENTS 계약만 있다.
@@ -607,12 +560,11 @@ describe("ainecto init (files on disk)", () => {
     // 5차 독립 리뷰 I2 — 「없으니 건너뛴다」가 그 원본을 영영 버렸다.
     await writeFile(join(root, ".mcp.json"),
       `${JSON.stringify({ mcpServers: { "ainecto": { command: "mine" } } }, null, 2)}\n`, "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
     await rm(join(root, ".mcp.json"));
     out.length = 0;
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(out.join("")).toContain("the backup is kept");
     const record = (await recordOf(root))!;
@@ -621,19 +573,18 @@ describe("ainecto init (files on disk)", () => {
 
   it("★변경 없는 재실행은 파일을 바꾸지 않는다 (끝 개행이 늘지 않는다)", async () => {
     // 5차 독립 리뷰 S2 — 605 → 606 → 607 로 1바이트씩 자랐다.
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
     const first = await readFile(join(root, "AGENTS.md"), "utf8");
 
-    await executeInitCommand(options(["--role", "development"], stub));
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
+    await executeInitCommand(options(["--mcp"]));
 
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(first);
   });
 
   // ── 1단계: 비대화형 경로(설계 §21-1) ─────────────────────────────────────────
 
-  function withLogin(argv: string[], rpc: McpRpcClient, token: string | undefined) {
+  function withLogin(argv: string[], token: string | undefined) {
     const events: string[] = [];
     const errors: string[] = [];
     let current = token;
@@ -641,162 +592,105 @@ describe("ainecto init (files on disk)", () => {
       events,
       errors,
       opts: {
-        ...options(argv, rpc),
+        ...options(argv),
         io: {
           stdout: io.stdout,
           stderr: { write: (text: string) => { errors.push(text); return true; } },
         } as unknown as { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream },
         accessToken: async () => current,
         login: async () => { events.push("login"); current = "fresh"; },
+        fetchImpl: (async (...args: Parameters<typeof fetch>) => {
+          events.push(`documents with ${current}`);
+          return serverDocuments()(...args);
+        }) as typeof fetch,
       },
     };
   }
 
-  it("★토큰이 없으면 원격을 부르기 «전에» 그 역할로 로그인하고 이어서 진행한다", async () => {
-    const calls: string[] = [];
-    const { opts, events, errors } = withLogin(["--role", "development"], {
-      toolsCall: async (name: string) => {
-        calls.push(`${name} after ${events.join(",") || "nothing"}`);
-        return { content: [{ type: "text", text: JSON.stringify({ projects: [{ uuid: "p-1", name: "Billing" }] }) }] };
-      },
-    } as unknown as McpRpcClient, undefined);
+  it("★토큰이 없으면 문서를 받기 «전에» 로그인하고 이어서 진행한다 — 서버 판을 쓴다", async () => {
+    const { opts, events, errors } = withLogin(["--mcp"], undefined);
 
     const code = await executeInitCommand(opts);
 
     expect(code).toBe(0);
-    expect(events).toEqual(["login"]);
-    expect(calls).toEqual(["list_projects after login"]);
+    expect(events).toEqual(["login", "documents with fresh"]);
     expect(errors.join("")).toContain("Signed in.");
-    expect(existsSync(join(root, ".mcp.json"))).toBe(true);
+    expect(await readFile(join(root, ".ainecto/HARNESS.md"), "utf8")).toBe("SERVER DOC for https://ainecto.com/mcp\n");
   });
 
   it("토큰이 있으면 로그인하지 않는다", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    const { opts, events } = withLogin(["--role", "test"], stub, "stored");
+    const { opts, events } = withLogin([], "stored");
+
+    expect(await executeInitCommand(opts)).toBe(0);
+    expect(events).toEqual(["documents with stored"]);
+  });
+
+  it("★--dry-run 도 서버 문서를 받는다 — 계획이 실제 실행과 같다(요구서 8장 P1)", async () => {
+    const dry = withLogin(["--dry-run"], "stored");
+    expect(await executeInitCommand(dry.opts)).toBe(0);
+    const planned = JSON.parse(out.join("")) as { data: { written: string[]; notes: string[] } };
+    out.length = 0;
+
+    const real = withLogin([], "stored");
+    expect(await executeInitCommand(real.opts)).toBe(0);
+    const done = JSON.parse(out.join("")) as { data: { written: string[]; notes: string[] } };
+
+    expect(dry.events).toEqual(["documents with stored"]);
+    expect(planned.data.written).toEqual(done.data.written);
+    expect(planned.data.notes.join("\n")).not.toContain("package's default");
+  });
+
+  it("★--dry-run 은 브라우저를 띄우지 않는다 — 로그인이 없으면 패키지 기본값 기준임을 «파일별로» 적는다", async () => {
+    const { opts, events, errors } = withLogin(["--dry-run"], undefined);
 
     expect(await executeInitCommand(opts)).toBe(0);
     expect(events).toEqual([]);
+    expect(errors.join("")).toContain("ainecto auth login");
+    const notes = (JSON.parse(out.join("")) as { data: { notes: string[] } }).data.notes.join("\n");
+    expect(notes).toContain(".ainecto/HARNESS.md: written from this package's default HARNESS.DOC");
+    expect(notes).toContain("AGENTS.md / CLAUDE.md: written from this package's default HARNESS.AGENT_NOTE");
+    expect(notes).toContain("the real run may write the server's version instead");
   });
 
-  it("★--dry-run 은 브라우저를 띄우지 않고 로그인 명령을 알려 준다", async () => {
-    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
-    const { opts, events } = withLogin(["--role", "design", "--dry-run"], stub, undefined);
-
-    await expect(executeInitCommand(opts)).rejects.toThrow(/neither refreshes it nor opens a browser[\s\S]*ainecto auth login\n/);
-    expect(events).toEqual([]);
-    expect(calls).toEqual([]);
-  });
-
-  it("역할이 없으면 로그인도 원격 호출도 없이 멈춘다 (기본값으로 고르지 않는다)", async () => {
-    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
-    const { opts, events } = withLogin([], stub, undefined);
-
-    const failure = await executeInitCommand(opts).catch((e: Error) => e);
-    // ★「하나 고르라」가 아니라 «사용자에게 물어라» — 읽는 쪽이 대개 에이전트다(0.4.1 최종 리뷰 P1).
-    expect((failure as Error).message).toMatch(/^No role given\. Ask the user which role[\s\S]*re-run with --role <role>\.$/);
-    expect((failure as Error).message).not.toContain("Pick one");
-    expect(events).toEqual([]);
-    expect(calls).toEqual([]);
-  });
-
-  it("★설정끼리 역할이 어긋나면 비대화형은 «사용자에게 물어라»고 하고 멈춘다", async () => {
-    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
-    const cursor = join(root, ".cursor/mcp.json");
-    const parsed = JSON.parse(await readFile(cursor, "utf8"));
-    const args = parsed.mcpServers["ainecto"].args as string[];
-    args[args.indexOf("--role") + 1] = "test";
-    await writeFile(cursor, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-    calls.length = 0;
-
-    const failure = await executeInitCommand(options([], stub)).catch((e: Error) => e);
-
-    expect((failure as Error).message).toMatch(/disagree[\s\S]*Ask the user which role[\s\S]*--role <role>/);
-    expect(calls).toEqual([]);
-  });
-
-  it("★Design 이 아니면 프로젝트를 만들지 않고, 원격 쓰기 «전에» 무엇을 할지 말한다", async () => {
-    // 예전엔 서버가 거부한 뒤 「Project creation did not return a project uuid.」로 끝났다.
-    const { stub, calls } = client([], { uuid: "p-new", name: "x" });
-
-    const failure = await executeInitCommand(options(["--role", "test", "--yes"], stub)).catch((e: Error) => e);
-
-    expect((failure as Error).message).toMatch(/only a Design session can create one[\s\S]*Ask the user[\s\S]*--role test\.$/);
-    // ★「--role design 으로 다시 치라」고 하지 않는다 — 에이전트를 역할 전환으로 이끈다(코드 리뷰 P1).
-    expect((failure as Error).message).not.toContain("--role design");
-    expect(calls).toEqual(["list_projects"]);
-    expect(existsSync(join(root, ".mcp.json"))).toBe(false);
-  });
-
-  it("★프로젝트를 만들면 그 자리에서 알린다 (뒤에서 실패해도 사용자가 안다)", async () => {
-    const { stub } = client([], { uuid: "p-new", name: "fresh" });
-    const { opts, errors } = withLogin(["--role", "design", "--yes"], stub, "t");
-
-    expect(await executeInitCommand(opts)).toBe(0);
-    expect(errors.join("")).toContain("Created project fresh (p-new).");
-  });
-
-  it("★역할이 바뀌면 사람이 보는 자리에 한 줄 남긴다 — CLI 는 지금, MCP 도구는 새 세션부터라는 조건까지", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
-
-    const changed = withLogin(["--role", "design"], stub, "t");
-    await executeInitCommand(changed.opts);
-    expect(changed.errors.join("")).toContain("Role changes from development to design: `ainecto` commands now, MCP tools from a new session.");
-
-    const same = withLogin(["--role", "design"], stub, "t");
-    await executeInitCommand(same.opts);
-    expect(same.errors.join("")).not.toContain("Role changes");
-  });
-
-  it("★결과의 다음 할 일에 «따로 로그인하라»가 없다 — 이미 그 역할로 로그인했다", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-
-    await executeInitCommand(options(["--role", "development"], stub));
+  it("★결과의 다음 할 일 — 역할·재시작·Codex 프로필 안내가 없다", async () => {
+    await executeInitCommand(options(["--mcp"]));
 
     const result = JSON.parse(out.join("")) as { data: { next: string[] } };
-    expect(result.data.next.join("\n")).not.toContain("auth login");
-    expect(result.data.next.join("\n")).toContain("claude -c");
-    expect(result.data.next.join("\n")).toContain("codex -p development");
-    // ★재시작 없이 이어간다(2026-09-30) — 첫 줄이 «이 세션에서 CLI 로», 재시작은 선택이다.
-    expect(result.data.next[0]).toContain("no restart is needed");
-    expect(result.data.next.join("\n")).toContain("ainecto tools call <tool>");
-    expect(result.data.next.join("\n")).toContain(".ainecto/HARNESS.md");
+    const next = result.data.next.join("\n");
+    expect(next).toContain(".ainecto/HARNESS.md");
+    expect(next).toContain("permissions");
+    expect(next).not.toMatch(/--role|codex -p|role/i);
   });
 
   it("★git 저장소의 하위 폴더에서는 멈춘다 (init·undo 모두)", async () => {
     await mkdir(join(root, ".git"));
     const sub = join(root, "packages", "api");
     await mkdir(sub, { recursive: true });
-    const { stub, calls } = client([{ uuid: "p-1", name: "Billing" }]);
 
-    await expect(executeInitCommand({ ...options(["--role", "design"], stub), cwd: sub }))
+    await expect(executeInitCommand({ ...options(["--mcp"]), cwd: sub }))
       .rejects.toThrow(new RegExp(`cd ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-    await expect(executeInitCommand({ ...options(["--undo"], stub), cwd: sub }))
+    await expect(executeInitCommand({ ...options(["--undo"]), cwd: sub }))
       .rejects.toThrow(/not at its root/);
-    expect(calls).toEqual([]);
     expect(existsSync(join(sub, ".mcp.json"))).toBe(false);
   });
 
   it("★.git 이 «파일»(worktree)이어도 루트로 알아본다", async () => {
     await writeFile(join(root, ".git"), "gitdir: /somewhere/else\n", "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
 
-    expect(await executeInitCommand(options(["--role", "design"], stub))).toBe(0);
+    expect(await executeInitCommand(options(["--mcp"]))).toBe(0);
     const result = JSON.parse(out.join("")) as { data: { notes: string[] } };
     expect(result.data.notes.join("\n")).not.toContain("not inside a git repository");
     expect(await findGitRoot(join(root, "deeper"))).toBe(root);
   });
 
   it("git 저장소가 아니면 그 자리에서 진행하고 그 사실을 적는다", async () => {
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
 
-    expect(await executeInitCommand(options(["--role", "design"], stub))).toBe(0);
+    expect(await executeInitCommand(options(["--mcp"]))).toBe(0);
     const result = JSON.parse(out.join("")) as { data: { notes: string[] } };
     expect(result.data.notes.join("\n")).toContain("not inside a git repository");
     // undo 도 같은 note 를 쓴다 — «init 이 설정했다»가 아니라 «이 폴더를 기준으로 삼았다».
     out.length = 0;
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
     const undone = JSON.parse(out.join("")) as { data: { notes: string[] } };
     expect(undone.data.notes.join("\n")).toContain("this folder was used as the repository root");
     expect(undone.data.notes.join("\n")).not.toContain("init set up");
@@ -805,10 +699,9 @@ describe("ainecto init (files on disk)", () => {
   it("leaves a user's own file inside .ainecto alone", async () => {
     await mkdir(join(root, ".ainecto"), { recursive: true });
     await writeFile(join(root, ".ainecto/notes.md"), "mine\n", "utf8");
-    const { stub } = client([{ uuid: "p-1", name: "Billing" }]);
-    await executeInitCommand(options(["--role", "development"], stub));
+    await executeInitCommand(options(["--mcp"]));
 
-    await executeInitCommand(options(["--undo"], stub));
+    await executeInitCommand(options(["--undo"]));
 
     expect(await readFile(join(root, ".ainecto/notes.md"), "utf8")).toBe("mine\n");
   });
@@ -859,14 +752,8 @@ describe("★S1 이미 있던 빈 디렉터리는 우리 것으로 기록되지 
 
   it("사용자가 먼저 만들어 둔 .cursor 는 기록에 없고, 우리가 만든 .ainecto 는 있다", async () => {
     await mkdir(join(root, ".cursor"), { recursive: true });
-    const stub = {
-      toolsCall: async () => ({
-        content: [{ type: "text", text: JSON.stringify({ projects: [{ uuid: "p-1", name: "Billing" }] }) }],
-      }),
-    } as unknown as McpRpcClient;
-
     const code = await executeInitCommand({
-      argv: [], role: "development" as HarnessRole, client: stub,
+      argv: ["--mcp"],
       endpoint: "https://ainecto.com/mcp", env: "prod" as const,
       cliVersion: "@ainecto/mcp test", cwd: root, json: true, io,
     });
