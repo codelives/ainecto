@@ -101,7 +101,7 @@ export function accountView(account: AccountSummary | undefined, signedIn: boole
   if (account?.userId) view.userId = account.userId;
   if (account?.displayName) view.name = account.displayName;
   if (account?.jobTitle !== undefined) {
-    view.role = account.jobTitle ?? `not set — set it at ${profileSettingsUrl(endpoint)}`;
+    view.jobTitle = account.jobTitle ?? `not set — set it at ${profileSettingsUrl(endpoint)}`;
   }
   if (account?.projectCount !== undefined) view.projects = account.projectCount;
   if (account?.problem) view.problem = `${account.problem.kind}: ${account.problem.message}`;

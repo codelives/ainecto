@@ -81,7 +81,7 @@ describe("ainecto setup", () => {
     expect(await fake.state("codex")).toBe(`cmd|${OUR_BRIDGE}`);
     const cursor = JSON.parse(await readFile(cursorFile(), "utf8"));
     expect(cursor.mcpServers.ainecto).toEqual({ command: "npx", args: ["-y", "@ainecto/mcp"] });
-    expect(result().account).toMatchObject({ signedIn: true, userId: "u-1", name: "Ryan", role: "Founder & Product Lead", projects: 2 });
+    expect(result().account).toMatchObject({ signedIn: true, userId: "u-1", name: "Ryan", jobTitle: "Founder & Product Lead", projects: 2 });
     // ★이메일 칸이 없다.
     expect(JSON.stringify(result().account)).not.toMatch(/email|@/i);
     // 실행한 외부 명령이 «명령 + 종료 코드» 한 항목씩 남는다.
@@ -191,7 +191,7 @@ describe("ainecto setup", () => {
   it("직무가 미설정이면 설정 화면 링크를 다음 할 일에 싣는다(막지 않는다)", async () => {
     expect(await executeSetupCommand(options([], { client: accountClient(null) }))).toBe(0);
 
-    expect(result().account.role).toBe("not set — set it at https://ainecto.com/home/settings");
+    expect(result().account.jobTitle).toBe("not set — set it at https://ainecto.com/home/settings");
     expect(result().next.join("\n")).toContain("https://ainecto.com/home/settings");
     expect(result().next.join("\n")).toContain("does not change permissions");
   });

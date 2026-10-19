@@ -86,7 +86,7 @@ describe("ainecto status", () => {
     expect(await executeStatusCommand(options())).toBe(0);
 
     const view = data();
-    expect(view.account).toMatchObject({ signedIn: true, userId: "u-1", name: "Ryan", role: "QA Engineer", projects: 1 });
+    expect(view.account).toMatchObject({ signedIn: true, userId: "u-1", name: "Ryan", jobTitle: "QA Engineer", projects: 1 });
     expect(view.agents).toContainEqual({ client: "Claude Code", state: "connected (user)", bridge: "@ainecto/mcp@0.8.0" });
     expect(view.agents).toContainEqual({ client: "Codex", state: "not connected" });
     expect(view.repository).toMatchObject({ root: repo, git: true, harnessDoc: false });
@@ -162,7 +162,7 @@ describe("ainecto doctor", () => {
   it("★직무 미설정은 warn — 실패가 아니다(설정 링크)", async () => {
     await fake.seed("claude", "cmd|npx -y @ainecto/mcp@0.8.0");
     expect(await executeDoctorCommand(options({ client: accountClient(null) }))).toBe(0);
-    expect(check("AiNecto role")).toMatchObject({ level: "warn", fix: "set it at https://ainecto.com/home/settings" });
+    expect(check("AiNecto job title")).toMatchObject({ level: "warn", fix: "set it at https://ainecto.com/home/settings" });
   });
 
   it("서버 거절의 원인을 가른다 — 401 / 403(요금제) / 네트워크", async () => {

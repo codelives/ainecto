@@ -109,9 +109,9 @@ export function doctorChecks(status: MachineStatus): DoctorCheck[] {
 
   // ── 직무 ──
   if (status.account?.jobTitle === null) {
-    checks.push({ item: "AiNecto role", level: "warn", detail: "not set — AI uses it to pitch explanations; it does not change permissions", fix: `set it at ${settings}` });
+    checks.push({ item: "AiNecto job title", level: "warn", detail: "not set — AI uses it to pitch explanations; it does not change permissions", fix: `set it at ${settings}` });
   } else if (typeof status.account?.jobTitle === "string") {
-    checks.push({ item: "AiNecto role", level: "ok", detail: status.account.jobTitle });
+    checks.push({ item: "AiNecto job title", level: "ok", detail: status.account.jobTitle });
   }
   return checks;
 }
