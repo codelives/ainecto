@@ -2,8 +2,9 @@
 /**
  * 같은 코드를 «세 이름»으로 퍼블리시한다.
  *
- *   @ainecto/mcp   주 이름 — MCP Registry(server.json)가 가리키는 패키지. init 이 쓰는
- *                  `npx -y @ainecto/mcp --role …` 도 이것이다(범위 뗀 이름 `mcp` = 브리지 bin).
+ *   @ainecto/mcp   주 이름 — MCP Registry(server.json)가 가리키는 패키지. setup·init --mcp 가 쓰는
+ *                  `npx -y @ainecto/mcp@<판>` 도 이것이다(범위 뗀 이름 `mcp` = 브리지 bin). 0.7.x 가 쓴
+ *                  `npx -y @ainecto/mcp --role …`(판 고정 없음)도 게시 즉시 이 판을 띄운다 — --role 을 받아 넘긴다.
  *   ainecto        범위 없는 이름 — `npx -y ainecto@latest init`. 이름과 같은 bin `ainecto`(CLI)가 실행된다.
  *   @ainecto/cli   에이전트가 짐작할 또 하나의 이름 — bin 을 `{"ainecto"}` «하나»로 줄여 올린다.
  *
@@ -48,8 +49,8 @@ const original = readFileSync(PKG, "utf8");
 const parsed = JSON.parse(original);
 const primaryName = parsed.name;
 
-// ★주 이름과 브리지 bin 을 강제한다. init 이 쓰는 `.mcp.json`(`npx -y @ainecto/mcp --role …`)과 MCP Registry 가
-//   npx 의 «범위 뗀 패키지 이름 = bin» 규칙으로 `mcp` 를 실행한다 — 이 둘이 어긋나면 모든 역할 세션이 안 뜬다.
+// ★주 이름과 브리지 bin 을 강제한다. setup·init 이 쓰는 MCP 항목(`npx -y @ainecto/mcp@<판>`)과 MCP Registry 가
+//   npx 의 «범위 뗀 패키지 이름 = bin» 규칙으로 `mcp` 를 실행한다 — 이 둘이 어긋나면 모든 세션의 연결이 안 뜬다.
 if (primaryName !== PRIMARY_NAME || !parsed.bin?.[BRIDGE_BIN]) {
   console.error(`package.json 은 name "${PRIMARY_NAME}" 와 bin "${BRIDGE_BIN}" 를 가져야 합니다 — \`npx -y ${PRIMARY_NAME}\` 이 브리지를 실행한다.`);
   process.exit(1);

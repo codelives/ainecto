@@ -2,82 +2,69 @@
 
 Published as `ainecto`, `@ainecto/mcp` and `@ainecto/cli` — the same code. Command: `ainecto`.
 
-**In a terminal, from your repository root:** `npx -y ainecto@latest init` — it asks which role this
-repository's AI sessions should have and which AiNecto project to use, and signs you in through the
-browser if needed.
+**Once per machine:** `npx -y ainecto@latest setup` — signs you in through the browser (once), checks the
+connection, and connects Claude Code, Cursor, and Codex to AiNecto.
+
+Every AI session sees the same AiNecto tools. What a tool may change is decided by your AiNecto
+permissions on the workspace, project, or document it touches — the server refuses the rest. There are
+no session roles (Design / Development / Test / Validation were removed in 0.8.0).
 
 ## For AI agents
 
-**Ask the user which role this repository's AI sessions should have — Design, Development, Test, or Validation. Never pick one yourself. Then, from the repository root: `npx -y ainecto@latest init --role <role>` (it signs the user in through the browser if needed).**
+**Run `npx -y ainecto@latest setup` (use a long command timeout — at least 6 minutes: sign-in waits up
+to 5 minutes for the user). Then run `npx -y ainecto@latest doctor` and do what it says.**
 
-- Use a long command timeout (at least 6 minutes): sign-in waits up to 5 minutes for the user.
-- If `init` lists projects, ask the user which one and re-run with `--project <uuid>`. If it says
-  this is not the repository root, re-run from the folder it names.
-- **No restart is needed.** Right after `init`, keep working in the same session through the CLI:
-  `ainecto` commands run from the repository read its role on every call (read `.ainecto/HARNESS.md`,
-  then `ainecto tools list` and `ainecto tools call <tool> '<json>'`). Do not use MCP tools the session
-  started with for that work — they keep the role (or no role) the session started with.
-- A new session is optional and only adds the role's MCP tools (Claude Code: exit, then `claude -c`
-  in this folder to keep the conversation; approve the `ainecto` server from `.mcp.json` when asked).
-  Codex: save the profile `init` prints and start with `codex -p <role>`.
-- **A server added during a session is not available in that session.** In our test, a server added
-  with `claude mcp add` while Claude Code was running did not attach to the running session — that is
-  why the CLI is the way to keep going. `/mcp` shows what the current session actually loaded.
-- Inside the repository, `ainecto` commands (`ainecto tools call …`) use the repository's role
-  automatically — do not pass `--role`; a different `--role` is refused.
+- To add AiNecto's working rules to a repository, run `npx -y ainecto@latest init` from its root. It
+  does not ask for a role or a project.
+- **A server added during a session is not available in that session.** Keep working through the CLI:
+  `npx -y ainecto@latest tools list` and `npx -y ainecto@latest tools call <tool> '<json>'`. A new
+  session loads the MCP tools.
+- If a result names a tool that is not in your tool list, the session started before that tool was
+  added — start a new session or call it through the CLI as above.
 - Claude Code's auto mode may block running an external package with `npx`. If it does, ask the user
   to allow the command.
 
-To connect AiNecto without a repository role (for example before `init`), add the remote server at
-**user scope** under the name `ainecto` — a local-scope entry would hide the `.mcp.json` that `init`
-writes, and a different name would sit next to it as a second server with no role:
+## Set up this machine
 
 ```bash
-claude mcp add --scope user --transport http ainecto https://ainecto.com/mcp  # Claude Code
-codex mcp add ainecto --url https://ainecto.com/mcp                           # Codex
+npx -y ainecto@latest setup              # sign in, check, connect Claude Code · Cursor · Codex
+npx -y ainecto@latest setup --dry-run    # show what it would do — no sign-in, no changes
+npx -y ainecto@latest setup --undo       # remove the connections setup made (sign-in stays)
+npx -y ainecto@latest status             # who is signed in, your AiNecto role, what is connected
+npx -y ainecto@latest doctor             # what is missing, and the one command that fixes each item
 ```
 
-The client signs the user in on first use. That session has no role until `init` runs and a new
-session starts.
+`setup` connects each client separately and reports `connected`, `updated`, `kept` (someone else's
+`ainecto` entry, left untouched), `not installed`, or `failed`; if any client fails it says «partial» and
+exits 1:
 
-## Set up a repository (roles)
+- Claude Code — `claude mcp add -s user ainecto -- npx -y @ainecto/mcp@<version>` (user scope).
+- Cursor — merges the same entry into `~/.cursor/mcp.json`, keeping your other servers.
+- Codex — `codex mcp add ainecto -- npx -y @ainecto/mcp@<version>`.
+
+The entry is pinned to the CLI version that wrote it; re-run `setup` to move to a newer one (`doctor`
+tells you when one is available). Your AiNecto role (your job, set in AiNecto's account settings) is
+shown by `setup` and `status`; AI uses it to pitch explanations — it does not change permissions.
+
+## Set up a repository (optional)
 
 ```bash
-npx -y ainecto@latest init                     # in a terminal: asks for the role and the project
-npx -y ainecto@latest init --role development  # agents, scripts, CI: nothing is asked
+npx -y ainecto@latest init               # .ainecto/HARNESS.md, an AGENTS.md block (and CLAUDE.md if present), .ainecto/config.json
+npx -y ainecto@latest init --mcp         # also .mcp.json (Claude Code) and .cursor/mcp.json (Cursor)
+npx -y ainecto@latest init --dry-run     # the same plan, nothing written
+npx -y ainecto@latest init --undo        # remove what init wrote
 ```
 
-In a terminal (stdin and stdout both a TTY, no `--json`, and not under an agent or CI — `CLAUDECODE`,
-`CI`, `GEMINI_CLI`, `CODEX_SANDBOX`, `CURSOR_AGENT`) `init` asks for what was not given:
-- the role, unless `--role` or `AINECTO_ROLE` is set — by number, with no default. The role already
-  set on the repository is the default only when there is one (if its agent configs disagree, there
-  is no default);
-- the project, unless `--project` is set — by number; «Create a new project» is offered to Design only.
-
-Ctrl+C or Ctrl+D at a question cancels without writing repository files (Ctrl+D exits with 130). A
-sign-in you already completed stays saved, and choosing «Create a new project» creates it right away.
-Anywhere else (an agent's shell, CI) it asks nothing. In both cases:
-
-- If this machine is not signed in to AiNecto yet, `init` opens a browser and continues once the user
-  approves — **once per machine** (per server), not per role. The sign-in URL is printed first (with
-  `--json`, as one JSON line on stderr: `{"event":"login_url","url":…}`), and sign-in gives up after
-  5 minutes. It fails at once
-  when the command that opens the browser is missing, or (except on Windows, where the exit code is
-  not reliable) exits with an error.
-- Outside a terminal, with no `--role`/`AINECTO_ROLE` it uses the role already set on the repository.
-  If there is none (or the repository's agent configs disagree) it stops and says to ask the user —
-  it never picks a role for you. If the account has more than one project it lists them and stops;
-  re-run with `--project <uuid>`. With no project yet,
-  only a Design session can create one (`--yes`, optionally `--project-name <name>`); in any other
-  role it asks you to have the user create the project, then re-run with the same role.
+- `init` fetches the rules from the server — `--dry-run` too, so the plan is the real one. If it cannot
+  (not signed in, offline), it says which files would get this package's default text instead.
+- If this machine is not signed in yet, `init` opens the browser once (`--dry-run` never does). The
+  sign-in URL is printed first (with `--json`, as one JSON line on stderr: `{"event":"login_url","url":…}`).
 - It stops when run from a sub-folder of a git repository, and tells you the root.
-- It writes one `ainecto` server entry carrying `--role` into `.mcp.json` (Claude Code) and
-  `.cursor/mcp.json` (Cursor), and prints the Codex profile to use (`codex -p <role>`).
-- `ainecto` commands in the repository use the new role **at once**; MCP tools pick it up in a **new
-  session** (a running session's MCP tools keep the role they started with). Roles are a working
-  guardrail, not a security boundary.
-- `ainecto init --dry-run` shows what would change (it does not sign in or refresh a sign-in);
-  `ainecto init --undo` removes what it wrote.
+- **Repositories set up by 0.7.x** (`.mcp.json` with `--role`): re-run `npx -y ainecto@latest init`.
+  It rewrites the existing `ainecto` entry without `--role`, pinned to this version, and drops the old
+  `project` field from `.ainecto/config.json` (unless you changed it). Until then the old entry keeps
+  working: `--role` is accepted and ignored. Old flags (`--role`, `--project`, `--project-name`,
+  `--yes`) are ignored with a one-line note.
 
 ## Commands
 
@@ -87,7 +74,7 @@ and all ship the `ainecto` command, so a second global install conflicts. (`@ain
 `mcp`, the bridge.)
 
 ```bash
-ainecto auth login          # once per machine (and per --env); not per role
+ainecto auth login          # once per machine (and per --env) — `setup` does this for you
 ainecto auth status
 ainecto auth logout
 
@@ -100,16 +87,6 @@ ainecto projects list
 ainecto erd apply-changes -f erd-operations.json --yes
 ```
 
-**The role comes from the repository.** Inside a folder set up with `ainecto init` (the command looks
-from the current folder upward for the first `.mcp.json`/`.cursor/mcp.json` with an `ainecto` entry),
-every command uses that folder's role without `--role`. A `--role` or `AINECTO_ROLE` that differs from
-it is refused — the role changes only with `ainecto init --role <role>`, after asking the user. If the
-role there cannot be read (the `@ainecto/mcp` bridge entry without a valid `--role`, configs that
-disagree, broken JSON that mentions `ainecto`, a link that points outside the folder), the command
-stops. An entry that is not this bridge (for example an HTTP
-`url` or `mcp-remote` entry) means no role there. Your home folder itself is never read as a
-repository (`~/.cursor/mcp.json` is Cursor's global config). Outside such a folder there is no role
-(no restriction), and `--role` narrows it.
 Tool names are the server's own names (`list_projects`, `erd_apply_changes`, …). Your AI client
 shows them with its own prefix, for example `mcp__ainecto__list_projects` in Claude Code; the CLI
 does not use that prefix. A tool name that starts with
@@ -182,38 +159,36 @@ The server tools behind them (`list_notifications`, `list_agent_todos`, `update_
 ## Connector Mode
 
 ```bash
-ainecto mcp --role <design|development|test|validation> [--env dev]
+ainecto mcp [--env dev]
 ```
 
 The package doubles as a stdio-to-HTTP proxy for the resolved `/mcp` endpoint. It proxies
 `initialize`, `tools/list`, and `tools/call`, does not rewrite remote schemas, and does not interpret
-local file references. It uses this machine's one sign-in (`ainecto auth login`, or the sign-in
-`ainecto init` performs) and never opens a browser on its own. Its role comes only from `--role` (or
-`AINECTO_ROLE`) and is sent with every request; the server applies it.
+local file references. It uses this machine's one sign-in (`ainecto setup`, `ainecto auth login`, or
+the sign-in `ainecto init` performs) and never opens a browser on its own.
 
-This is the entry `ainecto init` writes into a repository's MCP config — you normally do not add it
-by hand:
+This is the entry `setup` and `init --mcp` write — you normally do not add it by hand:
 
 ```json
 {
   "mcpServers": {
     "ainecto": {
       "command": "npx",
-      "args": ["-y", "@ainecto/mcp", "--role", "development"]
+      "args": ["-y", "@ainecto/mcp@0.8.0"]
     }
   }
 }
 ```
 
-A bridge without a role has no restriction. If a session inside a set-up repository still has no role,
-another `ainecto` entry (for example Claude Code's local scope) is usually hiding the one `init` wrote —
-check with `claude mcp get ainecto`. An entry under another name does not hide it but adds a second
-server with no role — remove it.
+An older entry with `--role <name>` (or `AINECTO_ROLE`) still starts: the value is ignored, a one-line
+note goes to stderr, and the server only records that an old setting is still in use. If a session
+does not see the AiNecto tools, another `ainecto` entry (for example Claude Code's local scope) may be
+hiding it — `ainecto doctor` checks this.
 
 ### MCP Registry
 
 `server.json` is the Registry entry `io.github.codelives/ainecto` (same as `package.json#mcpName`). It
-lists only the npm package `@ainecto/mcp` — the per-repository role bridge `init` writes. Registry
+lists only the npm package `@ainecto/mcp` — the bridge `setup` and `init --mcp` write. Registry
 publication requires the npm version it references to carry that `mcpName`, so publish npm first.
 Registration is done by a person:
 
