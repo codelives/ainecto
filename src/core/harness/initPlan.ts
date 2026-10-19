@@ -2,11 +2,8 @@ import {
   AGENT_TARGETS,
   readServerEntry,
   buildServerEntry,
-  codexAddCommand,
-  codexProfileSetup,
-  codexRemoveCommand,
+  isOurBridge,
   mergeServerEntry,
-  readRoleFromEntry,
   removeServerEntry,
   SERVER_NAME,
 } from "./agentTargets";
@@ -35,8 +32,6 @@ import {
   type RecordState,
 } from "./initRecord";
 import { createHash } from "node:crypto";
-import { readConfigRole } from "./repositoryRole";
-import { ROLE_ENV_VAR, type HarnessRole } from "./role";
 
 /**
  * init 이 «무엇을 쓸지»를 순수하게 계산한다. 파일을 읽지도 쓰지도 않는다.
@@ -83,10 +78,6 @@ export interface FileWrite {
 export interface InitPlan {
   writes: FileWrite[];
   deletes: string[];
-  /** 사용자가 직접 칠 명령 — 우리가 전역 설정을 고치지 않는다. */
-  codexCommand: string;
-  /** Codex 에서 세션마다 역할을 바꾸는 법(프로필). 되돌리기 계획에는 없다. */
-  codexProfile?: string[];
   notes: string[];
   /** init 계획이 남기는 기록. {@code .ainecto/init-record.json} 에 저장된다. */
   record?: InitRecord;
@@ -176,18 +167,18 @@ function parseJsonObject(content: string): Record<string, unknown> | undefined {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface ConfigBodyValues {
-  projectUuid: string;
-  projectName: string;
   endpoint: string;
   cliVersion: string;
   versions: Record<string, string>;
 }
 
-/** init 이 config 에 쓰는 내용. ★적는 칸의 진실원이 여기 하나다. */
+/**
+ * init 이 config 에 쓰는 내용. ★적는 칸의 진실원이 여기 하나다.
+ * v2(0.8.0): {@code project} 칸이 없다 — 저장소를 한 프로젝트에 묶지 않는다(요구서 11장).
+ */
 function configBodyOf(values: ConfigBodyValues): Record<string, unknown> {
   return {
-    version: 1,
-    project: { uuid: values.projectUuid, name: values.projectName },
+    version: 2,
     endpoint: values.endpoint,
     generatedBy: values.cliVersion,
     promptVersions: values.versions,
@@ -204,8 +195,21 @@ function configBodyOf(values: ConfigBodyValues): Record<string, unknown> {
  * config 에 {@code managed} 라는 칸을 적어 두어도 그것은 사용자 것이다(7차 독립 리뷰 I2).
  */
 const OUR_CONFIG_FIELDS: readonly string[] = Object.keys(configBodyOf({
-  projectUuid: "", projectName: "", endpoint: "", cliVersion: "", versions: {},
+  endpoint: "", cliVersion: "", versions: {},
 }));
+
+/**
+ * ★<b>옛 판이 «우리 칸»으로 썼고 지금은 쓰지 않는 칸.</b> 기록({@code writtenFields})에 남아 있으면 그 칸도
+ * 우리 것이다 — 재init 은 그대로면 걷어내고(원본이 있었으면 원본으로), 사용자가 고쳤으면 남긴다.
+ * 되돌리기도 기록에 있는 동안은 우리 칸으로 다룬다.
+ */
+const RETIRED_CONFIG_FIELDS: readonly string[] = ["project"];
+
+/** 이 계약에서 «우리 칸»인 이름 — 지금의 칸 + 기록에 남은 옛 칸. */
+function ownedConfigFields(contract: Pick<FileContract, "writtenFields"> | undefined): string[] {
+  const written = contract?.writtenFields ?? {};
+  return [...OUR_CONFIG_FIELDS, ...RETIRED_CONFIG_FIELDS.filter((field) => hasField(written, field))];
+}
 
 const hasField = (object: Record<string, unknown>, field: string) =>
   Object.prototype.hasOwnProperty.call(object, field);
@@ -215,11 +219,16 @@ const hasField = (object: Record<string, unknown>, field: string) =>
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PlanInitInput {
-  role: HarnessRole;
   env?: "prod" | "dev";
-  projectName: string;
-  projectUuid: string;
   endpoint: string;
+  /**
+   * ★MCP 설정 파일({@code .mcp.json}·{@code .cursor/mcp.json})을 쓰나 — {@code init --mcp}(설계 결정 #6).
+   * 없어도 «우리 브리지 항목이 이미 있는» 파일은 다시 쓴다 — 옛 {@code --role} 을 걷고 판을 고정한다.
+   * 이것이 옛 저장소의 이행 경로다(별도 migrate 명령 없음, D10).
+   */
+  mcp: boolean;
+  /** 브리지 패키지 지정(시험용). 기본은 이 CLI 판으로 고정. */
+  packageSpec?: string;
   cliVersion: string;
   files: FileSnapshot;
   /** 직전 실행의 기록 «상태». ★유효하지 않으면 init 이 멈춘다 — 덮으면 백업이 사라진다. */
@@ -266,16 +275,12 @@ export function planInit(input: PlanInitInput): InitPlan {
   const previous = input.previous ?? readRecord(input.files.get(HARNESS_RECORD_PATH));
   const refusal = initRefusal(input.files, previous);
   if (refusal !== undefined) {
-    return {
-      writes: [], deletes: [], notes: [],
-      codexCommand: codexAddCommand({ role: input.role, env: input.env, endpoint: input.endpoint }),
-      refusal,
-    };
+    return { writes: [], deletes: [], notes: [], refusal };
   }
 
   const carriedRecord = previous.state === "valid" ? previous.record : emptyRecord();
 
-  const entry = buildServerEntry({ role: input.role, env: input.env, endpoint: input.endpoint });
+  const entry = buildServerEntry({ env: input.env, endpoint: input.endpoint, packageSpec: input.packageSpec });
   const writes: FileWrite[] = [];
   const notes: string[] = [];
   const record: InitRecord = {
@@ -306,14 +311,14 @@ export function planInit(input: PlanInitInput): InitPlan {
   for (const target of AGENT_TARGETS) {
     const existing = input.files.get(target.path);
     const currentEntry = existing === undefined ? undefined : readServerEntry(existing);
+    if (!input.mcp && !isOurBridge(currentEntry)) {
+      // --mcp 없이는 MCP 설정을 새로 쓰지 않는다. 우리 브리지 항목이 이미 있을 때만 갱신한다.
+      continue;
+    }
     const prior = priorOf(target.path, ownedJson(currentEntry, currentEntry !== undefined));
     const merged = mergeServerEntry(existing, entry);
     if (existing === merged.content) {
       continue;
-    }
-    const before = previousRole(target.path, existing);
-    if (merged.replaced && before && before !== input.role) {
-      notes.push(`${target.path}: role ${before} → ${input.role}`);
     }
     const original = prior?.original ?? ownedJson(merged.replacedEntry, merged.replaced);
     if (prior === undefined && original.at !== "absent") {
@@ -332,11 +337,7 @@ export function planInit(input: PlanInitInput): InitPlan {
   // ── HARNESS.md — 우리가 «파일 전체»를 소유한다 ────────────────────────────────
   const existingDoc = input.files.get(HARNESS_DOC_PATH);
   const priorDoc = priorOf(HARNESS_DOC_PATH, ownedText(existingDoc));
-  const docContent = renderHarnessDoc({
-    projectName: input.projectName,
-    projectUuid: input.projectUuid,
-    endpoint: input.endpoint,
-  }, input.documents?.doc);
+  const docContent = renderHarnessDoc({ endpoint: input.endpoint }, input.documents?.doc);
   const docOriginal = priorDoc?.original ?? ownedText(existingDoc);
   if (priorDoc === undefined && docOriginal.at !== "absent") {
     notes.push(`${HARNESS_DOC_PATH} already existed; its original was saved and --undo will restore it.`);
@@ -417,8 +418,6 @@ export function planInit(input: PlanInitInput): InitPlan {
   // ── config.json — 우리가 «칸 몇 개»를 소유한다. 나머지는 사용자 것이다 ────────
   const existingConfig = input.files.get(HARNESS_CONFIG_PATH);
   const ourFields = configBodyOf({
-    projectUuid: input.projectUuid,
-    projectName: input.projectName,
     endpoint: input.endpoint,
     cliVersion: input.cliVersion,
     // ★어느 판의 규칙으로 썼나. 이게 없으면 「무엇이 적혀 있었나」를 나중에 못 되짚는다.
@@ -449,7 +448,27 @@ export function planInit(input: PlanInitInput): InitPlan {
         notes.push(`${HARNESS_CONFIG_PATH}: you changed ${field} — ainecto now treats your value as the one to put back.`);
       }
     }
-    const mergedConfig = serialize({ ...(theirConfig ?? {}), ...ourFields });
+    // ── 옛 판이 쓴 칸(project) — 기록과 같으면 걷어내고, 사용자가 고쳤으면 남긴다 ──
+    //   ★판정 규칙은 위 칸들과 같다(「기록에 적힌 우리 값과 지금 값이 같은가」). 걷어낸 칸은 기록에서도 뺀다 —
+    //   더는 우리 칸이 아니므로, 사용자가 남긴 값은 이후 사용자 것이다.
+    const retained = { ...(theirConfig ?? {}) };
+    for (const field of RETIRED_CONFIG_FIELDS) {
+      const priorWritten = priorConfig?.writtenFields;
+      if (priorWritten === undefined || !hasField(priorWritten, field) || !hasField(retained, field)) {
+        continue;
+      }
+      if (stableStringify(retained[field]) !== stableStringify(priorWritten[field])) {
+        notes.push(`${HARNESS_CONFIG_PATH}: you changed ${field} — left as you set it (ainecto no longer writes it).`);
+        continue;
+      }
+      const original = priorConfig?.originalFields?.[field];
+      if (original?.at === "json") {
+        retained[field] = original.value;
+      } else {
+        delete retained[field];
+      }
+    }
+    const mergedConfig = serialize({ ...retained, ...ourFields });
     record.files[HARNESS_CONFIG_PATH] = {
       scope: "fields",
       createdByUs: priorConfig?.createdByUs ?? existingConfig === undefined,
@@ -482,14 +501,7 @@ export function planInit(input: PlanInitInput): InitPlan {
     });
   }
 
-  return {
-    writes,
-    deletes: [],
-    codexCommand: codexAddCommand({ role: input.role, env: input.env, endpoint: input.endpoint }),
-    codexProfile: codexProfileSetup({ role: input.role, env: input.env, endpoint: input.endpoint }),
-    notes,
-    record,
-  };
+  return { writes, deletes: [], notes, record };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -530,8 +542,8 @@ export function planUndo(input: PlanUndoInput): InitPlan {
   const deletes: string[] = [];
   const notes: string[] = [];
   const tail = () => {
-    notes.push(`Codex keeps its own global config — remove it with: ${codexRemoveCommand()}`);
-    notes.push(`If you set ${ROLE_ENV_VAR} anywhere, unset it too.`);
+    // 기기 전역 연결(Claude Code 사용자 범위·Cursor 전역·Codex)은 setup 의 것이다 — init 은 그것을 쓰지 않는다.
+    notes.push("Agent connections that `ainecto setup` made on this machine are removed with `ainecto setup --undo`.");
   };
 
   if (state.state === "absent") {
@@ -539,7 +551,7 @@ export function planUndo(input: PlanUndoInput): InitPlan {
     //   init 을 한 적도 없는 저장소의 사용자 항목까지 지웠다(독립 재리뷰 I2).
     notes.push(`No record of a previous init in ${HARNESS_RECORD_PATH} — no local file was changed.`);
     tail();
-    return { writes, deletes, codexCommand: codexRemoveCommand(), notes };
+    return { writes, deletes, notes };
   }
   if (state.state !== "valid") {
     // ⛔손상·구판 기록으로 파일을 «지우지» 않는다. 그 안에 아직 못 되돌린 원본이 있을 수 있고,
@@ -549,7 +561,7 @@ export function planUndo(input: PlanUndoInput): InitPlan {
       + "--undo still needs. Restore it, or finish the undo with the CLI version that wrote it.",
     );
     tail();
-    return { writes, deletes, codexCommand: codexRemoveCommand(), notes };
+    return { writes, deletes, notes };
   }
 
   const record = state.record;
@@ -595,7 +607,7 @@ export function planUndo(input: PlanUndoInput): InitPlan {
   const removableDirectories = parentsOf(deletes)
     .filter((directory) => record.createdDirectories.includes(directory));
 
-  return { writes, deletes, codexCommand: codexRemoveCommand(), notes, removableDirectories };
+  return { writes, deletes, notes, removableDirectories };
 }
 
 /**
@@ -784,7 +796,8 @@ function undoFields(path: string, contract: FileContract, existing: string): Out
   //   넘긴다 — 어느 칸이 우리 것인지. 그래서 「우리가 쓴 칸인데 기록에 없다」까지 걸린다.
   //   ⛔빈 map 으로 메우면 모든 칸이 「우리 것이 아니다」로 읽혀 파일은 그대로 두고 백업만
   //   지운다. 판정 자료가 반쯤 맞으면 그것으로 파일을 고치지 않는다(9차 B1 · 2차 리뷰 B1).
-  const contractProblem = fieldsContractProblem(contract, OUR_CONFIG_FIELDS);
+  const owned = ownedConfigFields(contract);
+  const contractProblem = fieldsContractProblem(contract, owned);
   if (contractProblem !== undefined) {
     return {
       kind: "unresolved",
@@ -797,7 +810,7 @@ function undoFields(path: string, contract: FileContract, existing: string): Out
   const next: Record<string, unknown> = {};
   const kept: string[] = [];
   for (const [field, value] of Object.entries(parsed)) {
-    if (!OUR_CONFIG_FIELDS.includes(field)) {
+    if (!owned.includes(field)) {
       next[field] = value; // 사용자 칸 — 손대지 않는다.
       continue;
     }
@@ -884,10 +897,4 @@ function parentsOf(paths: readonly string[]): string[] {
     }
   }
   return [...directories].sort((left, right) => right.length - left.length);
-}
-
-/** 이 설정 파일에 걸린 역할 — 읽는 규칙은 {@link readConfigRole} 한 곳이다. */
-function previousRole(path: string, existing: string | undefined): HarnessRole | undefined {
-  const read = readConfigRole(path, existing);
-  return read.kind === "role" ? read.role : undefined;
 }

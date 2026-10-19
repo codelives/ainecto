@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchHarnessDocuments, AGENT_NOTE_KEY, DOC_KEY } from "../src/core/harness/documentFetch";
-import { renderAgentNote, renderHarnessDoc } from "../src/core/harness/harnessDoc";
+import { fetchHarnessDocuments } from "../src/core/harness/documentFetch";
+import { AGENT_NOTE_KEY, DOC_KEY, renderAgentNote, renderHarnessDoc } from "../src/core/harness/harnessDoc";
 
 const ENDPOINT = "https://ainecto.com/mcp";
 
@@ -13,7 +13,7 @@ describe("하네스 문서를 서버에서 받는다", () => {
     const fetchImpl = vi.fn(async () => jsonResponse({
       documents: {
         [DOC_KEY]: {
-          body: "server doc {{projectName}} {{projectUuid}} {{endpoint}}",
+          body: "server doc at {{endpoint}}",
           version: "HARNESS.DOC@harness-r3",
         },
         [AGENT_NOTE_KEY]: {
@@ -30,7 +30,7 @@ describe("하네스 문서를 서버에서 받는다", () => {
     // ★/api/v1 이 아니다 — MCP 토큰은 REST 에서 거절된다.
     expect(vi.mocked(fetchImpl).mock.calls[0]![0])
       .toBe("https://ainecto.com/mcp/harness/documents?client=ainecto-cli");
-    expect(result.doc).toBe("server doc {{projectName}} {{projectUuid}} {{endpoint}}");
+    expect(result.doc).toBe("server doc at {{endpoint}}");
     expect(result.versions[DOC_KEY]).toBe("HARNESS.DOC@harness-r3");
     expect(result.unavailableReason).toBeUndefined();
   });
@@ -63,10 +63,21 @@ describe("하네스 문서를 서버에서 받는다", () => {
     })) as unknown as typeof fetch;
 
     const result = await fetchHarnessDocuments({ endpoint: ENDPOINT, fetchImpl });
-    // 채울 자리가 없는 글은 채워도 프로젝트를 가리키지 못한다 — 쓰지 않는다.
+    // 채울 자리가 없는 글은 채워도 주소를 가리키지 못한다 — 쓰지 않는다.
     expect(result.doc).toBeUndefined();
     expect(result.versions[DOC_KEY]).toBeUndefined();
+    expect(result.fallbacks[DOC_KEY]).toContain("{{endpoint}}");
+  });
+
+  it("★이 CLI 가 모르는 변수가 든 본문은 받지 않는다 — 옛 서버 판의 {{projectName}} 이 저장소에 그대로 들어가지 않게", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      documents: { [DOC_KEY]: { body: "Project {{projectName}} ({{projectUuid}}) at {{endpoint}}", version: "HARNESS.DOC@r10" } },
+    })) as unknown as typeof fetch;
+
+    const result = await fetchHarnessDocuments({ endpoint: ENDPOINT, fetchImpl });
+    expect(result.doc).toBeUndefined();
     expect(result.fallbacks[DOC_KEY]).toContain("{{projectName}}");
+    expect(result.fallbacks[DOC_KEY]).toContain("does not fill");
   });
 
   it("★관리 마커가 없는 AGENT_NOTE 는 받지 않는다", async () => {
@@ -111,18 +122,17 @@ describe("하네스 문서를 서버에서 받는다", () => {
 });
 
 describe("서버 본문과 패키지 기본값이 같은 채움 경로를 쓴다", () => {
-  const values = { projectName: "Billing", projectUuid: "p-1", endpoint: ENDPOINT };
+  const values = { endpoint: ENDPOINT };
 
   it("서버 본문이 있으면 그것을 채운다", () => {
-    const rendered = renderHarnessDoc(values, "Project: {{projectName}} ({{projectUuid}}) at {{endpoint}}");
-    expect(rendered).toBe("Project: Billing (p-1) at https://ainecto.com/mcp");
+    const rendered = renderHarnessDoc(values, "Rules for {{endpoint}}");
+    expect(rendered).toBe("Rules for https://ainecto.com/mcp");
   });
 
   it("없으면 패키지 기본값을 «같은 방식으로» 채운다", () => {
     const rendered = renderHarnessDoc(values);
-    expect(rendered).toContain("**Billing**");
-    expect(rendered).toContain("p-1");
-    expect(rendered).not.toContain("{{projectName}}");
+    expect(rendered).toContain("MCP endpoint: https://ainecto.com/mcp");
+    expect(rendered).not.toContain("{{endpoint}}");
   });
 
   it("AGENTS.md 블록도 마찬가지다", () => {

@@ -11,9 +11,7 @@ import { executeGeneratedCommand, matchGeneratedCommand } from "./generatedComma
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
 import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands";
 import { executeInitCommand } from "./initCommand";
-import { createReadlinePrompter, isInteractive } from "./prompter";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
-import { assertRole, resolveRole } from "../../core/harness/role";
 import { LEGACY_ROLE_NOTICE, legacyRoleInput } from "../../core/harness/legacyRole";
 
 export interface CliIO {
@@ -40,7 +38,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     const [domain, action, ...rest] = parsed.positionals;
     // ★옛 --role / AINECTO_ROLE — 세션 역할은 없어졌다(0.8.0). 값을 검사하지 않고 받아 안내 한 줄을
     //   남기고, 원격 요청에 기록용 헤더로만 싣는다(legacyRole.ts). 브리지는 connector 가 같은 일을 한다.
-    const legacyRole = legacyRoleInput(parsed.role);
+    const legacyRole = legacyRoleInput(parsed.legacyRole);
     if (legacyRole !== undefined && domain !== "mcp") {
       // --json 이면 stderr 도 JSON 한 줄이다(login_url 과 같은 규칙).
       io.stderr.write(parsed.json
@@ -72,7 +70,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     if (domain === "mcp") {
       await runConnector({
         endpoint: resolved.endpoint,
-        legacyRoleFlag: parsed.role,
+        legacyRoleFlag: parsed.legacyRole,
         input: io.stdin,
         output: io.stdout,
         errorOutput: io.stderr,
@@ -81,37 +79,28 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     if (domain === "init") {
-      // ⚠init 의 플래그(--role 등)는 전역 파서가 positional 로 흘려보낸다. 그대로 넘긴다.
+      // ⚠init 의 플래그는 전역 파서가 positional 로 흘려보낸다. 그대로 넘긴다.
+      const { auth } = connect();
       return await executeInitCommand({
         argv: parsed.positionals.slice(1),
-        role: parsed.role !== undefined ? assertRole(parsed.role) : resolveRole().role,
-        connect: () => {
-          const { auth, client } = connect();
-          return {
-            client,
-            // 문서는 인증 후에 받는다 — 토큰이 없으면 패키지 기본값으로 가고, 그 사실을 보고한다.
-            // ★«필요할 때» 가져온다. --undo 는 로컬 작업이라 토큰을 건드릴 이유가 없다(S1) — undo 는
-            //   connect 자체를 부르지 않는다.
-            // ★갱신 실패는 «토큰 없음»(→ 로그인)이지만, AINECTO_TOKEN 을 못 쓰는 주소라는 거절은 삼키지 않는다 —
-            //   삼키면 그 설정 오류가 브라우저 로그인으로 둔갑한다.
-            accessToken: async () => {
-              try {
-                return await auth.getAccessToken();
-              } catch (error) {
-                if (process.env.AINECTO_TOKEN) {
-                  throw error;
-                }
-                return undefined;
-              }
-            },
-            // 로그인한다 — `ainecto auth login` 과 같은 함수다. 서버마다 한 번이다(0.4.2).
-            login: async () => {
-              await auth.login();
-            },
-          };
+        // 문서는 인증 후에 받는다 — 토큰이 없으면 패키지 기본값으로 가고, 그 사실을 보고한다.
+        // ★«필요할 때» 가져온다. --undo 는 로컬 작업이라 토큰을 건드리지 않는다(S1).
+        // ★갱신 실패는 «토큰 없음»(→ 로그인)이지만, AINECTO_TOKEN 을 못 쓰는 주소라는 거절은 삼키지 않는다 —
+        //   삼키면 그 설정 오류가 브라우저 로그인으로 둔갑한다.
+        accessToken: async () => {
+          try {
+            return await auth.getAccessToken();
+          } catch (error) {
+            if (process.env.AINECTO_TOKEN) {
+              throw error;
+            }
+            return undefined;
+          }
         },
-        // ★대화형일 때만 묻는다(판정은 isInteractive 한 곳). 에이전트·CI 는 TTY 가 아니다.
-        prompter: isInteractive(io, parsed.json) ? createReadlinePrompter(io) : undefined,
+        // 로그인한다 — `ainecto auth login` 과 같은 함수다. 서버마다 한 번이다.
+        login: async () => {
+          await auth.login();
+        },
         endpoint: resolved.endpoint,
         env: resolved.env,
         cliVersion: `${PACKAGE_NAME} ${CLI_VERSION}`,
@@ -280,7 +269,7 @@ interface GlobalArgs {
   env?: AinectoEnv;
   endpoint?: string;
   /** 옛 --role — 검사하지 않는다(legacyRole.ts). */
-  role?: string;
+  legacyRole?: string;
   json: boolean;
   help: boolean;
   version: boolean;
@@ -302,7 +291,7 @@ function parseGlobalArgs(argv: string[]): GlobalArgs {
       // ★옛 전역 플래그 — 값을 검사하지 않고 받는다(legacyRole.ts). 값 없이 끝나도 멈추지 않는다.
       const value = argv[index + 1];
       if (value !== undefined && !value.startsWith("--")) {
-        result.role = value;
+        result.legacyRole = value;
         index += 1;
       }
     } else if (arg === "--json") {
@@ -384,8 +373,7 @@ function helpText(): string {
     "  ainecto mcp [--env prod|dev] [--endpoint URL]",
     "",
     "Harness:",
-    "  ainecto init [--role <design|development|test|validation>] [--project <uuid>] [--dry-run]",
-    "      In a terminal, asks for the role and project when they are not given.",
+    "  ainecto init [--mcp] [--dry-run] [--json]   AiNecto rules for this repository (--mcp also writes .mcp.json and .cursor/mcp.json)",
     "  ainecto init --undo",
     "",
   ].join("\n");

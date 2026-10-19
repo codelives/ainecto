@@ -1,5 +1,5 @@
 import { assertTrustedEndpointUrl } from "../config/endpoints";
-import { documentContractProblem } from "./harnessDoc";
+import { AGENT_NOTE_KEY, DOC_KEY, documentContractProblem } from "./harnessDoc";
 
 /**
  * 저장소에 쓸 하네스 문서를 서버에서 받아 온다.
@@ -34,9 +34,6 @@ export interface FetchHarnessDocumentsInput {
   client?: string;
   fetchImpl?: typeof fetch;
 }
-
-export const DOC_KEY = "HARNESS.DOC";
-export const AGENT_NOTE_KEY = "HARNESS.AGENT_NOTE";
 
 export async function fetchHarnessDocuments(
   input: FetchHarnessDocumentsInput,

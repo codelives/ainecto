@@ -1,16 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { assertRole, resolveRole, ROLE_ENV_VAR } from "../src/core/harness/role";
 import {
   buildServerEntry,
-  codexAddCommand,
-  codexProfileSetup,
   mergeServerEntry,
-  readRoleFromEntry,
   removeServerEntry,
   SERVER_NAME,
 } from "../src/core/harness/agentTargets";
+import { bridgePackageSpec } from "../src/core/version";
 import {
   documentContractProblem,
+  fillTemplate,
   MARKER_BEGIN,
   MARKER_END,
   markerEvidence,
@@ -20,16 +18,14 @@ import {
   upsertMarkerBlock,
 } from "../src/core/harness/harnessDoc";
 import { planInit, planUndo, readRecord } from "../src/core/harness/initPlan";
-import { rolesInFiles } from "../src/core/harness/repositoryRole";
-import { extractProjects, unwrapToolJson } from "../src/adapters/cli/initCommand";
+import { extractProjects, unwrapMcpToolPayload } from "../src/core/mcp/toolPayload";
 
+/** ★mcp: true — 이 파일의 복구 계약 시험은 MCP 설정까지 쓰는 init 을 기준으로 한다. */
 const BASE = {
-  role: "development",
   env: "prod",
-  projectName: "Billing",
-  projectUuid: "p-1",
   endpoint: "https://ainecto.com/mcp",
   cliVersion: "@ainecto/mcp test",
+  mcp: true,
 } as const;
 
 function snapshot(entries: Record<string, string | undefined>) {
@@ -62,35 +58,24 @@ function applied(
   return next;
 }
 
-describe("role resolution", () => {
-  it("takes the flag first, then the environment", () => {
-    expect(resolveRole({ role: "design" })).toEqual({ role: "design", source: "flag" });
-    expect(resolveRole({ envVars: { [ROLE_ENV_VAR]: "test" } })).toEqual({ role: "test", source: "env" });
-    expect(resolveRole({ envVars: {} })).toEqual({ source: "none" });
-  });
-
-  it("stops on a typo instead of silently running unscoped", () => {
-    // 조용히 «역할 없음»으로 도는 것이 이 도구에서 가장 나쁜 실패다.
-    expect(() => assertRole("developement")).toThrow(/Invalid role/);
-  });
-});
-
 describe("mcp config merge", () => {
-  it("writes exactly one server entry — that is what makes one session one role", () => {
-    const entry = buildServerEntry({ role: "development" });
+  it("writes exactly one server entry, pinned to this CLI version and without a role", () => {
+    const entry = buildServerEntry({ packageSpec: bridgePackageSpec("0.8.0") });
     const merged = mergeServerEntry(undefined, entry);
     const parsed = JSON.parse(merged.content);
 
     expect(Object.keys(parsed.mcpServers)).toEqual([SERVER_NAME]);
-    expect(parsed.mcpServers[SERVER_NAME].args).toEqual(["-y", "@ainecto/mcp", "--role", "development"]);
-    expect(readRoleFromEntry(parsed.mcpServers[SERVER_NAME])).toBe("development");
+    expect(parsed.mcpServers[SERVER_NAME].args).toEqual(["-y", "@ainecto/mcp@0.8.0"]);
+  });
+
+  it("★판을 모르는 실행(번들 밖)은 고정하지 않는다 — @dev 는 npm 에서 배포 태그로 읽힌다", () => {
+    expect(bridgePackageSpec("dev")).toBe("@ainecto/mcp");
+    expect(bridgePackageSpec("0.8.0")).toBe("@ainecto/mcp@0.8.0");
   });
 
   it("adds --env only when it is not the default", () => {
-    expect(buildServerEntry({ role: "design", env: "prod" }).args).not.toContain("--env");
-    expect(buildServerEntry({ role: "design", env: "dev" }).args).toEqual(
-      ["-y", "@ainecto/mcp", "--role", "design", "--env", "dev"],
-    );
+    expect(buildServerEntry({ env: "prod" }).args).not.toContain("--env");
+    expect(buildServerEntry({ env: "dev" }).args).toEqual(["-y", "@ainecto/mcp", "--env", "dev"]);
   });
 
   it("keeps other people's servers and other top-level keys", () => {
@@ -99,7 +84,7 @@ describe("mcp config merge", () => {
       somethingElse: { keep: true },
     });
 
-    const merged = mergeServerEntry(existing, buildServerEntry({ role: "test" }));
+    const merged = mergeServerEntry(existing, buildServerEntry());
     const parsed = JSON.parse(merged.content);
 
     expect(parsed.mcpServers.sentry).toEqual({ type: "http", url: "https://mcp.sentry.dev/mcp" });
@@ -109,20 +94,20 @@ describe("mcp config merge", () => {
   it("★mcpServers 모양이 틀려도 원문을 조용히 버리지 않는다", () => {
     // 배열이 들어 있는 설정을 {} 로 갈아 끼우면 사용자의 내용이 사라진다(독립 리뷰 I8).
     const weird = JSON.stringify({ mcpServers: [{ command: "user-command" }] });
-    expect(() => mergeServerEntry(weird, buildServerEntry({ role: "test" })))
+    expect(() => mergeServerEntry(weird, buildServerEntry()))
       .toThrow(/not an object/);
   });
 
   it("★기본이 아닌 endpoint 만 인자로 싣는다", () => {
-    expect(buildServerEntry({ role: "design", endpoint: "https://ainecto.com/mcp" }).args)
+    expect(buildServerEntry({ endpoint: "https://ainecto.com/mcp" }).args)
       .not.toContain("--endpoint");
-    expect(buildServerEntry({ role: "design", endpoint: "https://custom.example/mcp" }).args)
-      .toEqual(["-y", "@ainecto/mcp", "--role", "design", "--endpoint", "https://custom.example/mcp"]);
+    expect(buildServerEntry({ endpoint: "https://custom.example/mcp" }).args)
+      .toEqual(["-y", "@ainecto/mcp", "--endpoint", "https://custom.example/mcp"]);
   });
 
   it("refuses to overwrite a config it cannot parse", () => {
     // 읽을 수 없는 파일을 덮으면 사용자의 설정이 사라진다.
-    expect(() => mergeServerEntry("{ not json", buildServerEntry({ role: "test" })))
+    expect(() => mergeServerEntry("{ not json", buildServerEntry()))
       .toThrow(/not valid JSON/);
   });
 
@@ -130,7 +115,7 @@ describe("mcp config merge", () => {
     const existing = JSON.stringify({
       mcpServers: {
         sentry: { type: "http", url: "https://mcp.sentry.dev/mcp" },
-        [SERVER_NAME]: buildServerEntry({ role: "design" }),
+        [SERVER_NAME]: buildServerEntry(),
       },
     });
 
@@ -143,7 +128,7 @@ describe("mcp config merge", () => {
   });
 
   it("reports an emptied file so the caller can delete what it created", () => {
-    const existing = JSON.stringify({ mcpServers: { [SERVER_NAME]: buildServerEntry({ role: "design" }) } });
+    const existing = JSON.stringify({ mcpServers: { [SERVER_NAME]: buildServerEntry() } });
     expect(removeServerEntry(existing).emptied).toBe(true);
   });
 });
@@ -236,13 +221,12 @@ describe("marker block", () => {
 
   it("★채워 넣은 값 안의 자리표시자 모양은 다시 치환하지 않는다", () => {
     // 4차 독립 리뷰 S4 — 넣은 값은 «내용»이지 템플릿이 아니다.
-    const rendered = renderHarnessDoc({
-      projectName: "The {{endpoint}} project",
-      projectUuid: "p-1",
+    const rendered = fillTemplate("{{name}} at {{endpoint}}", {
+      name: "The {{endpoint}} project",
       endpoint: "https://ainecto.com/mcp",
     });
 
-    expect(rendered).toContain("The {{endpoint}} project");
+    expect(rendered).toBe("The {{endpoint}} project at https://ainecto.com/mcp");
   });
 
   it("★쓰고 나서 «다시 찾을 수 있는» 모양만 수락한다", () => {
@@ -275,19 +259,23 @@ describe("marker block", () => {
     expect(removeMarkerBlock(thrice).removed).toBe(true)
   })
 
-  it("never writes the role into prose — the config is the only source of truth", () => {
+  it("★패키지 기본 문서에 세션 역할·프로젝트 묶기가 없다 — 권한이 정한다", () => {
     const note = renderAgentNote();
-    const doc = renderHarnessDoc({ projectName: "Billing", projectUuid: "p-1", endpoint: "https://ainecto.com/mcp" });
+    const doc = renderHarnessDoc({ endpoint: "https://ainecto.com/mcp" });
 
-    for (const role of ["design", "development", "test", "validation"]) {
-      expect(note.toLowerCase()).not.toContain(`role: ${role}`);
-      expect(doc.toLowerCase()).not.toContain(`current role: ${role}`);
+    for (const text of [note, doc]) {
+      expect(text).not.toMatch(/Design|Development Session|Validation|--role|one role/);
+      expect(text).toContain("permissions");
+      expect(text).not.toMatch(/\{\{[a-zA-Z]+}}/);
     }
+    expect(doc).toContain("https://ainecto.com/mcp");
+    // D7 — 세션 시작 뒤에 더해진 도구를 만나면 무엇을 할지.
+    expect(doc.replace(/\s+/g, " ")).toContain("this session started before that tool was added");
   });
 });
 
 describe("init plan", () => {
-  it("wires both agent configs and binds the project", () => {
+  it("--mcp: wires both agent configs; config v2 binds no project", () => {
     const plan = planInit({ ...BASE, files: snapshot({}) });
     const paths = plan.writes.map((write) => write.path);
 
@@ -295,8 +283,38 @@ describe("init plan", () => {
     expect(paths).toContain(".cursor/mcp.json");
     expect(paths).toContain(".ainecto/HARNESS.md");
     expect(paths).toContain(".ainecto/config.json");
-    expect(JSON.parse(writtenAt(plan, ".ainecto/config.json")!).project)
-      .toEqual({ uuid: "p-1", name: "Billing" });
+    const config = JSON.parse(writtenAt(plan, ".ainecto/config.json")!);
+    expect(config.version).toBe(2);
+    expect(config).not.toHaveProperty("project");
+    expect(Object.keys(config).sort()).toEqual(["endpoint", "generatedBy", "promptVersions", "version"]);
+  });
+
+  it("★--mcp 없이는 MCP 설정 파일을 새로 쓰지 않는다 — 남의 ainecto 항목도 건드리지 않는다", () => {
+    const theirs = `${JSON.stringify({ mcpServers: { ainecto: { type: "http", url: "https://ainecto.com/mcp" } } }, null, 2)}\n`;
+    const plan = planInit({ ...BASE, mcp: false, files: snapshot({ ".mcp.json": theirs }) });
+    const paths = plan.writes.map((write) => write.path);
+
+    expect(paths).not.toContain(".mcp.json");
+    expect(paths).not.toContain(".cursor/mcp.json");
+    expect(paths).toContain(".ainecto/HARNESS.md");
+    expect(paths).toContain("AGENTS.md");
+  });
+
+  it("★옛 저장소 이행 — 우리 브리지(--role 실림)가 있으면 --mcp 없이도 --role 을 걷고 판을 고정한다", () => {
+    const old = `${JSON.stringify({ mcpServers: {
+      sentry: { type: "http", url: "https://mcp.sentry.dev/mcp" },
+      ainecto: { command: "npx", args: ["-y", "@ainecto/mcp", "--role", "development", "--env", "dev"] },
+    } }, null, 2)}\n`;
+    const plan = planInit({
+      ...BASE, env: "dev", endpoint: "https://dev.ainecto.com/mcp", mcp: false,
+      packageSpec: bridgePackageSpec("0.8.0"), files: snapshot({ ".mcp.json": old }),
+    });
+    const written = JSON.parse(writtenAt(plan, ".mcp.json")!);
+
+    expect(written.mcpServers.ainecto.args).toEqual(["-y", "@ainecto/mcp@0.8.0", "--env", "dev"]);
+    expect(written.mcpServers.sentry).toEqual({ type: "http", url: "https://mcp.sentry.dev/mcp" });
+    // Cursor 파일은 없었다 — --mcp 가 아니므로 새로 만들지 않는다.
+    expect(plan.writes.map((write) => write.path)).not.toContain(".cursor/mcp.json");
   });
 
   it("creates AGENTS.md but does not invent a CLAUDE.md", () => {
@@ -314,37 +332,6 @@ describe("init plan", () => {
     expect(writtenAt(plan, "CLAUDE.md")).toContain("AiNecto Harness");
   });
 
-  it("gives Codex a per-session route through profiles, still one server entry", () => {
-    // 실측(2026-09-22, codex 0.153.4): codex -p <name> 이 $CODEX_HOME/<name>.config.toml 을 얹고
-    // 같은 서버 이름이면 «덮어쓴다». 합쳐지지 않으므로 세션이 보는 항목은 여전히 하나다.
-    const lines = codexProfileSetup({ role: "design" }).join("\n");
-
-    expect(lines).toContain("$CODEX_HOME/design.config.toml");
-    expect(lines).toContain("[mcp_servers.ainecto]");
-    expect(lines).toContain('"--role","design"'.replace(/"/g, '"'));
-    expect(lines).toContain("codex -p design");
-    expect(lines).toContain("replaces the global one");
-  });
-
-  it("does not modify the codex global config, it hands over the command", () => {
-    const plan = planInit({ ...BASE, files: snapshot({}) });
-
-    expect(plan.writes.map((write) => write.path).join(" ")).not.toContain("codex");
-    expect(plan.codexCommand).toBe(codexAddCommand({ role: "development", env: "prod" }));
-    expect(plan.codexCommand).toContain("--role development");
-  });
-
-  it("re-running with a new role rewrites the one entry and says what changed", () => {
-    const first = planInit({ ...BASE, files: snapshot({}) });
-    const after = snapshot({ ".mcp.json": writtenAt(first, ".mcp.json") });
-
-    const second = planInit({ ...BASE, role: "design", files: after });
-
-    expect(readRoleFromEntry(JSON.parse(writtenAt(second, ".mcp.json")!).mcpServers[SERVER_NAME]))
-      .toBe("design");
-    expect(second.notes.join(" ")).toContain("role development → design");
-  });
-
   it("writes nothing twice when nothing changed", () => {
     const first = planInit({ ...BASE, files: snapshot({}) });
     const settled = snapshot(Object.fromEntries(first.writes.map((write) => [write.path, write.content])));
@@ -355,14 +342,6 @@ describe("init plan", () => {
     //   기록 파일을 매번 다시 써서 기대값에 그 둘을 적어 두고 있었다 — 시험이 이름보다 약했다.
     //   파일별 계약으로 옮기면서 「내용이 같으면 쓰지 않는다」가 모든 파일에 한 규칙으로 걸린다.
     expect(second.writes.map((write) => write.path)).toEqual([]);
-  });
-
-  it("detects a role already wired into the repository", () => {
-    const first = planInit({ ...BASE, files: snapshot({}) });
-    const found = rolesInFiles(snapshot({ ".mcp.json": writtenAt(first, ".mcp.json") }));
-
-    expect(found.roles).toEqual(["development"]);
-    expect(found.problems).toEqual([]);
   });
 });
 
@@ -482,15 +461,14 @@ describe("undo", () => {
 
   it("tells the user about the parts it cannot reach", () => {
     const undo = planUndo({ files: snapshot({}) });
-    expect(undo.notes.join(" ")).toContain("codex mcp remove");
-    expect(undo.notes.join(" ")).toContain(ROLE_ENV_VAR);
+    expect(undo.notes.join(" ")).toContain("ainecto setup --undo");
   });
 });
 
 describe("tool response reading", () => {
   it("unwraps the MCP text content envelope", () => {
     const result = { content: [{ type: "text", text: JSON.stringify({ projects: [{ uuid: "p-1", name: "A" }] }) }] };
-    expect(extractProjects(unwrapToolJson(result))).toEqual([{ uuid: "p-1", name: "A" }]);
+    expect(extractProjects(unwrapMcpToolPayload(result))).toEqual([{ uuid: "p-1", name: "A" }]);
   });
 
   it("finds projects however the server wraps them", () => {
