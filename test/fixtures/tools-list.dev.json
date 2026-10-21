@@ -3953,7 +3953,7 @@
     },
     {
       "name": "create_documents",
-      "description": "Create documents. If a document body is tens of KB or more, prefer request_upload_token (purpose=document.create) and upload the body with curl.",
+      "description": "Create documents. projectUuid comes from list_projects (a workspace UUID is not a project UUID). Set shareEnabled to also turn on each document's public link and get its shareUrl in the same call. If a document body is tens of KB or more, prefer request_upload_token (purpose=document.create) and upload the body with curl.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3995,6 +3995,10 @@
                 "body": {
                   "type": "string",
                   "description": "Deprecated compatibility alias for typePayload.body when document type is markdown. 본문이 수십 KB 이상으로 크면 LLM 토큰 절약을 위해 `request_upload_token (purpose=document.create)` 를 호출해 uploadUrl 을 받고 curl 로 직접 PUT 으로 보낼 것."
+                },
+                "shareEnabled": {
+                  "type": "boolean",
+                  "description": "Optional. true turns on the document's public link right after creating it, exactly as enable_shares does (needs the right to manage sharing; types without a public page are refused). The created item then carries shareUrl, the page anyone can open. If sharing is refused, this item is not created."
                 }
               },
               "required": [
