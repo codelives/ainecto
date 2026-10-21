@@ -28,7 +28,7 @@
                 },
                 "kind": {
                   "type": "string",
-                  "description": "Top-level comments only: COMMENT (default) or QUESTION. A QUESTION can later be resolved with mcp__ainecto__resolve_comments.",
+                  "description": "COMMENT (default) or QUESTION. A reply (parentCommentId) is always COMMENT. A QUESTION can later be resolved with mcp__ainecto__resolve_comments.",
                   "enum": [
                     "COMMENT",
                     "QUESTION"
@@ -126,7 +126,7 @@
     },
     {
       "name": "list_mention_candidates",
-      "description": "List the people you can mention in comments on a document or a kanban card (cardUuid): userId and displayName. Only people who can read it are listed — for a card, the people who can read its board, which are also the people a card can be assigned to. To mention someone, write @<displayName> exactly in the comment body and pass their userId in mentionUserIds of create_comments or update_comments. Page with nextCursor while hasMore is true.",
+      "description": "List the people you can mention in comments on a document or a kanban card (cardUuid): userId, displayName and jobTitle (null = not set) — jobTitle helps tell people with the same name apart. Only people who can read it are listed — for a card, the people who can read its board, which are also the people a card can be assigned to. To mention someone, write @<displayName> exactly in the comment body and pass their userId in mentionUserIds of create_comments or update_comments. Page with nextCursor while hasMore is true.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3172,7 +3172,7 @@
     },
     {
       "name": "get_my_work_summary",
-      "description": "One-call summary of what is waiting for the signed-in user in AiNecto — call it when the user asks things like \"do I have anything to do?\", \"anything new?\", \"anything to review?\" or \"did anyone ask me something?\". Returns notifications {unread (not yet read by the person, newest 100 counted; unreadCapped when there are more), unreadByKind, newForThisConnection (not yet acknowledged by this connection — the same number as the line at the end of tool results)}, mentionsToRead {items the person has not read that mention them, each with target title and url}, and todos {open, leaseExpired, inProgress, items: questions and requests waiting for the user's agent} and cards {kanban cards assigned to the user on boards they can read now: assignedOpen, pendingAcceptance (assigned but not yet accepted or declined), inProgress, inReview, blocked, items: the first page}. For details use list_notifications, list_agent_todos and kanban_list_cards; to read the document and its comments use get_document with the target uuid. Read-only: nothing is marked read or acknowledged.",
+      "description": "One-call summary of what is waiting for the signed-in user in AiNecto — call it when the user asks things like \"do I have anything to do?\", \"anything new?\", \"anything to review?\" or \"did anyone ask me something?\". Returns notifications {unread (not yet read by the person — the same read state as the web bell, so reading on the web lowers it at once; newest 100 counted; unreadCapped when there are more; the same number as the line at the end of tool results), unreadByKind}, mentionsToRead {items the person has not read that mention them, each with target title and url}, and todos {open (stays until the to-do is done or closed; the to-dos on that line), leaseExpired, inProgress, items: questions and requests waiting for the user's agent} and cards {kanban cards assigned to the user on boards they can read now: assignedOpen, pendingAcceptance (assigned but not yet accepted or declined), inProgress, inReview, blocked, items: the first page}. For details use list_notifications, list_agent_todos and kanban_list_cards; to read the document and its comments use get_document with the target uuid. Read-only: nothing is marked read or acknowledged.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3233,6 +3233,7 @@
                 "CARD_UPDATED",
                 "CARD_ASSIGNED",
                 "CARD_UNASSIGNED",
+                "CARD_REQUESTER_SET",
                 "CARD_ASSIGNMENT_ACCEPTED",
                 "CARD_ASSIGNMENT_DECLINED",
                 "CARD_STATUS_CHANGED",
@@ -3325,6 +3326,7 @@
                 "CARD_UPDATED",
                 "CARD_ASSIGNED",
                 "CARD_UNASSIGNED",
+                "CARD_REQUESTER_SET",
                 "CARD_ASSIGNMENT_ACCEPTED",
                 "CARD_ASSIGNMENT_DECLINED",
                 "CARD_STATUS_CHANGED",
@@ -3365,7 +3367,7 @@
     },
     {
       "name": "list_notifications",
-      "description": "Read new notifications for the signed-in user, oldest first and without gaps — for an agent that checks the inbox periodically. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person; open to-dos are in list_agent_todos. Calls closer than 30 seconds apart (except a call that carries ack) return retryAfterSeconds instead of items.",
+      "description": "Read new notifications for the signed-in user, oldest first and without gaps — for an agent that checks the inbox periodically. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person (use mark_notifications_read when the user asks); open to-dos are in list_agent_todos. Calls closer than 30 seconds apart (except a call that carries ack) return retryAfterSeconds instead of items.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3392,6 +3394,7 @@
                 "CARD_UPDATED",
                 "CARD_ASSIGNED",
                 "CARD_UNASSIGNED",
+                "CARD_REQUESTER_SET",
                 "CARD_ASSIGNMENT_ACCEPTED",
                 "CARD_ASSIGNMENT_DECLINED",
                 "CARD_STATUS_CHANGED",
@@ -3443,8 +3446,45 @@
       }
     },
     {
+      "name": "mark_notifications_read",
+      "description": "Mark the signed-in user's notifications as read in the AiNecto inbox — the same read state as the web bell, so the unread badge goes down. Call it only when the user explicitly asks you to mark notifications read; reading or acknowledging notifications (list_notifications ack) does not do this. Pass the id and seq of each item as you received them. Results are per item: {id, ok: true, readAt, alreadyRead?} or {id, ok: false, error} with error one of STALE (the entry was updated after you saw it — it stays unread; seq is the current one), NOT_FOUND (not your notification, archived, or no such id), INVALID. unread is the user's unread count after the call (the number on the web bell, unreadCapped when above it). Only your own notifications. Retrying is safe. It does not close to-dos and does not acknowledge anything for list_notifications.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Notifications to mark read; each item is applied and reported on its own.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Notification id from list_notifications or get_my_work_summary (mentionsToRead)."
+                },
+                "seq": {
+                  "type": "integer",
+                  "description": "The seq of that same item as you received it. If the entry was updated after you saw it (higher seq), it stays unread and you get STALE."
+                }
+              },
+              "required": [
+                "id",
+                "seq"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "update_agent_todos",
-      "description": "Claim, renew, complete, release, or dismiss the signed-in user's agent to-dos. Only the session holding the current leaseToken may renew, release, or complete a claimed to-do — even another session of the same connection gets CLAIMED_BY_OTHER. Results are per item: {todoId, ok: true, state, leaseToken?, claimExpiresAt?} or {todoId, ok: false, error} with error one of CLAIMED_BY_OTHER, LEASE_LOST, ALREADY_DONE, CLOSED_BY_HUMAN, SUPERSEDED, ACCESS_LOST, BUSINESS_ACTION_REQUIRED, NOT_FOUND, INVALID — on CLOSED_BY_HUMAN or SUPERSEDED stop working on it. BUSINESS_ACTION_REQUIRED: card to-dos (CARD_*) cannot be completed here; doing the card action closes them. Retrying the same complete or dismiss returns ok again. There is no tool to mark the person's notifications read.",
+      "description": "Claim, renew, complete, release, or dismiss the signed-in user's agent to-dos. Only the session holding the current leaseToken may renew, release, or complete a claimed to-do — even another session of the same connection gets CLAIMED_BY_OTHER. Results are per item: {todoId, ok: true, state, leaseToken?, claimExpiresAt?} or {todoId, ok: false, error} with error one of CLAIMED_BY_OTHER, LEASE_LOST, ALREADY_DONE, CLOSED_BY_HUMAN, SUPERSEDED, ACCESS_LOST, BUSINESS_ACTION_REQUIRED, NOT_FOUND, INVALID — on CLOSED_BY_HUMAN or SUPERSEDED stop working on it. BUSINESS_ACTION_REQUIRED: card to-dos (CARD_*) cannot be completed here; doing the card action closes them. Retrying the same complete or dismiss returns ok again. To mark the person's notifications read (only when they ask), use mark_notifications_read.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3497,7 +3537,7 @@
     },
     {
       "name": "kanban_apply_changes",
-      "description": "Create, edit, reorder and link cards on one kanban board in a single atomic call (at most 100 operations; if one fails nothing is applied and the error carries operationIndex and code). Creating and editing cards needs edit access to the board; the assignee may also check acceptance criteria and add result links (DELIVERABLE, REVIEW_RESULT, TEST_EVIDENCE). To change a card's column, assign it, accept, approve, block, watch and similar, use kanban_card_action. Results list each operation's card uuid, revision, status and sortKey.",
+      "description": "Create, edit, reorder and link cards on one kanban board in a single atomic call (at most 100 operations; if one fails nothing is applied and the error carries operationIndex and code). Creating and editing cards needs edit access to the board; move with toBoardUuid moves a card to another board of the same project. The assignee may also check acceptance criteria and add result links (DELIVERABLE, REVIEW_RESULT, TEST_EVIDENCE). create also sets assignee, requester, reviewers and watchers in the same call. To change a card's column, reassign it, accept, approve, block, watch and similar, use kanban_card_action. Results list each operation's card uuid, revision, status and sortKey.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3513,7 +3553,7 @@
               "properties": {
                 "op": {
                   "type": "string",
-                  "description": "create: a new card in To Do (you become its requester). update: change only the fields you send (send null to clear description, dueAt). move: reorder within the card's column. link / unlink: attach or remove a document or an external URL.",
+                  "description": "create: a new card in To Do (you become its requester unless requesterUserId names someone else). update: change only the fields you send (send null to clear description, dueAt). move: reorder within the card's column, or with toBoardUuid move it to another board of the same project. link / unlink: attach or remove a document or an external URL.",
                   "enum": [
                     "create",
                     "link",
@@ -3524,15 +3564,18 @@
                 },
                 "cardUuid": {
                   "type": "string",
-                  "description": "Target card (update, move, link, unlink). It must be on this board."
+                  "description": "Target card (update, move, link, unlink). It must be on this board. From kanban_list_cards — by cardKeys if you only have the card key, e.g. KAN-15."
                 },
                 "title": {
                   "type": "string",
                   "description": "Card title (required for create)."
                 },
                 "description": {
-                  "type": "string",
-                  "description": "Markdown description. Keep it short — link longer text as a document instead."
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Markdown description. Keep it short — link longer text as a document instead. update: null clears it."
                 },
                 "cardType": {
                   "type": "string",
@@ -3555,8 +3598,11 @@
                   ]
                 },
                 "dueAt": {
-                  "type": "string",
-                  "description": "Due time, ISO-8601 instant such as 2026-10-31T09:00:00Z."
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Due time, ISO-8601 instant such as 2026-10-31T09:00:00Z. update: null clears it."
                 },
                 "criteria": {
                   "type": "array",
@@ -3578,6 +3624,14 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "assigneeUserId": {
+                  "type": "string",
+                  "description": "create only: assign the new card (userId from list_mention_candidates with the board's documentUuid). Someone other than you gets an assignment to accept. To reassign an existing card use kanban_card_action assign."
+                },
+                "requesterUserId": {
+                  "type": "string",
+                  "description": "create only: the requester (reporter) instead of you; they are notified. To change it later use kanban_card_action set_requester."
                 },
                 "reviewerIds": {
                   "type": "array",
@@ -3677,6 +3731,10 @@
                   "type": "string",
                   "description": "move: place before this card in the column."
                 },
+                "toBoardUuid": {
+                  "type": "string",
+                  "description": "move: another kanban board (document UUID) in the same project to move the card to. It keeps its key, column, people, comments, links and to-dos; afterCardUuid / beforeCardUuid then name cards on that board. Needs edit access to both boards, and everyone on the card (requester, assignee, reviewers, watchers, responders) must be able to read the new board."
+                },
                 "clientMutationId": {
                   "type": "string",
                   "description": "create: idempotency key — retrying with the same value returns the same card instead of creating another."
@@ -3719,7 +3777,7 @@
         "properties": {
           "cardUuid": {
             "type": "string",
-            "description": "Card UUID (from kanban_list_cards)."
+            "description": "Card UUID (from kanban_list_cards — by cardKeys if you only have the card key, e.g. KAN-15)."
           },
           "action": {
             "type": "string",
@@ -3787,7 +3845,7 @@
     },
     {
       "name": "kanban_list_cards",
-      "description": "Read kanban cards. Three ways: cardUuids → those cards in full, including allowedActions (what you may do now with kanban_card_action) and links; boardUuid → the board's columns To Do, In Progress, In Review, Done (each with hasMore and nextAfter); neither → cards across all boards you can read where you are the assignee (or requester / watcher), most recently updated first. Each card has uuid, title, status, assignee and assignmentState (PENDING = not yet accepted), blocked, revision and allowedTransitions.",
+      "description": "Read kanban cards. Three ways: cardUuids (or cardKeys) → those cards in full, including allowedActions (what you may do now with kanban_card_action) and links; boardUuid → the board's columns To Do, In Progress, In Review, Done (each with hasMore and nextAfter); none of these → cards across all boards you can read where you are the assignee (or requester / watcher), most recently updated first. Each card has uuid and key (KAN-15 — the short id people use in chat; find a card by it with cardKeys, then use its uuid in the write tools), title, status, assignee and assignmentState (PENDING = not yet accepted), blocked, revision and allowedTransitions.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3808,6 +3866,16 @@
           "cardUuids": {
             "type": "array",
             "description": "Read these cards in full (description, people, links, allowedActions). Use alone.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true
+          },
+          "cardKeys": {
+            "type": "array",
+            "description": "Read these cards in full by their key (e.g. KAN-15 — the short id people use in chat), the same as cardUuids. Use alone.",
             "items": {
               "type": "string"
             },
@@ -4904,10 +4972,51 @@
     },
     {
       "name": "identity_get_self",
-      "description": "Return the authenticated MCP caller identity summary; never returns email or token claims.",
+      "description": "Return the authenticated MCP caller identity summary: userId, display name, and job profile (the user's job title and areas — personal context only, it never changes what they may do). Never returns email or token claims.",
       "inputSchema": {
         "type": "object",
         "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "identity_list_job_roles",
+      "description": "List the job roles the signed-in user can pick for their own job profile — the same list as the account settings screen: roles {code, title, family}, families, areas {code, title}, suggested role codes, customCode (pick it to type a title that is not in the list) and titleMaxLength. Use the codes with identity_update_job_profile. A job profile is personal context only; it never changes what the user may do.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "identity_update_job_profile",
+      "description": "Set the signed-in user's own job profile (job role and areas) — the same setting as the account settings screen. It only ever changes the caller's own profile. Pick code and areas from identity_list_job_roles; pass null as code to clear it. Returns the saved jobProfile in the same shape as identity_get_self (null when cleared). Invalid values fail with INVALID_JOB_PROFILE and change nothing. A job profile is personal context only; it never changes what the user may do.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Job role code from identity_list_job_roles, or its customCode to type your own title. null clears the job profile."
+          },
+          "title": {
+            "type": "string",
+            "description": "The role title in the user's own words — required with the custom code, ignored for a listed role (its title comes from the list)."
+          },
+          "areas": {
+            "type": "array",
+            "description": "Area codes from identity_list_job_roles; the first is the primary area. At least one with the custom code, optional for a listed role. Each area once.",
+            "items": {
+              "type": "string",
+              "description": "Area code."
+            }
+          }
+        },
+        "required": [
+          "code"
+        ],
         "additionalProperties": false
       }
     }
