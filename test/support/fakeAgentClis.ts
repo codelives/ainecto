@@ -11,7 +11,8 @@ import { join } from "node:path";
  *       `No MCP server named "ainecto".` + 종료 1. add 는 같은 범위에 있으면 거절(종료 1).</li>
  *   <li>{@code codex mcp get ainecto --json} — 있으면 JSON({transport:{command,args}}), 없으면
  *       `Error: No MCP server named 'ainecto' found.` + 종료 1. add 는 덮어쓴다({@code --url} 이면 원격).
- *       ★진짜 codex 는 원격 add 때 OAuth 로그인을 시작한다 — 가짜는 하지 않는다.</li>
+ *       ★진짜 codex 는 원격 add 때 OAuth 로그인을 시작한다 — 가짜는 그 출력(로그인 링크)만 흉내 낸다.
+ *       {@code codex.fail} 이 있으면 항목을 쓴 «뒤» 실패한다(로그인 한도 초과와 같은 모양).</li>
  * </ul>
  * 상태 파일 한 줄: `command|arg1 arg2…` 또는 `url|https://…`. 실행마다 `<name>.log` 에 인자를 한 줄씩 남긴다.
  */
@@ -56,7 +57,10 @@ case "$1 $2" in
     fi
     echo "Error: No MCP server named 'ainecto' found." >&2; exit 1;;
   "mcp add")
-    case "$*" in *"--url "*) while [ "$1" != "--url" ]; do shift; done; echo "url|$2" > "$STATE"; echo "Added global MCP server 'ainecto'."; exit 0;; esac
+    case "$*" in *"--url "*) while [ "$1" != "--url" ]; do shift; done; echo "url|$2" > "$STATE"; echo "Added global MCP server 'ainecto'."
+      echo "Detected OAuth support. Starting OAuth flow…"; echo "Authorize \\\`ainecto\\\` by opening this URL in your browser:"; echo "https://auth.example/authorize?fake=1"
+      [ -f "$FAKE_AGENT_HOME/codex.fail" ] && { echo "codex timed out after 90s" >&2; exit 1; }
+      echo "Successfully logged in."; exit 0;; esac
     while [ "$1" != "--" ]; do shift; done; shift
     echo "cmd|$*" > "$STATE"; echo "Added global MCP server 'ainecto'."; exit 0;;
   "mcp remove")
@@ -72,7 +76,7 @@ export interface FakeAgents {
   seed(name: "claude" | "codex", state: string): Promise<void>;
   state(name: "claude" | "codex"): Promise<string | undefined>;
   log(name: "claude" | "codex"): Promise<string[]>;
-  failAdds(name: "claude"): Promise<void>;
+  failAdds(name: "claude" | "codex"): Promise<void>;
 }
 
 export async function installFakeAgents(home: string, which: Array<"claude" | "codex"> = ["claude", "codex"]): Promise<FakeAgents> {

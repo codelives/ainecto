@@ -5,15 +5,13 @@ import type { McpRpcClient } from "../../core/mcp/rpcClient";
 import { readAccount, type AccountSummary } from "../../core/setup/accountSummary";
 import {
   connectAgent,
-  desiredEntry,
   disconnectAgent,
   inspectAgents,
-  REMOTE_SIGN_IN,
-  type AgentClientId,
   type AgentContext,
   type ConnectionOutcome,
 } from "../../core/setup/agentConnections";
 import { recordingRunner, type CommandLog, type CommandRunner } from "../../core/setup/commandRunner";
+import { desiredServerEntry, REMOTE_SIGN_IN, type AgentClientId } from "../../core/harness/agentTargets";
 
 export interface SetupCommandOptions {
   argv: string[];
@@ -46,7 +44,13 @@ export interface SetupCommandOptions {
 export async function executeSetupCommand(options: SetupCommandOptions): Promise<number> {
   const args = parseSetupArgs(options.argv);
   const commands: CommandLog[] = [];
-  const context: AgentContext = { runner: recordingRunner(options.runner, commands), home: options.home, endpoint: options.endpoint };
+  const context: AgentContext = {
+    runner: recordingRunner(options.runner, commands),
+    home: options.home,
+    endpoint: options.endpoint,
+    // Codex 의 원격 add 는 그 자리에서 로그인한다 — 그 출력(로그인 링크)을 사용자에게 흘린다(stdout 결과는 깨끗하게).
+    show: (text) => { options.io.stderr.write(text); },
+  };
 
   if (args.undo) {
     const states = await inspectAgents(context);
@@ -80,10 +84,11 @@ export async function executeSetupCommand(options: SetupCommandOptions): Promise
   const agents: ConnectionOutcome[] = [];
   const remote: AgentClientId[] = [];
   for (const state of await inspectAgents(context)) {
-    const desired = desiredEntry({ client: state.client, env: options.env, endpoint: options.endpoint, local: args.local });
+    const desired = desiredServerEntry({ client: state.client, env: options.env, endpoint: options.endpoint, local: args.local });
     const outcome = await connectAgent(state, desired, context, args.dryRun);
     agents.push(outcome);
-    if ("url" in desired && (outcome.status === "connected" || outcome.status === "updated")) {
+    // failed 도 싣는다 — 항목은 들어갔는데 로그인이 못 끝난 경우(Codex 한도 초과)가 있다. 재실행(already connected)도 다시 싣는다.
+    if ("url" in desired && (outcome.status === "connected" || outcome.status === "updated" || outcome.status === "failed")) {
       remote.push(state.client);
     }
   }

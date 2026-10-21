@@ -175,6 +175,31 @@ describe("ainecto setup", () => {
     expect(result().next.join("\n")).not.toContain("signs in to AiNecto by itself");
   });
 
+  it("★Codex 원격 add 가 시작한 로그인의 출력(링크)을 stderr 로 바로 보인다 — stdout 결과는 깨끗하다", async () => {
+    expect(await executeSetupCommand(options([]))).toBe(0);
+
+    const shown = err.join("");
+    expect(shown).toContain("Connecting Codex");
+    expect(shown).toContain("https://auth.example/authorize?fake=1");
+    expect(out.join("")).not.toContain("auth.example");
+    // 다른 클라이언트의 출력은 흘리지 않는다.
+    expect(shown).not.toContain("Added HTTP MCP server");
+  });
+
+  it("★Codex 가 항목을 쓴 뒤 로그인을 못 마치면 failed + 로그인 안내 — 재실행(already connected)에도 안내가 다시 나온다", async () => {
+    await fake.failAdds("codex");
+
+    expect(await executeSetupCommand(options([]))).toBe(1);
+    expect(statusOf("codex")).toBe("failed");
+    expect(await fake.state("codex")).toBe(`url|${ENDPOINT}`);
+    expect(result().next.join("\n")).toContain("codex mcp login ainecto");
+
+    out.length = 0;
+    expect(await executeSetupCommand(options([]))).toBe(0);
+    expect(statusOf("codex")).toBe("connected");
+    expect(result().next.join("\n")).toContain("codex mcp login ainecto");
+  });
+
   it("설치 안 된 클라이언트는 «not installed» — 실패가 아니다", async () => {
     const noAgents = await installFakeAgents(await mkdtemp(join(tmpdir(), "ainecto-empty-")), []);
     await rm(join(home, ".cursor"), { recursive: true });

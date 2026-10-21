@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TokenStore } from "../auth/tokenStore";
 import type { McpRpcClient } from "../mcp/rpcClient";
-import { AGENT_TARGETS, entryCarriesRole, isOurBridge, pinnedBridgeVersion, readServerEntry } from "../harness/agentTargets";
+import { AGENT_TARGETS, entryCarriesRole, isOurEntry, pinnedBridgeVersion, readServerEntry } from "../harness/agentTargets";
 import { HARNESS_CONFIG_PATH, HARNESS_DOC_PATH, DOC_KEY } from "../harness/harnessDoc";
 import { LEGACY_ROLE_ENV_VAR } from "../harness/legacyRole";
 import { findGitRoot, readManagedFile } from "../harness/repositoryFiles";
@@ -93,7 +93,7 @@ export async function collectStatus(input: CollectInput): Promise<MachineStatus>
   if (input.hereRunner && input.cwd !== input.home) {
     status.claudeHere = await inspectClaude({ runner: input.hereRunner, home: input.home, endpoint: input.endpoint });
   }
-  status.repository = await repositoryStatus(input.cwd);
+  status.repository = await repositoryStatus(input.cwd, input.endpoint);
   const globalVersion = await globalCliVersion(input.runner);
   if (globalVersion) {
     status.globalCliVersion = globalVersion;
@@ -124,7 +124,7 @@ async function tokenStatus(input: CollectInput): Promise<TokenStatus> {
   }
 }
 
-async function repositoryStatus(cwd: string): Promise<RepositoryStatus> {
+async function repositoryStatus(cwd: string, endpoint: string): Promise<RepositoryStatus> {
   const gitRoot = await findGitRoot(cwd);
   const root = gitRoot ?? cwd;
   const status: RepositoryStatus = { root, git: gitRoot !== undefined, harnessDoc: false, configHasProject: false, mcpFiles: [] };
@@ -143,7 +143,7 @@ async function repositoryStatus(cwd: string): Promise<RepositoryStatus> {
         const pinnedVersion = pinnedBridgeVersion(entry);
         status.mcpFiles.push({
           path: target.path,
-          ours: isOurBridge(entry),
+          ours: isOurEntry(entry, endpoint),
           carriesRole: entryCarriesRole(entry),
           ...(pinnedVersion ? { pinnedVersion } : {}),
         });

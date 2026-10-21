@@ -26,6 +26,7 @@ const BASE = {
   endpoint: "https://ainecto.com/mcp",
   cliVersion: "@ainecto/mcp test",
   mcp: true,
+  local: false,
 } as const;
 
 function snapshot(entries: Record<string, string | undefined>) {
@@ -300,21 +301,45 @@ describe("init plan", () => {
     expect(paths).toContain("AGENTS.md");
   });
 
-  it("★옛 저장소 이행 — 우리 브리지(--role 실림)가 있으면 --mcp 없이도 --role 을 걷고 판을 고정한다", () => {
-    const old = `${JSON.stringify({ mcpServers: {
-      sentry: { type: "http", url: "https://mcp.sentry.dev/mcp" },
-      ainecto: { command: "npx", args: ["-y", "@ainecto/mcp", "--role", "development", "--env", "dev"] },
-    } }, null, 2)}\n`;
+  const OLD_BRIDGE_REPO = `${JSON.stringify({ mcpServers: {
+    sentry: { type: "http", url: "https://mcp.sentry.dev/mcp" },
+    ainecto: { command: "npx", args: ["-y", "@ainecto/mcp", "--role", "development", "--env", "dev"] },
+  } }, null, 2)}\n`;
+
+  it("★옛 저장소 이행 — 우리 로컬 중계(--role 실림)가 있으면 --mcp 없이도 서버 주소로 바꿔 쓴다", () => {
     const plan = planInit({
       ...BASE, env: "dev", endpoint: "https://dev.ainecto.com/mcp", mcp: false,
-      packageSpec: bridgePackageSpec("0.8.0"), files: snapshot({ ".mcp.json": old }),
+      files: snapshot({ ".mcp.json": OLD_BRIDGE_REPO, ".cursor/mcp.json": JSON.stringify({ mcpServers: { ainecto: { command: "npx", args: ["-y", "@ainecto/mcp@0.8.1"] } } }) }),
+    });
+
+    // Claude Code 의 .mcp.json 은 type 이 있어야 http 로 읽는다 · Cursor 는 url 만.
+    expect(JSON.parse(writtenAt(plan, ".mcp.json")!).mcpServers.ainecto).toEqual({ type: "http", url: "https://dev.ainecto.com/mcp" });
+    expect(JSON.parse(writtenAt(plan, ".mcp.json")!).mcpServers.sentry).toEqual({ type: "http", url: "https://mcp.sentry.dev/mcp" });
+    expect(JSON.parse(writtenAt(plan, ".cursor/mcp.json")!).mcpServers.ainecto).toEqual({ url: "https://dev.ainecto.com/mcp" });
+  });
+
+  it("★--local — 옛 항목을 판 고정한 로컬 중계로(--role 걷음), Cursor 파일이 없으면 --mcp 아닐 때 새로 만들지 않는다", () => {
+    const plan = planInit({
+      ...BASE, env: "dev", endpoint: "https://dev.ainecto.com/mcp", mcp: false, local: true,
+      packageSpec: bridgePackageSpec("0.8.0"), files: snapshot({ ".mcp.json": OLD_BRIDGE_REPO }),
     });
     const written = JSON.parse(writtenAt(plan, ".mcp.json")!);
 
     expect(written.mcpServers.ainecto.args).toEqual(["-y", "@ainecto/mcp@0.8.0", "--env", "dev"]);
     expect(written.mcpServers.sentry).toEqual({ type: "http", url: "https://mcp.sentry.dev/mcp" });
-    // Cursor 파일은 없었다 — --mcp 가 아니므로 새로 만들지 않는다.
     expect(plan.writes.map((write) => write.path)).not.toContain(".cursor/mcp.json");
+  });
+
+  it("★--mcp 없이 남의 ainecto 항목(다른 주소)은 그대로 — 우리 옛 주소(prod)는 지금 주소로", () => {
+    const theirs = JSON.stringify({ mcpServers: { ainecto: { type: "http", url: "https://mcp.example.com/mcp" } } });
+    const ourProd = JSON.stringify({ mcpServers: { ainecto: { url: "https://ainecto.com/mcp" } } });
+    const plan = planInit({
+      ...BASE, env: "dev", endpoint: "https://dev.ainecto.com/mcp", mcp: false,
+      files: snapshot({ ".mcp.json": theirs, ".cursor/mcp.json": ourProd }),
+    });
+
+    expect(writtenAt(plan, ".mcp.json")).toBeUndefined();
+    expect(JSON.parse(writtenAt(plan, ".cursor/mcp.json")!).mcpServers.ainecto).toEqual({ url: "https://dev.ainecto.com/mcp" });
   });
 
   it("creates AGENTS.md but does not invent a CLAUDE.md", () => {
@@ -511,7 +536,7 @@ describe("6차 독립 리뷰 — 복구 계약", () => {
     // 사용자가 config 에 자기 칸을 더하고, 우리 MCP 항목도 손댔다(= 해소 안 된 충돌).
     files.set(CONFIG, json({ ...JSON.parse(files.get(CONFIG)!), mine: "keep-me" }));
     const mcp = JSON.parse(files.get(".mcp.json")!);
-    mcp.mcpServers["ainecto"].args = [...mcp.mcpServers["ainecto"].args, "--mine"];
+    mcp.mcpServers["ainecto"].headers = { "X-Mine": "1" };
     files.set(".mcp.json", json(mcp));
 
     // 1차 — 충돌이 남았으니 기록을 «줄여서» 남긴다. 사용자 칸은 그대로.

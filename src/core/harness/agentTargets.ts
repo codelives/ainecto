@@ -1,24 +1,26 @@
 import { basename } from "node:path";
-import { isDefaultEndpointFor } from "../config/endpoints";
+import { isDefaultEndpoint, isDefaultEndpointFor, normalizeEndpoint } from "../config/endpoints";
 import { bridgePackageSpec, PACKAGE_NAME } from "../version";
 
 /**
  * 「어느 에이전트의 어느 파일에 무엇을 적는가」.
  *
  * ★<b>MCP 항목은 «하나»만 쓴다</b> — 이름 {@link SERVER_NAME}. 저장소 파일은 브리지 {@code npx -y @ainecto/mcp@<판>},
- * 기기 전역 연결은 서버 주소(원격 MCP)가 기본이다({@code setup/agentConnections} 의 표).
+ * 저장소 파일·기기 전역 연결 모두 서버 주소(원격 MCP)가 기본이다({@link REMOTE_SIGN_IN} 표).
  * 세션 역할은 없다(0.8.0): 모든 세션이 같은 도구를 보고, 무엇을 할 수 있는지는 서버가 권한으로 정한다.
  *
  * <p>저장소 파일({@code .mcp.json}·{@code .cursor/mcp.json})은 {@code init --mcp} 가, 기기 전역 연결
- * (Claude Code 사용자 범위·Cursor 전역·Codex)은 {@code setup} 이 쓴다. 둘 다 이 파일의 항목 모양과
- * 브리지 소유 판정({@link isOurBridge})을 쓴다 — 기록 파일을 따로 두지 않는다.
+ * (Claude Code 사용자 범위·Cursor 전역·Codex)은 {@code setup} 이 쓴다. 둘 다 이 파일의 항목 결정
+ * ({@link desiredServerEntry})과 소유 판정({@link isOurEntry})을 쓴다 — 기록 파일을 따로 두지 않는다.
  */
 
 /** 설정에 쓰는 서버 이름. ⛔env 에 따라 바꾸지 않는다 — 도구 접두사가 흔들리고 --undo 가 못 찾는다. */
 export const SERVER_NAME = "ainecto";
 
+export type AgentClientId = "claude-code" | "cursor" | "codex";
+
 export interface AgentTarget {
-  id: "claude-code" | "cursor";
+  id: Extract<AgentClientId, "claude-code" | "cursor">;
   label: string;
   /** 저장소 루트 기준 상대 경로. */
   path: string;
@@ -46,9 +48,74 @@ export interface McpServerEntry {
   args: string[];
 }
 
-/** 서버 주소를 직접 적는 항목(원격 MCP) — {@code setup} 이 기본으로 쓴다. */
+/** 서버 주소를 직접 적는 항목(원격 MCP) — 기본. {@code type} 은 Claude Code 파일에만 붙는다. */
 export interface RemoteServerEntry {
+  type?: "http";
   url: string;
+}
+
+/** {@code ainecto} 항목의 모양 — 명령형(로컬 중계, stdio) 또는 주소형(원격). 지금 있는 것과 쓸 것이 같은 모양이다. */
+export type AgentEntry = McpServerEntry | RemoteServerEntry;
+
+/**
+ * ★대상별 원격(HTTP) MCP 지원 표 — 한 곳. 있으면 서버 주소를 등록하고 값은 «첫 로그인 안내»다.
+ * 없는 대상만 로컬 중계를 쓴다. 근거는 각 도구의 공식 형식(2026-10-21 실측):
+ * <ul>
+ *   <li>Claude Code 2.1.306 — {@code claude mcp add --transport http -s user <name> <url>}
+ *       ({@code claude mcp add --help} 의 «Add HTTP server» 예). {@code ~/.claude.json}·{@code .mcp.json} 에
+ *       {@code {type:"http",url}} — ★{@code .mcp.json} 은 {@code type} 이 없으면 항목을 못 읽는다(실측).
+ *       {@code claude mcp get} 이 «Needs authentication» 을 보이고, 세션의 {@code /mcp} 에서 로그인한다.</li>
+ *   <li>Cursor — {@code ~/.cursor/mcp.json}·{@code .cursor/mcp.json} 의 {@code {"url": …}} (docs.cursor.com «Model Context Protocol» 의
+ *       Remote server 형식). 로그인은 Cursor 가 MCP 설정 화면에서 띄운다.</li>
+ *   <li>Codex 0.163.0 — {@code codex mcp add <name> --url <url>} (streamable HTTP). ★add 가 서버의 OAuth 를
+ *       감지하면 그 자리에서 브라우저 로그인을 시작한다(«Detected OAuth support. Starting OAuth flow»).
+ *       못 마치면 {@code codex mcp login <name>}. 같은 이름은 stdio↔url 어느 쪽으로든 덮어쓴다.</li>
+ * </ul>
+ */
+export const REMOTE_SIGN_IN: Partial<Record<AgentClientId, string>> = {
+  "claude-code": `Claude Code — in a session, run /mcp, pick "${SERVER_NAME}" and sign in`,
+  cursor: `Cursor — sign in when "${SERVER_NAME}" asks for it in Cursor's MCP settings`,
+  codex: `Codex — signs in while setup connects it (its sign-in link is printed above); if that did not finish, run \`codex mcp login ${SERVER_NAME}\``,
+};
+
+/** {@code ainecto} 항목의 모양 — 명령형(로컬 중계, stdio) 또는 주소형(원격). 지금 있는 것과 쓸 것이 같은 모양이다. */
+/**
+ * ★이 클라이언트에 쓸 항목 — setup·init 의 «한» 결정. 원격을 지원하면({@link REMOTE_SIGN_IN}) 서버 주소,
+ * 아니면(또는 {@code --local}) 판 고정한 로컬 중계. 주소는 호출자가 해석한 엔드포인트 하나다({@code resolveEndpoint}).
+ */
+export function desiredServerEntry(input: {
+  client: AgentClientId;
+  env: "prod" | "dev";
+  endpoint: string;
+  local: boolean;
+  /** 브리지 패키지 지정(시험용). */
+  packageSpec?: string;
+}): AgentEntry {
+  if (REMOTE_SIGN_IN[input.client] === undefined || input.local) {
+    return buildServerEntry({ env: input.env, endpoint: input.endpoint, packageSpec: input.packageSpec });
+  }
+  return input.client === "claude-code" ? { type: "http", url: input.endpoint } : { url: input.endpoint };
+}
+
+/**
+ * ★이 항목이 우리 것인가 — 우리 브리지({@link isOurBridge}) 또는 우리 서버 주소(기본 prod·dev 주소나 지금 쓰는
+ * {@code endpoint}). 다른 주소·다른 명령은 남의 것이다. setup·init·status·doctor 가 이것 하나를 쓴다.
+ */
+export function isOurEntry(entry: unknown, endpoint: string): boolean {
+  if (isRecord(entry) && typeof entry.url === "string") {
+    const url = normalizedServerUrl(entry.url);
+    return url !== undefined && (url === endpoint || isDefaultEndpoint(url));
+  }
+  return isOurBridge(entry);
+}
+
+/** 설정에 적힌 주소를 견줄 모양으로 — 못 읽는(믿을 수 없는) 주소면 undefined: 우리 것으로 보지 않는다. */
+export function normalizedServerUrl(url: string): string | undefined {
+  try {
+    return normalizeEndpoint(url);
+  } catch {
+    return undefined;
+  }
 }
 
 export function buildServerEntry(input: ServerEntryInput = {}): McpServerEntry {

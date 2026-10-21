@@ -12,7 +12,7 @@ import {
   withCreatedDirectories,
 } from "../../core/harness/initPlan";
 import { AGENT_NOTE_KEY, DOC_KEY, HARNESS_DOC_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
-import { AGENT_TARGETS } from "../../core/harness/agentTargets";
+import { AGENT_TARGETS, REMOTE_SIGN_IN } from "../../core/harness/agentTargets";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
 import {
   assertInsideRepository,
@@ -51,6 +51,8 @@ export interface InitCommandOptions {
 interface InitArgs {
   /** MCP 설정 파일도 쓴다(설계 결정 #6). 없으면 «우리 브리지 항목이 이미 있는» 파일만 갱신한다. */
   mcp: boolean;
+  /** 서버 주소 대신 로컬 중계로 쓴다(setup --local 과 같은 뜻). */
+  local: boolean;
   dryRun: boolean;
   undo: boolean;
   /** 0.7.x 의 플래그 — 받아서 무시한다(멈추지 않는다). 안내 한 줄에 이름을 싣는다. */
@@ -65,8 +67,8 @@ interface InitArgs {
  * <ul>
  *   <li>쓰는 것: {@code .ainecto/HARNESS.md} · {@code AGENTS.md} 관리 블록(·{@code CLAUDE.md} 가 있으면) ·
  *       {@code .ainecto/config.json}(v2) · 기록.</li>
- *   <li>MCP 설정 파일은 {@code --mcp} 일 때만 — 단 우리 브리지 항목이 이미 있으면 다시 쓴다(옛 {@code --role}
- *       제거 + 판 고정). 옛 저장소의 이행은 이 재실행 하나다.</li>
+ *   <li>MCP 설정 파일은 {@code --mcp} 일 때만 — 단 우리 항목이 이미 있으면 다시 쓴다(옛 로컬 중계 → 서버
+ *       주소, {@code --local} 이면 판 고정한 로컬 중계). 옛 저장소의 이행은 이 재실행 하나다.</li>
  *   <li>{@code --dry-run} 도 서버 문서를 받는다 — 계획이 실제 실행과 같아야 한다(요구서 8장 P1).</li>
  * </ul>
  */
@@ -120,6 +122,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     env: options.env,
     endpoint: options.endpoint,
     mcp: args.mcp,
+    local: args.local,
     cliVersion: options.cliVersion,
     files,
     documents,
@@ -145,6 +148,10 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
           ? "Claude Code and Cursor pick up the repository's MCP config in a new session."
           : "To connect your coding agents on this machine, run `ainecto setup` once"
             + " (or re-run init with --mcp to also write this repository's .mcp.json and .cursor/mcp.json).",
+        // 서버 주소를 썼으면 에이전트가 따로 로그인한다 — setup 과 같은 안내 표 하나.
+        ...(mcpWritten && !args.local
+          ? [`Each agent signs in to AiNecto by itself the first time: ${AGENT_TARGETS.map((target) => REMOTE_SIGN_IN[target.id]).filter(Boolean).join("; ")}.`]
+          : []),
         "Undo everything with: ainecto init --undo",
       ],
     },
@@ -480,7 +487,7 @@ async function fileMode(absolutePath: string): Promise<number | undefined> {
 type FileSnapshotMap = Map<string, string | undefined>;
 
 function parseInitArgs(argv: string[]): InitArgs {
-  const args: InitArgs = { mcp: false, dryRun: false, undo: false, ignored: [] };
+  const args: InitArgs = { mcp: false, local: false, dryRun: false, undo: false, ignored: [] };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (!arg) {
@@ -488,6 +495,8 @@ function parseInitArgs(argv: string[]): InitArgs {
     }
     if (arg === "--mcp") {
       args.mcp = true;
+    } else if (arg === "--local") {
+      args.local = true;
     } else if (arg === "--dry-run") {
       args.dryRun = true;
     } else if (arg === "--undo") {

@@ -17,8 +17,8 @@ to 5 minutes for the user). Then run `npx -y ainecto@latest doctor` and do what 
 
 - `setup` registers the server address, so each agent signs in on its own the first time: Claude Code —
   run `/mcp` in a session and sign in to `ainecto`; Cursor — sign in when `ainecto` asks in its MCP
-  settings; Codex — signs in while `setup` connects it (a browser tab opens; if it did not finish, run
-  `codex mcp login ainecto`).
+  settings; Codex — signs in while `setup` connects it (a browser tab opens and the sign-in link is
+  printed to stderr; if it did not finish, run `codex mcp login ainecto`).
 - To add AiNecto's working rules to a repository, run `npx -y ainecto@latest init` from its root. It
   does not ask for a role or a project.
 - **A server added during a session is not available in that session.** Keep working through the CLI:
@@ -49,7 +49,9 @@ exits 1:
 - Cursor — merges `"ainecto": { "url": "https://ainecto.com/mcp" }` into `~/.cursor/mcp.json`, keeping
   your other servers. Cursor asks you to sign in from its MCP settings.
 - Codex — `codex mcp add ainecto --url https://ainecto.com/mcp`. Codex starts its sign-in right away
-  (a browser tab opens); if that did not finish, run `codex mcp login ainecto`.
+  (a browser tab opens; `setup` passes Codex's output, with the sign-in link, through to stderr). If that
+  did not finish within 90 seconds, Codex shows as `failed` but stays connected — run
+  `codex mcp login ainecto` (re-running `setup` says the same).
 
 With `--env dev` (or `--endpoint`) the address is that environment's. The server address has no version
 to pin: a server update reaches every agent at once. Entries an older `setup` wrote
@@ -68,7 +70,8 @@ it to pitch explanations — it does not change permissions.
 
 ```bash
 npx -y ainecto@latest init               # .ainecto/HARNESS.md, an AGENTS.md block (and CLAUDE.md if present), .ainecto/config.json
-npx -y ainecto@latest init --mcp         # also .mcp.json (Claude Code) and .cursor/mcp.json (Cursor)
+npx -y ainecto@latest init --mcp         # also .mcp.json (Claude Code) and .cursor/mcp.json (Cursor), with the server address
+npx -y ainecto@latest init --mcp --local # the same files with the local relay instead
 npx -y ainecto@latest init --dry-run     # the same plan, nothing written
 npx -y ainecto@latest init --undo        # remove what init wrote
 ```
@@ -78,11 +81,16 @@ npx -y ainecto@latest init --undo        # remove what init wrote
 - If this machine is not signed in yet, `init` opens the browser once (`--dry-run` never does). The
   sign-in URL is printed first (with `--json`, as one JSON line on stderr: `{"event":"login_url","url":…}`).
 - It stops when run from a sub-folder of a git repository, and tells you the root.
-- **Repositories set up by 0.7.x** (`.mcp.json` with `--role`): re-run `npx -y ainecto@latest init`.
-  It rewrites the existing `ainecto` entry without `--role`, pinned to this version, and drops the old
-  `project` field from `.ainecto/config.json` (unless you changed it). Until then the old entry keeps
-  working: `--role` is accepted and ignored. Old flags (`--role`, `--project`, `--project-name`,
-  `--yes`) are ignored with a one-line note.
+- `--mcp` writes the server address, like `setup`: `.mcp.json` gets
+  `"ainecto": { "type": "http", "url": "https://ainecto.com/mcp" }` (Claude Code needs the `type`) and
+  `.cursor/mcp.json` gets `"ainecto": { "url": "https://ainecto.com/mcp" }`. Each agent signs in by
+  itself the first time. `--local` writes the pinned local relay instead (see Connector Mode).
+- **Repositories set up earlier** (`.mcp.json` with `npx -y @ainecto/mcp…`, with or without `--role`):
+  re-run `npx -y ainecto@latest init`. It rewrites the existing `ainecto` entry to the server address
+  (or, with `--local`, to the relay pinned to this version without `--role`), and drops the old
+  `project` field from `.ainecto/config.json` (unless you changed it). An `ainecto` entry pointing
+  somewhere else is left alone. Until then the old entry keeps working: `--role` is accepted and
+  ignored. Old flags (`--role`, `--project`, `--project-name`, `--yes`) are ignored with a one-line note.
 
 ## Commands
 
@@ -185,8 +193,8 @@ The package doubles as a stdio-to-HTTP proxy for the resolved `/mcp` endpoint. I
 local file references. It uses this machine's one sign-in (`ainecto setup`, `ainecto auth login`, or
 the sign-in `ainecto init` performs) and never opens a browser on its own.
 
-This is the entry `init --mcp` and `setup --local` write — you normally do not add it by hand
-(`setup` writes the server address instead: `{ "mcpServers": { "ainecto": { "url": "https://ainecto.com/mcp" } } }`):
+This is the entry `setup --local` and `init --mcp --local` write — you normally do not add it by hand
+(without `--local` they write the server address instead, as above):
 
 ```json
 {
@@ -207,7 +215,7 @@ hiding it — `ainecto doctor` checks this.
 ### MCP Registry
 
 `server.json` is the Registry entry `io.github.codelives/ainecto` (same as `package.json#mcpName`). It
-lists only the npm package `@ainecto/mcp` — the bridge `init --mcp` and `setup --local` write. Registry
+lists only the npm package `@ainecto/mcp` — the bridge `setup --local` and `init --mcp --local` write. Registry
 publication requires the npm version it references to carry that `mcpName`, so publish npm first.
 Registration is done by a person:
 

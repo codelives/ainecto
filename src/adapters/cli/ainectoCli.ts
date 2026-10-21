@@ -414,7 +414,7 @@ function helpText(): string {
     "  ainecto doctor [--json]                                                status + what is missing and the command that fixes it",
     "",
     "Harness:",
-    "  ainecto init [--mcp] [--dry-run] [--json]   AiNecto rules for this repository (--mcp also writes .mcp.json and .cursor/mcp.json)",
+    "  ainecto init [--mcp] [--local] [--dry-run] [--json]   AiNecto rules for this repository (--mcp also writes .mcp.json and .cursor/mcp.json with the server address; --local writes the local relay instead)",
     "  ainecto init --undo",
     "",
   ].join("\n");

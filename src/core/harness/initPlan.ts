@@ -1,8 +1,8 @@
 import {
   AGENT_TARGETS,
   readServerEntry,
-  buildServerEntry,
-  isOurBridge,
+  desiredServerEntry,
+  isOurEntry,
   mergeServerEntry,
   removeServerEntry,
   SERVER_NAME,
@@ -223,10 +223,12 @@ export interface PlanInitInput {
   endpoint: string;
   /**
    * ★MCP 설정 파일({@code .mcp.json}·{@code .cursor/mcp.json})을 쓰나 — {@code init --mcp}(설계 결정 #6).
-   * 없어도 «우리 브리지 항목이 이미 있는» 파일은 다시 쓴다 — 옛 {@code --role} 을 걷고 판을 고정한다.
-   * 이것이 옛 저장소의 이행 경로다(별도 migrate 명령 없음, D10).
+   * 없어도 «우리 항목이 이미 있는» 파일은 다시 쓴다 — 옛 로컬 중계(옛 {@code --role}·낮은 판 포함)를 서버
+   * 주소로 바꾼다. 이것이 옛 저장소의 이행 경로다(별도 migrate 명령 없음, D10).
    */
   mcp: boolean;
+  /** {@code --local}: 서버 주소 대신 판 고정한 로컬 중계를 쓴다(setup 과 같은 뜻). */
+  local: boolean;
   /** 브리지 패키지 지정(시험용). 기본은 이 CLI 판으로 고정. */
   packageSpec?: string;
   cliVersion: string;
@@ -280,7 +282,6 @@ export function planInit(input: PlanInitInput): InitPlan {
 
   const carriedRecord = previous.state === "valid" ? previous.record : emptyRecord();
 
-  const entry = buildServerEntry({ env: input.env, endpoint: input.endpoint, packageSpec: input.packageSpec });
   const writes: FileWrite[] = [];
   const notes: string[] = [];
   const record: InitRecord = {
@@ -311,11 +312,14 @@ export function planInit(input: PlanInitInput): InitPlan {
   for (const target of AGENT_TARGETS) {
     const existing = input.files.get(target.path);
     const currentEntry = existing === undefined ? undefined : readServerEntry(existing);
-    if (!input.mcp && !isOurBridge(currentEntry)) {
-      // --mcp 없이는 MCP 설정을 새로 쓰지 않는다. 우리 브리지 항목이 이미 있을 때만 갱신한다.
+    if (!input.mcp && !isOurEntry(currentEntry, input.endpoint)) {
+      // --mcp 없이는 MCP 설정을 새로 쓰지 않는다. 우리 항목이 이미 있을 때만 갱신한다.
       continue;
     }
     const prior = priorOf(target.path, ownedJson(currentEntry, currentEntry !== undefined));
+    const entry = desiredServerEntry({
+      client: target.id, env: input.env ?? "prod", endpoint: input.endpoint, local: input.local, packageSpec: input.packageSpec,
+    });
     const merged = mergeServerEntry(existing, entry);
     if (existing === merged.content) {
       continue;

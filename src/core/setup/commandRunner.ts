@@ -15,7 +15,12 @@ export interface CommandResult {
   missing: boolean;
 }
 
-export type CommandRunner = (command: string, args: readonly string[]) => Promise<CommandResult>;
+export interface RunOptions {
+  /** 자식의 출력을 «받는 대로» 사용자에게도 보인다 — 실행 중에 사람이 봐야 하는 것(로그인 링크)이 있을 때만. */
+  show?: (text: string) => void;
+}
+
+export type CommandRunner = (command: string, args: readonly string[], options?: RunOptions) => Promise<CommandResult>;
 
 /**
  * 실행한 명령 한 줄 — ★요청과 응답이 한 항목이다(명령 줄 + 종료 코드). 결과의 {@code commands} 로 나간다.
@@ -36,7 +41,7 @@ export interface CommandLog {
 const COMMAND_TIMEOUT_MS = 90_000;
 
 export function systemCommandRunner(options: { cwd: string; env?: NodeJS.ProcessEnv }): CommandRunner {
-  return (command, args) => new Promise((resolve) => {
+  return (command, args, run) => new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -56,8 +61,8 @@ export function systemCommandRunner(options: { cwd: string; env?: NodeJS.Process
       child.kill();
       finish({ exitCode: null, stdout, stderr: `${stderr}\n${command} timed out after ${COMMAND_TIMEOUT_MS / 1000}s`, missing: false });
     }, COMMAND_TIMEOUT_MS);
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); run?.show?.(String(chunk)); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); run?.show?.(String(chunk)); });
     child.on("error", (error: NodeJS.ErrnoException) => {
       finish({ exitCode: null, stdout, stderr: error.message, missing: error.code === "ENOENT" });
     });
@@ -67,8 +72,8 @@ export function systemCommandRunner(options: { cwd: string; env?: NodeJS.Process
 
 /** 실행기를 감싸 실행한 명령을 {@link CommandLog} 로 모은다. */
 export function recordingRunner(runner: CommandRunner, log: CommandLog[]): CommandRunner {
-  return async (command, args) => {
-    const result = await runner(command, args);
+  return async (command, args, run) => {
+    const result = await runner(command, args, run);
     const entry: CommandLog = { command: [command, ...args].join(" "), exitCode: result.exitCode };
     if (result.missing) {
       entry.missing = true;

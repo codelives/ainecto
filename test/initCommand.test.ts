@@ -68,8 +68,19 @@ describe("ainecto init (files on disk)", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("--mcp: wires a fresh repository without a role, pinned bridge, config v2 with no project", async () => {
+  it("--mcp: wires a fresh repository with the server address, config v2 with no project", async () => {
     const code = await executeInitCommand(options(["--mcp"]));
+
+    expect(code).toBe(0);
+    const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
+    expect(mcp.mcpServers["ainecto"]).toEqual({ type: "http", url: "https://ainecto.com/mcp" });
+    expect(JSON.parse(await readFile(join(root, ".cursor/mcp.json"), "utf8")).mcpServers["ainecto"]).toEqual({ url: "https://ainecto.com/mcp" });
+    const result = JSON.parse(out.join("")) as { data: { next: string[] } };
+    expect(result.data.next.join("\n")).toContain("signs in to AiNecto by itself");
+  });
+
+  it("--mcp --local: the pinned local relay instead, config v2 with no project", async () => {
+    const code = await executeInitCommand(options(["--mcp", "--local"]));
 
     expect(code).toBe(0);
     const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
@@ -80,6 +91,8 @@ describe("ainecto init (files on disk)", () => {
     expect(config).not.toHaveProperty("project");
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("AiNecto Harness");
     expect(existsSync(join(root, ".cursor/mcp.json"))).toBe(true);
+    const result = JSON.parse(out.join("")) as { data: { next: string[] } };
+    expect(result.data.next.join("\n")).not.toContain("signs in to AiNecto by itself");
   });
 
   it("★--mcp 가 없으면 MCP 설정 파일을 쓰지 않는다 — 규칙 파일만", async () => {
@@ -109,7 +122,7 @@ describe("ainecto init (files on disk)", () => {
     const v07 = await import("../src/core/harness/initPlan");
     const files = new Map<string, string | undefined>();
     const old = v07.planInit({
-      env: "prod", endpoint: "https://ainecto.com/mcp", cliVersion: "@ainecto/mcp 0.7.0", mcp: true, files,
+      env: "prod", endpoint: "https://ainecto.com/mcp", cliVersion: "@ainecto/mcp 0.7.0", mcp: true, local: true, files,
     });
     for (const write of old.writes) {
       await mkdir(join(root, write.path, ".."), { recursive: true });
@@ -138,10 +151,10 @@ describe("ainecto init (files on disk)", () => {
     record.createdDirectories = [".ainecto", ".cursor"];
     await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
 
-    // ★--mcp 없이 — 우리 브리지 항목이 있으므로 갱신된다.
+    // ★--mcp 없이 — 우리 브리지 항목이 있으므로 갱신된다(서버 주소로).
     expect(await executeInitCommand(options([]))).toBe(0);
 
-    expect(JSON.parse(await readFile(mcpPath, "utf8")).mcpServers.ainecto.args).toEqual(["-y", "@ainecto/mcp"]);
+    expect(JSON.parse(await readFile(mcpPath, "utf8")).mcpServers.ainecto).toEqual({ type: "http", url: "https://ainecto.com/mcp" });
     const after = JSON.parse(await readFile(configPath, "utf8"));
     expect(after.version).toBe(2);
     expect(after).not.toHaveProperty("project");
@@ -257,7 +270,11 @@ describe("ainecto init (files on disk)", () => {
       ...options(["--mcp"]),
       endpoint: "https://custom.example/mcp",
     });
+    expect(JSON.parse(await readFile(join(root, ".mcp.json"), "utf8")).mcpServers["ainecto"])
+      .toEqual({ type: "http", url: "https://custom.example/mcp" });
 
+    // --local 이면 브리지 인자로.
+    await executeInitCommand({ ...options(["--mcp", "--local"]), endpoint: "https://custom.example/mcp" });
     const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
     expect(mcp.mcpServers["ainecto"].args).toContain("--endpoint");
     expect(mcp.mcpServers["ainecto"].args).toContain("https://custom.example/mcp");
