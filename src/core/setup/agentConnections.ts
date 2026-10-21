@@ -1,5 +1,6 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { isDefaultEndpoint, normalizeEndpoint } from "../config/endpoints";
 import {
   buildServerEntry,
   entryCarriesRole,
@@ -10,6 +11,7 @@ import {
   removeServerEntry,
   SERVER_NAME,
   type McpServerEntry,
+  type RemoteServerEntry,
 } from "../harness/agentTargets";
 import { lastLine, type CommandRunner } from "./commandRunner";
 
@@ -17,8 +19,13 @@ import { lastLine, type CommandRunner } from "./commandRunner";
  * ★기기 전역의 에이전트 연결 — Claude Code(사용자 범위) · Cursor(전역 {@code ~/.cursor/mcp.json}) · Codex.
  * setup 이 쓰고(connect/disconnect), status·doctor 가 읽는다(inspect). 셋이 같은 판정을 쓴다.
  *
- * <p>소유 판정은 {@link isOurBridge} 하나다 — 기록 파일을 따로 두지 않는다. 남의 {@code ainecto} 항목
- * (원격 URL 등)은 건드리지 않고 그대로 보고한다.
+ * <p>★기본은 서버 주소(원격 MCP)를 직접 등록한다 — 판 고정이 없고 로그인은 에이전트 자신의 OAuth 다.
+ * 로컬 중계({@code npx -y @ainecto/mcp@<판>}, stdio)는 {@link REMOTE_SIGN_IN} 표에 없는 대상과
+ * {@code setup --local} 에만 쓴다.
+ *
+ * <p>소유 판정은 {@link describe} 하나다 — 우리 브리지({@link isOurBridge}) 또는 우리 서버 주소
+ * (기본 prod·dev 주소나 지금 쓰는 주소). 기록 파일을 따로 두지 않는다. 남의 {@code ainecto} 항목
+ * (다른 주소·다른 명령)은 건드리지 않고 그대로 보고한다.
  *
  * <p>Claude Code·Codex 는 그 도구의 CLI({@code claude mcp …}·{@code codex mcp …})로만 고친다 — 설정 파일
  * 형식을 우리가 쓰지 않는다. Cursor 는 CLI 가 없어 우리가 JSON 을 병합한다(남의 항목·다른 키 보존).
@@ -32,16 +39,36 @@ export const AGENT_CLIENT_LABELS: Record<AgentClientId, string> = {
   codex: "Codex",
 };
 
-/** 지금 있는 {@code ainecto} 항목의 모양. 명령형(stdio) 또는 주소형. */
-export type ExistingEntry = { command: string; args: string[] } | { url: string };
+/**
+ * ★대상별 원격(HTTP) MCP 지원 표 — 한 곳. 있으면 서버 주소를 등록하고 값은 «첫 로그인 안내»다.
+ * 없는 대상만 로컬 중계를 쓴다. 근거는 각 도구의 공식 형식(2026-10-21 실측):
+ * <ul>
+ *   <li>Claude Code 2.1.306 — {@code claude mcp add --transport http -s user <name> <url>}
+ *       ({@code claude mcp add --help} 의 «Add HTTP server» 예). {@code ~/.claude.json} 에 {@code {type:"http",url}}.
+ *       {@code claude mcp get} 이 «Needs authentication» 을 보이고, 세션의 {@code /mcp} 에서 로그인한다.</li>
+ *   <li>Cursor — {@code ~/.cursor/mcp.json} 의 {@code {"url": …}} (docs.cursor.com «Model Context Protocol» 의
+ *       Remote server 형식). 로그인은 Cursor 가 MCP 설정 화면에서 띄운다.</li>
+ *   <li>Codex 0.163.0 — {@code codex mcp add <name> --url <url>} (streamable HTTP). ★add 가 서버의 OAuth 를
+ *       감지하면 그 자리에서 브라우저 로그인을 시작한다(«Detected OAuth support. Starting OAuth flow»).
+ *       못 마치면 {@code codex mcp login <name>}. 같은 이름은 stdio↔url 어느 쪽으로든 덮어쓴다.</li>
+ * </ul>
+ */
+export const REMOTE_SIGN_IN: Partial<Record<AgentClientId, string>> = {
+  "claude-code": `Claude Code — in a session, run /mcp, pick "${SERVER_NAME}" and sign in`,
+  cursor: `Cursor — sign in when "${SERVER_NAME}" asks for it in Cursor's MCP settings`,
+  codex: `Codex — signs in while setup connects it (a browser tab opens); if that did not finish, run \`codex mcp login ${SERVER_NAME}\``,
+};
+
+/** {@code ainecto} 항목의 모양 — 명령형(로컬 중계, stdio) 또는 주소형(원격). 지금 있는 것과 쓸 것이 같은 모양이다. */
+export type AgentEntry = McpServerEntry | RemoteServerEntry;
 
 export interface AgentState {
   client: AgentClientId;
   installed: boolean;
   /** 항목이 있는 범위 — Claude: user·local·project / Cursor·Codex: global. */
   scope?: string;
-  entry?: ExistingEntry;
-  /** 우리 브리지 항목인가. */
+  entry?: AgentEntry;
+  /** 우리 항목인가 — 우리 브리지 또는 우리 서버 주소. */
   ours: boolean;
   /** 옛 {@code --role} 을 싣고 있나(0.7.x 의 흔적). */
   carriesRole: boolean;
@@ -65,6 +92,8 @@ export interface ConnectionOutcome {
 
 export interface AgentContext {
   runner: CommandRunner;
+  /** 지금 쓰는 MCP 주소(정규화된 것) — 이 주소의 원격 항목도 우리 것이다. */
+  endpoint: string;
   /** 사용자 홈 — Cursor 전역 설정의 자리. 시험은 임시 폴더를 준다. */
   home: string;
 }
@@ -83,7 +112,7 @@ const NOT_FOUND = /No MCP server named/i;
  * Claude Code. {@code claude mcp get ainecto} 는 «이긴» 범위 하나를 말한다(local > project > user).
  * setup 은 홈 폴더에서 실행해 저장소의 local·project 범위가 끼지 않게 한다(실행기의 cwd).
  */
-export async function inspectClaude({ runner }: AgentContext): Promise<AgentState> {
+export async function inspectClaude({ runner, endpoint }: AgentContext): Promise<AgentState> {
   const base = { client: "claude-code" as const, ours: false, carriesRole: false };
   const result = await runner("claude", ["mcp", "get", SERVER_NAME]);
   if (result.missing) {
@@ -100,13 +129,13 @@ export async function inspectClaude({ runner }: AgentContext): Promise<AgentStat
     : /^project/i.test(scopeText) ? "project" : scopeText || undefined;
   const url = field("URL");
   const command = field("Command");
-  const entry: ExistingEntry | undefined = url
+  const entry: AgentEntry | undefined = url
     ? { url }
     : command ? { command, args: (field("Args") ?? "").split(/\s+/).filter(Boolean) } : undefined;
-  return { ...base, installed: true, scope, ...describe(entry) };
+  return { ...base, installed: true, scope, ...describe(entry, endpoint) };
 }
 
-export async function inspectCursor({ home }: AgentContext): Promise<AgentState> {
+export async function inspectCursor({ home, endpoint }: AgentContext): Promise<AgentState> {
   const base = { client: "cursor" as const, ours: false, carriesRole: false, scope: "global" };
   if (!(await exists(join(home, ".cursor")))) {
     return { ...base, installed: false };
@@ -127,10 +156,10 @@ export async function inspectCursor({ home }: AgentContext): Promise<AgentState>
     }
   }
   const raw = readServerEntry(content);
-  return { ...base, installed: true, ...describe(toExisting(raw)) };
+  return { ...base, installed: true, ...describe(toEntry(raw), endpoint) };
 }
 
-export async function inspectCodex({ runner }: AgentContext): Promise<AgentState> {
+export async function inspectCodex({ runner, endpoint }: AgentContext): Promise<AgentState> {
   const base = { client: "codex" as const, ours: false, carriesRole: false, scope: "global" };
   const result = await runner("codex", ["mcp", "get", SERVER_NAME, "--json"]);
   if (result.missing) {
@@ -144,7 +173,7 @@ export async function inspectCodex({ runner }: AgentContext): Promise<AgentState
   try {
     const parsed = JSON.parse(result.stdout) as { transport?: { command?: unknown; args?: unknown; url?: unknown } };
     const transport = parsed.transport ?? {};
-    return { ...base, installed: true, ...describe(toExisting(transport)) };
+    return { ...base, installed: true, ...describe(toEntry(transport), endpoint) };
   } catch {
     return { ...base, installed: true, problem: "codex mcp get --json did not return JSON" };
   }
@@ -155,12 +184,13 @@ export async function inspectCodex({ runner }: AgentContext): Promise<AgentState
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 한 클라이언트를 우리 브리지에 연결한다. ★남의 항목은 건드리지 않는다. 실패는 그 클라이언트만의 결과다 —
+ * 한 클라이언트를 {@code desired}({@link desiredEntry})로 연결한다 — 우리 옛 항목(로컬 중계·다른 우리 주소)은
+ * 바꿔 쓴다(updated). ★남의 항목은 건드리지 않는다. 실패는 그 클라이언트만의 결과다 —
  * 던지지 않는다(나머지 클라이언트는 계속한다).
  */
 export async function connectAgent(
   state: AgentState,
-  desired: McpServerEntry,
+  desired: AgentEntry,
   context: AgentContext,
   dryRun: boolean,
 ): Promise<ConnectionOutcome> {
@@ -203,7 +233,7 @@ export async function connectAgent(
   return outcome(updating ? "updated" : "connected");
 }
 
-/** 우리 브리지 항목만 지운다(setup --undo). 로그인은 그대로다 — `ainecto auth logout` 이 따로 있다. */
+/** 우리 항목(브리지·우리 서버 주소)만 지운다(setup --undo). 로그인은 그대로다 — `ainecto auth logout` 이 따로 있다. */
 export async function disconnectAgent(state: AgentState, context: AgentContext, dryRun: boolean): Promise<ConnectionOutcome> {
   const outcome = (status: ConnectionStatus, detail?: string): ConnectionOutcome => ({
     client: state.client, label: AGENT_CLIENT_LABELS[state.client], status,
@@ -245,9 +275,14 @@ export async function disconnectAgent(state: AgentState, context: AgentContext, 
   return outcome("removed");
 }
 
-/** setup 이 쓰는 우리 항목 — init 과 같은 모양(판 고정). */
-export function desiredEntry(input: { env: "prod" | "dev"; endpoint: string }): McpServerEntry {
-  return buildServerEntry({ env: input.env, endpoint: input.endpoint });
+/**
+ * setup 이 이 클라이언트에 쓸 항목 — 원격을 지원하면 서버 주소, 아니면(또는 {@code --local}) init 과 같은
+ * 로컬 중계(판 고정). 주소는 호출자가 해석한 엔드포인트 하나다({@code resolveEndpoint}).
+ */
+export function desiredEntry(input: { client: AgentClientId; env: "prod" | "dev"; endpoint: string; local: boolean }): AgentEntry {
+  return REMOTE_SIGN_IN[input.client] !== undefined && !input.local
+    ? { url: input.endpoint }
+    : buildServerEntry({ env: input.env, endpoint: input.endpoint });
 }
 
 export function cursorConfigPath(home: string): string {
@@ -258,18 +293,20 @@ export function cursorConfigPath(home: string): string {
 // 내부
 // ─────────────────────────────────────────────────────────────────────────────
 
-function writeCommands(client: AgentClientId, entry: McpServerEntry, updating: boolean): string[][] {
-  const bridge = [entry.command, ...entry.args];
+function writeCommands(client: AgentClientId, entry: AgentEntry, updating: boolean): string[][] {
   if (client === "claude-code") {
     // 같은 범위에 같은 이름이 있으면 add 가 거절한다 — 우리 것일 때만 지우고 다시 넣는다.
+    const add = "url" in entry
+      ? ["--transport", "http", "-s", "user", SERVER_NAME, entry.url]
+      : ["-s", "user", SERVER_NAME, "--", entry.command, ...entry.args];
     return [
       ...(updating ? [["claude", "mcp", "remove", "-s", "user", SERVER_NAME]] : []),
-      ["claude", "mcp", "add", "-s", "user", SERVER_NAME, "--", ...bridge],
+      ["claude", "mcp", "add", ...add],
     ];
   }
   if (client === "codex") {
-    // codex mcp add 는 같은 이름을 덮어쓴다(0.163 실측).
-    return [["codex", "mcp", "add", SERVER_NAME, "--", ...bridge]];
+    // codex mcp add 는 같은 이름을 덮어쓴다(0.163 실측, stdio↔url 양쪽).
+    return [["codex", "mcp", "add", SERVER_NAME, ...("url" in entry ? ["--url", entry.url] : ["--", entry.command, ...entry.args])]];
   }
   return [];
 }
@@ -288,12 +325,14 @@ function keptDetail(state: AgentState): string {
   return `someone else's "${SERVER_NAME}" entry${where} — left untouched`;
 }
 
-function describe(entry: ExistingEntry | undefined): Pick<AgentState, "entry" | "ours" | "carriesRole" | "pinnedVersion"> {
+function describe(entry: AgentEntry | undefined, endpoint: string): Pick<AgentState, "entry" | "ours" | "carriesRole" | "pinnedVersion"> {
   if (!entry) {
     return { ours: false, carriesRole: false };
   }
   if ("url" in entry) {
-    return { entry, ours: false, carriesRole: false };
+    // 우리 서버 주소 = 기본 prod·dev 주소 또는 지금 쓰는 주소. 다른 주소는 남의 것이다.
+    const url = normalizedUrl(entry.url);
+    return { entry, ours: url !== undefined && (url === endpoint || isDefaultEndpoint(url)), carriesRole: false };
   }
   const pinnedVersion = pinnedBridgeVersion(entry);
   return {
@@ -304,7 +343,7 @@ function describe(entry: ExistingEntry | undefined): Pick<AgentState, "entry" | 
   };
 }
 
-function toExisting(raw: unknown): ExistingEntry | undefined {
+function toEntry(raw: unknown): AgentEntry | undefined {
   if (typeof raw !== "object" || raw === null) {
     return undefined;
   }
@@ -318,9 +357,21 @@ function toExisting(raw: unknown): ExistingEntry | undefined {
   return undefined;
 }
 
-function sameEntry(entry: ExistingEntry, desired: McpServerEntry): boolean {
+function sameEntry(entry: AgentEntry, desired: AgentEntry): boolean {
+  if ("url" in desired) {
+    return "url" in entry && normalizedUrl(entry.url) === desired.url;
+  }
   return "command" in entry && entry.command === desired.command
     && entry.args.length === desired.args.length && entry.args.every((arg, at) => arg === desired.args[at]);
+}
+
+/** 설정에 적힌 주소를 견줄 모양으로 — 못 읽는(믿을 수 없는) 주소면 undefined: 우리 것으로 보지 않는다. */
+function normalizedUrl(url: string): string | undefined {
+  try {
+    return normalizeEndpoint(url);
+  } catch {
+    return undefined;
+  }
 }
 
 async function writeKeepingMode(path: string, content: string): Promise<void> {

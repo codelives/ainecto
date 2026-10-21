@@ -83,7 +83,7 @@ export async function collectStatus(input: CollectInput): Promise<MachineStatus>
     endpoint: input.endpoint,
     env: input.env,
     token,
-    agents: await inspectAgents({ runner: input.runner, home: input.home }),
+    agents: await inspectAgents({ runner: input.runner, home: input.home, endpoint: input.endpoint }),
     legacyEnv: [LEGACY_ROLE_ENV_VAR, "AI_ERD_ROLE"].filter((name) => input.envVars[name]?.trim()),
     legacyCodexProfiles: await legacyCodexProfiles(input.envVars.CODEX_HOME ?? join(input.home, ".codex")),
   };
@@ -91,7 +91,7 @@ export async function collectStatus(input: CollectInput): Promise<MachineStatus>
     status.account = await readAccount(input.client);
   }
   if (input.hereRunner && input.cwd !== input.home) {
-    status.claudeHere = await inspectClaude({ runner: input.hereRunner, home: input.home });
+    status.claudeHere = await inspectClaude({ runner: input.hereRunner, home: input.home, endpoint: input.endpoint });
   }
   status.repository = await repositoryStatus(input.cwd);
   const globalVersion = await globalCliVersion(input.runner);

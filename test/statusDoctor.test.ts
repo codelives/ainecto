@@ -82,13 +82,15 @@ afterEach(async () => {
 describe("ainecto status", () => {
   it("읽기 전용 한 화면 — 계정·직무·연결·저장소, 토큰 값·이메일은 없다", async () => {
     await fake.seed("claude", "cmd|npx -y @ainecto/mcp@0.8.0");
+    await fake.seed("codex", `url|${ENDPOINT}`);
 
     expect(await executeStatusCommand(options())).toBe(0);
 
     const view = data();
     expect(view.account).toMatchObject({ signedIn: true, userId: "u-1", name: "Ryan", jobTitle: "QA Engineer", projects: 1 });
     expect(view.agents).toContainEqual({ client: "Claude Code", state: "connected (user)", bridge: "@ainecto/mcp@0.8.0" });
-    expect(view.agents).toContainEqual({ client: "Codex", state: "not connected" });
+    expect(view.agents).toContainEqual({ client: "Codex", state: "connected (global)", url: ENDPOINT });
+    expect(view.agents).toContainEqual({ client: "Cursor", state: "not connected" });
     expect(view.repository).toMatchObject({ root: repo, git: true, harnessDoc: false });
     const text = out.join("");
     expect(text).not.toContain("SECRET-TOKEN");
@@ -99,13 +101,16 @@ describe("ainecto status", () => {
 });
 
 describe("ainecto doctor", () => {
-  it("모두 맞으면 fail 0 — 종료 0", async () => {
-    await fake.seed("claude", "cmd|npx -y @ainecto/mcp@0.8.0");
+  it("★모두 맞으면 fail 0 — 원격 등록·로컬 중계 둘 다 정상, 종료 0", async () => {
+    await fake.seed("claude", `url|${ENDPOINT}`);
     await fake.seed("codex", "cmd|npx -y @ainecto/mcp@0.8.0");
-    await writeFile(join(home, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { ainecto: { command: "npx", args: ["-y", "@ainecto/mcp@0.8.0"] } } }));
+    await writeFile(join(home, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { ainecto: { url: ENDPOINT } } }));
 
     expect(await executeDoctorCommand(options())).toBe(0);
     expect(data().summary).toBe("all good");
+    expect(check("Claude Code")).toMatchObject({ level: "ok", detail: `connected to ${ENDPOINT}` });
+    expect(check("Cursor")).toMatchObject({ level: "ok", detail: `connected to ${ENDPOINT}` });
+    expect(check("Codex")).toMatchObject({ level: "ok", detail: "connected (@ainecto/mcp@0.8.0)" });
   });
 
   it("★로그인 없음 → fail + `ainecto setup`, 종료 1", async () => {
@@ -139,7 +144,7 @@ describe("ainecto doctor", () => {
 
   it("에이전트 — 미연결·옛 --role·낮은 고정 판·남의 항목을 각각 고칠 명령과 함께", async () => {
     await fake.seed("claude", "cmd|npx -y @ainecto/mcp --role development");
-    await fake.seed("codex", "url|https://ainecto.com/mcp");
+    await fake.seed("codex", "url|https://mcp.example.com/mcp");
     await writeFile(join(home, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { ainecto: { command: "npx", args: ["-y", "@ainecto/mcp@0.7.9"] } } }));
 
     await executeDoctorCommand(options());

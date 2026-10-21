@@ -8,6 +8,8 @@ import {
   desiredEntry,
   disconnectAgent,
   inspectAgents,
+  REMOTE_SIGN_IN,
+  type AgentClientId,
   type AgentContext,
   type ConnectionOutcome,
 } from "../../core/setup/agentConnections";
@@ -32,17 +34,19 @@ export interface SetupCommandOptions {
  * {@code ainecto setup} — ★기기 1회(설계 §4-1). 로그인 → 연결 확인(읽기) → 에이전트 연결.
  *
  * <ul>
- *   <li>Claude Code(사용자 범위)·Cursor(전역)·Codex 를 각각 따로 연결하고, 결과를 클라이언트마다
+ *   <li>Claude Code(사용자 범위)·Cursor(전역)·Codex 에 ★서버 주소(원격 MCP)를 각각 따로 등록하고, 결과를 클라이언트마다
  *       {@code connected / updated / kept / not installed / failed} 로 말한다. 하나라도 실패하면 «부분 완료», 종료 1.</li>
- *   <li>남의 {@code ainecto} 항목은 건드리지 않는다. 소유 판정은 {@code isOurBridge} 하나.</li>
+ *   <li>우리 옛 항목(로컬 중계 {@code npx -y @ainecto/mcp@판})은 원격으로 바꿔 쓴다(updated). 남의 {@code ainecto}
+ *       항목은 건드리지 않는다. 소유 판정은 {@code agentConnections} 하나.</li>
+ *   <li>{@code --local}: 원격 대신 로컬 중계로 등록한다(이 기기의 로그인 하나를 모든 에이전트가 같이 쓴다).</li>
  *   <li>{@code --dry-run}: 로그인하지 않고 아무것도 쓰지 않는다 — 할 일만 보인다.</li>
- *   <li>{@code --undo}: 우리 브리지 항목만 지운다. 로그인은 {@code ainecto auth logout} 이 따로 한다.</li>
+ *   <li>{@code --undo}: 우리 항목(원격·로컬 중계)만 지운다. 로그인은 {@code ainecto auth logout} 이 따로 한다.</li>
  * </ul>
  */
 export async function executeSetupCommand(options: SetupCommandOptions): Promise<number> {
   const args = parseSetupArgs(options.argv);
   const commands: CommandLog[] = [];
-  const context: AgentContext = { runner: recordingRunner(options.runner, commands), home: options.home };
+  const context: AgentContext = { runner: recordingRunner(options.runner, commands), home: options.home, endpoint: options.endpoint };
 
   if (args.undo) {
     const states = await inspectAgents(context);
@@ -73,10 +77,15 @@ export async function executeSetupCommand(options: SetupCommandOptions): Promise
   const account = signedIn ? await readAccount(options.client) : undefined;
 
   // ③ 에이전트 연결 — 클라이언트마다 따로. 실패는 그 클라이언트만의 결과다.
-  const desired = desiredEntry({ env: options.env, endpoint: options.endpoint });
   const agents: ConnectionOutcome[] = [];
+  const remote: AgentClientId[] = [];
   for (const state of await inspectAgents(context)) {
-    agents.push(await connectAgent(state, desired, context, args.dryRun));
+    const desired = desiredEntry({ client: state.client, env: options.env, endpoint: options.endpoint, local: args.local });
+    const outcome = await connectAgent(state, desired, context, args.dryRun);
+    agents.push(outcome);
+    if ("url" in desired && (outcome.status === "connected" || outcome.status === "updated")) {
+      remote.push(state.client);
+    }
   }
 
   const failed = agents.some((agent) => agent.status === "failed") || account?.problem !== undefined;
@@ -87,7 +96,7 @@ export async function executeSetupCommand(options: SetupCommandOptions): Promise
     account: accountView(account, signedIn, options.endpoint),
     agents,
     commands,
-    next: nextSteps(account, agents, options.endpoint),
+    next: nextSteps(account, agents, remote, options.endpoint),
   }, { json: options.json }));
   return failed ? 1 : 0;
 }
@@ -110,10 +119,14 @@ export function accountView(account: AccountSummary | undefined, signedIn: boole
   return view;
 }
 
-function nextSteps(account: AccountSummary | undefined, agents: ConnectionOutcome[], endpoint: string): string[] {
+function nextSteps(account: AccountSummary | undefined, agents: ConnectionOutcome[], remote: AgentClientId[], endpoint: string): string[] {
   const next: string[] = [];
   if (agents.some((agent) => agent.status === "connected" || agent.status === "updated")) {
     next.push("Start a new agent session to load the AiNecto tools. Every session sees the same tools; your AiNecto permissions decide what they may change.");
+  }
+  if (remote.length > 0) {
+    // 원격 등록은 에이전트마다 자기 OAuth 로 한 번 로그인한다 — 이 CLI 의 로그인과 별개다.
+    next.push(`Each agent signs in to AiNecto by itself the first time it connects: ${remote.map((client) => REMOTE_SIGN_IN[client]).join("; ")}.`);
   }
   if (account?.jobTitle === null) {
     next.push(`Set your AiNecto role (your job) at ${profileSettingsUrl(endpoint)} — AI uses it to pitch explanations; it does not change permissions.`);
@@ -123,11 +136,13 @@ function nextSteps(account: AccountSummary | undefined, agents: ConnectionOutcom
   return next;
 }
 
-function parseSetupArgs(argv: string[]): { dryRun: boolean; undo: boolean } {
-  const args = { dryRun: false, undo: false };
+function parseSetupArgs(argv: string[]): { dryRun: boolean; undo: boolean; local: boolean } {
+  const args = { dryRun: false, undo: false, local: false };
   for (const arg of argv) {
     if (arg === "--dry-run") {
       args.dryRun = true;
+    } else if (arg === "--local") {
+      args.local = true;
     } else if (arg === "--undo") {
       args.undo = true;
     } else if (arg === "--json") {

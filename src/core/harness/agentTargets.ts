@@ -5,12 +5,13 @@ import { bridgePackageSpec, PACKAGE_NAME } from "../version";
 /**
  * 「어느 에이전트의 어느 파일에 무엇을 적는가」.
  *
- * ★<b>MCP 항목은 «하나»만 쓴다</b> — 이름 {@link SERVER_NAME}, 브리지 {@code npx -y @ainecto/mcp@<판>}.
+ * ★<b>MCP 항목은 «하나»만 쓴다</b> — 이름 {@link SERVER_NAME}. 저장소 파일은 브리지 {@code npx -y @ainecto/mcp@<판>},
+ * 기기 전역 연결은 서버 주소(원격 MCP)가 기본이다({@code setup/agentConnections} 의 표).
  * 세션 역할은 없다(0.8.0): 모든 세션이 같은 도구를 보고, 무엇을 할 수 있는지는 서버가 권한으로 정한다.
  *
  * <p>저장소 파일({@code .mcp.json}·{@code .cursor/mcp.json})은 {@code init --mcp} 가, 기기 전역 연결
  * (Claude Code 사용자 범위·Cursor 전역·Codex)은 {@code setup} 이 쓴다. 둘 다 이 파일의 항목 모양과
- * 소유 판정({@link isOurBridge})을 쓴다 — 기록 파일을 따로 두지 않는다.
+ * 브리지 소유 판정({@link isOurBridge})을 쓴다 — 기록 파일을 따로 두지 않는다.
  */
 
 /** 설정에 쓰는 서버 이름. ⛔env 에 따라 바꾸지 않는다 — 도구 접두사가 흔들리고 --undo 가 못 찾는다. */
@@ -43,6 +44,11 @@ export interface ServerEntryInput {
 export interface McpServerEntry {
   command: string;
   args: string[];
+}
+
+/** 서버 주소를 직접 적는 항목(원격 MCP) — {@code setup} 이 기본으로 쓴다. */
+export interface RemoteServerEntry {
+  url: string;
 }
 
 export function buildServerEntry(input: ServerEntryInput = {}): McpServerEntry {
@@ -133,7 +139,7 @@ export function isOurBridge(entry: unknown): boolean {
  */
 const OUR_BINS: readonly string[] = ["ainecto"];
 
-export function mergeServerEntry(existing: string | undefined, entry: McpServerEntry): MergeResult {
+export function mergeServerEntry(existing: string | undefined, entry: McpServerEntry | RemoteServerEntry): MergeResult {
   const root = parseConfigObject(existing);
   const servers = readServers(root);
   const replaced = Object.prototype.hasOwnProperty.call(servers, SERVER_NAME);

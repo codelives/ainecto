@@ -52,6 +52,7 @@ function statusView(status: MachineStatus): Record<string, unknown> {
         : agent.problem ? `unknown (${agent.problem})`
           : !agent.entry ? "not connected"
             : agent.ours ? `connected${agent.scope ? ` (${agent.scope})` : ""}` : `someone else's entry${agent.scope ? ` (${agent.scope})` : ""}`,
+      ...(agent.entry && "url" in agent.entry ? { url: agent.entry.url } : {}),
       ...(agent.pinnedVersion ? { bridge: `@ainecto/mcp@${agent.pinnedVersion}` } : {}),
       ...(agent.carriesRole ? { legacyRole: true } : {}),
     })),

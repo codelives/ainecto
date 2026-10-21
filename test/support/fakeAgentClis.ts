@@ -5,12 +5,13 @@ import { join } from "node:path";
  * 가짜 `claude`·`codex` — PATH 앞에 두는 기록 스크립트(설계 §7-3 cli 표적).
  * ★실 사용자 설정(~/.claude, ~/.codex)을 건드리지 않는다: 상태는 임시 HOME 아래 파일 하나다.
  *
- * <p>모양은 실측한 출력을 따른다(claude 2.1.303 · codex 0.163.0):
+ * <p>모양은 실측한 출력을 따른다(claude 2.1.303·2.1.306 · codex 0.163.0):
  * <ul>
- *   <li>{@code claude mcp get ainecto} — 있으면 «Scope: / Type: / Command: / Args:» 줄, 없으면
+ *   <li>{@code claude mcp get ainecto} — 있으면 «Scope: / Type: / Command: / Args:»(원격은 «Type: http / URL:») 줄, 없으면
  *       `No MCP server named "ainecto".` + 종료 1. add 는 같은 범위에 있으면 거절(종료 1).</li>
  *   <li>{@code codex mcp get ainecto --json} — 있으면 JSON({transport:{command,args}}), 없으면
- *       `Error: No MCP server named 'ainecto' found.` + 종료 1. add 는 덮어쓴다.</li>
+ *       `Error: No MCP server named 'ainecto' found.` + 종료 1. add 는 덮어쓴다({@code --url} 이면 원격).
+ *       ★진짜 codex 는 원격 add 때 OAuth 로그인을 시작한다 — 가짜는 하지 않는다.</li>
  * </ul>
  * 상태 파일 한 줄: `command|arg1 arg2…` 또는 `url|https://…`. 실행마다 `<name>.log` 에 인자를 한 줄씩 남긴다.
  */
@@ -31,6 +32,7 @@ case "$1 $2" in
     echo 'No MCP server named "ainecto". Run \`claude mcp add\` to add one.'; exit 1;;
   "mcp add")
     if [ -f "$STATE" ]; then echo "MCP server ainecto already exists in user config" >&2; exit 1; fi
+    case "$*" in *"--transport http"*) for a in "$@"; do URL="$a"; done; echo "url|$URL" > "$STATE"; echo "Added HTTP MCP server ainecto with URL: $URL to user config"; exit 0;; esac
     while [ "$1" != "--" ]; do shift; done; shift
     echo "cmd|$*" > "$STATE"; echo "Added stdio MCP server ainecto"; exit 0;;
   "mcp remove")
@@ -54,6 +56,7 @@ case "$1 $2" in
     fi
     echo "Error: No MCP server named 'ainecto' found." >&2; exit 1;;
   "mcp add")
+    case "$*" in *"--url "*) while [ "$1" != "--url" ]; do shift; done; echo "url|$2" > "$STATE"; echo "Added global MCP server 'ainecto'."; exit 0;; esac
     while [ "$1" != "--" ]; do shift; done; shift
     echo "cmd|$*" > "$STATE"; echo "Added global MCP server 'ainecto'."; exit 0;;
   "mcp remove")

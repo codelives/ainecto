@@ -16,6 +16,8 @@ import { installFakeAgents, type FakeAgents } from "./support/fakeAgentClis";
 const ENDPOINT = "https://ainecto.com/mcp";
 /** 번들 밖 실행이라 판을 모른다 → 고정하지 않은 모양(고정 규칙은 harness.test). */
 const OUR_BRIDGE = "npx -y @ainecto/mcp";
+const CLAUDE_REMOTE_ADD = `mcp add --transport http -s user ainecto ${ENDPOINT}`;
+const THEIR_URL = "https://mcp.example.com/mcp";
 
 let home: string;
 let fake: FakeAgents;
@@ -72,28 +74,34 @@ afterEach(async () => {
 });
 
 describe("ainecto setup", () => {
-  it("새 기기 — 세 클라이언트를 각각 연결하고 계정·직무를 보여 준다", async () => {
+  it("★새 기기 — 세 클라이언트에 서버 주소(원격)를 각각 등록하고 계정·직무를 보여 준다", async () => {
     expect(await executeSetupCommand(options([]))).toBe(0);
 
     expect(result().setup).toBe("complete");
     expect(statusOf("claude-code")).toBe("connected");
     expect(statusOf("cursor")).toBe("connected");
     expect(statusOf("codex")).toBe("connected");
-    expect(await fake.log("claude")).toContain(`mcp add -s user ainecto -- ${OUR_BRIDGE}`);
-    expect(await fake.state("codex")).toBe(`cmd|${OUR_BRIDGE}`);
+    expect(await fake.log("claude")).toContain(CLAUDE_REMOTE_ADD);
+    expect(await fake.log("codex")).toContain(`mcp add ainecto --url ${ENDPOINT}`);
+    expect(await fake.state("codex")).toBe(`url|${ENDPOINT}`);
     const cursor = JSON.parse(await readFile(cursorFile(), "utf8"));
-    expect(cursor.mcpServers.ainecto).toEqual({ command: "npx", args: ["-y", "@ainecto/mcp"] });
+    expect(cursor.mcpServers.ainecto).toEqual({ url: ENDPOINT });
+    // ★원격 등록은 에이전트가 따로 로그인한다 — 대상마다 그 길을 다음 할 일에 싣는다.
+    const next = result().next.join("\n");
+    expect(next).toContain("signs in to AiNecto by itself");
+    expect(next).toContain("/mcp");
+    expect(next).toContain("codex mcp login ainecto");
     expect(result().account).toMatchObject({ signedIn: true, userId: "u-1", name: "Ryan", jobTitle: "Founder & Product Lead", projects: 2 });
     // ★이메일 칸이 없다.
     expect(JSON.stringify(result().account)).not.toMatch(/email|@/i);
     // 실행한 외부 명령이 «명령 + 종료 코드» 한 항목씩 남는다.
     expect(result().commands).toContainEqual({ command: "claude mcp get ainecto", exitCode: 1, error: expect.stringContaining("No MCP server") });
-    expect(result().commands).toContainEqual({ command: `claude mcp add -s user ainecto -- ${OUR_BRIDGE}`, exitCode: 0 });
+    expect(result().commands).toContainEqual({ command: `claude ${CLAUDE_REMOTE_ADD}`, exitCode: 0 });
   });
 
-  it("★옛 0.7.x 항목(--role)은 우리 것이다 — 걷고 다시 넣는다(updated)", async () => {
+  it("★옛 로컬 중계 항목(0.7.x --role · 0.8.x 판 고정)은 우리 것이다 — 원격으로 바꿔 쓴다(updated)", async () => {
     await fake.seed("claude", "cmd|npx -y @ainecto/mcp --role design");
-    await fake.seed("codex", "cmd|npx -y @ainecto/mcp --role development");
+    await fake.seed("codex", "cmd|npx -y @ainecto/mcp@0.8.1");
     await writeFile(cursorFile(), JSON.stringify({
       mcpServers: { other: { url: "https://x" }, ainecto: { command: "npx", args: ["-y", "@ainecto/mcp", "--role", "test"] } },
     }));
@@ -106,19 +114,19 @@ describe("ainecto setup", () => {
     expect(await fake.log("claude")).toEqual([
       "mcp get ainecto",
       "mcp remove -s user ainecto",
-      `mcp add -s user ainecto -- ${OUR_BRIDGE}`,
+      CLAUDE_REMOTE_ADD,
     ]);
-    expect(await fake.state("claude")).toBe(`cmd|${OUR_BRIDGE}`);
-    expect(await fake.state("codex")).toBe(`cmd|${OUR_BRIDGE}`);
+    expect(await fake.state("claude")).toBe(`url|${ENDPOINT}`);
+    expect(await fake.state("codex")).toBe(`url|${ENDPOINT}`);
     const cursor = JSON.parse(await readFile(cursorFile(), "utf8"));
-    expect(cursor.mcpServers.ainecto.args).toEqual(["-y", "@ainecto/mcp"]);
+    expect(cursor.mcpServers.ainecto).toEqual({ url: ENDPOINT });
     expect(cursor.mcpServers.other).toEqual({ url: "https://x" });
   });
 
-  it("★남의 ainecto 항목(원격 URL)은 건드리지 않고 «kept»로 알린다", async () => {
-    await fake.seed("claude", "url|https://ainecto.com/mcp");
-    await fake.seed("codex", "url|https://ainecto.com/mcp");
-    const theirs = JSON.stringify({ mcpServers: { ainecto: { url: "https://ainecto.com/mcp" } } });
+  it("★남의 ainecto 항목(다른 주소)은 건드리지 않고 «kept»로 알린다", async () => {
+    await fake.seed("claude", `url|${THEIR_URL}`);
+    await fake.seed("codex", `url|${THEIR_URL}`);
+    const theirs = JSON.stringify({ mcpServers: { ainecto: { url: THEIR_URL } } });
     await writeFile(cursorFile(), theirs);
 
     expect(await executeSetupCommand(options([]))).toBe(0);
@@ -127,17 +135,44 @@ describe("ainecto setup", () => {
       expect(statusOf(client)).toBe("kept");
     }
     expect(await fake.log("claude")).toEqual(["mcp get ainecto"]);
-    expect(await fake.state("codex")).toBe("url|https://ainecto.com/mcp");
+    expect(await fake.state("codex")).toBe(`url|${THEIR_URL}`);
     expect(await readFile(cursorFile(), "utf8")).toBe(theirs);
   });
 
-  it("이미 같은 항목이면 아무 명령도 더 돌리지 않는다", async () => {
-    await fake.seed("claude", `cmd|${OUR_BRIDGE}`);
+  it("이미 같은 원격 항목이면(끝 / 차이 포함) 아무 명령도 더 돌리지 않는다", async () => {
+    await fake.seed("claude", `url|${ENDPOINT}/`);
+    await fake.seed("codex", `url|${ENDPOINT}`);
 
     await executeSetupCommand(options([]));
 
     expect(statusOf("claude-code")).toBe("connected");
+    expect(statusOf("codex")).toBe("connected");
     expect(await fake.log("claude")).toEqual(["mcp get ainecto"]);
+    expect(await fake.log("codex")).toEqual(["mcp get ainecto --json"]);
+  });
+
+  it("★--env dev — dev 주소를 등록하고, prod 주소의 우리 항목은 바꿔 쓴다", async () => {
+    const dev = "https://dev.ainecto.com/mcp";
+    await fake.seed("codex", `url|${ENDPOINT}`);
+
+    expect(await executeSetupCommand(options([], { env: "dev", endpoint: dev }))).toBe(0);
+
+    expect(await fake.state("claude")).toBe(`url|${dev}`);
+    expect(statusOf("codex")).toBe("updated");
+    expect(await fake.state("codex")).toBe(`url|${dev}`);
+    expect(JSON.parse(await readFile(cursorFile(), "utf8")).mcpServers.ainecto).toEqual({ url: dev });
+  });
+
+  it("★--local — 원격 대신 로컬 중계로 등록한다(원격 우리 항목도 바꿔 쓴다), 로그인 안내는 없다", async () => {
+    await fake.seed("claude", `url|${ENDPOINT}`);
+
+    expect(await executeSetupCommand(options(["--local"]))).toBe(0);
+
+    expect(statusOf("claude-code")).toBe("updated");
+    expect(await fake.log("claude")).toEqual(["mcp get ainecto", "mcp remove -s user ainecto", `mcp add -s user ainecto -- ${OUR_BRIDGE}`]);
+    expect(await fake.state("codex")).toBe(`cmd|${OUR_BRIDGE}`);
+    expect(JSON.parse(await readFile(cursorFile(), "utf8")).mcpServers.ainecto).toEqual({ command: "npx", args: ["-y", "@ainecto/mcp"] });
+    expect(result().next.join("\n")).not.toContain("signs in to AiNecto by itself");
   });
 
   it("설치 안 된 클라이언트는 «not installed» — 실패가 아니다", async () => {
@@ -174,7 +209,7 @@ describe("ainecto setup", () => {
     expect(result().account).toMatchObject({ signedIn: false });
     expect(result().agents.every((agent) => agent.status !== "connected" || agent.planned)).toBe(true);
     expect(result().agents.find((agent) => agent.client === "claude-code")?.detail)
-      .toContain(`would run: claude mcp add -s user ainecto -- ${OUR_BRIDGE}`);
+      .toContain(`would run: claude ${CLAUDE_REMOTE_ADD}`);
     expect(await fake.log("claude")).toEqual(["mcp get ainecto"]);
     expect(await fake.state("claude")).toBeUndefined();
     await expect(readFile(cursorFile(), "utf8")).rejects.toThrow();
@@ -211,9 +246,9 @@ describe("ainecto setup", () => {
 });
 
 describe("ainecto setup --undo", () => {
-  it("우리 항목만 지운다 — 남의 항목은 남긴다, 로그인은 그대로", async () => {
-    await fake.seed("claude", `cmd|${OUR_BRIDGE}@0.8.0`);
-    await fake.seed("codex", "url|https://ainecto.com/mcp");
+  it("우리 항목(원격·로컬 중계)만 지운다 — 남의 항목은 남긴다, 로그인은 그대로", async () => {
+    await fake.seed("claude", `url|${ENDPOINT}`);
+    await fake.seed("codex", `url|${THEIR_URL}`);
     await writeFile(cursorFile(), JSON.stringify({ mcpServers: { other: { url: "https://x" }, ainecto: { command: "npx", args: ["-y", "@ainecto/mcp@0.8.0"] } } }));
 
     expect(await executeSetupCommand(options(["--undo"]))).toBe(0);
@@ -222,7 +257,7 @@ describe("ainecto setup --undo", () => {
     expect(statusOf("cursor")).toBe("removed");
     expect(statusOf("codex")).toBe("kept");
     expect(await fake.state("claude")).toBeUndefined();
-    expect(await fake.state("codex")).toBe("url|https://ainecto.com/mcp");
+    expect(await fake.state("codex")).toBe(`url|${THEIR_URL}`);
     expect(JSON.parse(await readFile(cursorFile(), "utf8")).mcpServers).toEqual({ other: { url: "https://x" } });
     expect(JSON.stringify(JSON.parse(out.join("")).data.notes)).toContain("ainecto auth logout");
   });

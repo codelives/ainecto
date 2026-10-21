@@ -3,7 +3,8 @@
 Published as `ainecto`, `@ainecto/mcp` and `@ainecto/cli` — the same code. Command: `ainecto`.
 
 **Once per machine:** `npx -y ainecto@latest setup` — signs you in through the browser (once), checks the
-connection, and connects Claude Code, Cursor, and Codex to AiNecto.
+connection, and connects Claude Code, Cursor, and Codex to the AiNecto server address
+(`https://ainecto.com/mcp`). Each agent then signs in to AiNecto by itself the first time it connects.
 
 Every AI session sees the same AiNecto tools. What a tool may change is decided by your AiNecto
 permissions on the workspace, project, or document it touches — the server refuses the rest. There are
@@ -14,6 +15,10 @@ no session roles (Design / Development / Test / Validation were removed in 0.8.0
 **Run `npx -y ainecto@latest setup` (use a long command timeout — at least 6 minutes: sign-in waits up
 to 5 minutes for the user). Then run `npx -y ainecto@latest doctor` and do what it says.**
 
+- `setup` registers the server address, so each agent signs in on its own the first time: Claude Code —
+  run `/mcp` in a session and sign in to `ainecto`; Cursor — sign in when `ainecto` asks in its MCP
+  settings; Codex — signs in while `setup` connects it (a browser tab opens; if it did not finish, run
+  `codex mcp login ainecto`).
 - To add AiNecto's working rules to a repository, run `npx -y ainecto@latest init` from its root. It
   does not ask for a role or a project.
 - **A server added during a session is not available in that session.** Keep working through the CLI:
@@ -29,6 +34,7 @@ to 5 minutes for the user). Then run `npx -y ainecto@latest doctor` and do what 
 ```bash
 npx -y ainecto@latest setup              # sign in, check, connect Claude Code · Cursor · Codex
 npx -y ainecto@latest setup --dry-run    # show what it would do — no sign-in, no changes
+npx -y ainecto@latest setup --local      # connect through the local relay instead (see below)
 npx -y ainecto@latest setup --undo       # remove the connections setup made (sign-in stays)
 npx -y ainecto@latest status             # who is signed in, your AiNecto role, what is connected
 npx -y ainecto@latest doctor             # what is missing, and the one command that fixes each item
@@ -38,13 +44,25 @@ npx -y ainecto@latest doctor             # what is missing, and the one command 
 `ainecto` entry, left untouched), `not installed`, or `failed`; if any client fails it says «partial» and
 exits 1:
 
-- Claude Code — `claude mcp add -s user ainecto -- npx -y @ainecto/mcp@<version>` (user scope).
-- Cursor — merges the same entry into `~/.cursor/mcp.json`, keeping your other servers.
-- Codex — `codex mcp add ainecto -- npx -y @ainecto/mcp@<version>`.
+- Claude Code — `claude mcp add --transport http -s user ainecto https://ainecto.com/mcp` (user scope).
+  Sign in with `/mcp` in a session.
+- Cursor — merges `"ainecto": { "url": "https://ainecto.com/mcp" }` into `~/.cursor/mcp.json`, keeping
+  your other servers. Cursor asks you to sign in from its MCP settings.
+- Codex — `codex mcp add ainecto --url https://ainecto.com/mcp`. Codex starts its sign-in right away
+  (a browser tab opens); if that did not finish, run `codex mcp login ainecto`.
 
-The entry is pinned to the CLI version that wrote it; re-run `setup` to move to a newer one (`doctor`
-tells you when one is available). Your AiNecto role (your job, set in AiNecto's account settings) is
-shown by `setup` and `status`; AI uses it to pitch explanations — it does not change permissions.
+With `--env dev` (or `--endpoint`) the address is that environment's. The server address has no version
+to pin: a server update reaches every agent at once. Entries an older `setup` wrote
+(`npx -y @ainecto/mcp@<version>`, with or without `--role`) are rewritten to the server address when you
+re-run `setup`; `setup --undo` removes either kind.
+
+`setup --local` registers the local relay instead — `npx -y @ainecto/mcp@<version>` (stdio, pinned to
+the CLI version), which uses this machine's one `ainecto` sign-in for every agent. Use it only when an
+agent cannot sign in to the server address by itself; running `setup` again without `--local` moves back
+to the server address.
+
+Your AiNecto role (your job, set in AiNecto's account settings) is shown by `setup` and `status`; AI uses
+it to pitch explanations — it does not change permissions.
 
 ## Set up a repository (optional)
 
@@ -167,7 +185,8 @@ The package doubles as a stdio-to-HTTP proxy for the resolved `/mcp` endpoint. I
 local file references. It uses this machine's one sign-in (`ainecto setup`, `ainecto auth login`, or
 the sign-in `ainecto init` performs) and never opens a browser on its own.
 
-This is the entry `setup` and `init --mcp` write — you normally do not add it by hand:
+This is the entry `init --mcp` and `setup --local` write — you normally do not add it by hand
+(`setup` writes the server address instead: `{ "mcpServers": { "ainecto": { "url": "https://ainecto.com/mcp" } } }`):
 
 ```json
 {
@@ -188,7 +207,7 @@ hiding it — `ainecto doctor` checks this.
 ### MCP Registry
 
 `server.json` is the Registry entry `io.github.codelives/ainecto` (same as `package.json#mcpName`). It
-lists only the npm package `@ainecto/mcp` — the bridge `setup` and `init --mcp` write. Registry
+lists only the npm package `@ainecto/mcp` — the bridge `init --mcp` and `setup --local` write. Registry
 publication requires the npm version it references to carry that `mcpName`, so publish npm first.
 Registration is done by a person:
 

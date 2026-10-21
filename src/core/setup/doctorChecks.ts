@@ -144,6 +144,9 @@ function agentCheck(agent: AgentState, cliVersion: string): DoctorCheck {
   if (olderThan(agent.pinnedVersion, cliVersion)) {
     return { item, level: "warn", detail: `connected with @ainecto/mcp@${agent.pinnedVersion}; ${cliVersion} is available`, fix: "ainecto setup" };
   }
+  if ("url" in agent.entry) {
+    return { item, level: "ok", detail: `connected to ${agent.entry.url}` };
+  }
   return { item, level: "ok", detail: agent.pinnedVersion ? `connected (@ainecto/mcp@${agent.pinnedVersion})` : "connected" };
 }
 
