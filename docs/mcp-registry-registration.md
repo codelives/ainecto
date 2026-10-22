@@ -1,7 +1,8 @@
 # MCP Registry Registration Prep
 
-Date: 2026-07-10 KST (updated 2026-10-14 for 0.6.0)
-Status: published (package only). The current procedure is in README «MCP Registry».
+Date: 2026-07-10 KST (updated 2026-10-14 for 0.6.0, 2026-10-22 remote draft)
+Status: published up to 0.8.1 (package only). `server.json` 0.9.0 is a draft that adds the remote —
+validated (`mcp-publisher validate`), not published. The current procedure is in README «MCP Registry».
 
 ## Proposed Identity
 
@@ -9,19 +10,33 @@ Status: published (package only). The current procedure is in README «MCP Regis
 - Namespace auth path: GitHub organization namespace `io.github.codelives/*`
 - npm package: `@ainecto/mcp`
 - Package version: see `server.json` (same as `package.json#version`)
-- Remote: none here — the entry lists only the package
-- Package: `npx -y @ainecto/mcp` over stdio — the per-repository role bridge that `ainecto init --role` writes
+- Remote: `https://ainecto.com/mcp` (`streamable-http`) — the connection standard; `setup` registers it
+- Package: `npx -y @ainecto/mcp` over stdio — the local bridge `setup --local` / `init --mcp --local` write
 - Homepage: `https://ainecto.com`
 - Repository: `https://github.com/codelives/ainecto`
 - License metadata: `UNLICENSED`
 
 The repository contains `server.json` at the package root. Its `name` must match `package.json#mcpName`.
 
-### Why `server.json` has no remote
+### Remote and name (2026-10-22 draft, KAN-26)
 
-The Registry lets one remote URL belong to only one server. This entry lists only the package: the
-per-repository role bridge that `ainecto init --role` writes. Listing `https://ainecto.com/mcp` as a
-remote needs ainecto.com domain auth (`mcp-publisher login dns|http --domain ainecto.com`).
+Up to 0.8.1 the entry listed only the package. The 0.9.0 draft lists the remote too (official
+«Supporting Remote and Non-remote Installation»: `remotes` and `packages` can coexist).
+
+- Domain auth is **not** needed for the remote under `io.github.codelives/*`: the registry checks a
+  remote's URL format and that no other server name already uses it (`validateNoDuplicateRemoteURLs`
+  — «remote URL … is already used by server …»), not that the URL matches the namespace.
+- ★Consequence: once `io.github.codelives/ainecto` is published with `https://ainecto.com/mcp`, that URL
+  belongs to this name. A later `com.ainecto/*` entry cannot list it.
+
+**Name not decided yet — `com.ainecto/ainecto` (memo only, nothing prepared):**
+
+- Needs ainecto.com domain auth: `mcp-publisher login dns --domain ainecto.com` (TXT record) or
+  `login http --domain ainecto.com` (`/.well-known/mcp-registry-auth`).
+- `package.json#mcpName` must change to the same name, so it ships with an npm release.
+- The existing `io.github.codelives/ainecto` versions stay listed; the old name can be marked
+  deprecated with `mcp-publisher status`.
+- Decide the name **before** publishing the remote, because of the one-URL-one-name rule above.
 
 ### Publishing under `io.github.codelives/*` (2026-09-29)
 

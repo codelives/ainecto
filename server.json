@@ -2,13 +2,19 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.codelives/ainecto",
   "title": "AiNecto",
-  "description": "AiNecto MCP connector for workspace, document, ERD, diagram, task, and attachment workflows.",
+  "description": "Shared project memory for people and AI agents: workspaces, documents, ERD, diagrams and boards.",
   "version": "0.9.0",
   "websiteUrl": "https://ainecto.com",
   "repository": {
     "url": "https://github.com/codelives/ainecto",
     "source": "github"
   },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://ainecto.com/mcp"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
