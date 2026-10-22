@@ -2,12 +2,12 @@
 
 Date: 2026-07-10 KST (updated 2026-10-14 for 0.6.0, 2026-10-22 remote draft, 2026-10-22 rename)
 Status: published up to 0.8.1 as `io.github.codelives/ainecto` (package only). `server.json` 0.9.0 is
-renamed to `com.ainecto/ainecto` and adds the remote — validated (`mcp-publisher validate`), not
+renamed to `com.ainecto/mcp` and adds the remote — validated (`mcp-publisher validate`), not
 published. The current procedure is in README «MCP Registry».
 
 ## Identity
 
-- Registry name: `com.ainecto/ainecto` (from 0.9.0; before: `io.github.codelives/ainecto`)
+- Registry name: `com.ainecto/mcp` (from 0.9.0; before: `io.github.codelives/ainecto`)
 - Namespace auth path: `ainecto.com` domain, HTTP method (`com.ainecto/*`)
 - npm package: `@ainecto/mcp`
 - Package version: see `server.json` (same as `package.json#version`)
@@ -28,8 +28,8 @@ is already used by server …»). The remote `https://ainecto.com/mcp` is listed
 (official «Supporting Remote and Non-remote Installation»).
 
 Name form: domain auth grants `com.ainecto/*` (official «Authentication»: `com.example.*/*`). The part
-after `/` is free; both conventions exist in the registry (`com.stripe/mcp`, `com.notion/mcp` vs
-`app.linear/linear`). `ainecto` was chosen.
+after `/` is free. `mcp` was chosen: it matches the npm package `@ainecto/mcp` 1:1 and follows the
+`com.stripe/mcp` / `com.notion/mcp` convention (user decision 2026-10-22).
 
 ### Domain auth — HTTP method
 
@@ -66,13 +66,13 @@ DNS method (not used): TXT record on `ainecto.com` with the same value
 
 ### The old name `io.github.codelives/ainecto`
 
-Its versions (≤ 0.8.1) stay listed. After the first `com.ainecto/ainecto` publish, mark them deprecated
+Its versions (≤ 0.8.1) stay listed. After the first `com.ainecto/mcp` publish, mark them deprecated
 (`mcp-publisher status --help`; the registry accepts a publish permission on the name):
 
 ```bash
 MCP_GITHUB_TOKEN=<pat> mcp-publisher login github
 mcp-publisher status --status deprecated --all-versions \
-  --message "Moved to com.ainecto/ainecto" io.github.codelives/ainecto
+  --message "Moved to com.ainecto/mcp" io.github.codelives/ainecto
 ```
 
 ### GitHub login for `io.github.codelives/*` (2026-09-29)
@@ -138,10 +138,10 @@ mcp-publisher publish
 7. Verify after publish:
 
 ```bash
-curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=com.ainecto/ainecto"
+curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=com.ainecto/mcp"
 ```
 
-Before Registry publication, the `@ainecto/mcp` version in `server.json` must be on npm and contain `mcpName: "com.ainecto/ainecto"`.
+Before Registry publication, the `@ainecto/mcp` version in `server.json` must be on npm and contain `mcpName: "com.ainecto/mcp"`.
 
 ## Community Directory Mapping
 

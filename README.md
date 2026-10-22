@@ -214,7 +214,7 @@ hiding it — `ainecto doctor` checks this.
 
 ### MCP Registry
 
-`server.json` is the Registry entry `com.ainecto/ainecto` (same as `package.json#mcpName`). It
+`server.json` is the Registry entry `com.ainecto/mcp` (same as `package.json#mcpName`). It
 lists the server address `https://ainecto.com/mcp` (remote, streamable HTTP — what `setup` registers) and
 the npm package `@ainecto/mcp` (the bridge `setup --local` and `init --mcp --local` write). Registry
 publication requires the npm version it references to carry that `mcpName`, so publish npm first.
@@ -227,7 +227,7 @@ Registration is done by a person:
 3. `mcp-publisher publish` from this folder.
 
 Up to 0.8.1 the entry was `io.github.codelives/ainecto` (package only); it is marked deprecated after
-the first `com.ainecto/ainecto` publish. Details in `docs/mcp-registry-registration.md`.
+the first `com.ainecto/mcp` publish. Details in `docs/mcp-registry-registration.md`.
 
 ## Development
 
