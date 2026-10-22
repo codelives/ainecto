@@ -482,6 +482,7 @@
     },
     {
       "name": "diagram_get_edge",
+      "description": "Read one diagram edge by its edge UUID (same fields as diagram_list_edges). Read only; needs read access to the diagram. Fails with 404 for an unknown edge.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -497,6 +498,7 @@
     },
     {
       "name": "diagram_get_group",
+      "description": "Read one diagram group by its group UUID (same fields as diagram_list_groups). Read only; needs read access to the diagram. Fails with 404 for an unknown group.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -512,6 +514,7 @@
     },
     {
       "name": "diagram_get_node",
+      "description": "Read one diagram node by its node UUID (same fields as diagram_list_nodes). Read only; needs read access to the diagram. Fails with 404 for an unknown node.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -527,6 +530,7 @@
     },
     {
       "name": "diagram_get_pending_llm_requests",
+      "description": "List your own AI requests that are waiting (PENDING) or in progress (PROCESSING), for every service, not only diagrams: uuid, serviceCode, type, status, model and context. Read only — it does not claim anything; a request becomes PROCESSING only when a worker claims it through AiNecto's AI request API. Returns requests and count.",
       "inputSchema": {
         "type": "object",
         "properties": {}
@@ -534,6 +538,7 @@
     },
     {
       "name": "diagram_list_edges",
+      "description": "List every edge (connector) of one diagram document: uuid, fromUuid, toUuid, label, bridgeType, strokeColor, lineStyle, strokeWidth and version. Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns edges and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -549,6 +554,7 @@
     },
     {
       "name": "diagram_list_groups",
+      "description": "List every group of one diagram document: uuid, name, color, width, height, parentGroupUuid, collapsed, depth, sortOrder, linkedDiagramUuid, linkMode and version. Nodes point to their group with groupUuid. Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns groups and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -564,6 +570,7 @@
     },
     {
       "name": "diagram_list_nodes",
+      "description": "List every node of one diagram document: uuid, type, text, shape, x, y, width, height, groupUuid, colors and version. diagram_apply_changes changes them. Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns nodes and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -579,6 +586,7 @@
     },
     {
       "name": "diagram_submit_llm_result",
+      "description": "Complete one of your AI requests that is PROCESSING by storing its result text and token counts; it becomes COMPLETED. This charges AI credits, calculated by the server from the token counts (creditsCharged is ignored). It only stores the result and does not change any diagram by itself. Fails for a request that is not yours, is not PROCESSING, or whose context names a diagram you cannot edit. Returns uuid, status and the recorded token counts.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -615,6 +623,7 @@
     },
     {
       "name": "diagram_update_llm_request_status",
+      "description": "Mark one of your AI requests FAILED (the only status allowed here), with an optional errorMessage. Works on PENDING or PROCESSING requests and charges no credits; diagram_submit_llm_result completes one instead. Fails for a request that is not yours, is already finished, or whose context names a diagram you cannot edit. Returns uuid, status and errorMessage.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3030,6 +3039,7 @@
     },
     {
       "name": "erd_get_enum",
+      "description": "Read one ERD enum with its values (uuid, value, note, displayOrder). Read only; needs read access. Fails with 404 for an unknown UUID, 403 without access, and an error when documentUuid is not an ERD document, or when the enum belongs to a different ERD document.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3050,6 +3060,7 @@
     },
     {
       "name": "erd_get_ref",
+      "description": "Read one ERD relationship with its column pairs (fromColumnUuid to toColumnUuid, displayOrder). Read only; needs read access. Fails with 404 for an unknown UUID, 403 without access, and an error when documentUuid is not an ERD document, or when the relationship belongs to a different ERD document.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3070,6 +3081,7 @@
     },
     {
       "name": "erd_get_table_group",
+      "description": "Read one ERD table group: uuid, name, color and noteUuids. Read only; needs read access. Fails with 404 for an unknown UUID, 403 without access, and an error when documentUuid is not an ERD document, or when the group belongs to a different ERD document.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3112,6 +3124,7 @@
     },
     {
       "name": "erd_list_enums",
+      "description": "List the enums of one ERD document: uuid, name, schemaName and note. Values are not included — erd_get_enum reads them. Read only; needs read access. Fails with 404 for an unknown UUID, 403 without access, and an error when documentUuid is not an ERD document. Returns enums and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3127,6 +3140,7 @@
     },
     {
       "name": "erd_list_refs",
+      "description": "List the relationships (foreign-key refs) of one ERD document: uuid, name, fromTableUuid, toTableUuid, relationship (>, < or -), onDelete and onUpdate. Column pairs are not included — erd_get_ref reads them. Read only; needs read access. Fails with 404 for an unknown UUID, 403 without access, and an error when documentUuid is not an ERD document. Returns refs and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3142,6 +3156,7 @@
     },
     {
       "name": "erd_list_table_groups",
+      "description": "List the table groups of one ERD document: uuid, name, color and noteUuids (the notes in the group). Read only; needs read access. Fails with 404 for an unknown UUID, 403 without access, and an error when documentUuid is not an ERD document. Returns tableGroups and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3157,6 +3172,7 @@
     },
     {
       "name": "erd_list_tables",
+      "description": "List the tables of one ERD document: uuid, name, schemaName, alias, note, headerColor and displayOrder. Columns and indexes are not included — erd_get_table reads them. Read only; needs read access. Fails with 404 for an unknown UUID, 403 without access, and an error when documentUuid is not an ERD document. Returns tables and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3916,7 +3932,7 @@
     },
     {
       "name": "markdown_append_document",
-      "description": "Append to Markdown documents. If the appended body is tens of KB or more, prefer request_upload_token (purpose=document.append) and upload the body with curl.",
+      "description": "Append text to the end of Markdown documents without resending the existing body; separator goes between the old body and the addition. The change is kept in version history (restore_versions can undo it). Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns appended (document rows) and count. Fails with 409 when the document is in the trash or its folder, project or workspace is archived. If the appended body is tens of KB or more, prefer request_upload_token (purpose=document.append) and upload the body with curl.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4016,6 +4032,7 @@
     },
     {
       "name": "create_folders",
+      "description": "Create folders in a project, at its top level or under parentFolderUuid (the parent must be in the same project). Folders nest up to 50 levels. Folder names do not have to be unique, even side by side, and every call creates new folders — check list_folders first so a retry does not make duplicates. Needs edit access to the project (and to the parent folder). Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns created (folder rows with uuid and app url) and count. Fails with 404, 403, or 409 when the project, its workspace or the parent folder is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4052,6 +4069,7 @@
     },
     {
       "name": "create_projects",
+      "description": "Create new, empty projects. workspaceUuid picks the workspace (you need edit access there); without it the project goes to your first personal workspace, which is created if you have none. projectKey is optional and must be unique within the workspace; project names do not have to be unique. Every call creates new projects, so check list_projects before retrying. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns created (project rows with uuid) and count. Fails with 403 without edit access, 409 when the workspace is archived, and an error when the projectKey is already used.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4091,6 +4109,7 @@
     },
     {
       "name": "create_workspaces",
+      "description": "Create new, empty personal workspaces owned by you (there is no limit on how many). Names do not have to be unique and every call creates new ones, so check list_workspaces before retrying. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns created (workspace rows with uuid) and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4122,6 +4141,7 @@
     },
     {
       "name": "delete_attachments",
+      "description": "Remove attachments. A removed attachment is hidden (archived) and no longer listed, and no tool brings it back — confirm with the user first. The file that is a file document's own content cannot be removed here; delete that document instead. Needs edit access to the document (or project) it is attached to. All-or-nothing: if any UUID fails (404 unknown, 403 no edit access, 409 already removed or file-document content), nothing is removed. Sends no email or inbox notification. Returns deleted (UUIDs) and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4140,6 +4160,7 @@
     },
     {
       "name": "delete_documents",
+      "description": "Move documents to the trash (soft delete) — this is not permanent deletion. A trashed document disappears from lists and its public link stops opening; people it was shared with directly lose that access, and restoring does not give it back. unarchive_documents restores a document and list_trash shows the trash. The server permanently deletes a trashed document once the trash retention period passes (30 days by default), and that cannot be undone. Needs delete rights on each document (editor or above). Confirm with the user before deleting anything they did not name explicitly. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns deleted (UUIDs) and count. Fails with 404 for an unknown UUID, 403 without delete rights, and 409 when the document is already in the trash or its folder, project or workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4158,6 +4179,7 @@
     },
     {
       "name": "delete_folders",
+      "description": "Move folders to the trash together with everything under them (subfolders and their documents) — soft delete, not permanent. People shared with the folder, its subfolders or those documents directly lose that access, and restoring does not give it back. unarchive_folders restores the whole subtree; the server permanently deletes trashed folders and documents once the trash retention period passes (30 days by default). Needs admin or owner rights on the folder. Always confirm with the user first and say how much is inside (list_documents with folderUuid). Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns deleted (UUIDs) and count. Fails with 404 for an unknown UUID, 403 without rights, and 409 when the folder or a parent folder is already archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4176,6 +4198,7 @@
     },
     {
       "name": "delete_projects",
+      "description": "Archive projects. An archived project disappears from list_projects and nothing inside it can be read or edited; its documents are not moved to the trash and nothing is purged automatically. Archiving also removes every person's direct sharing on the project, its folders and its documents, and restoring does not give it back. Public links of documents inside stop opening while the project is archived. unarchive_projects is the matching restore tool. Needs admin or owner rights on the project. Always confirm with the user first (get_project shows the name and workspace). Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns deleted (UUIDs) and count. Fails with 404 for an unknown UUID, 403 without rights or when it is already archived, and 409 when its workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4194,6 +4217,7 @@
     },
     {
       "name": "delete_workspaces",
+      "description": "Archive workspaces. An archived workspace disappears from list_workspaces, its projects disappear from list_projects, and nothing inside can be read or changed until it is restored with unarchive_workspaces. Nothing is purged and sharing is kept. Only the workspace owner can do this. Always confirm with the user first — it hides every project in the workspace for everyone. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns deleted (UUIDs) and count. Fails with 404 for an unknown UUID and 403 when you are not the owner or it is already archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4212,6 +4236,7 @@
     },
     {
       "name": "disable_shares",
+      "description": "Turn public links off. For a document or project the link stops working at once and turning it on again later brings back the same link; for a folder the stored token is deleted. Sharing with specific people is not affected. Needs the same rights as enable_shares (document or project: admin or owner; folder: edit access). Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns disabled (rows) and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4240,6 +4265,7 @@
     },
     {
       "name": "enable_shares",
+      "description": "Turn on public links: anyone with the link can open it without signing in, so confirm with the user before exposing anything. targetType document returns shareUrl (a public page) and publicApiPath; board documents have no public link (PUBLIC_SHARE_UNSUPPORTED_TYPE); needs admin or owner rights on the document. targetType project returns publicToken and a publicApiPath that reads the project and its documents through the public API — there is no public project page; needs admin or owner rights. targetType folder only stores a token that nothing public reads yet, so share the documents or the project instead; needs edit access. Re-enabling a document or project reuses its previous link. This does not invite or notify anyone — giving specific people access is done in the AiNecto app. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns enabled (rows with the link fields) and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4268,6 +4294,7 @@
     },
     {
       "name": "markdown_generate_document",
+      "description": "Queue a Markdown generation request (status PENDING) for a separate worker that claims requests through AiNecto's AI request API. This tool does not generate text and does not change the document; to write content yourself use update_documents or markdown_append_document. The queued request keeps only prompt and context, not documentUuid, so put everything the worker needs in context. Needs edit access to the document and an AI credit balance above zero; queuing is rate-limited per user. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns queued (uuid, status, documentUuid) and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4304,6 +4331,7 @@
     },
     {
       "name": "get_attachment",
+      "description": "Read one attachment's metadata by UUID: filename, contentType, sizeBytes, parent, uploadedBy, archived. It does not return the file contents or a download link. Needs read access to the whole project. Read only. Fails with 404 for an unknown UUID and 403 without access.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4335,6 +4363,7 @@
     },
     {
       "name": "get_project",
+      "description": "Read one project by UUID: name, projectKey, description, workspaceId, publicReadable and publicToken, archived and revision. Read only. Fails with 404 for an unknown UUID and 403 when you cannot open the whole project or it is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4350,6 +4379,7 @@
     },
     {
       "name": "get_version",
+      "description": "Read one saved version of a document, including snapshotJson — the full saved content in that document type's stored format. Read only; needs read access. Fails with 404 for an unknown version number and with a plan-limit error for a locked version (see list_versions).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4370,6 +4400,7 @@
     },
     {
       "name": "get_workspace",
+      "description": "Read one workspace by UUID: name, description, owner, archived and revision. Works for any workspace you can see, including one where you were only given a project. Read only. Fails with 404 for an unknown UUID and 403 when you have no access or the workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4385,6 +4416,7 @@
     },
     {
       "name": "list_attachments",
+      "description": "List the active attachments in a project, newest first: uuid, filename, contentType, sizeBytes, parentType and parentId, uploadedBy. Metadata only — no file contents or download link. Removed attachments are not listed. Needs read access to the whole project. Read only. Returns attachments and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4400,6 +4432,7 @@
     },
     {
       "name": "list_documents",
+      "description": "List or search documents you can read, including ones shared with you individually. Without q it lists the documents directly in folderUuid (not its subfolders), otherwise in projectUuid, otherwise every document you can read in every project; only active documents (the trash is list_trash). With q it searches the document search index (mode=search; at most limit hits, default and maximum 50; with total), narrowed by projectUuid and by folderUuid including its subfolders. type filters by document type. Titles can repeat — compare folder and project and ask the user when several match. Read only. Returns documents, count and mode.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4409,7 +4442,7 @@
           },
           "folderUuid": {
             "type": "string",
-            "description": "Optional folder UUID"
+            "description": "Optional folder UUID. With q, searches this folder and the folders under it."
           },
           "type": {
             "type": "string",
@@ -4437,6 +4470,7 @@
     },
     {
       "name": "list_folders",
+      "description": "List all active folders of one project as a flat list (uuid, id, name, parentFolderId, depth, displayOrder, app url); rebuild the tree from id and parentFolderId. Trashed folders are not included. Folder names can repeat — tell them apart by parent and ask the user when unsure. Needs read access to the whole project. Read only. Returns folders and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4452,6 +4486,7 @@
     },
     {
       "name": "list_projects",
+      "description": "Find projects you can open. With no arguments it lists every active project you can open, across all workspaces; workspaceUuid narrows it to one workspace (an unknown UUID gives an empty list). With q it searches the project search index instead (mode=search; at most limit hits, default and maximum 50; with total). Archived projects are never listed. Project names can repeat — compare workspaceId and ask the user when several match. Read only. Returns projects, count and mode.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4472,6 +4507,7 @@
     },
     {
       "name": "list_trash",
+      "description": "List the documents in the trash across every project you can open as a whole (access through a single shared folder or file does not count): documents deleted with delete_documents or inside a trashed folder. Trashed folders, archived projects and archived workspaces are not listed here. Read only, no paging. Returns trashed (document rows: uuid, title, type, projectId, folderId) and count. unarchive_documents restores one; the server permanently deletes trashed documents once the trash retention period passes (30 days by default).",
       "inputSchema": {
         "type": "object",
         "properties": {}
@@ -4479,6 +4515,7 @@
     },
     {
       "name": "list_versions",
+      "description": "List a document's saved versions, newest first: versionNumber, versionType, title, changeSummary, createdBy, createdAt and locked. locked=true means the version is outside your plan's history window and cannot be opened or restored. get_version reads one and restore_versions rolls back. Read only; needs read access. Returns versions and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4494,6 +4531,7 @@
     },
     {
       "name": "list_workspaces",
+      "description": "List the personal workspaces you own (active ones only). Workspaces that other people or a team share with you are not included — list_projects shows every project you can open (each row has workspaceId) and get_workspace reads one workspace. Read only. Returns workspaces (uuid, name, description, owner, revision) and count.",
       "inputSchema": {
         "type": "object",
         "properties": {}
@@ -4501,6 +4539,7 @@
     },
     {
       "name": "move_documents",
+      "description": "Move documents to another folder, to a project's top level (empty newFolderUuid), or into another project — even in another workspace — with targetProjectUuid (targetWorkspaceUuid is only a check that must match that project's workspace). Attachments, including those on its comments, go with the document. Sharing inherited from the old folder or project stops applying and is reported in unlinkedInheritedShares; the destination's sharing applies instead. Confirm with the user before moving documents into another project or workspace. Needs edit access to each document and to the destination (and to the source project when leaving it); moving into a different storage quota can be refused. All-or-nothing: if any item fails, nothing moves. Sends no email or inbox notification. Returns moved (document rows), count, unlinkedInheritedShareCount and attachmentsReprojected.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4547,6 +4586,7 @@
     },
     {
       "name": "move_folders",
+      "description": "Move folders, with everything under them, under another folder of the same project, or to the project's top level when newParentFolderUuid is empty. Folders cannot move between projects (move_documents can move documents across projects). A folder cannot go under itself or its own subfolder, and the result must stay within 50 levels. Sharing inherited from the old parent folders stops applying and the new parents' sharing applies instead. Needs edit access to the folder and to the new parent. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns moved (folder rows) and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4578,6 +4618,7 @@
     },
     {
       "name": "move_projects",
+      "description": "Move projects, with all their folders, documents and attachments, into another workspace. This changes who can open them: people with access to the old workspace lose it, people with access to the target workspace gain it, and people given the project itself keep it. Public links stay as they were. Confirm with the user before moving a project into a team workspace. Needs edit access to the project and to the target workspace; moving to the workspace it is already in does nothing. Each item is tried on its own and the call does not stop at a failure: results reports each item as ok, or with status and error (409 when its projectKey is already used in the target workspace; the target's storage quota can also refuse). Sends no email or inbox notification. Returns results, movedCount and failedCount.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4645,6 +4686,7 @@
     },
     {
       "name": "restore_versions",
+      "description": "Roll documents back to an earlier saved version (version numbers come from list_versions). The current content and title are replaced by that version's snapshot and a new version \"Restored from version N\" is recorded, so the history keeps everything and the rollback can itself be undone the same way. Tell the user which version you are restoring before calling. Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns restored (the new version rows, each with documentUuid) and count. Fails with 404 for an unknown document or version number, with a plan-limit error for a locked version (locked=true in list_versions), and with 409 when the document is in the trash or its folder, project or workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4677,6 +4719,7 @@
     },
     {
       "name": "unarchive_documents",
+      "description": "Restore documents from the trash (list_trash shows them) to where they were. A public link that was on opens again; direct sharing removed when the document was trashed does not come back. Needs edit access. A document that is not in the trash is returned unchanged. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns unarchived (document rows) and count. Fails with 409 when its folder, project or workspace is archived — restore the folder with unarchive_folders instead — and is refused when restoring would exceed the storage quota.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4695,6 +4738,7 @@
     },
     {
       "name": "unarchive_folders",
+      "description": "Restore trashed folders together with their whole subtree. Every trashed subfolder and document under the folder comes back — including documents that were trashed on their own before the folder was. Direct sharing removed at trash time does not come back. No tool lists trashed folders (list_trash lists documents only), so use the UUID from the earlier delete_folders call. Needs edit access to the folder. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns unarchived (folder rows) and count. Fails with 409 when a parent folder, the project or the workspace is archived (restore the parent first) and is refused when restoring would exceed the storage quota.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4713,6 +4757,7 @@
     },
     {
       "name": "unarchive_projects",
+      "description": "Restore archived projects so they are listed and editable again. Public links of documents inside open again if they were on; sharing removed at archive time does not come back. No tool lists archived projects, so use the UUID from the earlier delete_projects call. Needs edit access to the project, and its workspace must not be archived. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns unarchived (project rows) and count. Fails with 404 for an unknown UUID, 403 without access, and 409 when the workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4731,6 +4776,7 @@
     },
     {
       "name": "unarchive_workspaces",
+      "description": "Restore archived workspaces so they and their projects are listed and usable again. No tool lists archived workspaces, so use the UUID from the earlier delete_workspaces call. Needs edit access to the workspace. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns unarchived (workspace rows) and count. Fails with 404 for an unknown UUID and 403 without access.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4749,7 +4795,7 @@
     },
     {
       "name": "update_documents",
-      "description": "Update documents. If a replacement body is tens of KB or more, prefer request_upload_token (purpose=document.update) and upload the body with curl.",
+      "description": "Update documents: the title and/or the whole body. A body you send replaces the current body entirely — it is not a patch, so read the document first and send the full new text. The document type decides the body field (see body and typePayload): file documents can only be renamed, ERD content changes through erd_apply_changes, diagram nodes and edges through diagram_apply_changes, and board documents are refused. Every body change is kept in version history, so list_versions and restore_versions can undo it. Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns updated (document rows) and count. Fails with 409 when the document is in the trash or its folder, project or workspace is archived. If a replacement body is tens of KB or more, prefer request_upload_token (purpose=document.update) and upload the body with curl.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4789,6 +4835,7 @@
     },
     {
       "name": "update_folders",
+      "description": "Rename folders (only the name; move_folders moves them). Names do not have to be unique. Needs edit access to the folder. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns updated (folder rows) and count. Fails with 404, 403, or 409 when the folder or a parent folder is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4821,6 +4868,7 @@
     },
     {
       "name": "update_projects",
+      "description": "Rename projects or change their description (projectKey cannot be changed here). Omitted fields stay as they are, a blank name is ignored, and description \"\" clears it. Names do not have to be unique. Needs admin or owner rights on the project. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns updated (project rows) and count. Fails with 404 for an unknown UUID and 403 without rights or when the project or its workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4856,6 +4904,7 @@
     },
     {
       "name": "update_workspaces",
+      "description": "Rename workspaces or change their description. Omitted fields stay as they are, a blank name is ignored, and description \"\" clears it. Names do not have to be unique. Needs admin or owner rights. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns updated (workspace rows) and count. Fails with 404 for an unknown UUID and 403 without rights or when the workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4891,6 +4940,7 @@
     },
     {
       "name": "upload_attachments",
+      "description": "Register files you have already uploaded as attachments of documents. Steps: (1) request_upload_token with purpose=attachment.upload and {documentUuid, filename}; (2) PUT the file bytes with curl to the returned URL; (3) call this with the storageKey from step 1 — without step 2 it fails. sizeBytes, when given, must equal the uploaded size. A storageKey registers once (409 after that). Files over the server's attachment size limit or beyond the storage quota are refused, and the server decides the stored content type. File documents cannot take attachments. Needs edit access to the document. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns uploaded (attachment rows) and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4936,12 +4986,13 @@
     },
     {
       "name": "search_documents",
+      "description": "Find documents you can read by keywords, people, folder and dates, when you have no link or exact title. Each hit has title, type, uuid, projectName, folderPath (\"Parent / Child\"), url, updatedAt and lastEditorName — enough to tell the user which document is which. Map the user's words to filters: \"edited today\" -> updatedFrom = today's date-time at local midnight with offset; \"last week\" -> updatedFrom/updatedTo; \"Ryan's\" or \"Ryan changed\" -> first get Ryan's userId from list_mention_candidates (or identity_get_self for \"me\"), then ownerUserId or lastEditorUserId; \"in the X folder\" -> folderUuid from list_folders. Keep only the topic words in q.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "q": {
             "type": "string",
-            "description": "검색 키워드"
+            "description": "Keywords in the title or body. Optional — omit to list by the filters alone, most recently updated first."
           },
           "type": {
             "type": "string",
@@ -4958,7 +5009,35 @@
           },
           "projectUuid": {
             "type": "string",
-            "description": "특정 프로젝트로 한정 (선택)"
+            "description": "Only documents in this project."
+          },
+          "folderUuid": {
+            "type": "string",
+            "description": "Only documents in this folder or any folder under it."
+          },
+          "ownerUserId": {
+            "type": "string",
+            "description": "Only documents owned by this user (the creator, unless ownership moved)."
+          },
+          "lastEditorUserId": {
+            "type": "string",
+            "description": "Only documents whose latest saved version is by this user."
+          },
+          "createdFrom": {
+            "type": "string",
+            "description": "ISO-8601: a date-time with offset (2026-10-21T00:00:00+09:00) or a date (2026-10-21 = that UTC day; use the offset form for a local day). Created at or after."
+          },
+          "createdTo": {
+            "type": "string",
+            "description": "ISO-8601: a date-time with offset (2026-10-21T00:00:00+09:00) or a date (2026-10-21 = that UTC day; use the offset form for a local day). Created at or before (a date includes that whole day)."
+          },
+          "updatedFrom": {
+            "type": "string",
+            "description": "ISO-8601: a date-time with offset (2026-10-21T00:00:00+09:00) or a date (2026-10-21 = that UTC day; use the offset form for a local day). Last changed at or after."
+          },
+          "updatedTo": {
+            "type": "string",
+            "description": "ISO-8601: a date-time with offset (2026-10-21T00:00:00+09:00) or a date (2026-10-21 = that UTC day; use the offset form for a local day). Last changed at or before (a date includes that whole day)."
           },
           "limit": {
             "type": "integer",
@@ -4968,10 +5047,7 @@
             "type": "integer",
             "description": "페이지네이션 offset (기본 0)"
           }
-        },
-        "required": [
-          "q"
-        ]
+        }
       }
     },
     {
