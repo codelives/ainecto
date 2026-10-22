@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.codelives/ainecto",
+  "name": "com.ainecto/ainecto",
   "title": "AiNecto",
   "description": "Shared project memory for people and AI agents: workspaces, documents, ERD, diagrams and boards.",
   "version": "0.9.0",

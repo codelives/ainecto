@@ -1,13 +1,14 @@
 # MCP Registry Registration Prep
 
-Date: 2026-07-10 KST (updated 2026-10-14 for 0.6.0, 2026-10-22 remote draft)
-Status: published up to 0.8.1 (package only). `server.json` 0.9.0 is a draft that adds the remote —
-validated (`mcp-publisher validate`), not published. The current procedure is in README «MCP Registry».
+Date: 2026-07-10 KST (updated 2026-10-14 for 0.6.0, 2026-10-22 remote draft, 2026-10-22 rename)
+Status: published up to 0.8.1 as `io.github.codelives/ainecto` (package only). `server.json` 0.9.0 is
+renamed to `com.ainecto/ainecto` and adds the remote — validated (`mcp-publisher validate`), not
+published. The current procedure is in README «MCP Registry».
 
-## Proposed Identity
+## Identity
 
-- Registry name: `io.github.codelives/ainecto`
-- Namespace auth path: GitHub organization namespace `io.github.codelives/*`
+- Registry name: `com.ainecto/ainecto` (from 0.9.0; before: `io.github.codelives/ainecto`)
+- Namespace auth path: `ainecto.com` domain, HTTP method (`com.ainecto/*`)
 - npm package: `@ainecto/mcp`
 - Package version: see `server.json` (same as `package.json#version`)
 - Remote: `https://ainecto.com/mcp` (`streamable-http`) — the connection standard; `setup` registers it
@@ -16,34 +17,70 @@ validated (`mcp-publisher validate`), not published. The current procedure is in
 - Repository: `https://github.com/codelives/ainecto`
 - License metadata: `UNLICENSED`
 
-The repository contains `server.json` at the package root. Its `name` must match `package.json#mcpName`.
+The repository contains `server.json` at the package root. Its `name` must match `package.json#mcpName`
+(official «Package Types»: the registry checks `mcpName` of the npm version `server.json` references).
 
-### Remote and name (2026-10-22 draft, KAN-26)
+### Why `com.ainecto/*` (2026-10-22, KAN-26)
 
-Up to 0.8.1 the entry listed only the package. The 0.9.0 draft lists the remote too (official
-«Supporting Remote and Non-remote Installation»: `remotes` and `packages` can coexist).
+The registry gives one remote URL to one server name (`validateNoDuplicateRemoteURLs` — «remote URL …
+is already used by server …»). The remote `https://ainecto.com/mcp` is listed for the first time in
+0.9.0, so it goes under the domain name, not the GitHub org name. `remotes` and `packages` coexist
+(official «Supporting Remote and Non-remote Installation»).
 
-- Domain auth is **not** needed for the remote under `io.github.codelives/*`: the registry checks a
-  remote's URL format and that no other server name already uses it (`validateNoDuplicateRemoteURLs`
-  — «remote URL … is already used by server …»), not that the URL matches the namespace.
-- ★Consequence: once `io.github.codelives/ainecto` is published with `https://ainecto.com/mcp`, that URL
-  belongs to this name. A later `com.ainecto/*` entry cannot list it.
+Name form: domain auth grants `com.ainecto/*` (official «Authentication»: `com.example.*/*`). The part
+after `/` is free; both conventions exist in the registry (`com.stripe/mcp`, `com.notion/mcp` vs
+`app.linear/linear`). `ainecto` was chosen.
 
-**Name not decided yet — `com.ainecto/ainecto` (memo only, nothing prepared):**
+### Domain auth — HTTP method
 
-- Needs ainecto.com domain auth: `mcp-publisher login dns --domain ainecto.com` (TXT record) or
-  `login http --domain ainecto.com` (`/.well-known/mcp-registry-auth`).
-- `package.json#mcpName` must change to the same name, so it ships with an npm release.
-- The existing `io.github.codelives/ainecto` versions stay listed; the old name can be marked
-  deprecated with `mcp-publisher status`.
-- Decide the name **before** publishing the remote, because of the one-URL-one-name rule above.
+Official «Authentication» → «HTTP Authentication». Registry source
+(`internal/api/handlers/v0/auth/http.go`): it GETs `https://ainecto.com/.well-known/mcp-registry-auth`
+with redirects **disabled**, needs status 200, reads at most 4096 bytes and trims whitespace. HTTP auth
+grants `com.ainecto/*` only (no subdomains; DNS auth would also grant `com.ainecto.*`).
 
-### Publishing under `io.github.codelives/*` (2026-09-29)
+- Key: Ed25519. The private key (hex, the form `--private-key` takes) is only in the macOS keychain,
+  service `codelive-mcp-registry`, account `ainecto.com`. No file.
+- Public record (not secret) to serve as `text/plain`:
+
+```text
+v=MCPv1; k=ed25519; p=aGJHaCzLoZzNrdfw1VymjNItFMZaUrjgbOQkixf9jIY=
+```
+
+- Serving: production nginx (`/etc/nginx/sites-enabled/ai-erd`, the `ainecto.com` block) proxies
+  `location /.well-known` to the API, so a homepage `public/` file would never be reached. One exact
+  location placed before it is enough:
+
+```nginx
+location = /.well-known/mcp-registry-auth {
+    default_type text/plain;
+    return 200 "v=MCPv1; k=ed25519; p=aGJHaCzLoZzNrdfw1VymjNItFMZaUrjgbOQkixf9jIY=\n";
+}
+```
+
+- Check after reload: `curl -s https://ainecto.com/.well-known/mcp-registry-auth` returns the line above.
+- Rotating the key: generate a new pair, replace the keychain item and the nginx line together.
+
+DNS method (not used): TXT record on `ainecto.com` with the same value
+(`ainecto.com. IN TXT "v=MCPv1; k=ed25519; p=…"`), then `mcp-publisher login dns --domain ainecto.com
+--private-key …`. Needs a Cloudflare DNS write token.
+
+### The old name `io.github.codelives/ainecto`
+
+Its versions (≤ 0.8.1) stay listed. After the first `com.ainecto/ainecto` publish, mark them deprecated
+(`mcp-publisher status --help`; the registry accepts a publish permission on the name):
+
+```bash
+MCP_GITHUB_TOKEN=<pat> mcp-publisher login github
+mcp-publisher status --status deprecated --all-versions \
+  --message "Moved to com.ainecto/ainecto" io.github.codelives/ainecto
+```
+
+### GitHub login for `io.github.codelives/*` (2026-09-29)
 
 Only an org **Owner** gets the org namespace, and the registry must be able to read the role.
 The browser login (`mcp-publisher login github`) came back with `io.github.Ryan9071/*` only, even
 for an Owner with public membership. A classic PAT with just `read:org` worked:
-`MCP_GITHUB_TOKEN=$(pbpaste) mcp-publisher login github && mcp-publisher publish`.
+`MCP_GITHUB_TOKEN=$(pbpaste) mcp-publisher login github`.
 
 ## Official Registry Procedure
 
@@ -58,7 +95,7 @@ Official docs:
 
 Steps:
 
-1. Add `mcpName` to npm `package.json`. For GitHub auth, the name must use `io.github.<user-or-org>/<server>`.
+1. Add `mcpName` to npm `package.json`. For domain auth the name is `com.ainecto/<server>`; for GitHub auth `io.github.<user-or-org>/<server>`.
 2. Publish the npm package before publishing Registry metadata. The official Registry hosts metadata, not package code.
 3. Install `mcp-publisher`:
 
@@ -79,13 +116,14 @@ brew install mcp-publisher
 mcp-publisher init
 ```
 
-5. Authenticate. For this repo, use GitHub org namespace auth:
+5. Authenticate. For this repo, use `ainecto.com` HTTP auth (see «Domain auth — HTTP method»):
 
 ```bash
-mcp-publisher login github
+mcp-publisher login http --domain ainecto.com \
+  --private-key "$(security find-generic-password -s codelive-mcp-registry -a ainecto.com -w)"
 ```
 
-Other documented methods are GitHub OIDC for Actions, DNS TXT verification, and HTTP well-known verification.
+Other documented methods are GitHub (device flow / OIDC for Actions) and DNS TXT verification.
 
 6. Publish:
 
@@ -100,10 +138,10 @@ mcp-publisher publish
 7. Verify after publish:
 
 ```bash
-curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.codelives/ainecto"
+curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=com.ainecto/ainecto"
 ```
 
-Before Registry publication, the `@ainecto/mcp` version in `server.json` must be on npm and contain `mcpName: "io.github.codelives/ainecto"`.
+Before Registry publication, the `@ainecto/mcp` version in `server.json` must be on npm and contain `mcpName: "com.ainecto/ainecto"`.
 
 ## Community Directory Mapping
 
@@ -119,9 +157,10 @@ Before Registry publication, the `@ainecto/mcp` version in `server.json` must be
 
 ## User-Only Actions
 
-- Authenticate as a GitHub user or org member allowed to publish under `io.github.codelives/*`.
+- Serve the public record at `https://ainecto.com/.well-known/mcp-registry-auth` (production nginx).
+- Log in with the `ainecto.com` key from the keychain; deprecate the old name with a GitHub `codelives` Owner login.
 - Confirm the published npm package version referenced by `server.json` still contains the matching `mcpName`.
-- Run `mcp-publisher login github` and `mcp-publisher publish`.
+- Run `mcp-publisher login http --domain ainecto.com …` and `mcp-publisher publish`.
 - Submit or claim listings in community directories that require account login, email, or ownership proof.
 
 ## Developer-Ready Actions

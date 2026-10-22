@@ -214,19 +214,20 @@ hiding it — `ainecto doctor` checks this.
 
 ### MCP Registry
 
-`server.json` is the Registry entry `io.github.codelives/ainecto` (same as `package.json#mcpName`). It
+`server.json` is the Registry entry `com.ainecto/ainecto` (same as `package.json#mcpName`). It
 lists the server address `https://ainecto.com/mcp` (remote, streamable HTTP — what `setup` registers) and
 the npm package `@ainecto/mcp` (the bridge `setup --local` and `init --mcp --local` write). Registry
 publication requires the npm version it references to carry that `mcpName`, so publish npm first.
 Registration is done by a person:
 
 1. `npm run release -- --otp=<code>` (below) so that `@ainecto/mcp@<version>` is on npm.
-2. GitHub org namespace login as a `codelives` org **Owner** — a classic PAT with only `read:org`
-   works where the browser login did not: `MCP_GITHUB_TOKEN=<pat> mcp-publisher login github`.
+2. Domain login for `ainecto.com` (HTTP: `https://ainecto.com/.well-known/mcp-registry-auth` must
+   serve the public key; the private key is in the macOS keychain):
+   `mcp-publisher login http --domain ainecto.com --private-key "$(security find-generic-password -s codelive-mcp-registry -a ainecto.com -w)"`.
 3. `mcp-publisher publish` from this folder.
 
-The Registry gives one remote URL to one server name: once this entry is published with the remote, a
-`com.ainecto/*` entry cannot list the same URL. The name decision is in `docs/mcp-registry-registration.md`.
+Up to 0.8.1 the entry was `io.github.codelives/ainecto` (package only); it is marked deprecated after
+the first `com.ainecto/ainecto` publish. Details in `docs/mcp-registry-registration.md`.
 
 ## Development
 
