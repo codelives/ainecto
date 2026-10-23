@@ -74,6 +74,10 @@
           "items"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -104,6 +108,10 @@
           "ids"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -122,6 +130,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -155,6 +167,78 @@
           }
         },
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "list_my_comments",
+      "description": "List the comments, questions and replies the signed-in user wrote, across documents and kanban cards in one list, newest first by default — call it when the user asks things like \"what did I comment on?\", \"which of my questions are still open?\" or \"find the comment I left about ...\". Each item has commentId, kind (COMMENT or QUESTION), body, parentCommentId (set on a reply), resolved (for a top-level question: true once resolved; null otherwise), createdAt, updatedAt and target {type (DOCUMENT or KANBAN_CARD), documentUuid (for a card, its board), cardUuid (cards only), title, url}. Only comments on what you can read now are listed; deleted comments are not. Filters combine with AND. Read the next page by passing nextCursor as cursor (hasMore says whether there is one). To read a whole thread use list_comments with the target's documentUuid or cardUuid.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "string",
+            "description": "Sort by when the comment was written: newest (default) or oldest first.",
+            "enum": [
+              "newest",
+              "oldest"
+            ]
+          },
+          "workspaceUuid": {
+            "type": "string",
+            "description": "Only comments in this workspace."
+          },
+          "projectUuid": {
+            "type": "string",
+            "description": "Only comments in this project. With workspaceUuid too, both must match. A workspace or project you cannot see matches nothing."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Only this kind: COMMENT or QUESTION.",
+            "enum": [
+              "COMMENT",
+              "QUESTION"
+            ]
+          },
+          "resolved": {
+            "type": "boolean",
+            "description": "Only your top-level questions that are resolved (true) or still open (false). Comments and replies are left out when this is given."
+          },
+          "since": {
+            "type": "string",
+            "description": "Only comments written at or after this ISO-8601 time, e.g. 2026-10-01T00:00:00Z."
+          },
+          "until": {
+            "type": "string",
+            "description": "Only comments written before this ISO-8601 time."
+          },
+          "target": {
+            "type": "string",
+            "description": "Only comments on documents (DOCUMENT) or on kanban cards (KANBAN_CARD).",
+            "enum": [
+              "DOCUMENT",
+              "KANBAN_CARD"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Comments per page, default 20.",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "description": "The nextCursor of the previous response, to read the next page. Keep the other arguments the same."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -185,6 +269,10 @@
           "ids"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -254,6 +342,10 @@
           "items"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -351,7 +443,8 @@
               },
               "required": [
                 "action"
-              ]
+              ],
+              "additionalProperties": false
             }
           },
           "edges": {
@@ -409,7 +502,8 @@
               },
               "required": [
                 "action"
-              ]
+              ],
+              "additionalProperties": false
             }
           },
           "groups": {
@@ -470,14 +564,20 @@
               },
               "required": [
                 "action"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "diagramUuid",
           "description"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -493,7 +593,12 @@
         },
         "required": [
           "edgeUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -509,7 +614,12 @@
         },
         "required": [
           "groupUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -525,7 +635,12 @@
         },
         "required": [
           "nodeUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -533,7 +648,12 @@
       "description": "List your own AI requests that are waiting (PENDING) or in progress (PROCESSING), for every service, not only diagrams: uuid, serviceCode, type, status, model and context. Read only — it does not claim anything; a request becomes PROCESSING only when a worker claims it through AiNecto's AI request API. Returns requests and count.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -549,12 +669,17 @@
         },
         "required": [
           "diagramUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
       "name": "diagram_list_groups",
-      "description": "List every group of one diagram document: uuid, name, color, width, height, parentGroupUuid, collapsed, depth, sortOrder, linkedDiagramUuid, linkMode and version. Nodes point to their group with groupUuid. Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns groups and count.",
+      "description": "List every group of one diagram document: uuid, name, color, width, height, parentGroupUuid, collapsed, depth, sortOrder, linkedDiagramUuid, linkMode, version and nodeUuids (the member nodes; each node also points to its group with groupUuid). Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns groups and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -565,7 +690,12 @@
         },
         "required": [
           "diagramUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -581,7 +711,12 @@
         },
         "required": [
           "diagramUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -618,7 +753,12 @@
         "required": [
           "uuid",
           "result"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -646,7 +786,12 @@
         "required": [
           "uuid",
           "status"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -666,7 +811,12 @@
         },
         "required": [
           "documentUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -723,436 +873,15 @@
                 },
                 "data": {
                   "type": "object",
-                  "description": "Type-specific payload. All field names are snake_case. For create, data.uuid may be client-supplied and referenced by later operations in the same batch.",
-                  "oneOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "name": {
-                          "type": "string",
-                          "description": "Table name. Required for create."
-                        },
-                        "schema_name": {
-                          "type": "string",
-                          "description": "Schema name."
-                        },
-                        "alias": {
-                          "type": "string",
-                          "description": "Display alias."
-                        },
-                        "note": {
-                          "type": "string",
-                          "description": "Table note."
-                        },
-                        "header_color": {
-                          "type": "string",
-                          "description": "Header color."
-                        },
-                        "display_order": {
-                          "type": "integer",
-                          "description": "Display order."
-                        }
-                      },
-                      "title": "table data",
-                      "description": "Payload for operation.type='table'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "table_uuid": {
-                          "type": "string",
-                          "description": "Parent table UUID. Required for create; may be a data.uuid from an earlier table operation in this batch."
-                        },
-                        "name": {
-                          "type": "string",
-                          "description": "Column name."
-                        },
-                        "type": {
-                          "type": "string",
-                          "description": "SQL data type. Use this exact field name; do not send data_type."
-                        },
-                        "is_pk": {
-                          "type": "boolean",
-                          "description": "Primary key flag."
-                        },
-                        "is_unique": {
-                          "type": "boolean",
-                          "description": "Unique flag."
-                        },
-                        "is_not_null": {
-                          "type": "boolean",
-                          "description": "Not-null flag."
-                        },
-                        "is_increment": {
-                          "type": "boolean",
-                          "description": "Auto-increment flag."
-                        },
-                        "default_value": {
-                          "type": "string",
-                          "description": "Default value."
-                        },
-                        "note": {
-                          "type": "string",
-                          "description": "Column note."
-                        },
-                        "display_order": {
-                          "type": "integer",
-                          "description": "Display order."
-                        }
-                      },
-                      "title": "column data",
-                      "description": "Payload for operation.type='column'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "table_uuid": {
-                          "type": "string",
-                          "description": "Parent table UUID. Required for create."
-                        },
-                        "name": {
-                          "type": "string",
-                          "description": "Index name."
-                        },
-                        "is_pk": {
-                          "type": "boolean",
-                          "description": "Primary key index flag."
-                        },
-                        "is_unique": {
-                          "type": "boolean",
-                          "description": "Unique index flag."
-                        },
-                        "type": {
-                          "type": "string",
-                          "description": "Index type."
-                        },
-                        "note": {
-                          "type": "string",
-                          "description": "Index note."
-                        }
-                      },
-                      "title": "index data",
-                      "description": "Payload for operation.type='index'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "index_uuid": {
-                          "type": "string",
-                          "description": "Index UUID. Required for create."
-                        },
-                        "column_uuid": {
-                          "type": "string",
-                          "description": "Column UUID. Required for create."
-                        },
-                        "sort_order": {
-                          "type": "string",
-                          "description": "Sort order, for example ASC or DESC."
-                        },
-                        "display_order": {
-                          "type": "integer",
-                          "description": "Display order."
-                        }
-                      },
-                      "title": "index_column data",
-                      "description": "Payload for operation.type='index_column'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "name": {
-                          "type": "string",
-                          "description": "Reference name."
-                        },
-                        "from_table_uuid": {
-                          "type": "string",
-                          "description": "Source table UUID. Required for create."
-                        },
-                        "to_table_uuid": {
-                          "type": "string",
-                          "description": "Target table UUID. Required for create."
-                        },
-                        "relationship": {
-                          "type": "string",
-                          "description": "Required for create. Use short dbdiagram-style relationship symbols.",
-                          "enum": [
-                            ">",
-                            "<",
-                            "-"
-                          ]
-                        },
-                        "on_delete": {
-                          "type": "string",
-                          "description": "ON DELETE action."
-                        },
-                        "on_update": {
-                          "type": "string",
-                          "description": "ON UPDATE action."
-                        }
-                      },
-                      "title": "ref data",
-                      "description": "Payload for operation.type='ref'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "ref_uuid": {
-                          "type": "string",
-                          "description": "Reference UUID. Required for create; may be a data.uuid from an earlier ref operation."
-                        },
-                        "from_column_uuid": {
-                          "type": "string",
-                          "description": "Source column UUID. Required for create."
-                        },
-                        "to_column_uuid": {
-                          "type": "string",
-                          "description": "Target column UUID. Required for create."
-                        },
-                        "display_order": {
-                          "type": "integer",
-                          "description": "Display order."
-                        }
-                      },
-                      "title": "ref_column data",
-                      "description": "Payload for operation.type='ref_column'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "name": {
-                          "type": "string",
-                          "description": "Enum name."
-                        },
-                        "schema_name": {
-                          "type": "string",
-                          "description": "Schema name."
-                        },
-                        "note": {
-                          "type": "string",
-                          "description": "Enum note."
-                        }
-                      },
-                      "title": "enum data",
-                      "description": "Payload for operation.type='enum'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "enum_uuid": {
-                          "type": "string",
-                          "description": "Parent enum UUID. Required for create; may be a data.uuid from an earlier enum operation."
-                        },
-                        "value": {
-                          "type": "string",
-                          "description": "Enum value. Inline enum values on enum are not persisted; create enum_value operations."
-                        },
-                        "note": {
-                          "type": "string",
-                          "description": "Enum value note."
-                        },
-                        "display_order": {
-                          "type": "integer",
-                          "description": "Display order."
-                        }
-                      },
-                      "title": "enum_value data",
-                      "description": "Payload for operation.type='enum_value'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "name": {
-                          "type": "string",
-                          "description": "Table group name."
-                        },
-                        "color": {
-                          "type": "string",
-                          "description": "Group color."
-                        }
-                      },
-                      "title": "table_group data",
-                      "description": "Payload for operation.type='table_group'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "group_uuid": {
-                          "type": "string",
-                          "description": "Table group UUID. Required for create."
-                        },
-                        "schema_name": {
-                          "type": "string",
-                          "description": "Table schema name."
-                        },
-                        "table_name": {
-                          "type": "string",
-                          "description": "Table name. Required for create."
-                        },
-                        "display_order": {
-                          "type": "integer",
-                          "description": "Display order."
-                        }
-                      },
-                      "title": "table_group_table data",
-                      "description": "Payload for operation.type='table_group_table'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "group_uuid": {
-                          "type": "string",
-                          "description": "Table group UUID. Required for create."
-                        },
-                        "note_uuid": {
-                          "type": "string",
-                          "description": "Note UUID. Required for create."
-                        },
-                        "display_order": {
-                          "type": "integer",
-                          "description": "Display order."
-                        }
-                      },
-                      "title": "table_group_note data",
-                      "description": "Payload for operation.type='table_group_note'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "name": {
-                          "type": "string",
-                          "description": "Filter name."
-                        },
-                        "is_default": {
-                          "type": "boolean",
-                          "description": "Default filter flag."
-                        },
-                        "included_tables": {
-                          "type": "string",
-                          "description": "JSON string/list of included tables."
-                        },
-                        "table_positions": {
-                          "type": "string",
-                          "description": "JSON string/object of table positions."
-                        },
-                        "table_groups": {
-                          "type": "string",
-                          "description": "JSON string/object of table groups."
-                        }
-                      },
-                      "title": "filter data",
-                      "description": "Payload for operation.type='filter'."
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "uuid": {
-                          "type": "string",
-                          "description": "Optional on create: client-generated UUID (at most 36 characters, e.g. a standard UUID v4). If supplied, later operations in the same batch can reference it. Do not put create UUIDs in operation.uuid; operation.uuid is only the update/delete target.",
-                          "maxLength": 36
-                        },
-                        "title": {
-                          "type": "string",
-                          "description": "Note title."
-                        },
-                        "content": {
-                          "type": "string",
-                          "description": "Note content."
-                        },
-                        "color": {
-                          "type": "string",
-                          "description": "Note color."
-                        },
-                        "position_x": {
-                          "type": "integer",
-                          "description": "X position."
-                        },
-                        "position_y": {
-                          "type": "integer",
-                          "description": "Y position."
-                        },
-                        "width": {
-                          "type": "integer",
-                          "description": "Width."
-                        },
-                        "height": {
-                          "type": "integer",
-                          "description": "Height."
-                        },
-                        "icon_name": {
-                          "type": "string",
-                          "description": "Icon name."
-                        }
-                      },
-                      "title": "note data",
-                      "description": "Payload for operation.type='note'."
-                    }
-                  ]
+                  "description": "Type-specific payload; its shape is chosen by operation.type. All field names are snake_case. For create, data.uuid may be client-supplied and referenced by later operations in the same batch.",
+                  "additionalProperties": true
                 }
               },
               "required": [
                 "op",
                 "type"
               ],
+              "additionalProperties": false,
               "description": "One ERD mutation. Use a single operations array with client-generated data.uuid values to create cross-referenced tables, columns, enums, refs, and ref_columns without read-back calls.",
               "oneOf": [
                 {
@@ -1209,6 +938,7 @@
                           "description": "Display order."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "table data",
                       "description": "Payload for operation.type='table'."
                     }
@@ -1217,11 +947,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "table operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1233,7 +963,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -1271,6 +1000,7 @@
                             "required": [
                               "name"
                             ],
+                            "additionalProperties": false,
                             "title": "table data",
                             "description": "Payload for operation.type='table'."
                           }
@@ -1282,7 +1012,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1297,7 +1026,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -1376,6 +1104,7 @@
                           "description": "Display order."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "column data",
                       "description": "Payload for operation.type='column'."
                     }
@@ -1384,11 +1113,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "column operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1400,7 +1129,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -1454,6 +1182,7 @@
                             "required": [
                               "table_uuid"
                             ],
+                            "additionalProperties": false,
                             "title": "column data",
                             "description": "Payload for operation.type='column'."
                           }
@@ -1465,7 +1194,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1480,7 +1208,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -1543,6 +1270,7 @@
                           "description": "Index note."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "index data",
                       "description": "Payload for operation.type='index'."
                     }
@@ -1551,11 +1279,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "index operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1567,7 +1295,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -1605,6 +1332,7 @@
                             "required": [
                               "table_uuid"
                             ],
+                            "additionalProperties": false,
                             "title": "index data",
                             "description": "Payload for operation.type='index'."
                           }
@@ -1616,7 +1344,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1631,7 +1358,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -1686,6 +1412,7 @@
                           "description": "Display order."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "index_column data",
                       "description": "Payload for operation.type='index_column'."
                     }
@@ -1694,11 +1421,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "index_column operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1710,7 +1437,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -1741,6 +1467,7 @@
                               "index_uuid",
                               "column_uuid"
                             ],
+                            "additionalProperties": false,
                             "title": "index_column data",
                             "description": "Payload for operation.type='index_column'."
                           }
@@ -1752,7 +1479,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1767,7 +1493,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -1835,6 +1560,7 @@
                           "description": "ON UPDATE action."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "ref data",
                       "description": "Payload for operation.type='ref'."
                     }
@@ -1843,11 +1569,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "ref operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1859,7 +1585,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -1904,6 +1629,7 @@
                               "to_table_uuid",
                               "relationship"
                             ],
+                            "additionalProperties": false,
                             "title": "ref data",
                             "description": "Payload for operation.type='ref'."
                           }
@@ -1915,7 +1641,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -1930,7 +1655,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -1985,6 +1709,7 @@
                           "description": "Display order."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "ref_column data",
                       "description": "Payload for operation.type='ref_column'."
                     }
@@ -1993,11 +1718,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "ref_column operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2009,7 +1734,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -2041,6 +1765,7 @@
                               "from_column_uuid",
                               "to_column_uuid"
                             ],
+                            "additionalProperties": false,
                             "title": "ref_column data",
                             "description": "Payload for operation.type='ref_column'."
                           }
@@ -2052,7 +1777,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2067,7 +1791,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -2118,6 +1841,7 @@
                           "description": "Enum note."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "enum data",
                       "description": "Payload for operation.type='enum'."
                     }
@@ -2126,11 +1850,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "enum operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2142,7 +1866,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -2165,6 +1888,7 @@
                                 "description": "Enum note."
                               }
                             },
+                            "additionalProperties": false,
                             "title": "enum data",
                             "description": "Payload for operation.type='enum'."
                           }
@@ -2176,7 +1900,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2191,7 +1914,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -2246,6 +1968,7 @@
                           "description": "Display order."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "enum_value data",
                       "description": "Payload for operation.type='enum_value'."
                     }
@@ -2254,11 +1977,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "enum_value operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2270,7 +1993,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -2300,6 +2022,7 @@
                             "required": [
                               "enum_uuid"
                             ],
+                            "additionalProperties": false,
                             "title": "enum_value data",
                             "description": "Payload for operation.type='enum_value'."
                           }
@@ -2311,7 +2034,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2326,7 +2048,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -2373,6 +2094,7 @@
                           "description": "Group color."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "table_group data",
                       "description": "Payload for operation.type='table_group'."
                     }
@@ -2381,11 +2103,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "table_group operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2397,7 +2119,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -2416,6 +2137,7 @@
                                 "description": "Group color."
                               }
                             },
+                            "additionalProperties": false,
                             "title": "table_group data",
                             "description": "Payload for operation.type='table_group'."
                           }
@@ -2427,7 +2149,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2442,7 +2163,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -2497,6 +2217,7 @@
                           "description": "Display order."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "table_group_table data",
                       "description": "Payload for operation.type='table_group_table'."
                     }
@@ -2505,11 +2226,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "table_group_table operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2521,7 +2242,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -2552,6 +2272,7 @@
                               "group_uuid",
                               "table_name"
                             ],
+                            "additionalProperties": false,
                             "title": "table_group_table data",
                             "description": "Payload for operation.type='table_group_table'."
                           }
@@ -2563,7 +2284,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2578,7 +2298,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -2629,6 +2348,7 @@
                           "description": "Display order."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "table_group_note data",
                       "description": "Payload for operation.type='table_group_note'."
                     }
@@ -2637,11 +2357,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "table_group_note operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2653,7 +2373,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -2680,6 +2399,7 @@
                               "group_uuid",
                               "note_uuid"
                             ],
+                            "additionalProperties": false,
                             "title": "table_group_note data",
                             "description": "Payload for operation.type='table_group_note'."
                           }
@@ -2691,7 +2411,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2706,7 +2425,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -2765,6 +2483,7 @@
                           "description": "JSON string/object of table groups."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "filter data",
                       "description": "Payload for operation.type='filter'."
                     }
@@ -2773,11 +2492,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "filter operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2789,7 +2508,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -2820,6 +2538,7 @@
                                 "description": "JSON string/object of table groups."
                               }
                             },
+                            "additionalProperties": false,
                             "title": "filter data",
                             "description": "Payload for operation.type='filter'."
                           }
@@ -2831,7 +2550,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2846,7 +2564,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -2917,6 +2634,7 @@
                           "description": "Icon name."
                         }
                       },
+                      "additionalProperties": false,
                       "title": "note data",
                       "description": "Payload for operation.type='note'."
                     }
@@ -2925,11 +2643,11 @@
                     "op",
                     "type"
                   ],
+                  "additionalProperties": false,
                   "title": "note operation",
                   "allOf": [
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -2941,7 +2659,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {
                           "data": {
                             "type": "object",
@@ -2984,6 +2701,7 @@
                                 "description": "Icon name."
                               }
                             },
+                            "additionalProperties": false,
                             "title": "note data",
                             "description": "Payload for operation.type='note'."
                           }
@@ -2995,7 +2713,6 @@
                     },
                     {
                       "if": {
-                        "type": "object",
                         "properties": {
                           "op": {
                             "type": "string",
@@ -3010,7 +2727,6 @@
                         ]
                       },
                       "then": {
-                        "type": "object",
                         "properties": {},
                         "required": [
                           "uuid"
@@ -3034,7 +2750,12 @@
           "documentUuid",
           "description",
           "operations"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -3055,7 +2776,12 @@
         "required": [
           "documentUuid",
           "enumUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3076,7 +2802,12 @@
         "required": [
           "documentUuid",
           "refUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3097,7 +2828,12 @@
         "required": [
           "documentUuid",
           "tableGroupUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3119,7 +2855,12 @@
           "documentUuid",
           "tableUuid"
         ],
+        "additionalProperties": false,
         "description": "Get one ERD table with nested columns and indexes. Returns persistent table/column/index UUIDs usable directly as mcp__ainecto__erd_apply_changes update/delete targets and ref_column column references. Column fields use apply_changes snake_case names: uuid, table_uuid, name, type, is_pk, is_unique, is_not_null, is_increment, default_value, note, display_order. Index fields include uuid, name, columns (column UUIDs), is_unique, is_pk, type."
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3135,7 +2876,12 @@
         },
         "required": [
           "documentUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3151,7 +2897,12 @@
         },
         "required": [
           "documentUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3167,7 +2918,12 @@
         },
         "required": [
           "documentUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3183,7 +2939,12 @@
         },
         "required": [
           "documentUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3214,6 +2975,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3261,7 +3026,11 @@
                 "CARD_BLOCKED",
                 "CARD_UNBLOCKED",
                 "CARD_ARCHIVED",
-                "CARD_COMMENTED"
+                "CARD_COMMENTED",
+                "WORKSPACE_ARCHIVED",
+                "WORKSPACE_UNARCHIVED",
+                "PROJECT_ARCHIVED",
+                "PROJECT_UNARCHIVED"
               ]
             },
             "uniqueItems": true
@@ -3298,6 +3067,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3354,7 +3127,11 @@
                 "CARD_BLOCKED",
                 "CARD_UNBLOCKED",
                 "CARD_ARCHIVED",
-                "CARD_COMMENTED"
+                "CARD_COMMENTED",
+                "WORKSPACE_ARCHIVED",
+                "WORKSPACE_UNARCHIVED",
+                "PROJECT_ARCHIVED",
+                "PROJECT_UNARCHIVED"
               ]
             },
             "uniqueItems": true
@@ -3379,6 +3156,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3422,7 +3203,11 @@
                 "CARD_BLOCKED",
                 "CARD_UNBLOCKED",
                 "CARD_ARCHIVED",
-                "CARD_COMMENTED"
+                "CARD_COMMENTED",
+                "WORKSPACE_ARCHIVED",
+                "WORKSPACE_UNARCHIVED",
+                "PROJECT_ARCHIVED",
+                "PROJECT_UNARCHIVED"
               ]
             },
             "uniqueItems": true
@@ -3459,6 +3244,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3496,6 +3285,10 @@
           "items"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -3549,6 +3342,10 @@
           "items"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -3783,6 +3580,10 @@
           "operations"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -3857,6 +3658,10 @@
           "action"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -3928,6 +3733,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -3958,13 +3767,19 @@
               "required": [
                 "uuid",
                 "addition"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4006,7 +3821,8 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only); kanban: no payload — creates an empty board; add cards with kanban_apply_changes."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only); kanban: no payload — creates an empty board; add cards with kanban_apply_changes.",
+                  "additionalProperties": true
                 },
                 "body": {
                   "type": "string",
@@ -4021,13 +3837,19 @@
                 "projectUuid",
                 "type",
                 "title"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4058,13 +3880,19 @@
               "required": [
                 "projectUuid",
                 "name"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4098,13 +3926,19 @@
               },
               "required": [
                 "name"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4130,13 +3964,19 @@
               },
               "required": [
                 "name"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4155,7 +3995,12 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4174,7 +4019,12 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4193,12 +4043,17 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
       "name": "delete_projects",
-      "description": "Archive projects. An archived project disappears from list_projects and nothing inside it can be read or edited; its documents are not moved to the trash and nothing is purged automatically. Archiving also removes every person's direct sharing on the project, its folders and its documents, and restoring does not give it back. Public links of documents inside stop opening while the project is archived. unarchive_projects is the matching restore tool. Needs admin or owner rights on the project. Always confirm with the user first (get_project shows the name and workspace). Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns deleted (UUIDs) and count. Fails with 404 for an unknown UUID, 403 without rights or when it is already archived, and 409 when its workspace is archived.",
+      "description": "Archive projects. An archived project disappears from list_projects and nothing inside it can be read or edited; its documents are not moved to the trash and nothing is purged automatically. Archiving also removes every person's direct sharing on the project, its folders and its documents, and restoring does not give it back. Public links of documents inside stop opening while the project is archived. unarchive_projects is the matching restore tool. Needs admin or owner rights on the project. Always confirm with the user first (get_project shows the name and workspace). Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Everyone else who can open the whole project gets an inbox notification (no email). Returns deleted (UUIDs) and count. Fails with 404 for an unknown UUID, 403 without rights or when it is already archived, and 409 when its workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4212,12 +4067,17 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
       "name": "delete_workspaces",
-      "description": "Archive workspaces. An archived workspace disappears from list_workspaces, its projects disappear from list_projects, and nothing inside can be read or changed until it is restored with unarchive_workspaces. Nothing is purged and sharing is kept. Only the workspace owner can do this. Always confirm with the user first — it hides every project in the workspace for everyone. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns deleted (UUIDs) and count. Fails with 404 for an unknown UUID and 403 when you are not the owner or it is already archived.",
+      "description": "Archive workspaces. An archived workspace disappears from list_workspaces, its projects disappear from list_projects, and nothing inside can be read or changed until it is restored with unarchive_workspaces. Nothing is purged and sharing is kept. Needs admin or owner rights on the workspace. Always confirm with the user first — it hides every project in the workspace for everyone. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Everyone else who can open the whole workspace gets an inbox notification (no email). Returns deleted (UUIDs) and count. Fails with 404 for an unknown UUID and 403 without rights or when it is already archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4231,7 +4091,12 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4260,7 +4125,12 @@
         "required": [
           "targetType",
           "targetUuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4289,7 +4159,12 @@
         "required": [
           "targetType",
           "targetUuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4320,13 +4195,19 @@
               "required": [
                 "documentUuid",
                 "prompt"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4342,7 +4223,12 @@
         },
         "required": [
           "uuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4358,7 +4244,12 @@
         },
         "required": [
           "uuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4374,7 +4265,12 @@
         },
         "required": [
           "uuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4395,7 +4291,12 @@
         "required": [
           "documentUuid",
           "versionNumber"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4411,7 +4312,12 @@
         },
         "required": [
           "uuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4427,7 +4333,12 @@
         },
         "required": [
           "projectUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4465,7 +4376,12 @@
             "type": "integer",
             "description": "Result cap when q is set (default 50)"
           }
-        }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4481,7 +4397,12 @@
         },
         "required": [
           "projectUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4502,7 +4423,12 @@
             "type": "integer",
             "description": "Result cap when q is set (default 50)"
           }
-        }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4510,7 +4436,12 @@
       "description": "List the documents in the trash across every project you can open as a whole (access through a single shared folder or file does not count): documents deleted with delete_documents or inside a trashed folder. Trashed folders, archived projects and archived workspaces are not listed here. Read only, no paging. Returns trashed (document rows: uuid, title, type, projectId, folderId) and count. unarchive_documents restores one; the server permanently deletes trashed documents once the trash retention period passes (30 days by default).",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4526,7 +4457,12 @@
         },
         "required": [
           "documentUuid"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4534,7 +4470,12 @@
       "description": "List the personal workspaces you own (active ones only). Workspaces that other people or a team share with you are not included — list_projects shows every project you can open (each row has workspaceId) and get_workspace reads one workspace. Read only. Returns workspaces (uuid, name, description, owner, revision) and count.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -4568,7 +4509,8 @@
               },
               "required": [
                 "uuid"
-              ]
+              ],
+              "additionalProperties": false
             }
           },
           "clientMutationId": {
@@ -4581,7 +4523,12 @@
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4607,13 +4554,19 @@
               },
               "required": [
                 "uuid"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4640,13 +4593,19 @@
               "required": [
                 "uuid",
                 "targetWorkspaceUuid"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4657,7 +4616,7 @@
         "properties": {
           "purpose": {
             "type": "string",
-            "description": "Token 용도. `mcp.call` 은 curl 로 /mcp 호출, `document.create/update/append` 는 PUT body 로 본문 업로드, `attachment.upload` 는 파일 bytes 업로드. 콘텐츠가 크면 (수십 KB 이상) LLM 토큰 절약을 위해 이 도구로 5분 재사용 토큰을 받고 curl 로 보내는 것을 강력 권장.",
+            "description": "Token purpose. `mcp.call` calls /mcp with curl, `document.create/update/append` uploads the body as a PUT, `attachment.upload` uploads file bytes. For large content (tens of KB or more), get a 5-minute reusable token here and send it with curl to save LLM tokens.",
             "enum": [
               "mcp.call",
               "document.create",
@@ -4668,20 +4627,27 @@
           },
           "scopeJson": {
             "type": "string",
-            "description": "선택 — JSON scope. document.create 는 projectUuid, type, title 을 포함하고 creatable type values 는 erd, markdown, diagram, openapi, html, file, kanban. document.update/document.append 는 documentUuid 를 포함. type=file 은 filename 도 포함(확장자로 형식 판정) — PUT 의 Content-Type 은 파일 MIME, 본문은 파일 바이트. attachment.upload: {documentUuid, filename}; storageKey 는 서버가 발급 scope 에 넣는다."
+            "description": "Optional JSON scope. document.create includes projectUuid, type, title; creatable type values: erd, markdown, diagram, openapi, html, file, kanban. document.update/document.append include documentUuid. type=file also includes filename (the extension decides the format) — the PUT Content-Type is the file MIME and the body is the file bytes. attachment.upload: {documentUuid, filename}; the server adds storageKey to the issued scope."
           },
           "maxBytes": {
             "type": "integer",
-            "description": "최대 업로드 byte (서버 측 한도)"
+            "description": "Maximum upload size in bytes, at most 52428800. Omit for the server default.",
+            "maximum": 52428800
           },
           "ttlSeconds": {
             "type": "integer",
-            "description": "TTL (초). 기본 300 (5분)"
+            "description": "Token lifetime in seconds. Default and maximum 300.",
+            "maximum": 300
           }
         },
         "required": [
           "purpose"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4708,13 +4674,19 @@
               "required": [
                 "documentUuid",
                 "versionNumber"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4733,7 +4705,12 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4752,12 +4729,17 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
       "name": "unarchive_projects",
-      "description": "Restore archived projects so they are listed and editable again. Public links of documents inside open again if they were on; sharing removed at archive time does not come back. No tool lists archived projects, so use the UUID from the earlier delete_projects call. Needs edit access to the project, and its workspace must not be archived. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns unarchived (project rows) and count. Fails with 404 for an unknown UUID, 403 without access, and 409 when the workspace is archived.",
+      "description": "Restore archived projects so they are listed and editable again. Public links of documents inside open again if they were on; sharing removed at archive time does not come back. No tool lists archived projects, so use the UUID from the earlier delete_projects call. Needs admin or owner rights on the project, and its workspace must not be archived. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Everyone else who can open the whole project gets an inbox notification (no email). Returns unarchived (project rows) and count. Fails with 404 for an unknown UUID, 403 without rights, and 409 when the workspace is archived.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4771,12 +4753,17 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
       "name": "unarchive_workspaces",
-      "description": "Restore archived workspaces so they and their projects are listed and usable again. No tool lists archived workspaces, so use the UUID from the earlier delete_workspaces call. Needs edit access to the workspace. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns unarchived (workspace rows) and count. Fails with 404 for an unknown UUID and 403 without access.",
+      "description": "Restore archived workspaces so they and their projects are listed and usable again. No tool lists archived workspaces, so use the UUID from the earlier delete_workspaces call. Needs admin or owner rights on the workspace. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Everyone else who can open the whole workspace gets an inbox notification (no email). Returns unarchived (workspace rows) and count. Fails with 404 for an unknown UUID and 403 without rights.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4790,7 +4777,12 @@
         },
         "required": [
           "uuids"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -4815,7 +4807,8 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB); kanban: no body — only the title can be updated; cards are changed with kanban_apply_changes and kanban_card_action."
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB); kanban: no body — only the title can be updated; cards are changed with kanban_apply_changes and kanban_card_action.",
+                  "additionalProperties": true
                 },
                 "body": {
                   "type": "string",
@@ -4824,13 +4817,19 @@
               },
               "required": [
                 "uuid"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4857,13 +4856,19 @@
               "required": [
                 "uuid",
                 "name"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4893,13 +4898,19 @@
               },
               "required": [
                 "uuid"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4929,13 +4940,19 @@
               },
               "required": [
                 "uuid"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     },
     {
@@ -4975,13 +4992,19 @@
                 "documentUuid",
                 "filename",
                 "storageKey"
-              ]
+              ],
+              "additionalProperties": false
             }
           }
         },
         "required": [
           "items"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
@@ -5047,7 +5070,12 @@
             "type": "integer",
             "description": "페이지네이션 offset (기본 0)"
           }
-        }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -5057,6 +5085,10 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -5066,6 +5098,10 @@
         "type": "object",
         "properties": {},
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
       }
     },
     {
@@ -5098,6 +5134,10 @@
           "code"
         ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
       }
     }
   ]
