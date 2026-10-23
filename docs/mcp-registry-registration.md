@@ -3,7 +3,8 @@
 Date: 2026-07-10 KST (updated 2026-10-14 for 0.6.0, 2026-10-22 remote draft, 2026-10-22 rename)
 Status: published up to 0.8.1 as `io.github.codelives/ainecto` (package only). `server.json` 0.9.0 is
 renamed to `com.ainecto/mcp` and adds the remote — validated (`mcp-publisher validate`), not
-published. The current procedure is in README «MCP Registry».
+published. The current procedure is in README «MCP Registry»; the publish-day command sequence is
+«Move day» below.
 
 ## Identity
 
@@ -66,14 +67,39 @@ DNS method (not used): TXT record on `ainecto.com` with the same value
 
 ### The old name `io.github.codelives/ainecto`
 
-Its versions (≤ 0.8.1) stay listed. After the first `com.ainecto/mcp` publish, mark them deprecated
-(`mcp-publisher status --help`; the registry accepts a publish permission on the name):
+Its versions (≤ 0.8.1, package only) stay listed. After the first `com.ainecto/mcp` publish, mark them
+deprecated (`mcp-publisher status --help`, checked on 1.7.9; the registry accepts a publish permission on
+the name, so it needs the `io.github.codelives/*` GitHub login below).
+
+#### Move day — commands to run in order (from this folder)
+
+`mcp-publisher` keeps one login at a time, so the domain login comes first and the GitHub login last.
 
 ```bash
-MCP_GITHUB_TOKEN=<pat> mcp-publisher login github
+# 1. npm 0.9.0 under all names (typecheck·test·build once; re-run with a new code if the OTP expires)
+npm run release -- --otp=<code>
+npm view @ainecto/mcp@0.9.0 mcpName          # must print com.ainecto/mcp
+
+# 2. Domain login (public record must already be served)
+curl -s https://ainecto.com/.well-known/mcp-registry-auth   # v=MCPv1; k=ed25519; p=…
+mcp-publisher login http --domain ainecto.com \
+  --private-key "$(security find-generic-password -s codelive-mcp-registry -a ainecto.com -w)"
+
+# 3. Publish
+mcp-publisher validate
+mcp-publisher publish
+
+# 4. Verify — com.ainecto/mcp 0.9.0 with remotes + packages
+curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=com.ainecto/mcp"
+
+# 5. Deprecate the old name (GitHub Owner of codelives, classic PAT with read:org)
+MCP_GITHUB_TOKEN=$(pbpaste) mcp-publisher login github
 mcp-publisher status --status deprecated --all-versions \
   --message "Moved to com.ainecto/mcp" io.github.codelives/ainecto
+curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.codelives/ainecto"
 ```
+
+Step 5 only after step 4 shows the new entry — the old one is the only listing until then.
 
 ### GitHub login for `io.github.codelives/*` (2026-09-29)
 
