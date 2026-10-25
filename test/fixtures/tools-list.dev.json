@@ -1,6 +1,19 @@
 {
   "tools": [
     {
+      "name": "open_ainecto_panel",
+      "description": "Opens the AiNecto panel beside the conversation: the signed-in user's notifications, comments they can reply to, and their kanban work, kept up to date while it is shown. Call it when the user asks to open or show the AiNecto panel or inbox. In hosts that cannot show panels it returns the same summary as get_my_work_summary. Read-only: nothing is marked read; the user marks items read or replies in the panel itself.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "create_comments",
       "description": "Add comments, questions, or replies to a document or a kanban card (cardUuid). Anyone who can read it may comment and reply. Set parentCommentId to reply to a top-level comment. To mention people, get their userId and displayName from list_mention_candidates, write @<displayName> in the body, and list their userIds in mentionUserIds (clientMutationId is then required). Items are applied in order and each one commits on its own; results report each item (ok, or status and error).\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
@@ -522,6 +535,14 @@
                     null
                   ]
                 },
+                "style": {
+                  "type": "string",
+                  "description": "Per-edge routing; omit to follow the diagram default",
+                  "enum": [
+                    "bezier",
+                    "smoothstep"
+                  ]
+                },
                 "strokeColor": {
                   "type": "string",
                   "description": "Stroke color"
@@ -533,6 +554,15 @@
                 "strokeWidth": {
                   "type": "integer",
                   "description": "Stroke width"
+                },
+                "arrowStyle": {
+                  "type": "string",
+                  "description": "Arrow head",
+                  "enum": [
+                    "none",
+                    "arrow",
+                    "open"
+                  ]
                 }
               },
               "required": [
@@ -700,7 +730,7 @@
     },
     {
       "name": "diagram_list_edges",
-      "description": "List every edge (connector) of one diagram document: uuid, fromUuid, toUuid, label, bridgeType, strokeColor, lineStyle, strokeWidth and version. Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns edges and count.",
+      "description": "List every edge (connector) of one diagram document: uuid, diagramUuid, fromUuid, toUuid, label, bridgeType, style, strokeColor, lineStyle, strokeWidth, arrowStyle, version. Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns edges and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -721,7 +751,7 @@
     },
     {
       "name": "diagram_list_groups",
-      "description": "List every group of one diagram document: uuid, name, color, width, height, parentGroupUuid, collapsed, depth, sortOrder, linkedDiagramUuid, linkMode, version and nodeUuids (the member nodes; each node also points to its group with groupUuid). Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns groups and count.",
+      "description": "List every group of one diagram document: uuid, diagramUuid, name, color, width, height, parentGroupUuid, collapsed, depth, sortOrder, linkedDiagramUuid, linkMode, version and nodeUuids (the member nodes; each node also points to its group with groupUuid). Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns groups and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -742,7 +772,7 @@
     },
     {
       "name": "diagram_list_nodes",
-      "description": "List every node of one diagram document: uuid, type, text, shape, x, y, width, height, groupUuid, colors and version. diagram_apply_changes changes them. Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns nodes and count.",
+      "description": "List every node of one diagram document: uuid, diagramUuid, type, text, shape, x, y, width, height, groupUuid, fillColor, strokeColor, textColor, version. diagram_apply_changes changes them. Read only; needs read access to the diagram. Fails when diagramUuid is not a diagram document. Returns nodes and count.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3530,7 +3560,7 @@
     },
     {
       "name": "kanban_apply_changes",
-      "description": "Create, edit, reorder and link cards on one kanban board in a single atomic call (at most 100 operations; if one fails nothing is applied and the error carries operationIndex and code). Creating and editing cards needs edit access to the board; move with toBoardUuid moves a card to another board of the same project. The assignee may also check acceptance criteria and add result links (DELIVERABLE, REVIEW_RESULT, TEST_EVIDENCE). create also sets assignee, requester, reviewers and watchers in the same call. To change a card's column, reassign it, accept, approve, block, watch and similar, use kanban_card_action. Results list each operation's card uuid, revision, status and sortKey.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Create, duplicate, edit, reorder and link cards on one kanban board in a single atomic call (at most 100 operations; if one fails nothing is applied and the error carries operationIndex and code). Creating, duplicating and editing cards needs edit access to the board; move with toBoardUuid moves a card to another board of the same project. The assignee may also check acceptance criteria and add result links (DELIVERABLE, REVIEW_RESULT, TEST_EVIDENCE). create also sets assignee, requester, reviewers and watchers in the same call. To change a card's column, reassign it, accept, approve, block, watch and similar, use kanban_card_action. Results list each operation's card uuid, revision, status and sortKey.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3546,9 +3576,10 @@
               "properties": {
                 "op": {
                   "type": "string",
-                  "description": "create: a new card in To Do (you become its requester unless requesterUserId names someone else). update: change only the fields you send (send null to clear description, dueAt). move: reorder within the card's column, or with toBoardUuid move it to another board of the same project. link / unlink: attach or remove a document or an external URL.",
+                  "description": "create: a new card in To Do (you become its requester unless requesterUserId names someone else). update: change only the fields you send (send null to clear description, dueAt). move: reorder within the card's column, or with toBoardUuid move it to another board of the same project. link / unlink: attach or remove a document or an external URL. duplicate: copy a card's content into a new To Do card on this board (title, description, type, priority, due date, acceptance criteria unchecked, and the links you can read; people, column, comments and history are not copied — you become the requester).",
                   "enum": [
                     "create",
+                    "duplicate",
                     "link",
                     "move",
                     "unlink",
@@ -3557,7 +3588,7 @@
                 },
                 "cardUuid": {
                   "type": "string",
-                  "description": "Target card (update, move, link, unlink). It must be on this board. From kanban_list_cards — by cardKeys if you only have the card key, e.g. KAN-15."
+                  "description": "Target card (update, move, link, unlink, duplicate). It must be on this board. From kanban_list_cards — by cardKeys if you only have the card key, e.g. KAN-15."
                 },
                 "title": {
                   "type": "string",
@@ -3730,7 +3761,7 @@
                 },
                 "clientMutationId": {
                   "type": "string",
-                  "description": "create: idempotency key — retrying with the same value returns the same card instead of creating another."
+                  "description": "create, duplicate: idempotency key — retrying with the same value returns the same card instead of creating another."
                 },
                 "expectedRevision": {
                   "type": "integer",
