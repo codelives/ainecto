@@ -3241,6 +3241,10 @@
           "projectUuid": {
             "type": "string",
             "description": "Older single-value form of projectUuids."
+          },
+          "agent": {
+            "type": "string",
+            "description": "Whose items: \"me\" (default for a named agent — only what is aimed at this agent), \"person\" (only what is for the person, not for any agent), \"all\" (default for a connection without an agent name), or an agentUuid from list_agents."
           }
         },
         "additionalProperties": false
@@ -3325,6 +3329,10 @@
           "projectUuid": {
             "type": "string",
             "description": "Older single-value form of projectUuids."
+          },
+          "agent": {
+            "type": "string",
+            "description": "Whose to-dos: \"me\" (default for a named agent — only what is aimed at this agent), \"person\" (only what is for the person, not for any agent), \"all\" (default for a connection without an agent name), or an agentUuid from list_agents."
           },
           "after": {
             "type": "string",
@@ -3435,7 +3443,7 @@
     },
     {
       "name": "list_notifications",
-      "description": "Read new notifications for the signed-in user, oldest first and without gaps. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. A DOCUMENT_UPDATED item (a document the user subscribed to was changed by someone else; changes within 10 minutes are one item) also has documentChange {changeCount, versionSummary — the name/description of a named version saved in that group, else null}. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person (use mark_notifications_read when the user asks); open to-dos are in list_agent_todos. The same call repeated within 30 seconds returns the previous result without reading again, unless the inbox changed in between (a new or updated notification, a read, an ack); a call that carries ack is always read fresh. With order the call browses instead (see order) and is always read fresh.",
+      "description": "Read new notifications for the signed-in user, oldest first and without gaps. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly, agent), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. A DOCUMENT_UPDATED item (a document the user subscribed to was changed by someone else; changes within 10 minutes are one item) also has documentChange {changeCount, versionSummary — the name/description of a named version saved in that group, else null}. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person (use mark_notifications_read when the user asks); open to-dos are in list_agent_todos. The same call repeated within 30 seconds returns the previous result without reading again, unless the inbox changed in between (a new or updated notification, a read, an ack); a call that carries ack is always read fresh. With order the call browses instead (see order) and is always read fresh.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3504,6 +3512,10 @@
           "projectUuid": {
             "type": "string",
             "description": "Older single-value form of projectUuids."
+          },
+          "agent": {
+            "type": "string",
+            "description": "Whose notifications: \"me\" (default for a named agent — only what is aimed at this agent), \"person\" (only what is for the person, not for any agent), \"all\" (default for a connection without an agent name), or an agentUuid from list_agents."
           },
           "directOnly": {
             "type": "boolean",
@@ -3826,6 +3838,10 @@
                   "type": "string",
                   "description": "create only: assign the new card (userId from list_mention_candidates with the board's documentUuid). Someone other than you gets an assignment to accept. To reassign an existing card use kanban_card_action assign."
                 },
+                "assigneeAgentUuid": {
+                  "type": "string",
+                  "description": "create only: assign the new card to one named agent of the assignee (agentUuid from list_agents, or agents[] of list_mention_candidates with cardUuid). Its to-dos and notifications go to that agent only. Given alone, the agent's owner becomes the assignee."
+                },
                 "requesterUserId": {
                   "type": "string",
                   "description": "create only: the requester (reporter) instead of you; they are notified. To change it later use kanban_card_action set_requester."
@@ -3833,6 +3849,14 @@
                 "reviewerIds": {
                   "type": "array",
                   "description": "Reviewers (userIds from list_mention_candidates with cardUuid or the board's documentUuid). update replaces the whole list.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "reviewerAgentUuids": {
+                  "type": "array",
+                  "description": "The named agent of each reviewer (agentUuids; at most one per reviewer). Review requests go to that agent. An agent whose owner is not a reviewer adds the owner as a reviewer. update replaces every reviewer's agent choice (reviewers not listed get none).",
                   "items": {
                     "type": "string"
                   },
@@ -4035,6 +4059,10 @@
             "type": "string",
             "description": "assign: who gets the card — someone who can read the board (list_mention_candidates with cardUuid). Your own userId assigns it to you and accepts at once."
           },
+          "assigneeAgentUuid": {
+            "type": "string",
+            "description": "assign: one named agent of the assignee (agentUuid from list_agents, or agents[] of list_mention_candidates with cardUuid) — the card's to-dos and notifications go to that agent only. Given alone, the agent's owner becomes the assignee. Changing only the agent is a reassignment; assigning without it clears the agent. Another agent of yours (not the one calling) gets an assignment to accept."
+          },
           "responderIds": {
             "type": "array",
             "description": "block: who should answer (people who can read the board). Omit to keep the card's current responders.",
@@ -4106,7 +4134,7 @@
     },
     {
       "name": "kanban_list_cards",
-      "description": "Read kanban cards. Three ways: cardUuids (or cardKeys) → those cards in full, including description, people, allowedActions (what you may do now with kanban_card_action), allowedTransitions and links; boardUuid → the board's columns To Do, In Progress, In Review, Done (each with hasMore and nextAfter; limit applies to each column, so up to 4 × limit cards — to see more of a column, call again with status and cursor = that column's nextAfter, one column at a time; add q to find cards on the board by text in the title or description); none of these → cards across all boards you can read where you are the assignee (or requester / watcher), most recently updated first. Lists (boardUuid or none) return one short line per card: uuid, key (KAN-15 — the short id people use in chat; find a card by it with cardKeys, then use its uuid in the write tools), title, cardType, status, priority, assignee (name), assignmentState (PENDING = not yet accepted), blocked and revision — open cards with cardUuids for the rest. In full cards, REQUIREMENT document links carry baseline (the version the work started from or was last re-based on, with history), currentVersionNumber and baselineState (UNCHANGED, CHANGED, CHANGED_SAME_CONTENT, NOT_RECORDED, NO_VERSIONS, BASELINE_DELETED); links you cannot read show none of it. Full cards also carry verificationState — PASS or FAIL from the latest TEST_EVIDENCE verdict recorded after the current requirement baseline (verificationLinkId names that link), otherwise UNVERIFIED_NO_EVIDENCE or UNVERIFIED_BEFORE_BASELINE; judged links carry verdict {result, recordedBy, recordedAt, actorType, clientId, beforeBaseline}.",
+      "description": "Read kanban cards. Three ways: cardUuids (or cardKeys) → those cards in full, including description, people, allowedActions (what you may do now with kanban_card_action), allowedTransitions and links; boardUuid → the board's columns To Do, In Progress, In Review, Done (each with hasMore and nextAfter; limit applies to each column, so up to 4 × limit cards — to see more of a column, call again with status and cursor = that column's nextAfter, one column at a time; add q to find cards on the board by text in the title or description); none of these → cards across all boards you can read where you are the assignee (or requester / watcher), most recently updated first. Lists (boardUuid or none) return one short line per card: uuid, key (KAN-15 — the short id people use in chat; find a card by it with cardKeys, then use its uuid in the write tools), title, cardType, status, priority, assignee (name), assigneeAgent (name of the assignee's agent, if any), assignmentState (PENDING = not yet accepted), blocked and revision — open cards with cardUuids for the rest. In full cards, REQUIREMENT document links carry baseline (the version the work started from or was last re-based on, with history), currentVersionNumber and baselineState (UNCHANGED, CHANGED, CHANGED_SAME_CONTENT, NOT_RECORDED, NO_VERSIONS, BASELINE_DELETED); links you cannot read show none of it. Full cards also carry verificationState — PASS or FAIL from the latest TEST_EVIDENCE verdict recorded after the current requirement baseline (verificationLinkId names that link), otherwise UNVERIFIED_NO_EVIDENCE or UNVERIFIED_BEFORE_BASELINE; judged links carry verdict {result, recordedBy, recordedAt, actorType, clientId, beforeBaseline}.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4127,6 +4155,14 @@
           "q": {
             "type": "string",
             "description": "With boardUuid: only cards whose title or description contains this text (case-insensitive; % and _ are matched literally). Same columns and paging."
+          },
+          "assigneeUserId": {
+            "type": "string",
+            "description": "With boardUuid: only cards assigned to this person. Same columns and paging."
+          },
+          "agentUuid": {
+            "type": "string",
+            "description": "With boardUuid: only cards whose assignee agent or a reviewer agent is this agent (agentUuid from list_agents) — \"me\" for the agent making this call. Same columns and paging."
           },
           "cardUuids": {
             "type": "array",
@@ -5813,6 +5849,80 @@
       },
       "annotations": {
         "destructiveHint": true,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "list_agents",
+      "description": "List the signed-in user's named agents — the fixed workers (for example ainecto-root, tester, reviewer02) that connect with an agent name in their folder's connection settings (header X-AiNecto-Agent-Name, or `ainecto init --agent <name>`). An agent registers itself the first time it connects with a name; there is no create. Each item has agentUuid, name, agentKind and clientName/clientVersion (from the connecting program), lastSeenAt, archived, and current (true for the agent making this call). Use agentUuid to give a card to an agent (assigneeAgentUuid of the card action assign) or to filter notifications and to-dos (agent). A name is not a permission boundary: what can be changed is decided by the person's permissions.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "includeArchived": {
+            "type": "boolean",
+            "description": "Also list archived agents (default false)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "update_agents",
+      "description": "Rename, archive or unarchive the signed-in user's named agents (see list_agents). Each item commits on its own and a failing item does not stop the others. Results are per item: {agentUuid, ok: true, agent, note?} or {agentUuid, ok: false, error: {code, message}} with code one of AGENT_NOT_FOUND, AGENT_NAME_INVALID, AGENT_NAME_TAKEN, AGENT_HAS_OPEN_WORK (open cards or to-dos still point at the agent — reassign them first; counts are in openCards and openTodos), AGENT_INVALID. After a rename, change the name in that agent's folder connection settings too, or it connects with the old name again and a new agent appears.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Agents to change; each item is applied and reported on its own.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "agentUuid": {
+                  "type": "string",
+                  "description": "agentUuid from list_agents."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "New name — lowercase letters, digits, '.', '_' and '-', starting with a letter or digit (stored in lowercase).",
+                  "maxLength": 64
+                },
+                "archived": {
+                  "type": "boolean",
+                  "description": "true archives the agent (it disappears from pickers; its history stays), false brings it back. An archived agent that connects again with its name is brought back automatically."
+                },
+                "clientMutationId": {
+                  "type": "string",
+                  "description": "Optional id echoed back in this item's result."
+                }
+              },
+              "required": [
+                "agentUuid"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
         "readOnlyHint": false
       }
     }
