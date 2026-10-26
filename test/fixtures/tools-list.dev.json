@@ -2,10 +2,19 @@
   "tools": [
     {
       "name": "open_ainecto_panel",
-      "description": "Opens the AiNecto panel beside the conversation: the signed-in user's notifications, comments they can reply to, and their kanban work, kept up to date while it is shown. Call it when the user asks to open or show the AiNecto panel or inbox. In hosts that cannot show panels it returns the same summary as get_my_work_summary. Read-only: nothing is marked read; the user marks items read or replies in the panel itself.",
+      "description": "Opens the AiNecto panel beside the conversation: the signed-in user's notifications, comments they can reply to, and their kanban work, kept up to date while it is shown. Hosts that cannot show panels get the same summary as get_my_work_summary (only that project's items once a project is chosen). panel names the project (needsProject with candidates when several fit) and artifactVersion, the newest Claude app panel page; with artifactPage: true it also returns that page (html, capabilities) for publishing the panel as a claude.ai artifact. Read-only: nothing is marked read; the user marks items read or replies in the panel itself.",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "projectUuid": {
+            "type": "string",
+            "description": "The project whose panel to open (from list_projects). Give it when the user names a project or the project you are working in is clear. Without it: the only project you can open, or a list of candidates."
+          },
+          "artifactPage": {
+            "type": "boolean",
+            "description": "true adds panel.artifactPage: html (the Claude app panel page for this project, large) and capabilities, for publishing the panel as a claude.ai artifact. Give it only when publishing or republishing the panel."
+          }
+        },
         "additionalProperties": false
       },
       "annotations": {
@@ -386,6 +395,160 @@
       },
       "annotations": {
         "destructiveHint": true,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "conversation_get_messages",
+      "description": "Read messages of one conversation, always returned oldest first. Without afterSeq/beforeSeq: the most recent limit messages. Every conversation belongs to one AiNecto project: the project room (everyone who can open the whole project) and direct chats between two project members (only those two can read them). Each message has seq (increasing within the conversation), uuid, author {userId, displayName — null if the account was deleted}, body, at, registeredBy (how it was sent) and readCount (how many current members other than the author have read it; in a direct chat 1 means read). hasMore says whether more messages exist beyond this page in the direction you read. This does not mark anything read — call conversation_mark_read when the user has seen them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "conversationUuid": {
+            "type": "string",
+            "description": "Conversation UUID (from conversation_list)."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Messages per call, default 20.",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "afterSeq": {
+            "type": "integer",
+            "description": "Only messages after this seq, oldest first — to fill a gap after the last message you saw.",
+            "minimum": 0
+          },
+          "beforeSeq": {
+            "type": "integer",
+            "description": "Only messages before this seq — to page back through older messages.",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "conversationUuid"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "conversation_list",
+      "description": "List my conversations in one project: the project room first, then my direct chats (most recent first). Every conversation belongs to one AiNecto project: the project room (everyone who can open the whole project) and direct chats between two project members (only those two can read them). Each conversation has conversationUuid, type (PROJECT_ROOM or DIRECT), name (project name, or the other person's name), withUserId (direct chats), unreadCount, latestSeq, myLastReadSeq and lastMessage {seq, author, preview, at}. members lists the people who can open the whole project (userId, displayName, jobTitle to tell same names apart) — the people you can start a direct chat with. Messages are not marked read.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectUuid": {
+            "type": "string",
+            "description": "Project UUID (from list_projects)."
+          },
+          "withUserId": {
+            "type": "string",
+            "description": "Only the direct chat with this project member (userId from members). Empty list if there is none yet — conversation_send with to.userId starts it."
+          }
+        },
+        "required": [
+          "projectUuid"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "conversation_mark_read",
+      "description": "Move the signed-in user's read position in one conversation up to throughSeq (default: the latest message). The position only moves forward and never past the latest message; inbox notifications for this conversation up to that position are marked read too. Call it when the user has seen the messages, not merely because you fetched them. Anyone who can read the conversation (viewers too) may mark it read. Returns lastReadSeq, unreadCount and notificationsRead.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "conversationUuid": {
+            "type": "string",
+            "description": "Conversation UUID (from conversation_list)."
+          },
+          "throughSeq": {
+            "type": "integer",
+            "description": "Mark read up to and including this seq (the last message the user has seen). Default: the latest message.",
+            "minimum": 0
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "conversationUuid"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "conversation_send",
+      "description": "Send one message as the signed-in user, to a conversation (conversationUuid) or to a place (to). Every conversation belongs to one AiNecto project: the project room (everyone who can open the whole project) and direct chats between two project members (only those two can read them). Sending needs edit rights on the project (viewers can read but not send); a direct chat's other person must still be a project member. The other person of a direct chat gets an inbox notification (messages within 5 minutes are one item); the project room sends no notifications yet. Returns conversationUuid, type, seq, messageUuid and at; your read position moves to your own message.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "conversationUuid": {
+            "type": "string",
+            "description": "Send into this conversation (from conversation_list). Give this or to, not both."
+          },
+          "to": {
+            "type": "object",
+            "properties": {
+              "projectUuid": {
+                "type": "string",
+                "description": "Project UUID."
+              },
+              "userId": {
+                "type": "string",
+                "description": "Direct chat with this project member (userId from conversation_list members) — found or started in the same call."
+              },
+              "room": {
+                "type": "string",
+                "description": "\"project\" = the project room.",
+                "enum": [
+                  "project"
+                ]
+              }
+            },
+            "required": [
+              "projectUuid"
+            ],
+            "additionalProperties": false,
+            "description": "Where to send when you do not have a conversationUuid: {projectUuid, userId} for a direct chat, or {projectUuid, room: \"project\"} for the project room. Give exactly one of userId and room."
+          },
+          "body": {
+            "type": "string",
+            "description": "Message text (plain text, 1..10000 characters).",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
         "readOnlyHint": false
       }
     },
@@ -3137,7 +3300,8 @@
                 "WORKSPACE_UNARCHIVED",
                 "PROJECT_ARCHIVED",
                 "PROJECT_UNARCHIVED",
-                "DOCUMENT_UPDATED"
+                "DOCUMENT_UPDATED",
+                "CONVERSATION_MESSAGE"
               ]
             },
             "uniqueItems": true
@@ -3271,7 +3435,7 @@
     },
     {
       "name": "list_notifications",
-      "description": "Read new notifications for the signed-in user, oldest first and without gaps — for an agent that checks the inbox periodically. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. A DOCUMENT_UPDATED item (a document the user subscribed to was changed by someone else; changes within 10 minutes are one item) also has documentChange {changeCount, versionSummary — the name/description of a named version saved in that group, else null}. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person (use mark_notifications_read when the user asks); open to-dos are in list_agent_todos. Calls closer than 30 seconds apart (except a call that carries ack) return retryAfterSeconds instead of items.",
+      "description": "Read new notifications for the signed-in user, oldest first and without gaps. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. A DOCUMENT_UPDATED item (a document the user subscribed to was changed by someone else; changes within 10 minutes are one item) also has documentChange {changeCount, versionSummary — the name/description of a named version saved in that group, else null}. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person (use mark_notifications_read when the user asks); open to-dos are in list_agent_todos. The same call repeated within 30 seconds returns the previous result without reading again, unless the inbox changed in between (a new or updated notification, a read, an ack); a call that carries ack is always read fresh. With order the call browses instead (see order) and is always read fresh.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3315,7 +3479,8 @@
                 "WORKSPACE_UNARCHIVED",
                 "PROJECT_ARCHIVED",
                 "PROJECT_UNARCHIVED",
-                "DOCUMENT_UPDATED"
+                "DOCUMENT_UPDATED",
+                "CONVERSATION_MESSAGE"
               ]
             },
             "uniqueItems": true
@@ -3349,6 +3514,14 @@
             "minimum": 1,
             "maximum": 50,
             "description": "Items per call, default 20."
+          },
+          "order": {
+            "type": "string",
+            "description": "Browse instead of reading new items: \"newest\" (latest first) or \"oldest\". One page of everything still kept, optionally within workspaceUuids/projectUuids; the saved position is neither read nor moved, there is no ackToken, and nextCursor (pass it back as cursor with the same order, scope and directOnly) is the next page. directOnly narrows the page the same way. Cannot be combined with ack or kinds. For a panel or a person looking at their notifications.",
+            "enum": [
+              "newest",
+              "oldest"
+            ]
           }
         },
         "additionalProperties": false
@@ -3560,7 +3733,7 @@
     },
     {
       "name": "kanban_apply_changes",
-      "description": "Create, duplicate, edit, reorder and link cards on one kanban board in a single atomic call (at most 100 operations; if one fails nothing is applied and the error carries operationIndex and code). Creating, duplicating and editing cards needs edit access to the board; move with toBoardUuid moves a card to another board of the same project. The assignee may also check acceptance criteria and add result links (DELIVERABLE, REVIEW_RESULT, TEST_EVIDENCE). create also sets assignee, requester, reviewers and watchers in the same call. To change a card's column, reassign it, accept, approve, block, watch and similar, use kanban_card_action. Results list each operation's card uuid, revision, status and sortKey.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Create, duplicate, edit, reorder and link cards on one kanban board in a single atomic call (at most 100 operations; if one fails nothing is applied and the error carries operationIndex and code). Creating, duplicating and editing cards needs edit access to the board; move with toBoardUuid moves a card to another board of the same project. The assignee may also check acceptance criteria and add result links (DELIVERABLE, REVIEW_RESULT, TEST_EVIDENCE). A TEST_EVIDENCE link records a test result you observed yourself and must carry a verdict (PASS or FAIL); the card's verificationState (kanban_list_cards detail) is computed from these links. create also sets assignee, requester, reviewers and watchers in the same call. To change a card's column, reassign it, accept, approve, block, watch and similar, use kanban_card_action. Results list each operation's card uuid, revision, status and sortKey.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3710,6 +3883,14 @@
                       "label": {
                         "type": "string",
                         "description": "Optional label for an external URL."
+                      },
+                      "verdict": {
+                        "type": "string",
+                        "description": "Only with linkRole TEST_EVIDENCE, and then required. The evidence is either url set to the CI run itself (the run or check-suite page, not the pull request), or documentUuid of a document that holds a manual test result. Record only a result you actually observed: in that run, or for a document only the manual test result recorded in it that you checked yourself. PASS only when every required check passed; a partial run, a skipped run or a run you did not see is not PASS. Anything else that ran is FAIL. Verdicts cannot be edited: a re-run is a new link with its new URL (to correct one, unlink it and link again). The card's verificationState is computed from these links — with no verdict, or only verdicts recorded before the current requirement baseline, it is UNVERIFIED.",
+                        "enum": [
+                          "PASS",
+                          "FAIL"
+                        ]
                       }
                     },
                     "required": [
@@ -3741,6 +3922,14 @@
                 "label": {
                   "type": "string",
                   "description": "Optional label for an external URL."
+                },
+                "verdict": {
+                  "type": "string",
+                  "description": "Only with linkRole TEST_EVIDENCE, and then required. The evidence is either url set to the CI run itself (the run or check-suite page, not the pull request), or documentUuid of a document that holds a manual test result. Record only a result you actually observed: in that run, or for a document only the manual test result recorded in it that you checked yourself. PASS only when every required check passed; a partial run, a skipped run or a run you did not see is not PASS. Anything else that ran is FAIL. Verdicts cannot be edited: a re-run is a new link with its new URL (to correct one, unlink it and link again). The card's verificationState is computed from these links — with no verdict, or only verdicts recorded before the current requirement baseline, it is UNVERIFIED.",
+                  "enum": [
+                    "PASS",
+                    "FAIL"
+                  ]
                 },
                 "linkId": {
                   "type": "integer",
@@ -3917,7 +4106,7 @@
     },
     {
       "name": "kanban_list_cards",
-      "description": "Read kanban cards. Three ways: cardUuids (or cardKeys) → those cards in full, including allowedActions (what you may do now with kanban_card_action) and links; boardUuid → the board's columns To Do, In Progress, In Review, Done (each with hasMore and nextAfter); none of these → cards across all boards you can read where you are the assignee (or requester / watcher), most recently updated first. Each card has uuid and key (KAN-15 — the short id people use in chat; find a card by it with cardKeys, then use its uuid in the write tools), title, status, assignee and assignmentState (PENDING = not yet accepted), blocked, revision and allowedTransitions. In full cards, REQUIREMENT document links carry baseline (the version the work started from or was last re-based on, with history), currentVersionNumber and baselineState (UNCHANGED, CHANGED, CHANGED_SAME_CONTENT, NOT_RECORDED, NO_VERSIONS, BASELINE_DELETED); links you cannot read show none of it.",
+      "description": "Read kanban cards. Three ways: cardUuids (or cardKeys) → those cards in full, including description, people, allowedActions (what you may do now with kanban_card_action), allowedTransitions and links; boardUuid → the board's columns To Do, In Progress, In Review, Done (each with hasMore and nextAfter; limit applies to each column, so up to 4 × limit cards — to see more of a column, call again with status and cursor = that column's nextAfter, one column at a time; add q to find cards on the board by text in the title or description); none of these → cards across all boards you can read where you are the assignee (or requester / watcher), most recently updated first. Lists (boardUuid or none) return one short line per card: uuid, key (KAN-15 — the short id people use in chat; find a card by it with cardKeys, then use its uuid in the write tools), title, cardType, status, priority, assignee (name), assignmentState (PENDING = not yet accepted), blocked and revision — open cards with cardUuids for the rest. In full cards, REQUIREMENT document links carry baseline (the version the work started from or was last re-based on, with history), currentVersionNumber and baselineState (UNCHANGED, CHANGED, CHANGED_SAME_CONTENT, NOT_RECORDED, NO_VERSIONS, BASELINE_DELETED); links you cannot read show none of it. Full cards also carry verificationState — PASS or FAIL from the latest TEST_EVIDENCE verdict recorded after the current requirement baseline (verificationLinkId names that link), otherwise UNVERIFIED_NO_EVIDENCE or UNVERIFIED_BEFORE_BASELINE; judged links carry verdict {result, recordedBy, recordedAt, actorType, clientId, beforeBaseline}.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3934,6 +4123,10 @@
               "IN_REVIEW",
               "DONE"
             ]
+          },
+          "q": {
+            "type": "string",
+            "description": "With boardUuid: only cards whose title or description contains this text (case-insensitive; % and _ are matched literally). Same columns and paging."
           },
           "cardUuids": {
             "type": "array",
@@ -3978,7 +4171,7 @@
           },
           "limit": {
             "type": "integer",
-            "description": "Cards per page (per column with boardUuid). Default 20.",
+            "description": "Cards per page. With boardUuid it applies to each column, so up to 4 × limit cards in total. Default 20.",
             "minimum": 1,
             "maximum": 50
           }
@@ -4612,7 +4805,7 @@
     },
     {
       "name": "get_document",
-      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; kanban → board {viewer, columns: each column's first 20 cards + hasMore} (more cards and card details via kanban_list_cards); erd → metadata only (read tables/refs via erd_list_*). latestVersionNumber = the newest saved version (as list_versions numbers it; null if none); currentVersion is a different counter. Pass latestVersionNumber in documentVersions of kanban_card_action to say which version you read.",
+      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; kanban → board {viewer, columns: each column's first 20 cards as short lines (the same lines as kanban_list_cards with boardUuid) + hasMore/nextAfter} (more cards via kanban_list_cards boardUuid; full cards with allowedTransitions, people and links via kanban_list_cards cardUuids or cardKeys); erd → metadata only (read tables/refs via erd_list_*). latestVersionNumber = the newest saved version (as list_versions numbers it; null if none); currentVersion is a different counter. Pass latestVersionNumber in documentVersions of kanban_card_action to say which version you read.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4722,7 +4915,7 @@
     },
     {
       "name": "list_documents",
-      "description": "List or search documents you can read, including ones shared with you individually. Without q it lists the documents directly in folderUuid (not its subfolders), otherwise in projectUuid, otherwise every document you can read in every project; only active documents (the trash is list_trash). With q it searches the document search index (mode=search; at most limit hits, default and maximum 50; with total), narrowed by projectUuid and by folderUuid including its subfolders. type filters by document type. Titles can repeat — compare folder and project and ask the user when several match. Read only. Returns documents, count and mode.",
+      "description": "List or search documents you can read, including ones shared with you individually. Without q it lists the documents directly in folderUuid (not its subfolders), otherwise in projectUuid, otherwise every document you can read in every project; only active documents (the trash is list_trash). With q it searches the document search index (mode=search; at most limit hits, default and maximum 50; with total), narrowed by projectUuid and by folderUuid including its subfolders. type filters by document type. Titles can repeat — compare folder and project and ask the user when several match. Read only. Returns documents, count and mode; search hits carry no body, read one with get_document.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5485,7 +5678,7 @@
     },
     {
       "name": "search_documents",
-      "description": "Find documents you can read by keywords, people, folder and dates, when you have no link or exact title. Each hit has title, type, uuid, projectName, folderPath (\"Parent / Child\"), url, updatedAt and lastEditorName — enough to tell the user which document is which. Map the user's words to filters: \"edited today\" -> updatedFrom = today's date-time at local midnight with offset; \"last week\" -> updatedFrom/updatedTo; \"Ryan's\" or \"Ryan changed\" -> first get Ryan's userId from list_mention_candidates (or identity_get_self for \"me\"), then ownerUserId or lastEditorUserId; \"in the X folder\" -> folderUuid from list_folders. Keep only the topic words in q.",
+      "description": "Find documents you can read by keywords, people, folder and dates, when you have no link or exact title. Each hit has title, type, uuid, projectName, folderPath (\"Parent / Child\"), url, updatedAt and lastEditorName — enough to tell the user which document is which; hits carry no body, read one with get_document. Map the user's words to filters: \"edited today\" -> updatedFrom = today's date-time at local midnight with offset; \"last week\" -> updatedFrom/updatedTo; \"Ryan's\" or \"Ryan changed\" -> first get Ryan's userId from list_mention_candidates (or identity_get_self for \"me\"), then ownerUserId or lastEditorUserId; \"in the X folder\" -> folderUuid from list_folders. Keep only the topic words in q.",
       "inputSchema": {
         "type": "object",
         "properties": {
