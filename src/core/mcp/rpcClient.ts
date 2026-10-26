@@ -33,6 +33,12 @@ export type JsonRpcResponse = JsonRpcSuccess | JsonRpcFailure;
  */
 export const CHANNEL_HEADER = "X-AiNecto-Channel";
 export const AGENT_HEADER = "X-AiNecto-Agent";
+/**
+ * 에이전트 «이름»(ainecto-root·tester 같은 고정 일꾼) — {@link AGENT_HEADER}(에이전트 «종류»)와 다른 사실이다.
+ * 서버 명부가 사람 밑에 이 이름으로 올린다. 이름 규칙의 진실원은 서버다 — 여기서는 앞뒤 공백만 걷어 싣는다.
+ * ★이 문자열은 이곳 하나 — {@code .mcp.json}·{@code .codex/config.toml} 에 쓰는 헤더 이름도 이것을 쓴다.
+ */
+export const AGENT_NAME_HEADER = "X-AiNecto-Agent-Name";
 /** 서버 AgentTypeResolver.MAX_NAME_LENGTH 와 같다. */
 export const MAX_AGENT_NAME_LENGTH = 100;
 
@@ -54,6 +60,11 @@ export interface McpRpcClientOptions {
    * 모든 요청의 {@code X-AiNecto-Channel} 헤더로 실린다.
    */
   channel: ExecutionChannel;
+  /**
+   * 이 폴더의 에이전트 이름(브리지 {@code --agent} 또는 {@code .ainecto/agent.local}). 있으면 모든 요청의
+   * {@link AGENT_NAME_HEADER} 로 실린다. 없으면 이름 없는 연결 — 지금과 같다.
+   */
+  agentName?: string;
 }
 
 export class McpRpcError extends Error {
@@ -134,10 +145,13 @@ export class McpRpcClient {
     }
     const text = await response.text();
     if (!response.ok) {
+      // ★서버가 이유를 말했으면({@code {"error","error_description"}}) 그 한 줄을 그대로 보여 준다 — 틀린 에이전트
+      //   이름(AGENT_NAME_INVALID)·상한(AGENT_LIMIT)은 사람이 설정을 고쳐야 하는 오류라 상태 코드만으로는 못 고친다.
+      const serverError = parseServerError(text);
       throw new McpRpcError(
-        `MCP HTTP request failed with HTTP ${response.status}.`,
+        `MCP HTTP request failed with HTTP ${response.status}${serverError ? ` — ${describeServerError(serverError)}` : "."}`,
         "MCP_HTTP_ERROR",
-        httpErrorDetails(response.status, text, this.options.envVars ?? process.env),
+        { ...httpErrorDetails(response.status, text, this.options.envVars ?? process.env), ...(serverError ? { error: serverError.error } : {}) },
       );
     }
     if (!text.trim()) {
@@ -165,6 +179,9 @@ export class McpRpcClient {
     headers[CHANNEL_HEADER.toLowerCase()] = this.options.channel;
     if (this.agent) {
       headers[AGENT_HEADER.toLowerCase()] = this.agent;
+    }
+    if (this.options.agentName) {
+      headers[AGENT_NAME_HEADER.toLowerCase()] = this.options.agentName;
     }
     return this.fetchImpl(this.options.endpoint, {
       method: "POST",
@@ -198,6 +215,37 @@ function printableHeaderValue(value: unknown): string | undefined {
   }
   const printable = value.replace(/[^\x20-\x7E]/g, "").trim().slice(0, MAX_AGENT_NAME_LENGTH).trim();
   return printable || undefined;
+}
+
+/** 서버의 HTTP 오류 본문 — {@code {"error":"AGENT_NAME_INVALID","error_description":"…"}} 꼴(OAuth 오류와 같은 모양). */
+export interface ServerError {
+  error: string;
+  description?: string;
+}
+
+/** HTTP 오류 본문에서 서버가 밝힌 오류. 그 꼴이 아니면 undefined. */
+export function parseServerError(body: string): ServerError | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || typeof parsed.error !== "string" || !parsed.error.trim()) {
+    return undefined;
+  }
+  return {
+    error: parsed.error.trim(),
+    description: typeof parsed.error_description === "string" && parsed.error_description.trim()
+      ? parsed.error_description
+      : undefined,
+  };
+}
+
+/** 사람이 읽을 한 줄 — {@code CODE: 설명}. 줄바꿈은 공백으로 접는다. */
+export function describeServerError(serverError: ServerError): string {
+  const line = serverError.description ? `${serverError.error}: ${serverError.description}` : serverError.error;
+  return line.replace(/\s+/g, " ").trim();
 }
 
 function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {

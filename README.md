@@ -74,7 +74,16 @@ npx -y ainecto@latest init --mcp         # also .mcp.json (Claude Code) and .cur
 npx -y ainecto@latest init --mcp --local # the same files with the local relay instead
 npx -y ainecto@latest init --dry-run     # the same plan, nothing written
 npx -y ainecto@latest init --undo        # remove what init wrote
+npx -y ainecto@latest init --agent tester  # name the agent working in this folder (see below)
 ```
+
+- `--agent <name>` names the agent that works in this folder. It writes the name to
+  `.ainecto/agent.local` (keep it out of git) and puts it in `.mcp.json`, `.cursor/mcp.json` and
+  `.codex/config.toml` — the server address entries get the header `X-AiNecto-Agent-Name`, the local relay
+  gets `--agent <name>`. Re-running `init` keeps the name. `ainecto tools call …` run in this folder sends
+  the same name. The server checks the name; a name it refuses stops `init` before any file is written.
+  `.codex/config.toml` is written only when it does not exist yet (or init wrote it); Codex reads it only in
+  a trusted project.
 
 - `init` fetches the rules from the server — `--dry-run` too, so the plan is the real one. If it cannot
   (not signed in, offline), it says which files would get this package's default text instead.

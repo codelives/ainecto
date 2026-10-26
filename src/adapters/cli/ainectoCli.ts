@@ -7,6 +7,8 @@ import { renderError, renderSuccess } from "../../core/output/render";
 import { getGeneratedTools, loadLiveTools } from "../../core/catalog";
 import type { GeneratedToolDefinition } from "../../core/catalog/types";
 import { runConnector } from "../mcp/connector";
+import { parseMcpArgs } from "../mcp/args";
+import { readAgentName } from "../../core/harness/agentName";
 import { executeGeneratedCommand, matchGeneratedCommand } from "./generatedCommandRouter";
 import { executeAttachmentsUploadCommand, isAttachmentsUploadCommand } from "./attachmentsUploadCommand";
 import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands";
@@ -50,6 +52,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         : `${LEGACY_ROLE_NOTICE}\n`);
     }
     const tokenStore = new FileTokenStore();
+    // ★이 폴더의 에이전트 이름(`init --agent` 가 쓴 .ainecto/agent.local) — 직접 명령도 브리지와 같은 파일을 읽는다.
+    //   없으면 이름 없는 연결(지금과 같다). 브리지는 connector 가 --agent 를 먼저 보고 같은 파일을 읽는다.
+    const agentName = domain === "mcp" ? undefined : await readAgentName(process.cwd());
     /** 인증·RPC 클라이언트. ★토큰은 서버마다 한 칸이다. */
     const connect = () => {
       const auth = new OAuthClient({
@@ -66,15 +71,19 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
             : `Opening your browser to sign in to AiNecto. If it does not open, visit:\n  ${url}\n`);
         },
       });
-      // 직접 명령 — 채널 cli. 에이전트 이름은 싣지 않는다(셸을 누가 돌렸는지 모른다 → 서버는 unknown).
-      const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, legacyRole, channel: "cli" });
+      // 직접 명령 — 채널 cli. 에이전트 «종류»는 싣지 않는다(셸을 누가 돌렸는지 모른다 → 서버는 unknown).
+      //   에이전트 «이름»은 폴더에 붙어 있으므로 싣는다.
+      const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, legacyRole, channel: "cli", agentName });
       return { auth, client };
     };
 
     if (domain === "mcp") {
+      // --env·--endpoint·--role 은 전역 파서가 이미 먹었다 — 남은 브리지 인자(--agent)는 브리지와 같은 파서로 읽는다.
+      const bridgeArgs = parseMcpArgs(parsed.positionals.slice(1));
       await runConnector({
         endpoint: resolved.endpoint,
         legacyRoleFlag: parsed.legacyRole,
+        agentFlag: bridgeArgs.agent,
         input: io.stdin,
         output: io.stdout,
         errorOutput: io.stderr,
@@ -404,7 +413,7 @@ function helpText(): string {
     "      --workspace and --project may repeat: any of the given workspaces AND any of the given projects",
     "      poll exit codes: 0 new items · 3 nothing new · 1 error · 2 usage error",
     "  ainecto <generated-command> [flags] [-f payload.json] [--yes] [--json]",
-    "  ainecto mcp [--env prod|dev] [--endpoint URL]",
+    "  ainecto mcp [--env prod|dev] [--endpoint URL] [--agent NAME]",
     "",
     "Setup (once per machine):",
     "  ainecto setup [--env prod|dev] [--endpoint URL] [--dry-run] [--json]   sign in and connect Claude Code, Cursor, and Codex to the server address",
@@ -415,6 +424,7 @@ function helpText(): string {
     "",
     "Harness:",
     "  ainecto init [--mcp] [--local] [--dry-run] [--json]   AiNecto rules for this repository (--mcp also writes .mcp.json and .cursor/mcp.json with the server address; --local writes the local relay instead)",
+    "  ainecto init --agent NAME                             name the agent working in this folder: writes .ainecto/agent.local (do not commit it) and puts the name in .mcp.json, .cursor/mcp.json and .codex/config.toml",
     "  ainecto init --undo",
     "",
   ].join("\n");

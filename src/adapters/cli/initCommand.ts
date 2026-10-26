@@ -5,6 +5,7 @@ import { renderSuccess } from "../../core/output/render";
 import {
   initRefusal,
   MANAGED_PATHS,
+  planAgentName,
   planInit,
   planUndo,
   type FileWrite,
@@ -14,6 +15,7 @@ import {
 import { AGENT_NOTE_KEY, DOC_KEY, HARNESS_DOC_PATH, HARNESS_RECORD_PATH } from "../../core/harness/harnessDoc";
 import { AGENT_TARGETS, REMOTE_SIGN_IN } from "../../core/harness/agentTargets";
 import { fetchHarnessDocuments, type HarnessDocuments } from "../../core/harness/documentFetch";
+import { agentNameOf } from "../../core/harness/agentName";
 import {
   assertInsideRepository,
   findGitRoot,
@@ -55,6 +57,8 @@ interface InitArgs {
   local: boolean;
   dryRun: boolean;
   undo: boolean;
+  /** {@code --agent <이름>} — 이 폴더의 에이전트 이름(앞뒤 공백만 걷은 값). */
+  agent?: string;
   /** 0.7.x 의 플래그 — 받아서 무시한다(멈추지 않는다). 안내 한 줄에 이름을 싣는다. */
   ignored: string[];
 }
@@ -114,6 +118,8 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
       accessToken: await options.accessToken?.(),
       // 서버가 문서의 클라이언트별 변형 키를 이 이름으로 찾는다.
       client: "ainecto-cli",
+      // ★init 의 인증된 호출 하나 — 같은 이름을 실어, 서버가 거절하는 이름이면 파일을 쓰기 전에 멈춘다.
+      agentName: planAgentName(args.agent, files),
       fetchImpl: options.fetchImpl,
     })
     : { versions: {}, fallbacks: {}, unavailableReason: args.dryRun ? "not signed in, and --dry-run does not sign in" : "not signed in" };
@@ -126,6 +132,7 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
     cliVersion: options.cliVersion,
     files,
     documents,
+    agentName: args.agent,
   });
   if (plan.refusal !== undefined) {
     // ★계획이 「멈춰라」고 하면 멈춘다(2026-09-27 8차 독립 리뷰 I1). 같은 함수라 위의 판정과 갈리지 않는다.
@@ -501,6 +508,13 @@ function parseInitArgs(argv: string[]): InitArgs {
       args.dryRun = true;
     } else if (arg === "--undo") {
       args.undo = true;
+    } else if (arg === "--agent") {
+      const name = agentNameOf(argv[index + 1]?.startsWith("--") ? undefined : argv[index + 1]);
+      if (name === undefined) {
+        throw new Error("--agent requires a name.");
+      }
+      args.agent = name;
+      index += 1;
     } else if (arg === "--project" || arg === "--project-name") {
       // 0.7.x — 값까지 삼키고 무시한다. 값이 없으면 플래그만.
       const value = argv[index + 1];

@@ -1,6 +1,8 @@
 import {
   AGENT_TARGETS,
+  CODEX_CONFIG_PATH,
   readServerEntry,
+  renderCodexConfig,
   desiredServerEntry,
   isOurEntry,
   mergeServerEntry,
@@ -31,6 +33,7 @@ import {
   type Owned,
   type RecordState,
 } from "./initRecord";
+import { AGENT_NAME_PATH, agentNameOf } from "./agentName";
 import { createHash } from "node:crypto";
 
 /**
@@ -64,6 +67,8 @@ export const MANAGED_PATHS: readonly string[] = [
   HARNESS_DOC_PATH,
   HARNESS_CONFIG_PATH,
   HARNESS_RECORD_PATH,
+  AGENT_NAME_PATH,
+  CODEX_CONFIG_PATH,
 ];
 
 /** 경로 → 현재 내용. 값이 {@code undefined} 면 «파일 없음». */
@@ -237,6 +242,19 @@ export interface PlanInitInput {
   previous?: RecordState;
   /** 서버에서 받은 문서 본문. 없으면 패키지 기본값(= 오프라인 기본값)을 쓴다. */
   documents?: { doc?: string; agentNote?: string; versions?: Record<string, string> };
+  /**
+   * {@code init --agent <이름>}(앞뒤 공백만 걷은 값). 있으면 {@link AGENT_NAME_PATH} 에 적는다. 없어도 그 파일에
+   * 이름이 있으면 그 이름을 쓴다 — ★입력은 한 번이고, 다시 친 init 이 이름을 지우지 않는다({@link planAgentName}).
+   */
+  agentName?: string;
+}
+
+/**
+ * 이번 init 이 MCP 설정에 실을 에이전트 이름 — 플래그가 우선, 없으면 이 폴더의 {@link AGENT_NAME_PATH}.
+ * ★한 곳에서 정한다: initCommand(서버 문서 요청의 헤더)와 {@link planInit}(설정 파일)이 같은 이름을 쓰게.
+ */
+export function planAgentName(flag: string | undefined, files: FileSnapshot): string | undefined {
+  return flag ?? agentNameOf(files.get(AGENT_NAME_PATH));
 }
 
 /**
@@ -308,17 +326,49 @@ export function planInit(input: PlanInitInput): InitPlan {
     return undefined;
   };
 
+  /**
+   * 파일 «전체»를 소유하는 쓰기(HARNESS.md · agent.local · .codex/config.toml) — 한 파일의 계약을 한 자리에서 세운다.
+   * 이미 있던 파일이면 원본을 기록해 --undo 가 되돌린다.
+   */
+  const ownWhole = (path: string, content: string, existing: string | undefined, prior: FileContract | undefined) => {
+    const original = prior?.original ?? ownedText(existing);
+    if (prior === undefined && original.at !== "absent") {
+      notes.push(`${path} already existed; its original was saved and --undo will restore it.`);
+    }
+    record.files[path] = {
+      scope: "whole",
+      createdByUs: prior?.createdByUs ?? existing === undefined,
+      original,
+      written: ownedText(content),
+      fileFingerprint: fingerprintFor(path, content),
+    };
+    if (content !== existing) {
+      writes.push({ path, content, existed: existing !== undefined });
+    }
+  };
+
+  // ── 에이전트 이름 — 이 폴더에 붙는다. 입력은 한 번(--agent), 세 파일이 같은 이름을 싣는다 ─────────
+  const agentName = planAgentName(input.agentName, input.files);
+  if (input.agentName !== undefined) {
+    const existingName = input.files.get(AGENT_NAME_PATH);
+    ownWhole(AGENT_NAME_PATH, `${input.agentName}\n`, existingName, priorOf(AGENT_NAME_PATH, ownedText(existingName)));
+    if (existingName === undefined) {
+      notes.push(`${AGENT_NAME_PATH} names the agent working in this folder — keep it out of git (add it to .gitignore).`);
+    }
+  }
+
   // ── MCP 설정 파일들 — 우리가 «항목 하나»를 소유한다 ──────────────────────────
   for (const target of AGENT_TARGETS) {
     const existing = input.files.get(target.path);
     const currentEntry = existing === undefined ? undefined : readServerEntry(existing);
-    if (!input.mcp && !isOurEntry(currentEntry, input.endpoint)) {
-      // --mcp 없이는 MCP 설정을 새로 쓰지 않는다. 우리 항목이 이미 있을 때만 갱신한다.
+    if (!input.mcp && agentName === undefined && !isOurEntry(currentEntry, input.endpoint)) {
+      // --mcp(또는 에이전트 이름) 없이는 MCP 설정을 새로 쓰지 않는다. 우리 항목이 이미 있을 때만 갱신한다.
       continue;
     }
     const prior = priorOf(target.path, ownedJson(currentEntry, currentEntry !== undefined));
     const entry = desiredServerEntry({
       client: target.id, env: input.env ?? "prod", endpoint: input.endpoint, local: input.local, packageSpec: input.packageSpec,
+      agentName,
     });
     const merged = mergeServerEntry(existing, entry);
     if (existing === merged.content) {
@@ -338,24 +388,34 @@ export function planInit(input: PlanInitInput): InitPlan {
     writes.push({ path: target.path, content: merged.content, existed: existing !== undefined });
   }
 
+  // ── .codex/config.toml — 에이전트 이름이 있을 때만. 우리가 만든 파일일 때만 «파일 전체»를 소유한다 ──────
+  //   ★Codex 의 기기 전역 연결은 setup 몫이고, 폴더별 파일이 필요한 이유는 이름 헤더뿐이다. 남의 config.toml 은
+  //   TOML 을 병합하지 않고 그대로 둔다 — 넣을 줄을 안내한다.
+  if (agentName !== undefined) {
+    const existingCodex = input.files.get(CODEX_CONFIG_PATH);
+    const priorCodex = priorOf(CODEX_CONFIG_PATH, ownedText(existingCodex));
+    const codexContent = renderCodexConfig(desiredServerEntry({
+      client: "codex", env: input.env ?? "prod", endpoint: input.endpoint, local: input.local, packageSpec: input.packageSpec,
+      agentName,
+    }));
+    if (existingCodex !== undefined && priorCodex === undefined) {
+      notes.push(`${CODEX_CONFIG_PATH} already exists and was left untouched. For Codex to send this agent's name, add:\n${codexContent}`);
+    } else {
+      ownWhole(CODEX_CONFIG_PATH, codexContent, existingCodex, priorCodex);
+      if (codexContent !== existingCodex) {
+        notes.push(`Codex reads ${CODEX_CONFIG_PATH} only in a project you have marked as trusted.`);
+      }
+    }
+  }
+
   // ── HARNESS.md — 우리가 «파일 전체»를 소유한다 ────────────────────────────────
   const existingDoc = input.files.get(HARNESS_DOC_PATH);
-  const priorDoc = priorOf(HARNESS_DOC_PATH, ownedText(existingDoc));
-  const docContent = renderHarnessDoc({ endpoint: input.endpoint }, input.documents?.doc);
-  const docOriginal = priorDoc?.original ?? ownedText(existingDoc);
-  if (priorDoc === undefined && docOriginal.at !== "absent") {
-    notes.push(`${HARNESS_DOC_PATH} already existed; its original was saved and --undo will restore it.`);
-  }
-  record.files[HARNESS_DOC_PATH] = {
-    scope: "whole",
-    createdByUs: priorDoc?.createdByUs ?? existingDoc === undefined,
-    original: docOriginal,
-    written: ownedText(docContent),
-    fileFingerprint: fingerprintFor(HARNESS_DOC_PATH, docContent),
-  };
-  if (docContent !== existingDoc) {
-    writes.push({ path: HARNESS_DOC_PATH, content: docContent, existed: existingDoc !== undefined });
-  }
+  ownWhole(
+    HARNESS_DOC_PATH,
+    renderHarnessDoc({ endpoint: input.endpoint }, input.documents?.doc),
+    existingDoc,
+    priorOf(HARNESS_DOC_PATH, ownedText(existingDoc)),
+  );
 
   // ── AGENTS.md / CLAUDE.md — 우리가 «블록 하나»를 소유한다 ─────────────────────
   const note = renderAgentNote(input.documents?.agentNote);

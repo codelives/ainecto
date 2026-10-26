@@ -1,4 +1,5 @@
 import { assertEnv, type AinectoEnv } from "../../core/config/endpoints";
+import { agentNameOf } from "../../core/harness/agentName";
 
 export interface McpBinArgs {
   env?: AinectoEnv;
@@ -8,6 +9,8 @@ export interface McpBinArgs {
    * 여기서 멈추면 그 연결이 전부 끊긴다. 값 없이 끝난 {@code --role} 도 멈추지 않고 «없음»으로 둔다.
    */
   legacyRole?: string;
+  /** {@code --agent <이름>} — 이 연결의 에이전트 이름. 없으면 브리지가 {@code .ainecto/agent.local} 을 본다. */
+  agent?: string;
   help: boolean;
 }
 
@@ -22,6 +25,12 @@ export function parseMcpArgs(argv: string[]): McpBinArgs {
       result.env = assertEnv(requireFlagValue(arg, argv[++index]));
     } else if (arg === "--endpoint") {
       result.endpoint = requireFlagValue(arg, argv[++index]);
+    } else if (arg === "--agent") {
+      const name = agentNameOf(requireFlagValue(arg, argv[++index]));
+      if (name === undefined) {
+        throw new Error(`${arg} requires a value.`);
+      }
+      result.agent = name;
     } else if (arg === "--role") {
       const value = argv[index + 1];
       if (value !== undefined && !value.startsWith("--")) {

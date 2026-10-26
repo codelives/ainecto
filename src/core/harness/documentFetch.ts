@@ -1,5 +1,7 @@
 import { assertTrustedEndpointUrl } from "../config/endpoints";
 import { AGENT_NOTE_KEY, DOC_KEY, documentContractProblem } from "./harnessDoc";
+import { AGENT_NAME_HEADER, describeServerError, parseServerError } from "../mcp/rpcClient";
+import { AGENT_NAME_REJECTIONS } from "./agentName";
 
 /**
  * 저장소에 쓸 하네스 문서를 서버에서 받아 온다.
@@ -32,6 +34,8 @@ export interface FetchHarnessDocumentsInput {
   endpoint: string;
   accessToken?: string;
   client?: string;
+  /** 이 폴더의 에이전트 이름 — 있으면 {@link AGENT_NAME_HEADER} 로 싣는다. */
+  agentName?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -49,9 +53,15 @@ export async function fetchHarnessDocuments(
       headers: {
         accept: "application/json",
         ...(input.accessToken ? { authorization: `Bearer ${input.accessToken}` } : {}),
+        ...(input.agentName ? { [AGENT_NAME_HEADER.toLowerCase()]: input.agentName } : {}),
       },
     });
     if (!response.ok) {
+      const serverError = parseServerError(await response.text().catch(() => ""));
+      // ★이름 거절은 «문서를 못 받았다»가 아니다 — 기본 규칙으로 덮고 넘어가면 틀린 이름이 설정 파일에 들어간다.
+      if (serverError !== undefined && AGENT_NAME_REJECTIONS.has(serverError.error)) {
+        throw new AgentNameRejectedError(`AiNecto refused the agent name "${input.agentName}" (HTTP ${response.status} — ${describeServerError(serverError)}). Nothing was changed.`);
+      }
       return { versions: {}, fallbacks: {}, unavailableReason: `server answered HTTP ${response.status}` };
     }
     const payload = (await response.json()) as {
@@ -76,6 +86,9 @@ export async function fetchHarnessDocuments(
     }
     return { doc: bodies[DOC_KEY], agentNote: bodies[AGENT_NOTE_KEY], versions, fallbacks };
   } catch (error) {
+    if (error instanceof AgentNameRejectedError) {
+      throw error; // 아래 «못 받았다»로 삼키지 않는다.
+    }
     return {
       versions: {},
       fallbacks: {},
@@ -83,6 +96,9 @@ export async function fetchHarnessDocuments(
     };
   }
 }
+
+/** 서버가 에이전트 이름을 거절했다 — init 이 멈춘다(파일을 쓰기 전). */
+class AgentNameRejectedError extends Error {}
 
 /**
  * 이 응답 조각을 저장소에 «써도 되는가». 쓰면 안 되는 이유가 있으면 그 이유를 돌려준다.

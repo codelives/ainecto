@@ -3,12 +3,17 @@ import { OAuthClient } from "../../core/auth/oauth";
 import { McpRpcClient } from "../../core/mcp/rpcClient";
 import { runStdioBridge } from "../../core/mcp/stdioBridge";
 import { LEGACY_ROLE_NOTICE, legacyRoleInput } from "../../core/harness/legacyRole";
+import { readAgentName } from "../../core/harness/agentName";
 import type { Readable, Writable } from "node:stream";
 
 export interface ConnectorOptions {
   endpoint: string;
   /** 옛 MCP 설정의 {@code --role} 값(검사하지 않는다). 없으면 {@code AINECTO_ROLE} 를 본다 — 기록용. */
   legacyRoleFlag?: string;
+  /** 브리지 인자 {@code --agent}. ★우선한다 — 없을 때만 {@code cwd} 폴더의 {@code .ainecto/agent.local} 을 읽는다. */
+  agentFlag?: string;
+  /** agent.local 을 찾을 폴더. 기본은 프로세스 cwd(에이전트가 브리지를 띄운 저장소). */
+  cwd?: string;
   envVars?: NodeJS.ProcessEnv;
   input: Readable;
   output: Writable;
@@ -27,7 +32,8 @@ export async function runConnector(options: ConnectorOptions): Promise<void> {
     endpoint: options.endpoint,
     tokenProvider: auth,
     legacyRole,
-    // 에이전트의 MCP 연결 — 에이전트 이름은 브리지가 호스트의 initialize 에서 읽어 싣는다.
+    agentName: options.agentFlag ?? await readAgentName(options.cwd ?? process.cwd()),
+    // 에이전트의 MCP 연결 — 에이전트 «종류»는 브리지가 호스트의 initialize 에서 읽어 싣는다(«이름»은 위 agentName).
     channel: "mcp",
   });
   await runStdioBridge({

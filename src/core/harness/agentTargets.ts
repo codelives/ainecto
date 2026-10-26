@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { isDefaultEndpoint, isDefaultEndpointFor, normalizeEndpoint } from "../config/endpoints";
 import { bridgePackageSpec, PACKAGE_NAME } from "../version";
+import { AGENT_NAME_HEADER } from "../mcp/rpcClient";
 
 /**
  * 「어느 에이전트의 어느 파일에 무엇을 적는가」.
@@ -41,6 +42,8 @@ export interface ServerEntryInput {
   endpoint?: string;
   /** 브리지 패키지 지정. 기본은 이 CLI 판으로 고정한 {@link bridgePackageSpec}. */
   packageSpec?: string;
+  /** 이 폴더의 에이전트 이름 — 있으면 브리지 인자 {@code --agent <이름>}. */
+  agentName?: string;
 }
 
 export interface McpServerEntry {
@@ -52,6 +55,8 @@ export interface McpServerEntry {
 export interface RemoteServerEntry {
   type?: "http";
   url: string;
+  /** 이 폴더의 에이전트 이름 헤더({@code init --agent}). Claude Code·Cursor 의 원격 항목이 같은 칸 이름을 쓴다. */
+  headers?: Record<string, string>;
 }
 
 /** {@code ainecto} 항목의 모양 — 명령형(로컬 중계, stdio) 또는 주소형(원격). 지금 있는 것과 쓸 것이 같은 모양이다. */
@@ -90,11 +95,40 @@ export function desiredServerEntry(input: {
   local: boolean;
   /** 브리지 패키지 지정(시험용). */
   packageSpec?: string;
+  /**
+   * 이 폴더의 에이전트 이름({@code init --agent}). 원격이면 {@link AGENT_NAME_HEADER} 헤더, 로컬 중계면
+   * {@code --agent} 인자로 싣는다. 없으면 이름 없는 연결 — 지금 항목과 같다. setup(기기 전역)은 넘기지 않는다.
+   */
+  agentName?: string;
 }): AgentEntry {
   if (REMOTE_SIGN_IN[input.client] === undefined || input.local) {
-    return buildServerEntry({ env: input.env, endpoint: input.endpoint, packageSpec: input.packageSpec });
+    return buildServerEntry({ env: input.env, endpoint: input.endpoint, packageSpec: input.packageSpec, agentName: input.agentName });
   }
-  return input.client === "claude-code" ? { type: "http", url: input.endpoint } : { url: input.endpoint };
+  const headers = input.agentName === undefined ? {} : { headers: { [AGENT_NAME_HEADER]: input.agentName } };
+  return input.client === "claude-code" ? { type: "http", url: input.endpoint, ...headers } : { url: input.endpoint, ...headers };
+}
+
+/** Codex 의 폴더별 설정 — 신뢰한 저장소에서만 Codex 가 읽는다. init 이 에이전트 이름이 있을 때만 쓴다. */
+export const CODEX_CONFIG_PATH = ".codex/config.toml";
+
+/**
+ * {@link desiredServerEntry} 가 정한 Codex 항목을 {@code .codex/config.toml} 본문으로. ★항목 결정은 위 함수 하나 —
+ * 여기는 모양만 바꾼다(원격 {@code headers} → Codex 의 {@code http_headers}). 문자열은 JSON 표기로 적는다 —
+ * TOML 기본 문자열의 이스케이프(\" \\ \uXXXX)와 같다.
+ */
+export function renderCodexConfig(entry: AgentEntry): string {
+  const lines = [`[mcp_servers.${SERVER_NAME}]`];
+  if ("url" in entry) {
+    lines.push(`url = ${JSON.stringify(entry.url)}`);
+    if (entry.headers !== undefined) {
+      const pairs = Object.entries(entry.headers).map(([key, value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}`);
+      lines.push(`http_headers = { ${pairs.join(", ")} }`);
+    }
+  } else {
+    lines.push(`command = ${JSON.stringify(entry.command)}`);
+    lines.push(`args = [${entry.args.map((arg) => JSON.stringify(arg)).join(", ")}]`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 /**
@@ -126,6 +160,9 @@ export function buildServerEntry(input: ServerEntryInput = {}): McpServerEntry {
   // ★«이 env 의» 기본 주소일 때만 생략한다. 넓은 기본 판정을 쓰면 dev 주소가 prod 로 해석된다.
   if (input.endpoint && !isDefaultEndpointFor(input.env ?? "prod", input.endpoint)) {
     args.push("--endpoint", input.endpoint);
+  }
+  if (input.agentName !== undefined) {
+    args.push("--agent", input.agentName);
   }
   return { command: "npx", args };
 }
