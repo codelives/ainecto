@@ -210,7 +210,7 @@ This is the entry `setup --local` and `init --mcp --local` write — you normall
   "mcpServers": {
     "ainecto": {
       "command": "npx",
-      "args": ["-y", "@ainecto/mcp@0.9.0"]
+      "args": ["-y", "@ainecto/mcp@0.10.0"]
     }
   }
 }
