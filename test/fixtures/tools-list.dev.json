@@ -4342,7 +4342,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only); kanban: no payload — creates an empty board; add cards with kanban_apply_changes.",
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only); kanban: no payload — creates an empty board; add cards with kanban_apply_changes.",
                   "additionalProperties": true
                 },
                 "body": {
@@ -5477,7 +5477,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {diagramSource,sourceLanguage,edgeStyle,isModule,metadata}; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB); kanban: no body — only the title can be updated; cards are changed with kanban_apply_changes and kanban_card_action.",
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB); kanban: no body — only the title can be updated; cards are changed with kanban_apply_changes and kanban_card_action.",
                   "additionalProperties": true
                 },
                 "body": {
@@ -5854,7 +5854,7 @@
     },
     {
       "name": "list_agents",
-      "description": "List the signed-in user's named agents — the fixed workers (for example ainecto-root, tester, reviewer02) that connect with an agent name in their folder's connection settings (header X-AiNecto-Agent-Name, or `ainecto init --agent <name>`). An agent registers itself the first time it connects with a name; there is no create. Each item has agentUuid, name, agentKind and clientName/clientVersion (from the connecting program), lastSeenAt, archived, and current (true for the agent making this call). Use agentUuid to give a card to an agent (assigneeAgentUuid of the card action assign) or to filter notifications and to-dos (agent). A name is not a permission boundary: what can be changed is decided by the person's permissions.",
+      "description": "List the signed-in user's named agents — the fixed workers (for example ainecto-root, tester, reviewer02) that connect with an agent name in their folder's connection settings (header X-AiNecto-Agent-Name, or `ainecto init --agent <name>`). An agent registers itself the first time it connects with a name; there is no create. Each item has agentUuid, name, agentKind and clientName/clientVersion (from the connecting program), lastSeenAt, archived, current (true for the agent making this call), and projectUuid/projectName — the project the agent works in, set with update_agents (null when not set or when you can no longer read that project; display only). Use agentUuid to give a card to an agent (assigneeAgentUuid of the card action assign) or to filter notifications and to-dos (agent). A name is not a permission boundary: what can be changed is decided by the person's permissions.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5872,7 +5872,7 @@
     },
     {
       "name": "update_agents",
-      "description": "Rename, archive or unarchive the signed-in user's named agents (see list_agents). Each item commits on its own and a failing item does not stop the others. Results are per item: {agentUuid, ok: true, agent, note?} or {agentUuid, ok: false, error: {code, message}} with code one of AGENT_NOT_FOUND, AGENT_NAME_INVALID, AGENT_NAME_TAKEN, AGENT_HAS_OPEN_WORK (open cards or to-dos still point at the agent — reassign them first; counts are in openCards and openTodos), AGENT_INVALID. After a rename, change the name in that agent's folder connection settings too, or it connects with the old name again and a new agent appears.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Rename, archive or unarchive the signed-in user's named agents (see list_agents), or set the project an agent works in (projectUuid; display only). Each item commits on its own and a failing item does not stop the others. Results are per item: {agentUuid, ok: true, agent, note?} or {agentUuid, ok: false, error: {code, message}} with code one of AGENT_NOT_FOUND, AGENT_NAME_INVALID, AGENT_NAME_TAKEN, AGENT_HAS_OPEN_WORK (open cards or to-dos still point at the agent — reassign them first; counts are in openCards and openTodos), PROJECT_NOT_FOUND (no such project, or you cannot read it), AGENT_INVALID. After a rename, change the name in that agent's folder connection settings too, or it connects with the old name again and a new agent appears.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5894,6 +5894,10 @@
                 "archived": {
                   "type": "boolean",
                   "description": "true archives the agent (it disappears from pickers; its history stays), false brings it back. An archived agent that connects again with its name is brought back automatically."
+                },
+                "projectUuid": {
+                  "type": "string",
+                  "description": "The project this agent works in (projectUuid from list_projects) — shown next to the agent in list_agents and when picking an agent for a card. Display only: it does not limit what the agent can do or which cards it can get. An empty string clears it. You must be able to read the project."
                 },
                 "clientMutationId": {
                   "type": "string",
