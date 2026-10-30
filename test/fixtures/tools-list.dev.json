@@ -3217,6 +3217,38 @@
       }
     },
     {
+      "name": "favorite_documents",
+      "description": "Add documents to the signed-in user's favorites — the «Favorites» group at the top of the project panel in the AiNecto web app. Needs read access; a kanban board can be a favorite. A new favorite goes to the bottom of the list, and adding one again keeps its place and favoritedAt. A user keeps up to 50 favorites, documents and folders together (409 FAVORITES_LIMIT — remove one first). Use it when the user asks to favorite, star or pin a document. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns favorited: [{documentUuid, favorited: true, favoritedAt}] and count.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Document UUIDs to add to favorites",
+            "items": {
+              "type": "string",
+              "description": "Document UUID"
+            }
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "uuids"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
       "name": "get_my_work_summary",
       "description": "One-call summary of what is waiting for the signed-in user in AiNecto — call it when the user asks things like \"do I have anything to do?\", \"anything new?\", \"anything to review?\" or \"did anyone ask me something?\". Returns notifications {unread (not yet read by the person — the same read state as the web bell, so reading on the web lowers it at once; newest 100 counted; unreadCapped when there are more; the same number as the line at the end of tool results), unreadByKind}, mentionsToRead {items the person has not read that mention them, each with target title and url}, and todos {open (stays until the to-do is done or closed; the to-dos on that line), leaseExpired, inProgress, items: questions and requests waiting for the user's agent} and cards {kanban cards assigned to the user on boards they can read now: assignedOpen, pendingAcceptance (assigned but not yet accepted or declined), inProgress, inReview, blocked, items: the first page}. For details use list_notifications, list_agent_todos and kanban_list_cards; to read the document and its comments use get_document with the target uuid. Read-only: nothing is marked read or acknowledged.",
       "inputSchema": {
@@ -3345,6 +3377,19 @@
             "description": "Items per call, default 20."
           }
         },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "list_favorite_documents",
+      "description": "List the documents in the signed-in user's favorites (favorite_documents), in the order the user arranged them in the web app's «Favorites» group. Folder favorites are not listed. Only documents the user can open right now are listed — one in an archived project or no longer shared is left out but stays a favorite (it comes back when restored); moving a document to the trash removes its favorite. All favorites come in one response (at most 50, no cursor). Returns items: [{documentUuid, title, displayName, type, projectName, url, favoritedAt}] and count. displayName is the name the user gave the favorite (null = the document title). projectName is null when the user sees the document but not its project.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
         "additionalProperties": false
       },
       "annotations": {
@@ -3644,6 +3689,38 @@
       },
       "annotations": {
         "destructiveHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "unfavorite_documents",
+      "description": "Remove documents from the signed-in user's favorites (favorite_documents). Works even for a document the user can no longer open, and a document that was not a favorite is returned the same way. The documents themselves are not changed. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns unfavorited: [{documentUuid, favorited: false}] and count.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "uuids": {
+            "type": "array",
+            "description": "Document UUIDs to remove from favorites",
+            "items": {
+              "type": "string",
+              "description": "Document UUID"
+            }
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "uuids"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
         "readOnlyHint": false
       }
     },
