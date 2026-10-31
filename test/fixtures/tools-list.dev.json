@@ -553,6 +553,172 @@
       }
     },
     {
+      "name": "design_apply_changes",
+      "description": "Change one design document's canvas — pages, mockups (each a self-contained HTML page drawn in a fixed w×h frame) and title notes — in a single atomic call guarded by baseRevision. Positions and sizes are only what you send; nothing is moved automatically, so keep mockups people placed where they are. Limits: at most 200 mockups, 50 pages and 1000 notes (more is INVALID_PARAMS at that operation); one mockup and the whole index must each stay under 1032192 bytes once encoded (DESIGN_BOARD_TOO_LARGE, DESIGN_INDEX_TOO_LARGE). For large HTML, call request_upload_token (purpose=mcp.call) and send this call with curl. Needs edit access. Sends no email or inbox notification. Returns documentUuid, revision (the new one) and changedBoardIds.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Design document UUID."
+          },
+          "baseRevision": {
+            "type": "integer",
+            "description": "The document revision you read (get_document revision). If the document changed since, nothing is applied and the error is REVISION_CONFLICT with latestRevision — read again and rebuild your operations.",
+            "minimum": 0
+          },
+          "operations": {
+            "type": "array",
+            "description": "Operations, applied in order to the canvas as it is after the previous one, in one transaction. If any fails nothing is applied and the error names operationIndex.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "description": "addBoard: a new mockup at the end of the drawing order (on top); every field required. updateBoard: change only the fields you send (moving or resizing too). removeBoard. reorderBoards: ids must be every current mockup id exactly once (later = drawn on top). addPage / renamePage / removePage: a page can be removed only when no mockup or note is on it at that point, and never the last page. setNote: create or replace a title note (all fields). removeNote.",
+                  "enum": [
+                    "addBoard",
+                    "addPage",
+                    "removeBoard",
+                    "removeNote",
+                    "removePage",
+                    "renamePage",
+                    "reorderBoards",
+                    "setNote",
+                    "updateBoard"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,40}(?![\\s\\S])",
+                  "description": "Mockup, page or note id (ids are unique per kind within the document)."
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Mockup title shown above it."
+                },
+                "page": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,40}(?![\\s\\S])",
+                  "description": "Page id the mockup or note is on."
+                },
+                "x": {
+                  "type": "integer",
+                  "minimum": -1000000,
+                  "maximum": 1000000,
+                  "description": "Left edge on the canvas, px."
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": -1000000,
+                  "maximum": 1000000,
+                  "description": "Top edge on the canvas, px."
+                },
+                "w": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8192,
+                  "description": "Mockup frame width, px (w×h at most 16000000 px²)."
+                },
+                "h": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8192,
+                  "description": "Mockup frame height, px."
+                },
+                "html": {
+                  "type": "string",
+                  "description": "The mockup: one self-contained HTML page (inline CSS, inline SVG, small data: images; no CDN scripts or external fonts — previews are drawn without network, so external resources do not appear in the preview or PNG). Stored exactly as sent."
+                },
+                "ids": {
+                  "type": "array",
+                  "description": "reorderBoards: every current mockup id, in the new drawing order.",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,40}(?![\\s\\S])"
+                  }
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Page name."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Note text."
+                },
+                "maxW": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000,
+                  "description": "Note wrap width, px."
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "documentUuid",
+          "baseRevision",
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "design_get_boards",
+      "description": "Read the HTML of mockups (boards) of one design document — the current canvas, or a saved version with versionNumber. Each boards[] item is {id, title, page, x, y, w, h, renderHash, html}. One response stays under 1048576 bytes: mockups are added in your order until the next would not fit, the rest come back in remainingBoardIds (truncated=true) — call again with those ids; every call returns at least one mockup while any requested mockup exists. Ids that do not exist are listed in missingBoardIds. The response carries revision (or versionNumber); if revision changes between calls, the canvas changed. Read only; needs read access.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Design document UUID."
+          },
+          "boardIds": {
+            "type": "array",
+            "description": "Mockup ids to read, in the order you want them (from get_document boards[].id), 1 to 200, no duplicates.",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,40}(?![\\s\\S])"
+            },
+            "minItems": 1,
+            "maxItems": 200,
+            "uniqueItems": true
+          },
+          "versionNumber": {
+            "type": "integer",
+            "description": "Read the mockups as saved in this version (from list_versions). Omit for the current canvas.",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "documentUuid",
+          "boardIds"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "diagram_apply_changes",
       "description": "Required single-call mutation path for diagram node/edge/group create/update/delete changes. Put nodes, edges, and groups in one request and call this once. Do not look for type-specific diagram CUD tools; this tool is the only diagram CUD entry point.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
@@ -4348,7 +4514,7 @@
     },
     {
       "name": "create_document_images",
-      "description": "Render documents as PNG images and return an image URL for each, to paste into a README, a pull request, a chat or a page. Works for documents you can read; file and board documents, and types not open to MCP here, return error UNSUPPORTED_TYPE for that item. If the document has a public link turned on, the URL is permanent (public=true, expiresAt=null) and stops working when the link is turned off; otherwise it is a signed URL that anyone holding it can open for 30 days (expiresAt) — call enable_shares first when a permanent URL is needed, and treat a signed URL like a share link. URLs always show the latest content; revision says which version was drawn now. Up to 5 documents per call. Charges no credits. Sends no email or inbox notification. Returns images (one row per document, in order: documentUuid, title, type, url, public, expiresAt, revision, width, height, bytes — or documentUuid and error NOT_FOUND / FORBIDDEN / UNSUPPORTED_TYPE / RENDER_FAILED) and count.",
+      "description": "Render documents as PNG images and return an image URL for each, to paste into a README, a pull request, a chat or a page. Works for every document you can read, of every type open to MCP here (a type not open here returns error UNSUPPORTED_TYPE for that item). A board is drawn as its columns and cards (a long column is cut at the bottom) and always gets a signed URL, since boards have no public link. A file document is drawn as in the viewer (an image, the first page of a PDF, the start of a text or CSV file); video, audio and files over 10 MiB show the file name, type and size. If the renderer is busy an item returns error BUSY with retryAfterSeconds; try that item again after it. If the document has a public link turned on, the URL is permanent (public=true, expiresAt=null) and stops working when the link is turned off; otherwise it is a signed URL that anyone holding it can open for 30 days (expiresAt) — call enable_shares first when a permanent URL is needed, and treat a signed URL like a share link. These URLs are for viewing the image (a public one opens without signing in); downloading the image as a file from the app or the public page requires a signed-in account. URLs always show the latest content; revision says which version was drawn now. Up to 5 documents per call. Charges no credits. Sends no email or inbox notification. Returns images (one row per document, in order: documentUuid, title, type, url, public, expiresAt, revision, width, height, bytes — or documentUuid and error NOT_FOUND / FORBIDDEN / UNSUPPORTED_TYPE / RENDER_FAILED / BUSY) and count. A design document is not drawn by this tool: its item returns error UNSUPPORTED_TYPE with appUrl — a person downloads each mockup PNG in the app after signing in (add ?board=<mockup id> from get_document to point at one).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4382,7 +4548,7 @@
     },
     {
       "name": "create_documents",
-      "description": "Create documents. projectUuid comes from list_projects (a workspace UUID is not a project UUID). Set shareEnabled to also turn on each document's public link and get its shareUrl in the same call. If a document body is tens of KB or more, prefer request_upload_token (purpose=document.create) and upload the body with curl.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Create documents. projectUuid comes from list_projects (a workspace UUID is not a project UUID). Create only where the user asked. If the workspace, project or folder they named cannot be found, or more than one fits, do not create it somewhere else instead (such as your own personal workspace or a new project): show the candidates from list_workspaces or list_projects and ask the user first. Titles do not have to be unique and every call creates new documents, so check list_documents first and do not create a document again after a failed or timed-out call without re-reading. The result has warnings: {index, code: DUPLICATE_TITLE, duplicateOf} means item index was created next to a live document with the same title in the same folder (or project top level), duplicateOf (possibly one created earlier in the same call). The document is still created: tell the user about the duplicate and ask whether to delete one before going on. No warning does not prove there is no duplicate: a document with the same title created at the same moment by another call can be missed. Set shareEnabled to also turn on each document's public link and get its shareUrl in the same call. If a document body is tens of KB or more, prefer request_upload_token (purpose=document.create) and upload the body with curl.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4402,7 +4568,7 @@
                 },
                 "type": {
                   "type": "string",
-                  "description": "Document type. Creatable values: erd, diagram, markdown, openapi, html, file, kanban.",
+                  "description": "Document type. Creatable values: erd, diagram, markdown, openapi, html, file, kanban, design.",
                   "enum": [
                     "erd",
                     "diagram",
@@ -4410,7 +4576,8 @@
                     "openapi",
                     "html",
                     "file",
-                    "kanban"
+                    "kanban",
+                    "design"
                   ]
                 },
                 "title": {
@@ -4419,7 +4586,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only); kanban: no payload — creates an empty board; add cards with kanban_apply_changes.",
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only); kanban: no payload — creates an empty board; add cards with kanban_apply_changes; design: no payload — creates an empty canvas with one page; add pages, mockups (self-contained HTML pages) and notes with design_apply_changes.",
                   "additionalProperties": true
                 },
                 "body": {
@@ -4459,7 +4626,7 @@
     },
     {
       "name": "create_folders",
-      "description": "Create folders in a project, at its top level or under parentFolderUuid (the parent must be in the same project). Folders nest up to 50 levels. Folder names do not have to be unique, even side by side, and every call creates new folders — check list_folders first so a retry does not make duplicates. Needs edit access to the project (and to the parent folder). Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns created (folder rows with uuid and app url) and count. Fails with 404, 403, or 409 when the project, its workspace or the parent folder is archived.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Create folders in a project, at its top level or under parentFolderUuid (the parent must be in the same project). Folders nest up to 50 levels. Folder names do not have to be unique, even side by side, and every call creates new folders — check list_folders first so a retry does not make duplicates. Needs edit access to the project (and to the parent folder). Create only where the user asked. If the workspace, project or folder they named cannot be found, or more than one fits, do not create it somewhere else instead (such as your own personal workspace or a new project): show the candidates from list_workspaces or list_projects and ask the user first. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns created (folder rows with uuid and app url) and count. Fails with 404, 403, or 409 when the project, its workspace or the parent folder is archived.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4509,7 +4676,7 @@
     },
     {
       "name": "create_projects",
-      "description": "Create new, empty projects. workspaceUuid picks the workspace (you need edit access there); without it the project goes to your first personal workspace, which is created if you have none. projectKey is optional and must be unique within the workspace; project names do not have to be unique. Every call creates new projects, so check list_projects before retrying. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns created (project rows with uuid) and count. Fails with 403 without edit access, 409 when the workspace is archived, and an error when the projectKey is already used.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Create new, empty projects. workspaceUuid picks the workspace (you need edit access there; list_workspaces shows yours and the ones shared with you, with your role). Leave it out only when the user wants the project in their own personal workspace: then it goes to your first personal workspace, which is created if you have none. projectKey is optional and must be unique within the workspace; project names do not have to be unique. Every call creates new projects, so check list_projects before creating or retrying. Create only where the user asked. If the workspace, project or folder they named cannot be found, or more than one fits, do not create it somewhere else instead (such as your own personal workspace or a new project): show the candidates from list_workspaces or list_projects and ask the user first. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns created (project rows with uuid) and count. Fails with 403 without edit access, 409 when the workspace is archived, and an error when the projectKey is already used.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4524,7 +4691,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Workspace UUID — null uses user's default workspace"
+                  "description": "Workspace UUID from list_workspaces — null puts it in your own personal workspace"
                 },
                 "name": {
                   "type": "string",
@@ -4806,7 +4973,7 @@
     },
     {
       "name": "enable_shares",
-      "description": "Turn on public links: anyone with the link can open it without signing in, so confirm with the user before exposing anything. targetType document returns shareUrl (a public page) and publicApiPath; board documents have no public link (PUBLIC_SHARE_UNSUPPORTED_TYPE); needs admin or owner rights on the document. targetType project returns publicToken and a publicApiPath that reads the project and its documents through the public API — there is no public project page; needs admin or owner rights. targetType folder only stores a token that nothing public reads yet, so share the documents or the project instead; needs edit access. Re-enabling a document or project reuses its previous link. This does not invite or notify anyone — giving specific people access is done in the AiNecto app. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns enabled (rows with the link fields) and count.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Turn on public links: anyone with the link can open it without signing in, so confirm with the user before exposing anything. targetType document returns shareUrl (a public page) and publicApiPath; board documents have no public link (PUBLIC_SHARE_UNSUPPORTED_TYPE); needs admin or owner rights on the document. targetType project returns publicToken and a publicApiPath that reads the project and its documents through the public API — there is no public project page; needs admin or owner rights. targetType folder only stores a token that nothing public reads yet, so share the documents or the project instead; needs edit access. Re-enabling a document or project reuses its previous link. This does not invite or notify anyone — to give specific people access to a project use invite_project_members; folders and documents are shared with people in the AiNecto app. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns enabled (rows with the link fields) and count.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4918,7 +5085,7 @@
     },
     {
       "name": "get_document",
-      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; kanban → board {viewer, columns: each column's first 20 cards as short lines (the same lines as kanban_list_cards with boardUuid) + hasMore/nextAfter} (more cards via kanban_list_cards boardUuid; full cards with allowedTransitions, people and links via kanban_list_cards cardUuids or cardKeys); erd → metadata only (read tables/refs via erd_list_*). latestVersionNumber = the newest saved version (as list_versions numbers it; null if none); currentVersion is a different counter. Pass latestVersionNumber in documentVersions of kanban_card_action to say which version you read.",
+      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; kanban → board {viewer, columns: each column's first 20 cards as short lines (the same lines as kanban_list_cards with boardUuid) + hasMore/nextAfter} (more cards via kanban_list_cards boardUuid; full cards with allowedTransitions, people and links via kanban_list_cards cardUuids or cardKeys); design → the canvas index only: pages, mockups {id,title,page,x,y,w,h,htmlBytes,renderHash} and notes (read mockup HTML with design_get_boards; change with design_apply_changes using revision as baseRevision); erd → metadata only (read tables/refs via erd_list_*). latestVersionNumber = the newest saved version (as list_versions numbers it; null if none); currentVersion is the version number shown to people — the same number once a version is saved (1 before any). Pass latestVersionNumber in documentVersions of kanban_card_action to say which version you read.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4960,7 +5127,7 @@
     },
     {
       "name": "get_version",
-      "description": "Read one saved version of a document, including snapshotJson — the full saved content in that document type's stored format. Read only; needs read access. Fails with 404 for an unknown version number and with a plan-limit error for a locked version (see list_versions).",
+      "description": "Read one saved version of a document, including snapshotJson — the full saved content in that document type's stored format. Read only; needs read access. Fails with 404 for an unknown version number and with a plan-limit error for a locked version (see list_versions). A design document returns that version's canvas index instead of snapshotJson (read its mockup HTML with design_get_boards versionNumber).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5006,6 +5173,56 @@
       }
     },
     {
+      "name": "invite_project_members",
+      "description": "Give one person access to a project. A member of the team the project is shared through gets access at once (status ADDED, no email); so does someone who already accepted an earlier invitation to this project whose access had lapsed. Anyone else gets one invitation email and access opens when they accept it from that email (INVITED); whether the address already has an AiNecto account is never revealed. If the person already has access or a pending invitation, nothing is changed and no email is sent (ALREADY_MEMBER / ALREADY_INVITED); changing an existing role is done in the AiNecto app. Sharing a project needs a Team plan and owner or admin rights on it; people outside the team can only be VIEWER. Refusals are error 403 GRANT_NOT_ALLOWED with reason and nextAction; TEAM_REQUIRED also lists candidates (orgUuid, orgName). If the project or the team is unclear, do not pick one yourself: show the candidates (from list_projects, or from the TEAM_REQUIRED error) and get the user's confirmation first. If you only have a person's name, ask the user for the email address. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Example: {\"projectUuid\":\"<uuid>\",\"email\":\"kim@example.com\",\"role\":\"VIEWER\"} returns {\"status\":\"INVITED\",\"mailSent\":true,...}; a teammate as editor, {\"projectUuid\":\"<uuid>\",\"email\":\"lee@company.com\",\"role\":\"EDITOR\"}, returns {\"status\":\"ADDED\",\"mailSent\":false,...}. Returns status, projectUuid, projectUrl, grant, mailSent and nextAction.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectUuid": {
+            "type": "string",
+            "description": "Project UUID."
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address of the person to invite. Give exactly one of email or userId."
+          },
+          "userId": {
+            "type": "string",
+            "description": "User id of a team member you already know. Give exactly one of email or userId."
+          },
+          "role": {
+            "type": "string",
+            "description": "Role to give. Always set it explicitly; people outside the team can only be VIEWER.",
+            "enum": [
+              "ADMIN",
+              "EDITOR",
+              "VIEWER"
+            ]
+          },
+          "orgUuid": {
+            "type": "string",
+            "description": "Team to share through. Only needed when the workspace owner is in more than one paying team (otherwise TEAM_REQUIRED lists the candidates)."
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "projectUuid",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
       "name": "list_attachments",
       "description": "List the active attachments in a project, newest first: uuid, filename, contentType, sizeBytes, parentType and parentId, uploadedBy. Metadata only — no file contents or download link. Removed attachments are not listed. Needs read access to the whole project. Read only. Returns attachments and count.",
       "inputSchema": {
@@ -5042,7 +5259,7 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Readable values: erd, diagram, markdown, openapi, html, file, kanban.",
+            "description": "Optional document type filter. Readable values: erd, diagram, markdown, openapi, html, file, kanban, design.",
             "enum": [
               "erd",
               "diagram",
@@ -5050,7 +5267,8 @@
               "openapi",
               "html",
               "file",
-              "kanban"
+              "kanban",
+              "design"
             ]
           },
           "q": {
@@ -5092,7 +5310,7 @@
     },
     {
       "name": "list_projects",
-      "description": "Find projects you can open. With no arguments it lists every active project you can open, across all workspaces; workspaceUuid narrows it to one workspace (an unknown UUID gives an empty list). With q it searches the project search index instead (mode=search; at most limit hits, default and maximum 50; with total). Archived projects are never listed. Project names can repeat — compare workspaceId and ask the user when several match. Read only. Returns projects, count and mode.",
+      "description": "Find projects you can open. With no arguments it lists every active project you can open, across all workspaces; workspaceUuid narrows it to one workspace (an unknown UUID gives an empty list). With q it searches the project search index instead (mode=search; at most limit hits, default and maximum 50; with total). Archived projects are never listed. workspaceId is the id of a list_workspaces row (that row gives the workspace's uuid and name). Project names can repeat — compare workspaceId and ask the user when several match. Read only. Returns projects, count and mode.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5152,7 +5370,7 @@
     },
     {
       "name": "list_workspaces",
-      "description": "List the personal workspaces you own (active ones only). Workspaces that other people or a team share with you are not included — list_projects shows every project you can open (each row has workspaceId) and get_workspace reads one workspace. Read only. Returns workspaces (uuid, name, description, owner, revision) and count.",
+      "description": "List every active workspace you can open: your own and the ones shared with you. Each row has uuid, id (list_projects rows point to it with workspaceId), name, description, owner, revision, access and myRole. access says how you see it: OWNER = your own workspace; GRANT = the whole workspace is shared with you and myRole is your role on the workspace (ADMIN, EDITOR or VIEWER); PARTIAL = you were only given some of its projects (list_projects shows them) and myRole is null. With VIEWER or PARTIAL you cannot create new projects in that workspace. myRole is only your workspace role: a project, folder or document can be shared with you with more rights (for example edit rights on one project), so whether you may write to an existing project, folder or document depends on that resource's own rights, not on this list. Your own workspaces come first, then shared ones by name; names can repeat. If the user named a workspace that is not in this list, or several rows match, do not create anything in another workspace (not even your own personal one) — show the user these candidates and ask which one. Read only. Returns workspaces and count.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -5332,7 +5550,7 @@
           },
           "scopeJson": {
             "type": "string",
-            "description": "Optional JSON scope. document.create includes projectUuid, type, title; creatable type values: erd, diagram, markdown, openapi, html, file, kanban. document.update/document.append include documentUuid. type=file also includes filename (the extension decides the format) — the PUT Content-Type is the file MIME and the body is the file bytes. attachment.upload: {documentUuid, filename}; the server adds storageKey to the issued scope."
+            "description": "Optional JSON scope. document.create includes projectUuid, type, title; creatable type values: erd, diagram, markdown, openapi, html, file, kanban, design. document.update/document.append include documentUuid. type=file also includes filename (the extension decides the format) — the PUT Content-Type is the file MIME and the body is the file bytes. attachment.upload: {documentUuid, filename}; the server adds storageKey to the issued scope."
           },
           "maxBytes": {
             "type": "integer",
@@ -5554,7 +5772,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB); kanban: no body — only the title can be updated; cards are changed with kanban_apply_changes and kanban_card_action.",
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB); kanban: no body — only the title can be updated; cards are changed with kanban_apply_changes and kanban_card_action; design: no body — only the title can be updated; the canvas is changed with design_apply_changes.",
                   "additionalProperties": true
                 },
                 "body": {
@@ -5801,7 +6019,7 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Readable values: erd, diagram, markdown, openapi, html, file, kanban.",
+            "description": "Optional document type filter. Readable values: erd, diagram, markdown, openapi, html, file, kanban, design.",
             "enum": [
               "erd",
               "diagram",
@@ -5809,7 +6027,8 @@
               "openapi",
               "html",
               "file",
-              "kanban"
+              "kanban",
+              "design"
             ]
           },
           "projectUuid": {
