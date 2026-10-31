@@ -4806,7 +4806,7 @@
     },
     {
       "name": "enable_shares",
-      "description": "Turn on public links: anyone with the link can open it without signing in, so confirm with the user before exposing anything. targetType document returns shareUrl (a public page) and publicApiPath; board documents have no public link (PUBLIC_SHARE_UNSUPPORTED_TYPE); needs admin or owner rights on the document. targetType project returns publicToken and a publicApiPath that reads the project and its documents through the public API — there is no public project page; needs admin or owner rights. targetType folder only stores a token that nothing public reads yet, so share the documents or the project instead; needs edit access. Re-enabling a document or project reuses its previous link. This does not invite or notify anyone — giving specific people access is done in the AiNecto app. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns enabled (rows with the link fields) and count.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Turn on public links: anyone with the link can open it without signing in, so confirm with the user before exposing anything. targetType document returns shareUrl (a public page) and publicApiPath; board documents have no public link (PUBLIC_SHARE_UNSUPPORTED_TYPE); needs admin or owner rights on the document. targetType project returns publicToken and a publicApiPath that reads the project and its documents through the public API — there is no public project page; needs admin or owner rights. targetType folder only stores a token that nothing public reads yet, so share the documents or the project instead; needs edit access. Re-enabling a document or project reuses its previous link. This does not invite or notify anyone — to give specific people access to a project use invite_project_members; folders and documents are shared with people in the AiNecto app. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns enabled (rows with the link fields) and count.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5003,6 +5003,56 @@
       "annotations": {
         "destructiveHint": false,
         "readOnlyHint": true
+      }
+    },
+    {
+      "name": "invite_project_members",
+      "description": "Give one person access to a project. A member of the team the project is shared through gets access at once (status ADDED, no email); so does someone who already accepted an earlier invitation to this project whose access had lapsed. Anyone else gets one invitation email and access opens when they accept it from that email (INVITED); whether the address already has an AiNecto account is never revealed. If the person already has access or a pending invitation, nothing is changed and no email is sent (ALREADY_MEMBER / ALREADY_INVITED); changing an existing role is done in the AiNecto app. Sharing a project needs a Team plan and owner or admin rights on it; people outside the team can only be VIEWER. Refusals are error 403 GRANT_NOT_ALLOWED with reason and nextAction; TEAM_REQUIRED also lists candidates (orgUuid, orgName). If the project or the team is unclear, do not pick one yourself: show the candidates (from list_projects, or from the TEAM_REQUIRED error) and get the user's confirmation first. If you only have a person's name, ask the user for the email address. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Example: {\"projectUuid\":\"<uuid>\",\"email\":\"kim@example.com\",\"role\":\"VIEWER\"} returns {\"status\":\"INVITED\",\"mailSent\":true,...}; a teammate as editor, {\"projectUuid\":\"<uuid>\",\"email\":\"lee@company.com\",\"role\":\"EDITOR\"}, returns {\"status\":\"ADDED\",\"mailSent\":false,...}. Returns status, projectUuid, projectUrl, grant, mailSent and nextAction.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectUuid": {
+            "type": "string",
+            "description": "Project UUID."
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address of the person to invite. Give exactly one of email or userId."
+          },
+          "userId": {
+            "type": "string",
+            "description": "User id of a team member you already know. Give exactly one of email or userId."
+          },
+          "role": {
+            "type": "string",
+            "description": "Role to give. Always set it explicitly; people outside the team can only be VIEWER.",
+            "enum": [
+              "ADMIN",
+              "EDITOR",
+              "VIEWER"
+            ]
+          },
+          "orgUuid": {
+            "type": "string",
+            "description": "Team to share through. Only needed when the workspace owner is in more than one paying team (otherwise TEAM_REQUIRED lists the candidates)."
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "projectUuid",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
       }
     },
     {
