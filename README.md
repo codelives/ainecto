@@ -28,6 +28,7 @@ to 5 minutes for the user). Then run `npx -y ainecto@latest doctor` and do what 
   added — start a new session or call it through the CLI as above.
 - Claude Code's auto mode may block running an external package with `npx`. If it does, ask the user
   to allow the command.
+- ChatGPT, Claude and other apps: see https://ainecto.com/docs/get-started/connect-your-agent/
 
 ## Set up this machine
 
