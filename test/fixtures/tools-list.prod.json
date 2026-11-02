@@ -553,8 +553,174 @@
       }
     },
     {
+      "name": "design_apply_changes",
+      "description": "Change one design document's canvas — pages, mockups (each a self-contained HTML page drawn in a fixed w×h frame) and title notes — in a single atomic call guarded by baseRevision. Positions and sizes are only what you send; nothing is moved automatically, so keep mockups people placed where they are. Limits: at most 200 mockups, 50 pages and 1000 notes (more is INVALID_PARAMS at that operation); one mockup and the whole index must each stay under 1032192 bytes once encoded (DESIGN_BOARD_TOO_LARGE, DESIGN_INDEX_TOO_LARGE). For large HTML, call request_upload_token (purpose=mcp.call) and send this call with curl. Needs edit access. Sends no email or inbox notification. Returns documentUuid, revision (the new one) and changedBoardIds.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Design document UUID."
+          },
+          "baseRevision": {
+            "type": "integer",
+            "description": "The document revision you read (get_document revision). If the document changed since, nothing is applied and the error is REVISION_CONFLICT with latestRevision — read again and rebuild your operations.",
+            "minimum": 0
+          },
+          "operations": {
+            "type": "array",
+            "description": "Operations, applied in order to the canvas as it is after the previous one, in one transaction. If any fails nothing is applied and the error names operationIndex.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "description": "addBoard: a new mockup at the end of the drawing order (on top); every field required. updateBoard: change only the fields you send (moving or resizing too). removeBoard. reorderBoards: ids must be every current mockup id exactly once (later = drawn on top). addPage / renamePage / removePage: a page can be removed only when no mockup or note is on it at that point, and never the last page. setNote: create or replace a title note (all fields). removeNote.",
+                  "enum": [
+                    "addBoard",
+                    "addPage",
+                    "removeBoard",
+                    "removeNote",
+                    "removePage",
+                    "renamePage",
+                    "reorderBoards",
+                    "setNote",
+                    "updateBoard"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,40}(?![\\s\\S])",
+                  "description": "Mockup, page or note id (ids are unique per kind within the document)."
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Mockup title shown above it."
+                },
+                "page": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,40}(?![\\s\\S])",
+                  "description": "Page id the mockup or note is on."
+                },
+                "x": {
+                  "type": "integer",
+                  "minimum": -1000000,
+                  "maximum": 1000000,
+                  "description": "Left edge on the canvas, px."
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": -1000000,
+                  "maximum": 1000000,
+                  "description": "Top edge on the canvas, px."
+                },
+                "w": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8192,
+                  "description": "Mockup frame width, px (w×h at most 16000000 px²)."
+                },
+                "h": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8192,
+                  "description": "Mockup frame height, px."
+                },
+                "html": {
+                  "type": "string",
+                  "description": "The mockup: one self-contained HTML page (inline CSS, inline SVG, small data: images; no CDN scripts or external fonts — previews are drawn without network, so external resources do not appear in the preview or PNG). Stored exactly as sent."
+                },
+                "ids": {
+                  "type": "array",
+                  "description": "reorderBoards: every current mockup id, in the new drawing order.",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,40}(?![\\s\\S])"
+                  }
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Page name."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Note text."
+                },
+                "maxW": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000,
+                  "description": "Note wrap width, px."
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "documentUuid",
+          "baseRevision",
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "design_get_boards",
+      "description": "Read the HTML of mockups (boards) of one design document — the current canvas, or a saved version with versionNumber. Each boards[] item is {id, title, page, x, y, w, h, renderHash, html}. One response stays under 1048576 bytes: mockups are added in your order until the next would not fit, the rest come back in remainingBoardIds (truncated=true) — call again with those ids; every call returns at least one mockup while any requested mockup exists. Ids that do not exist are listed in missingBoardIds. The response carries revision (or versionNumber); if revision changes between calls, the canvas changed. Read only; needs read access.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Design document UUID."
+          },
+          "boardIds": {
+            "type": "array",
+            "description": "Mockup ids to read, in the order you want them (from get_document boards[].id), 1 to 200, no duplicates.",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,40}(?![\\s\\S])"
+            },
+            "minItems": 1,
+            "maxItems": 200,
+            "uniqueItems": true
+          },
+          "versionNumber": {
+            "type": "integer",
+            "description": "Read the mockups as saved in this version (from list_versions). Omit for the current canvas.",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "documentUuid",
+          "boardIds"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "diagram_apply_changes",
-      "description": "Required single-call mutation path for diagram node/edge/group create/update/delete changes. Put nodes, edges, and groups in one request and call this once. Do not look for type-specific diagram CUD tools; this tool is the only diagram CUD entry point.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Required single-call mutation path for diagram node/edge/group create/update/delete changes. Put nodes, edges, and groups in one request and call this once. Do not look for type-specific diagram CUD tools; this tool is the only diagram CUD entry point. While you write a document, people who open it see that an AI agent is writing it (with your agent name and the time of your last write). When the document is complete, call finish_documents; otherwise the notice ends 10 minutes after your last write.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1045,7 +1211,7 @@
     },
     {
       "name": "erd_arrange_tables",
-      "description": "Arrange ERD tables after edits. Default incremental mode places newly-created tables while preserving existing positions; full=true re-layouts the entire diagram. Use after several separate table edits to tidy the canvas.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Arrange ERD tables after edits. Default incremental mode places newly-created tables while preserving existing positions; full=true re-layouts the entire diagram. Use after several separate table edits to tidy the canvas. While you write a document, people who open it see that an AI agent is writing it (with your agent name and the time of your last write). When the document is complete, call finish_documents; otherwise the notice ends 10 minutes after your last write.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1077,7 +1243,7 @@
     },
     {
       "name": "erd_apply_changes",
-      "description": "Required single-call mutation path for ERD create/update/delete changes. Put tables, columns, indexes, refs, enums, enum_values, and table groups in one operations array and call this once.\nRules: (1) all data field names are snake_case; (2) for create, generate your own UUIDs and put them in data.uuid, then later operations in the same batch may reference those UUIDs without read-back calls; (3) enum values are separate enum_value operations, not inline on enum; (4) ref.relationship uses short dbdiagram-style symbols: >, <, or -; (5) ref_column operations map FK columns explicitly, never automatically.\nDo not look for type-specific ERD CUD tools; this tool is the only ERD CUD entry point. If operations is very large, use request_upload_token with purpose=mcp.call and send the tools/call payload with curl to save LLM tokens.\nOne-call worked example:\n{\n  \"documentUuid\": \"erd-doc-uuid\",\n  \"description\": \"create users/posts ERD\",\n  \"operations\": [\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_users\",\"name\":\"users\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_id\",\"table_uuid\":\"tbl_users\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_email\",\"table_uuid\":\"tbl_users\",\"name\":\"email\",\"type\":\"varchar(255)\",\"is_unique\":true,\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_posts\",\"name\":\"posts\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_author_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"author_id\",\"type\":\"bigint\",\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_status\",\"table_uuid\":\"tbl_posts\",\"name\":\"status\",\"type\":\"post_status\",\"is_not_null\":true,\"display_order\":3}},\n    {\"op\":\"create\",\"type\":\"enum\",\"data\":{\"uuid\":\"enum_post_status\",\"name\":\"post_status\"}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_draft\",\"enum_uuid\":\"enum_post_status\",\"value\":\"draft\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_published\",\"enum_uuid\":\"enum_post_status\",\"value\":\"published\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"ref\",\"data\":{\"uuid\":\"ref_posts_author\",\"name\":\"fk_posts_author\",\"from_table_uuid\":\"tbl_posts\",\"to_table_uuid\":\"tbl_users\",\"relationship\":\">\",\"on_delete\":\"cascade\"}},\n    {\"op\":\"create\",\"type\":\"ref_column\",\"data\":{\"uuid\":\"refcol_posts_author\",\"ref_uuid\":\"ref_posts_author\",\"from_column_uuid\":\"col_posts_author_id\",\"to_column_uuid\":\"col_users_id\",\"display_order\":1}}\n  ]\n}\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Required single-call mutation path for ERD create/update/delete changes. Put tables, columns, indexes, refs, enums, enum_values, and table groups in one operations array and call this once.\nRules: (1) all data field names are snake_case; (2) for create, generate your own UUIDs and put them in data.uuid, then later operations in the same batch may reference those UUIDs without read-back calls; (3) enum values are separate enum_value operations, not inline on enum; (4) ref.relationship uses short dbdiagram-style symbols: >, <, or -; (5) ref_column operations map FK columns explicitly, never automatically.\nDo not look for type-specific ERD CUD tools; this tool is the only ERD CUD entry point. If operations is very large, use request_upload_token with purpose=mcp.call and send the tools/call payload with curl to save LLM tokens.\nOne-call worked example:\n{\n  \"documentUuid\": \"erd-doc-uuid\",\n  \"description\": \"create users/posts ERD\",\n  \"operations\": [\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_users\",\"name\":\"users\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_id\",\"table_uuid\":\"tbl_users\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_users_email\",\"table_uuid\":\"tbl_users\",\"name\":\"email\",\"type\":\"varchar(255)\",\"is_unique\":true,\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"table\",\"data\":{\"uuid\":\"tbl_posts\",\"name\":\"posts\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"id\",\"type\":\"bigint\",\"is_pk\":true,\"is_not_null\":true,\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_author_id\",\"table_uuid\":\"tbl_posts\",\"name\":\"author_id\",\"type\":\"bigint\",\"is_not_null\":true,\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"column\",\"data\":{\"uuid\":\"col_posts_status\",\"table_uuid\":\"tbl_posts\",\"name\":\"status\",\"type\":\"post_status\",\"is_not_null\":true,\"display_order\":3}},\n    {\"op\":\"create\",\"type\":\"enum\",\"data\":{\"uuid\":\"enum_post_status\",\"name\":\"post_status\"}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_draft\",\"enum_uuid\":\"enum_post_status\",\"value\":\"draft\",\"display_order\":1}},\n    {\"op\":\"create\",\"type\":\"enum_value\",\"data\":{\"uuid\":\"enum_post_status_published\",\"enum_uuid\":\"enum_post_status\",\"value\":\"published\",\"display_order\":2}},\n    {\"op\":\"create\",\"type\":\"ref\",\"data\":{\"uuid\":\"ref_posts_author\",\"name\":\"fk_posts_author\",\"from_table_uuid\":\"tbl_posts\",\"to_table_uuid\":\"tbl_users\",\"relationship\":\">\",\"on_delete\":\"cascade\"}},\n    {\"op\":\"create\",\"type\":\"ref_column\",\"data\":{\"uuid\":\"refcol_posts_author\",\"ref_uuid\":\"ref_posts_author\",\"from_column_uuid\":\"col_posts_author_id\",\"to_column_uuid\":\"col_users_id\",\"display_order\":1}}\n  ]\n}\n While you write a document, people who open it see that an AI agent is writing it (with your agent name and the time of your last write). When the document is complete, call finish_documents; otherwise the notice ends 10 minutes after your last write.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3250,7 +3416,7 @@
     },
     {
       "name": "get_my_work_summary",
-      "description": "One-call summary of what is waiting for the signed-in user in AiNecto — call it when the user asks things like \"do I have anything to do?\", \"anything new?\", \"anything to review?\" or \"did anyone ask me something?\". Returns notifications {unread (not yet read by the person — the same read state as the web bell, so reading on the web lowers it at once; newest 100 counted; unreadCapped when there are more; the same number as the line at the end of tool results), unreadByKind}, mentionsToRead {items the person has not read that mention them, each with target title and url}, and todos {open (stays until the to-do is done or closed; the to-dos on that line), leaseExpired, inProgress, items: questions and requests waiting for the user's agent} and cards {kanban cards assigned to the user on boards they can read now: assignedOpen, pendingAcceptance (assigned but not yet accepted or declined), inProgress, inReview, blocked, items: the first page}. For details use list_notifications, list_agent_todos and kanban_list_cards; to read the document and its comments use get_document with the target uuid. Read-only: nothing is marked read or acknowledged.",
+      "description": "One-call summary of what is waiting for the signed-in user in AiNecto — call it when the user asks things like \"do I have anything to do?\", \"anything new?\", \"anything to review?\" or \"did anyone ask me something?\". Returns notifications {unread (not yet read by the person — the same read state as the web bell, so reading on the web lowers it at once; newest 100 counted; unreadCapped when there are more; the same number as the line at the end of tool results), unreadByKind}, mentionsToRead {items the person has not read that mention them, each with target title and url}, and todos {open (stays until the to-do is done or closed; the to-dos on that line), leaseExpired, inProgress, items: questions and requests waiting for the user's agent} and cards {kanban cards assigned to the user on boards they can read now: assignedOpen, pendingAcceptance (assigned but not yet accepted or declined), inProgress, inReview, blocked, items: the first page}, staleTracking {count, items: the user's documents that need review because a source they track was updated (first 10, documentUuid and title) — read the source, update the document, then CONFIRM with document_relations}. For details use list_notifications, list_agent_todos and kanban_list_cards; to read the document and its comments use get_document with the target uuid. Read-only: nothing is marked read or acknowledged.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3337,6 +3503,7 @@
                 "PROJECT_ARCHIVED",
                 "PROJECT_UNARCHIVED",
                 "DOCUMENT_UPDATED",
+                "DOCUMENT_STALE_REMINDER",
                 "CONVERSATION_MESSAGE"
               ]
             },
@@ -3488,7 +3655,7 @@
     },
     {
       "name": "list_notifications",
-      "description": "Read new notifications for the signed-in user, oldest first and without gaps. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly, agent), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. A DOCUMENT_UPDATED item (a document the user subscribed to was changed by someone else; changes within 10 minutes are one item) also has documentChange {changeCount, versionSummary — the name/description of a named version saved in that group, else null}. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person (use mark_notifications_read when the user asks); open to-dos are in list_agent_todos. The same call repeated within 30 seconds returns the previous result without reading again, unless the inbox changed in between (a new or updated notification, a read, an ack); a call that carries ack is always read fresh. With order the call browses instead (see order) and is always read fresh.",
+      "description": "Read new notifications for the signed-in user, oldest first and without gaps. The server remembers, per connection and per filter (kinds, workspaceUuids, projectUuids, directOnly, agent), how far you have acknowledged; a new filter starts from now. Each response carries ackToken: pass it as ack in your next call (with the same filter) after you have handled the batch — if you do not, the next call returns the same batch again (identify duplicates by id and seq; an item that comes back with a higher seq and a larger groupCount is an update of the same entry). Each item has id, seq, kind, at, summary (one line), actor, target (title and url only when you can read it now), action (what the user is asked to do) and humanRead. A DOCUMENT_UPDATED item (a document the user subscribes to or tracks was changed by someone else; changes within 10 minutes are one item) also has documentChange {changeCount, versionSummary — the name/description of a named version saved in that group, else null; tracking — when a new version was saved and the user's own documents track that source: [{documentUuid, title, state, stale}] as they are now (stale = needs review because the source was updated)}. An item you can no longer read comes back as {id, seq, at, redacted: true}. This tool never marks anything read for the person (use mark_notifications_read when the user asks); open to-dos are in list_agent_todos. The same call repeated within 30 seconds returns the previous result without reading again, unless the inbox changed in between (a new or updated notification, a read, an ack); a call that carries ack is always read fresh. With order the call browses instead (see order) and is always read fresh.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3533,6 +3700,7 @@
                 "PROJECT_ARCHIVED",
                 "PROJECT_UNARCHIVED",
                 "DOCUMENT_UPDATED",
+                "DOCUMENT_STALE_REMINDER",
                 "CONVERSATION_MESSAGE"
               ]
             },
@@ -4298,7 +4466,7 @@
     },
     {
       "name": "markdown_append_document",
-      "description": "Append text to the end of Markdown documents without resending the existing body; separator goes between the old body and the addition. The change is kept in version history (restore_versions can undo it). Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns appended (document rows) and count. Fails with 409 when the document is in the trash or its folder, project or workspace is archived. If the appended body is tens of KB or more, prefer request_upload_token (purpose=document.append) and upload the body with curl.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Append text to the end of Markdown documents without resending the existing body; separator goes between the old body and the addition. The change is kept in version history (restore_versions can undo it). Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns appended (document rows) and count. Fails with 409 when the document is in the trash or its folder, project or workspace is archived. If the appended body is tens of KB or more, prefer request_upload_token (purpose=document.append) and upload the body with curl. While you write a document, people who open it see that an AI agent is writing it (with your agent name and the time of your last write). When the document is complete, call finish_documents; otherwise the notice ends 10 minutes after your last write.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4348,7 +4516,7 @@
     },
     {
       "name": "create_document_images",
-      "description": "Render documents as PNG images and return an image URL for each, to paste into a README, a pull request, a chat or a page. Works for every document you can read, of every type open to MCP here (a type not open here returns error UNSUPPORTED_TYPE for that item). A board is drawn as its columns and cards (a long column is cut at the bottom) and always gets a signed URL, since boards have no public link. A file document is drawn as in the viewer (an image, the first page of a PDF, the start of a text or CSV file); video, audio and files over 10 MiB show the file name, type and size. If the document has a public link turned on, the URL is permanent (public=true, expiresAt=null) and stops working when the link is turned off; otherwise it is a signed URL that anyone holding it can open for 30 days (expiresAt) — call enable_shares first when a permanent URL is needed, and treat a signed URL like a share link. These URLs are for viewing the image (a public one opens without signing in); downloading the image as a file from the app or the public page requires a signed-in account. URLs always show the latest content; revision says which version was drawn now. Up to 5 documents per call. Charges no credits. Sends no email or inbox notification. Returns images (one row per document, in order: documentUuid, title, type, url, public, expiresAt, revision, width, height, bytes — or documentUuid and error NOT_FOUND / FORBIDDEN / UNSUPPORTED_TYPE / RENDER_FAILED) and count.",
+      "description": "Render documents as PNG images and return an image URL for each, to paste into a README, a pull request, a chat or a page. Works for every document you can read, of every type open to MCP here (a type not open here returns error UNSUPPORTED_TYPE for that item). A board is drawn as its columns and cards (a long column is cut at the bottom) and always gets a signed URL, since boards have no public link. A file document is drawn as in the viewer (an image, the first page of a PDF, the start of a text or CSV file); video, audio and files over 10 MiB show the file name, type and size. If the renderer is busy an item returns error BUSY with retryAfterSeconds; try that item again after it. If the document has a public link turned on, the URL is permanent (public=true, expiresAt=null) and stops working when the link is turned off; otherwise it is a signed URL that anyone holding it can open for 30 days (expiresAt) — call enable_shares first when a permanent URL is needed, and treat a signed URL like a share link. These URLs are for viewing the image (a public one opens without signing in); downloading the image as a file from the app or the public page requires a signed-in account. URLs always show the latest content; revision says which version was drawn now. Up to 5 documents per call. Charges no credits. Sends no email or inbox notification. Returns images (one row per document, in order: documentUuid, title, type, url, public, expiresAt, revision, width, height, bytes — or documentUuid and error NOT_FOUND / FORBIDDEN / UNSUPPORTED_TYPE / RENDER_FAILED / BUSY) and count. A design document is not drawn by this tool: its item returns error UNSUPPORTED_TYPE with appUrl — a person downloads each mockup PNG in the app after signing in (add ?board=<mockup id> from get_document to point at one).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4382,7 +4550,7 @@
     },
     {
       "name": "create_documents",
-      "description": "Create documents. projectUuid comes from list_projects (a workspace UUID is not a project UUID). Create only where the user asked. If the workspace, project or folder they named cannot be found, or more than one fits, do not create it somewhere else instead (such as your own personal workspace or a new project): show the candidates from list_workspaces or list_projects and ask the user first. Titles do not have to be unique and every call creates new documents, so check list_documents first and do not create a document again after a failed or timed-out call without re-reading. The result has warnings: {index, code: DUPLICATE_TITLE, duplicateOf} means item index was created next to a live document with the same title in the same folder (or project top level), duplicateOf (possibly one created earlier in the same call). The document is still created: tell the user about the duplicate and ask whether to delete one before going on. No warning does not prove there is no duplicate: a document with the same title created at the same moment by another call can be missed. Set shareEnabled to also turn on each document's public link and get its shareUrl in the same call. If a document body is tens of KB or more, prefer request_upload_token (purpose=document.create) and upload the body with curl.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Create documents. projectUuid comes from list_projects (a workspace UUID is not a project UUID). Create only where the user asked. If the workspace, project or folder they named cannot be found, or more than one fits, do not create it somewhere else instead (such as your own personal workspace or a new project): show the candidates from list_workspaces or list_projects and ask the user first. Titles do not have to be unique and every call creates new documents, so check list_documents first and do not create a document again after a failed or timed-out call without re-reading. The result has warnings: {index, code: DUPLICATE_TITLE, duplicateOf} means item index was created next to a live document with the same title in the same folder (or project top level), duplicateOf (possibly one created earlier in the same call). The document is still created: tell the user about the duplicate and ask whether to delete one before going on. No warning does not prove there is no duplicate: a document with the same title created at the same moment by another call can be missed. Set shareEnabled to also turn on each document's public link and get its shareUrl in the same call. If a document body is tens of KB or more, prefer request_upload_token (purpose=document.create) and upload the body with curl. While you write a document, people who open it see that an AI agent is writing it (with your agent name and the time of your last write). When the document is complete, call finish_documents; otherwise the notice ends 10 minutes after your last write.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4402,7 +4570,7 @@
                 },
                 "type": {
                   "type": "string",
-                  "description": "Document type. Creatable values: erd, markdown, diagram, openapi, html, file, kanban.",
+                  "description": "Document type. Creatable values: erd, markdown, diagram, openapi, html, file, kanban, design.",
                   "enum": [
                     "erd",
                     "markdown",
@@ -4410,7 +4578,8 @@
                     "openapi",
                     "html",
                     "file",
-                    "kanban"
+                    "kanban",
+                    "design"
                   ]
                 },
                 "title": {
@@ -4419,7 +4588,7 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only); kanban: no payload — creates an empty board; add cards with kanban_apply_changes.",
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: no JSON payload — bytes go through request_upload_token(purpose=document.create, scopeJson={projectUuid,folderUuid?,type:\"file\",title,filename}) then one curl PUT (images·PDF·mp4/webm·audio·text/code·CSV only); kanban: no payload — creates an empty board; add cards with kanban_apply_changes; design: no payload — creates an empty canvas with one page; add pages, mockups (self-contained HTML pages) and notes with design_apply_changes.",
                   "additionalProperties": true
                 },
                 "body": {
@@ -4429,6 +4598,50 @@
                 "shareEnabled": {
                   "type": "boolean",
                   "description": "Optional. true turns on the document's public link right after creating it, exactly as enable_shares does (needs the right to manage sharing; types without a public page are refused). The created item then carries shareUrl, the page anyone can open. If sharing is refused, this item is not created."
+                },
+                "basedOn": {
+                  "type": "array",
+                  "description": "Documents this one is based on (at most 50). kind TRACK (default) records the source version and tells this document's owner when the source is updated so they can review it; REFERENCE is a plain link. If you read the source with get_document (or get_version), pass its readVersion as version — if that version was overwritten after you read it you get 409, read again. If readVersion is null (changes not yet saved as a version, or a type whose get_document does not return the whole content) read it with get_version and pass that readVersion, or omit version (always omit it when get_version's readVersion is null too). Omitting version records the latest version at save time and does not prove what you read. An existing tracking relation is confirmed to that version; an existing reference is promoted to tracking; kind REFERENCE never demotes a tracking relation (use document_relations SET_KIND). Relations not listed are left as they are.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "documentUuid": {
+                        "type": "string",
+                        "description": "Source document UUID"
+                      },
+                      "version": {
+                        "type": "object",
+                        "description": "The readVersion you got from get_document or get_version, as given",
+                        "properties": {
+                          "number": {
+                            "type": "integer",
+                            "description": "Version number from readVersion"
+                          },
+                          "hash": {
+                            "type": "string",
+                            "description": "Version hash from readVersion"
+                          }
+                        },
+                        "required": [
+                          "number",
+                          "hash"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "kind": {
+                        "type": "string",
+                        "description": "TRACK (default) or REFERENCE",
+                        "enum": [
+                          "REFERENCE",
+                          "TRACK"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "documentUuid"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -4499,6 +4712,69 @@
         },
         "required": [
           "items"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "create_project_from_template",
+      "description": "Create one project from a template: the project, its folders, its start documents (short writing frames with a purpose line and headings, no sample content) and one board with the standard columns and no cards. Call list_project_templates first and show the user the preview; leave out items with excludeItemKeys (the result matches that preview exactly). workspaceUuid is required: there is no default workspace, so if the user has not said which one, show the candidates from list_workspaces and ask. Create only where the user asked. If the workspace, project or folder they named cannot be found, or more than one fits, do not create it somewhere else instead (such as your own personal workspace or a new project): show the candidates from list_workspaces or list_projects and ask the user first. Everything is created in one transaction: on failure nothing is created and the error data says createdCount 0, failedItem {kind, key} and nextAction (RETRY_SAME_KEY, CHOOSE_ANOTHER_PROJECT_KEY, ASK_FOR_EDIT_ACCESS, CHOOSE_WORKSPACE, USE_NEW_CLIENT_MUTATION_ID, FIX_REQUEST). clientMutationId is required: send the same one when retrying the same request and you get the first result instead of a second project. Names are created in language (en or ko, default en). Sends no email or inbox notification. No AI call, no credits. Returns project, folders and documents (with uuids).\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workspaceUuid": {
+            "type": "string",
+            "description": "Workspace UUID from list_workspaces (you need edit access there)."
+          },
+          "templateKey": {
+            "type": "string",
+            "description": "Template key from list_project_templates."
+          },
+          "name": {
+            "type": "string",
+            "description": "Project name."
+          },
+          "excludeItemKeys": {
+            "type": "array",
+            "description": "Optional. Item keys (folders, documents) to leave out.",
+            "items": {
+              "type": "string",
+              "description": "Item key"
+            }
+          },
+          "projectKey": {
+            "type": "string",
+            "description": "Optional project key, unique within the workspace."
+          },
+          "description": {
+            "type": "string",
+            "description": "Optional project description."
+          },
+          "language": {
+            "type": "string",
+            "description": "Language of the created folder and document names (default en).",
+            "enum": [
+              "en",
+              "ko"
+            ]
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "workspaceUuid",
+          "templateKey",
+          "name",
+          "clientMutationId"
         ],
         "additionalProperties": false
       },
@@ -4805,6 +5081,93 @@
       }
     },
     {
+      "name": "document_relations",
+      "description": "Change what a document references or tracks — needs edit access to that document. ADD {sourceUuid, kind?, version?}: kind TRACK (default) records the source version and tells the document's owner when the source is updated, so they can review it; REFERENCE is a plain link. SET_KIND {relationId, kind, version?}: promote a reference to tracking, or demote tracking to a reference. CONFIRM {relationId, version?}: record that this document reflects the source version (after you re-read it and updated this document). REMOVE {relationId}. version is the readVersion get_document or get_version returned (409 VERSION_CHANGED_SINCE_READ if it was overwritten after you read it — read again); omit it to record the latest version at save time (not proof of what you read). ADD, promote and CONFIRM need read access to the source; demote and REMOVE do not (so a source you can no longer read can still be cleaned up). At most 50 operations and 50 relations per document; a source or relation may appear once per call (400 DUPLICATE_OPERATION). One call is one transaction: if any operation is refused nothing changes and the error names operationIndex. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Sends no email or inbox notification. Returns relations: the document's relation block after the change (same shape as get_document.relations).\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "The document that references or tracks (edit access)"
+          },
+          "operations": {
+            "type": "array",
+            "description": "At most 50 operations, applied in order",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "description": "ADD · SET_KIND · CONFIRM · REMOVE",
+                  "enum": [
+                    "ADD",
+                    "SET_KIND",
+                    "CONFIRM",
+                    "REMOVE"
+                  ]
+                },
+                "sourceUuid": {
+                  "type": "string",
+                  "description": "ADD: source document UUID"
+                },
+                "relationId": {
+                  "type": "integer",
+                  "description": "SET_KIND · CONFIRM · REMOVE: relationId from relations.items"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "ADD (default TRACK) · SET_KIND (required)",
+                  "enum": [
+                    "REFERENCE",
+                    "TRACK"
+                  ]
+                },
+                "version": {
+                  "type": "object",
+                  "description": "The readVersion you got from get_document or get_version, as given",
+                  "properties": {
+                    "number": {
+                      "type": "integer",
+                      "description": "Version number from readVersion"
+                    },
+                    "hash": {
+                      "type": "string",
+                      "description": "Version hash from readVersion"
+                    }
+                  },
+                  "required": [
+                    "number",
+                    "hash"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "documentUuid",
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
+      }
+    },
+    {
       "name": "enable_shares",
       "description": "Turn on public links: anyone with the link can open it without signing in, so confirm with the user before exposing anything. targetType document returns shareUrl (a public page) and publicApiPath; board documents have no public link (PUBLIC_SHARE_UNSUPPORTED_TYPE); needs admin or owner rights on the document. targetType project returns publicToken and a publicApiPath that reads the project and its documents through the public API — there is no public project page; needs admin or owner rights. targetType folder only stores a token that nothing public reads yet, so share the documents or the project instead; needs edit access. Re-enabling a document or project reuses its previous link. This does not invite or notify anyone — to give specific people access to a project use invite_project_members; folders and documents are shared with people in the AiNecto app. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns enabled (rows with the link fields) and count.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
@@ -4837,6 +5200,52 @@
         "required": [
           "targetType",
           "targetUuids"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "finish_documents",
+      "description": "Tell people you have finished writing these documents: the document stops showing its 'being written' marker at once. Pass the lastWriteAt your last write returned (or get_document's writing.lastWriteAt). It only ends your own last write: if another writer wrote after you the item reports OTHER_WRITER, if the document was written again since that lastWriteAt it reports WRITTEN_SINCE, and nothing changes. Call it after your last change, including when a single call wrote the document in full. Writing again shows the notice again. Needs edit access. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns finished: [{uuid, wasWriting, finished, reason?}] (wasWriting false = nobody was writing; nothing to do) and count.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Documents you finished writing",
+            "items": {
+              "type": "object",
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "description": "Document UUID"
+                },
+                "lastWriteAt": {
+                  "type": "string",
+                  "description": "The lastWriteAt your last write returned (or get_document's writing.lastWriteAt), exactly as given"
+                }
+              },
+              "required": [
+                "uuid",
+                "lastWriteAt"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "items"
         ],
         "additionalProperties": false
       },
@@ -4918,7 +5327,7 @@
     },
     {
       "name": "get_document",
-      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; kanban → board {viewer, columns: each column's first 20 cards as short lines (the same lines as kanban_list_cards with boardUuid) + hasMore/nextAfter} (more cards via kanban_list_cards boardUuid; full cards with allowedTransitions, people and links via kanban_list_cards cardUuids or cardKeys); erd → metadata only (read tables/refs via erd_list_*). latestVersionNumber = the newest saved version (as list_versions numbers it; null if none); currentVersion is the version number shown to people — the same number once a version is saved (1 before any). Pass latestVersionNumber in documentVersions of kanban_card_action to say which version you read.",
+      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; kanban → board {viewer, columns: each column's first 20 cards as short lines (the same lines as kanban_list_cards with boardUuid) + hasMore/nextAfter} (more cards via kanban_list_cards boardUuid; full cards with allowedTransitions, people and links via kanban_list_cards cardUuids or cardKeys); design → the canvas index only: pages, mockups {id,title,page,x,y,w,h,htmlBytes,renderHash} and notes (read mockup HTML with design_get_boards; change with design_apply_changes using revision as baseRevision). Design mockups carry relation counts only here. document_relations returns the full list (with relationId) as the result of each change; people see it in the web panel. erd → metadata only (read tables/refs via erd_list_*). latestVersionNumber = the newest saved version (as list_versions numbers it; null if none); currentVersion is the version number shown to people — the same number once a version is saved (1 before any). writing is set while an AI agent is writing this document (who, last write, when the notice ends); the body may still be incomplete — if it is another agent, avoid overwriting its work and tell the user. null when nobody is writing. readVersion = {number, hash} only when this response carries the whole content of that saved version (markdown, openapi, html) — pass it as version in basedOn or document_relations to record exactly what you read; null when there are changes not yet saved as a version, or for types whose full content this tool does not return (diagram, erd: read get_version instead) (file: omit version). relations = the documents this one references or tracks: counts {references, tracking, stale (needs review — the source was updated), hidden}, items (a source you cannot read shows only relationId/kind/hidden), trackedBy. Pass latestVersionNumber in documentVersions of kanban_card_action to say which version you read.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4960,7 +5369,7 @@
     },
     {
       "name": "get_version",
-      "description": "Read one saved version of a document, including snapshotJson — the full saved content in that document type's stored format. Read only; needs read access. Fails with 404 for an unknown version number and with a plan-limit error for a locked version (see list_versions).",
+      "description": "Read one saved version of a document, including snapshotJson — the full saved content in that document type's stored format. Read only; needs read access. Fails with 404 for an unknown version number and with a plan-limit error for a locked version (see list_versions). readVersion = {number, hash} of this version when the snapshot is the whole content (null for files, whose snapshot is only attachment metadata) — pass it as version in basedOn or document_relations to record exactly what you read. A design document returns that version's canvas index instead of snapshotJson (read its mockup HTML with design_get_boards versionNumber).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5092,7 +5501,7 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html, file, kanban.",
+            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html, file, kanban, design.",
             "enum": [
               "erd",
               "markdown",
@@ -5100,7 +5509,8 @@
               "openapi",
               "html",
               "file",
-              "kanban"
+              "kanban",
+              "design"
             ]
           },
           "q": {
@@ -5133,6 +5543,40 @@
         "required": [
           "projectUuid"
         ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "list_project_templates",
+      "description": "List the project templates (one per project type, plus Blank), or preview one. With no templateKey it returns templates: each with its folders and its documents (start documents and one board, each with its type). With templateKey it returns exactly what create_project_from_template would create, after leaving out excludeItemKeys (leaving out a folder also leaves out the documents in it; excludedItemKeys lists everything left out). Names come in language (en or ko, default en). defaultChoice and defaultExcludedItemKeys are only the starting state of the app's New project form (Blank, nothing in it); they do not change what a call creates. Show the preview to the user before creating. Read only; no AI call, no credits.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "templateKey": {
+            "type": "string",
+            "description": "Optional. A template key from the list; returns the preview of that template."
+          },
+          "excludeItemKeys": {
+            "type": "array",
+            "description": "Optional, with templateKey. Item keys (folders, documents) to leave out.",
+            "items": {
+              "type": "string",
+              "description": "Item key"
+            }
+          },
+          "language": {
+            "type": "string",
+            "description": "Language of the names (default en).",
+            "enum": [
+              "en",
+              "ko"
+            ]
+          }
+        },
         "additionalProperties": false
       },
       "annotations": {
@@ -5365,7 +5809,7 @@
     },
     {
       "name": "request_upload_token",
-      "description": "Use this for large payloads of tens of KB or more to save LLM tokens. purpose=mcp.call returns a short-lived bearer token that can call any MCP tool, including erd_apply_changes, via curl. purpose=document.create/update/append uploads document bodies directly to the upload endpoint with PUT/curl. Tokens are reusable for 5 minutes by default.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Use this for large payloads of tens of KB or more to save LLM tokens. purpose=mcp.call returns a short-lived bearer token that can call any MCP tool, including erd_apply_changes, via curl. purpose=document.create/update/append uploads document bodies directly to the upload endpoint with PUT/curl. Tokens are reusable for 5 minutes by default. While you write a document, people who open it see that an AI agent is writing it (with your agent name and the time of your last write). When the document is complete, call finish_documents; otherwise the notice ends 10 minutes after your last write.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5382,7 +5826,7 @@
           },
           "scopeJson": {
             "type": "string",
-            "description": "Optional JSON scope. document.create includes projectUuid, type, title; creatable type values: erd, markdown, diagram, openapi, html, file, kanban. document.update/document.append include documentUuid. type=file also includes filename (the extension decides the format) — the PUT Content-Type is the file MIME and the body is the file bytes. attachment.upload: {documentUuid, filename}; the server adds storageKey to the issued scope."
+            "description": "Optional JSON scope. document.create includes projectUuid, type, title; creatable type values: erd, markdown, diagram, openapi, html, file, kanban, design. document.update/document.append include documentUuid. type=file also includes filename (the extension decides the format) — the PUT Content-Type is the file MIME and the body is the file bytes. attachment.upload: {documentUuid, filename}; the server adds storageKey to the issued scope."
           },
           "maxBytes": {
             "type": "integer",
@@ -5414,7 +5858,7 @@
     },
     {
       "name": "restore_versions",
-      "description": "Roll documents back to an earlier saved version (version numbers come from list_versions). The current content and title are replaced by that version's snapshot and a new version \"Restored from version N\" is recorded, so the history keeps everything and the rollback can itself be undone the same way. Tell the user which version you are restoring before calling. Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns restored (the new version rows, each with documentUuid) and count. Fails with 404 for an unknown document or version number, with a plan-limit error for a locked version (locked=true in list_versions), and with 409 when the document is in the trash or its folder, project or workspace is archived.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Roll documents back to an earlier saved version (version numbers come from list_versions). The current content and title are replaced by that version's snapshot and a new version \"Restored from version N\" is recorded, so the history keeps everything and the rollback can itself be undone the same way. Tell the user which version you are restoring before calling. Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Sends no email or inbox notification. Returns restored (the new version rows, each with documentUuid) and count. Fails with 404 for an unknown document or version number, with a plan-limit error for a locked version (locked=true in list_versions), and with 409 when the document is in the trash or its folder, project or workspace is archived. While you write a document, people who open it see that an AI agent is writing it (with your agent name and the time of your last write). When the document is complete, call finish_documents; otherwise the notice ends 10 minutes after your last write.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5584,7 +6028,7 @@
     },
     {
       "name": "update_documents",
-      "description": "Update documents: the title and/or the whole body. A body you send replaces the current body entirely — it is not a patch, so read the document first and send the full new text. The document type decides the body field (see body and typePayload): file documents can only be renamed, ERD content changes through erd_apply_changes, diagram nodes and edges through diagram_apply_changes, and board documents are refused. Every body change is kept in version history, so list_versions and restore_versions can undo it. Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns updated (document rows) and count. Fails with 409 when the document is in the trash or its folder, project or workspace is archived. If a replacement body is tens of KB or more, prefer request_upload_token (purpose=document.update) and upload the body with curl.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Update documents: the title and/or the whole body. A body you send replaces the current body entirely — it is not a patch, so read the document first and send the full new text. The document type decides the body field (see body and typePayload): file documents can only be renamed, ERD content changes through erd_apply_changes, diagram nodes and edges through diagram_apply_changes, and board documents are refused. Every body change is kept in version history, so list_versions and restore_versions can undo it. Needs edit access. Items run in order and each one commits on its own: the first failing item ends the call with an error, items before it stay applied (the error does not list them), and later items are not tried — re-read before retrying. Returns updated (document rows) and count. Fails with 409 when the document is in the trash or its folder, project or workspace is archived. If a replacement body is tens of KB or more, prefer request_upload_token (purpose=document.update) and upload the body with curl. While you write a document, people who open it see that an AI agent is writing it (with your agent name and the time of your last write). When the document is complete, call finish_documents; otherwise the notice ends 10 minutes after your last write.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5604,12 +6048,56 @@
                 },
                 "typePayload": {
                   "type": "object",
-                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB); kanban: no body — only the title can be updated; cards are changed with kanban_apply_changes and kanban_card_action.",
+                  "description": "Type-specific payload for enabled document types. markdown: {body}; diagram: {sourceLanguage,edgeStyle,isModule,metadata,diagramSource} — the canvas is drawn only from nodes/edges/groups made with diagram_apply_changes; diagramSource is optional text kept beside them, never converted, and refused while the diagram has no nodes; openapi: {content}; html: {content} (a full HTML page); file: {file:{filename,contentType,sizeBytes,viewerKind}} (+content for text/CSV, first 64 KB); kanban: no body — only the title can be updated; cards are changed with kanban_apply_changes and kanban_card_action; design: no body — only the title can be updated; the canvas is changed with design_apply_changes.",
                   "additionalProperties": true
                 },
                 "body": {
                   "type": "string",
                   "description": "Deprecated compatibility alias for typePayload.body when document type is markdown. 본문이 수십 KB 이상으로 크면 LLM 토큰 절약을 위해 `request_upload_token (purpose=document.update)` 를 호출해 uploadUrl 을 받고 curl 로 직접 PUT 으로 보낼 것."
+                },
+                "basedOn": {
+                  "type": "array",
+                  "description": "Documents this one is based on (at most 50). kind TRACK (default) records the source version and tells this document's owner when the source is updated so they can review it; REFERENCE is a plain link. If you read the source with get_document (or get_version), pass its readVersion as version — if that version was overwritten after you read it you get 409, read again. If readVersion is null (changes not yet saved as a version, or a type whose get_document does not return the whole content) read it with get_version and pass that readVersion, or omit version (always omit it when get_version's readVersion is null too). Omitting version records the latest version at save time and does not prove what you read. An existing tracking relation is confirmed to that version; an existing reference is promoted to tracking; kind REFERENCE never demotes a tracking relation (use document_relations SET_KIND). Relations not listed are left as they are.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "documentUuid": {
+                        "type": "string",
+                        "description": "Source document UUID"
+                      },
+                      "version": {
+                        "type": "object",
+                        "description": "The readVersion you got from get_document or get_version, as given",
+                        "properties": {
+                          "number": {
+                            "type": "integer",
+                            "description": "Version number from readVersion"
+                          },
+                          "hash": {
+                            "type": "string",
+                            "description": "Version hash from readVersion"
+                          }
+                        },
+                        "required": [
+                          "number",
+                          "hash"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "kind": {
+                        "type": "string",
+                        "description": "TRACK (default) or REFERENCE",
+                        "enum": [
+                          "REFERENCE",
+                          "TRACK"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "documentUuid"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -5851,7 +6339,7 @@
           },
           "type": {
             "type": "string",
-            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html, file, kanban.",
+            "description": "Optional document type filter. Readable values: erd, markdown, diagram, openapi, html, file, kanban, design.",
             "enum": [
               "erd",
               "markdown",
@@ -5859,7 +6347,8 @@
               "openapi",
               "html",
               "file",
-              "kanban"
+              "kanban",
+              "design"
             ]
           },
           "projectUuid": {
