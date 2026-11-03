@@ -8,6 +8,7 @@
  * 본문 칸              code RATE_LIMITED · retryAfterSeconds · scope · policyId — 문장은 파싱하지 않는다
  * </pre>
  * 헤더가 없거나 깨졌으면 대기를 모른다(undefined) — 그것을 «바로 다시»로 읽지 않는다.
+ * 재개 시각이 Date 로 표현되지 않는 값(Infinity·지나치게 큰 초)도 «모름»이다 — 상한 상수를 따로 두지 않고 Date 범위로 판정한다.
  */
 
 export const RATE_LIMITED = "RATE_LIMITED";
@@ -26,11 +27,16 @@ export interface RateLimitDetails {
 export function parseRetryAfter(value: string | null | undefined, now: number = Date.now()): number | undefined {
   if (value === null || value === undefined) return undefined;
   const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  if (/^\d+$/.test(trimmed)) return representable(Number(trimmed), now);
   if (!/[a-z]/i.test(trimmed)) return undefined;
   const at = Date.parse(trimmed);
   if (Number.isNaN(at)) return undefined;
   return Math.max(0, Math.ceil((at - now) / 1000));
+}
+
+/** 재개 시각({@code now + 초})이 Date 로 표현되면 그 초, 아니면 undefined(«모름»). */
+function representable(seconds: number, now: number): number | undefined {
+  return Number.isNaN(new Date(now + seconds * 1000).getTime()) ? undefined : seconds;
 }
 
 /** 응답 헤더·본문 칸에서 대기 정보. 본문의 {@code retryAfterSeconds} 가 헤더보다 앞선다(서버는 같은 값을 싣는다). */
@@ -41,7 +47,7 @@ export function rateLimitDetails(
 ): RateLimitDetails {
   const fields = isRecord(body) ? body : {};
   const fromBody = typeof fields.retryAfterSeconds === "number" && Number.isFinite(fields.retryAfterSeconds) && fields.retryAfterSeconds >= 0
-    ? Math.ceil(fields.retryAfterSeconds)
+    ? representable(Math.ceil(fields.retryAfterSeconds), now)
     : undefined;
   const retryAfterSeconds = fromBody ?? parseRetryAfter(headerValue, now);
   return {

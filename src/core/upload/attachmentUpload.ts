@@ -221,8 +221,10 @@ async function putAttachmentBytes(
   const maxAttempts = 3;
   let lastRetryableError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // ★네트워크 재시도는 I/O 실패만 받는다 — 응답 상태 판정은 try 밖이라 429 가 이 경로에 들어갈 수 없다.
+    let response: Response;
     try {
-      const response = await fetchImpl(token.uploadUrl, {
+      response = await fetchImpl(token.uploadUrl, {
         method: "PUT",
         headers: {
           authorization: `Bearer ${token.token}`,
@@ -230,26 +232,28 @@ async function putAttachmentBytes(
         },
         body: new Uint8Array(metadata.bytes),
       });
-      if (response.status === 429) {
-        // ★호출 상한은 다시 부르지 않는다(대화형 자동 재시도 0 — 설계 D-1 §6). 대기를 실어 끝낸다.
-        throw await uploadRateLimited(response);
-      }
-      if (shouldRetryResponse(response.status) && attempt < maxAttempts) {
-        continue;
-      }
-      if (!response.ok) {
-        throw uploadHttpError(response.status);
-      }
-      return parsePutResponse(await response.text());
     } catch (error) {
-      if (error instanceof AttachmentUploadError) {
-        throw error;
-      }
       lastRetryableError = error;
-      if (attempt === maxAttempts) {
-        break;
-      }
+      continue;
     }
+    if (response.status === 429) {
+      // ★호출 상한은 다시 부르지 않는다(대화형 자동 재시도 0 — 설계 D-1 §6). 대기를 실어 끝낸다.
+      throw await uploadRateLimited(response);
+    }
+    if (shouldRetryResponse(response.status) && attempt < maxAttempts) {
+      continue;
+    }
+    if (!response.ok) {
+      throw uploadHttpError(response.status);
+    }
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      lastRetryableError = error;
+      continue;
+    }
+    return parsePutResponse(text);
   }
   throw new AttachmentUploadError("ATTACHMENT_UPLOAD_FAILED", "Attachment upload failed.", {
     cause: lastRetryableError instanceof Error ? lastRetryableError.message : String(lastRetryableError),

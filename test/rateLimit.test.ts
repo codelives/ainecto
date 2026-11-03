@@ -1,6 +1,10 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { parseRetryAfter, rateLimitDetails } from "../src/core/http/rateLimit";
+import { AttachmentUploadError, uploadAttachments } from "../src/core/upload/attachmentUpload";
 import { McpRpcClient, McpRpcError, RateLimitedError } from "../src/core/mcp/rpcClient";
 import { runStdioBridge } from "../src/core/mcp/stdioBridge";
 
@@ -23,6 +27,49 @@ describe("Retry-After", () => {
     expect(rateLimitDetails("99", { code: "RATE_LIMITED", retryAfterSeconds: 7, scope: "CLIENT", policyId: "mcp-client" }, NOW))
       .toEqual({ status: 429, retryAfterSeconds: 7, retryAt: "2026-11-03T00:00:07.000Z", scope: "CLIENT", policyId: "mcp-client" });
     expect(rateLimitDetails(null, "<html>", NOW)).toEqual({ status: 429 });
+  });
+
+  it("★a wait past what a Date can hold (huge header·Infinity·huge body) is «unknown» — never a throw", () => {
+    const huge = "100000000000000000000";
+    const infinite = "9".repeat(400);
+    expect(Number(infinite)).toBe(Infinity);
+    expect(parseRetryAfter(huge, NOW)).toBeUndefined();
+    expect(parseRetryAfter(infinite, NOW)).toBeUndefined();
+    expect(rateLimitDetails(huge, undefined, NOW)).toEqual({ status: 429 });
+    expect(rateLimitDetails(infinite, undefined, NOW)).toEqual({ status: 429 });
+    expect(rateLimitDetails(null, { retryAfterSeconds: 1e20, scope: "USER" }, NOW)).toEqual({ status: 429, scope: "USER" });
+    // 본문이 범위 밖이면 본문은 없는 것 — 헤더의 정상 값은 그대로 쓴다.
+    expect(rateLimitDetails("5", { retryAfterSeconds: 1e20 }, NOW))
+      .toEqual({ status: 429, retryAfterSeconds: 5, retryAt: "2026-11-03T00:00:05.000Z" });
+  });
+});
+
+describe("attachment PUT on 429", () => {
+  it("★a 429 with a wait past the Date range is sent once and ends as RATE_LIMITED (never the network retry path)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ainecto-rate-limit-test-"));
+    const path = join(dir, "notes.txt");
+    writeFileSync(path, "hello");
+    let puts = 0;
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts += 1;
+        return new Response(JSON.stringify({ code: "RATE_LIMITED", retryAfterSeconds: 1e20 }),
+          { status: 429, headers: { "retry-after": "100000000000000000000" } });
+      }
+      const body = JSON.parse(String(init?.body)) as { id: number };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {
+        token: "upload-token-redacted", uploadUrl: "https://uploads.example.test/put", storageKey: "k",
+      } }));
+    }) as unknown as typeof fetch;
+    const rpc = new McpRpcClient({ endpoint: ENDPOINT, fetchImpl, channel: "cli" });
+
+    const failure = await uploadAttachments(rpc, { documentUuid: "doc-1", files: [{ path }], fetchImpl })
+      .catch((error: unknown) => error);
+
+    expect(puts).toBe(1);
+    expect(failure).toBeInstanceOf(AttachmentUploadError);
+    expect(failure).toMatchObject({ code: "RATE_LIMITED", details: { status: 429 } });
+    expect((failure as AttachmentUploadError).details).not.toHaveProperty("retryAfterSeconds");
   });
 });
 
