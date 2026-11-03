@@ -1,3 +1,4 @@
+import { RATE_LIMITED, rateLimitDetails, rateLimitMessage } from "../http/rateLimit";
 import { readFile, stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { McpRpcClient } from "../mcp/rpcClient";
@@ -229,6 +230,10 @@ async function putAttachmentBytes(
         },
         body: new Uint8Array(metadata.bytes),
       });
+      if (response.status === 429) {
+        // ★호출 상한은 다시 부르지 않는다(대화형 자동 재시도 0 — 설계 D-1 §6). 대기를 실어 끝낸다.
+        throw await uploadRateLimited(response);
+      }
       if (shouldRetryResponse(response.status) && attempt < maxAttempts) {
         continue;
       }
@@ -261,8 +266,20 @@ function uploadHttpError(status: number): AttachmentUploadError {
   return new AttachmentUploadError("ATTACHMENT_UPLOAD_HTTP_ERROR", `Attachment upload failed with HTTP ${status}.`, { status });
 }
 
+/** 5xx 만 다시 한다 — 429(호출 상한)는 위에서 대기를 실어 끝낸다. */
 function shouldRetryResponse(status: number): boolean {
-  return status === 429 || status >= 500;
+  return status >= 500;
+}
+
+async function uploadRateLimited(response: Response): Promise<AttachmentUploadError> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  const details = rateLimitDetails(response.headers.get("retry-after"), body);
+  return new AttachmentUploadError(RATE_LIMITED, rateLimitMessage("Attachment upload", details), details);
 }
 
 function parsePutResponse(text: string): UploadPutResponse {

@@ -12,6 +12,7 @@ import {
   usableAccessToken,
 } from "../src/core/auth/oauth";
 import type { StoredTokenSet, TokenStore } from "../src/core/auth/tokenStore";
+import { RateLimitedError } from "../src/core/mcp/rpcClient";
 
 class MemoryTokenStore implements TokenStore {
   token: StoredTokenSet | undefined;
@@ -348,6 +349,20 @@ describe("refresh rejected by the server (review #6 F2)", () => {
     const client = clientWhoseTokenEndpoint(() => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }));
     await expect(client.getAccessToken()).rejects.toBeInstanceOf(OAuthReauthRequiredError);
     await expect(usableAccessToken(client)).resolves.toBeUndefined();
+  });
+
+  it("★a rate-limited refresh (429) is neither a re-login nor retried — it carries the wait (usableAccessToken does not read it as signed out)", async () => {
+    let tokenCalls = 0;
+    const client = clientWhoseTokenEndpoint(() => {
+      tokenCalls += 1;
+      return new Response(JSON.stringify({ code: "RATE_LIMITED", retryAfterSeconds: 12 }), { status: 429, headers: { "retry-after": "12" } });
+    });
+    const failure = await client.getAccessToken().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(RateLimitedError);
+    expect(failure).not.toBeInstanceOf(OAuthReauthRequiredError);
+    expect((failure as RateLimitedError).rateLimit).toMatchObject({ status: 429, retryAfterSeconds: 12 });
+    await expect(usableAccessToken(client)).rejects.toBeInstanceOf(RateLimitedError);
+    expect(tokenCalls).toBe(2);
   });
 
   it("★a server error or a non-OAuth body is not a re-login signal — it is thrown as is", async () => {

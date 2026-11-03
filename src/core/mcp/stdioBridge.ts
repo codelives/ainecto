@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import { McpRpcClient, McpRpcError, type JsonRpcFailure, type JsonRpcRequest, type JsonRpcResponse } from "./rpcClient";
+import { McpRpcClient, McpRpcError, RateLimitedError, type JsonRpcFailure, type JsonRpcRequest, type JsonRpcResponse } from "./rpcClient";
 
 export interface StdioBridgeOptions {
   input: Readable;
@@ -40,7 +40,8 @@ export async function runStdioBridge(options: StdioBridgeOptions): Promise<void>
         options.errorOutput.write(`${errorMessage(error)}\n`);
         continue;
       }
-      writeLine(options.output, failure(request.id, INTERNAL_ERROR, error));
+      // 호출 상한은 서버의 JSON-RPC 429 와 같은 코드로 — 호스트가 «내부 오류»로 읽지 않게(대기는 data.retryAfterSeconds).
+      writeLine(options.output, failure(request.id, error instanceof RateLimitedError ? RATE_LIMITED_CODE : INTERNAL_ERROR, error));
     }
   }
 }
@@ -49,6 +50,8 @@ export async function runStdioBridge(options: StdioBridgeOptions): Promise<void>
 const PARSE_ERROR = -32700;
 const INVALID_REQUEST = -32600;
 const INTERNAL_ERROR = -32603;
+/** 서버가 도구 안 호출 상한에 쓰는 JSON-RPC 코드와 같다. */
+const RATE_LIMITED_CODE = 429;
 
 /**
  * 실패 응답 — {@code message} 는 사람이 읽을 한 줄(서버가 밝힌 {@code CODE: 설명} 포함), {@code data} 는 기계가 가를 칸:
