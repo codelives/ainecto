@@ -5,6 +5,8 @@ import { URLSearchParams } from "node:url";
 import type { StoredTokenSet, TokenStore } from "./tokenStore";
 import { registerPublicClient, type ClientRegistrationResult } from "./clientRegistration";
 import { assertTrustedEndpointUrl, isDefaultEndpoint } from "../config/endpoints";
+import { rateLimitDetails, rateLimitMessage } from "../http/rateLimit";
+import { RateLimitedError } from "../mcp/rpcClient";
 
 /**
  * ★로그인은 서버마다 한 번이다(설계 0.4.2). 토큰은 역할을 싣지 않고, 역할은 저장소에서 와서
@@ -310,6 +312,11 @@ async function exchangeToken(
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(params),
   });
+  if (response.status === 429) {
+    // ★호출 상한 — 로그인 만료가 아니다(저장된 로그인을 지우지 않는다). 다시 부르지 않고 대기를 올려 보낸다.
+    const details = rateLimitDetails(response.headers.get("retry-after"), await readJsonObject(response));
+    throw new RateLimitedError(rateLimitMessage("OAuth token request", details), details);
+  }
   if (!response.ok) {
     const oauthError = await readOAuthErrorCode(response);
     if (params.grant_type === "refresh_token" && oauthError !== undefined && REAUTH_REQUIRED_ERRORS.has(oauthError)) {
@@ -321,6 +328,15 @@ async function exchangeToken(
 }
 
 /** 토큰 오류 응답의 {@code error} 코드. 본문이 JSON 이 아니면 없음 — 그때는 «재로그인» 으로 판정하지 않는다. */
+/** 오류 본문 JSON 객체 — 아니면 undefined(대기 칸이 없을 뿐이다). */
+async function readJsonObject(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
+}
+
 async function readOAuthErrorCode(response: Response): Promise<string | undefined> {
   try {
     const body = await response.json() as Record<string, unknown>;

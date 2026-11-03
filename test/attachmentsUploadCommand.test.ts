@@ -256,6 +256,36 @@ describe("attachments upload command", () => {
     expect((calls[3] as JsonRpcCall).params.name).toBe("mcp__ainecto__upload_attachments");
   });
 
+  it("★does not retry a rate-limited PUT — it ends with the server's wait (no automatic retry)", async () => {
+    const filePath = createTempFile("notes.txt", "hello");
+    let putAttempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putAttempts += 1;
+        return new Response(JSON.stringify({ code: "RATE_LIMITED", retryAfterSeconds: 30, scope: "USER", policyId: "user" }),
+          { status: 429, headers: { "retry-after": "30" } });
+      }
+      const body = parseJsonRpcBody(init);
+      return jsonRpcResult(body.id, {
+        token: "upload-token-redacted",
+        uploadUrl: "https://uploads.example.test/put",
+        storageKey: "server-storage-key",
+      });
+    }));
+    process.env.AINECTO_TOKEN = "redacted";
+    const io = createIo();
+
+    await expect(runAinectoCli([
+      "attachments", "upload", "--env", "dev", "--document-uuid", "doc-1", filePath, "--json",
+    ], io)).resolves.toBe(1);
+
+    expect(putAttempts).toBe(1);
+    expect(JSON.parse(io.stderrText())).toMatchObject({
+      ok: false,
+      error: { code: "RATE_LIMITED", details: { status: 429, retryAfterSeconds: 30, scope: "USER", policyId: "user" } },
+    });
+  });
+
   it("wraps repeated PUT network failures in an upload-specific error", async () => {
     const filePath = createTempFile("notes.txt", "hello");
     let putAttempts = 0;

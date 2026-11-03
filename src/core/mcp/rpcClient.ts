@@ -1,4 +1,12 @@
 import type { TokenProvider } from "../auth/oauth";
+import {
+  isRateLimitedRpcError,
+  parseRetryAfter,
+  RATE_LIMITED,
+  rateLimitDetails,
+  rateLimitMessage,
+  type RateLimitDetails,
+} from "../http/rateLimit";
 import { LEGACY_ROLE_HEADER } from "../harness/legacyRole";
 import { CLI_VERSION, PACKAGE_NAME } from "../version";
 
@@ -77,6 +85,17 @@ export class McpRpcError extends Error {
   }
 }
 
+/**
+ * 서버 호출 상한(429) — HTTP 429 든 HTTP 200 안의 JSON-RPC 429 든, OAuth 갱신의 429 든 이것 하나다. {@code details} 에 대기(초·재개 시각)·범위.
+ * ★로그인 만료가 아니다 — 토큰을 지우거나 다시 로그인시키지 않는다. ★자동 재시도도 없다(rateLimit.ts).
+ */
+export class RateLimitedError extends McpRpcError {
+  constructor(message: string, readonly rateLimit: RateLimitDetails) {
+    super(message, RATE_LIMITED, rateLimit);
+    this.name = "RateLimitedError";
+  }
+}
+
 export class McpRpcClient {
   private readonly fetchImpl: typeof fetch;
   private nextId = 1;
@@ -125,6 +144,10 @@ export class McpRpcClient {
       return undefined;
     }
     if ("error" in response) {
+      if (isRateLimitedRpcError(response.error)) {
+        const details = rateLimitDetails(undefined, response.error.data);
+        throw new RateLimitedError(rateLimitMessage(`MCP ${method}`, details), details);
+      }
       throw new McpRpcError(response.error.message, "MCP_ERROR", response.error);
     }
     return response.result;
@@ -144,6 +167,9 @@ export class McpRpcClient {
       return undefined;
     }
     const text = await response.text();
+    if (response.status === 429) {
+      return rateLimitedResponse(text, response.headers.get("retry-after"));
+    }
     if (!response.ok) {
       // ★서버가 이유를 말했으면({@code {"error","error_description"}}) 그 한 줄을 그대로 보여 준다 — 틀린 에이전트
       //   이름(AGENT_NAME_INVALID)·상한(AGENT_LIMIT)은 사람이 설정을 고쳐야 하는 오류라 상태 코드만으로는 못 고친다.
@@ -189,6 +215,29 @@ export class McpRpcClient {
       body: JSON.stringify(request),
     });
   }
+}
+
+/**
+ * HTTP 429 — 서버가 JSON-RPC 오류 봉투를 실었으면 ★그대로 돌려준다(브리지는 호스트에 서버의 말을 넘긴다). 헤더의 대기가 봉투에 없으면 채운다.
+ * 봉투가 아니면(프록시·에지의 429) 대기 정보를 담은 {@link RateLimitedError}.
+ */
+function rateLimitedResponse(text: string, retryAfter: string | null): JsonRpcResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = undefined;
+  }
+  if (isJsonRpcResponse(parsed) && "error" in parsed) {
+    const data = isRecord(parsed.error.data) ? parsed.error.data : {};
+    const seconds = parseRetryAfter(retryAfter);
+    if (data.retryAfterSeconds === undefined && seconds !== undefined) {
+      parsed.error.data = { ...data, retryAfterSeconds: seconds };
+    }
+    return parsed;
+  }
+  const details = rateLimitDetails(retryAfter, parsed);
+  throw new RateLimitedError(rateLimitMessage("MCP HTTP request", details), details);
 }
 
 /**
