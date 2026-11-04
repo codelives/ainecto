@@ -113,6 +113,14 @@ describe("McpRpcClient on 429", () => {
     await expect(forbidden.rpc.toolsCall("x", {})).rejects.toMatchObject({ code: "MCP_ERROR" });
   });
 
+  it("★HTTP 403 with the server's JSON-RPC envelope is handed through like HTTP 200 — the bridge passes the server's words on", async () => {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: 403, message: "no", data: { code: "X" } } });
+    const { rpc } = client(() => new Response(body, { status: 403 }));
+    await expect(rpc.sendRaw({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }))
+      .resolves.toMatchObject({ error: { code: 403, message: "no", data: { code: "X" } } });
+    await expect(rpc.toolsCall("x", {})).rejects.toMatchObject({ code: "MCP_ERROR", message: "X: no" });
+  });
+
   it("★a 429 is not a sign-in failure — no token refresh is attempted", async () => {
     const refreshAfterUnauthorized = vi.fn(async () => "new");
     const fetchImpl = vi.fn(async () => new Response("", { status: 429, headers: { "retry-after": "5" } })) as unknown as typeof fetch;

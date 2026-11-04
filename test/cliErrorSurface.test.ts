@@ -64,6 +64,52 @@ describe("실패는 전부 한 곳에서 그려진다", () => {
     expect(errors.join("")).not.toBe("");
   });
 
+  /** 서버가 도구 안 거절을 HTTP 4xx 로 보낼 때의 본문 — McpController 는 JSON-RPC 403 을 HTTP 403 으로 낸다(2026-11-04 운영 실측). */
+  const rpcError = (code: number, message: string, data: Record<string, unknown>) =>
+    JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code, message, data } });
+
+  it.each([
+    [403, rpcError(403, "Only a team plan can share outside the team.", {
+      code: "GRANT_NOT_ALLOWED", reason: "TEAM_REQUIRED",
+      messages: { ko: "팀 요금제에서만 팀 밖으로 공유할 수 있습니다.", en: "Only a team plan can share outside the team." },
+    }), "GRANT_NOT_ALLOWED: Only a team plan can share outside the team."],
+    [400, rpcError(400, "Invalid OpenAPI spec: paths is required", { code: "OPENAPI_SPEC_INVALID" }),
+      "OPENAPI_SPEC_INVALID: Invalid OpenAPI spec: paths is required"],
+  ])("★tools call 의 HTTP %i 도구 오류 — 본문의 코드와 거절 문장을 그대로 보여 준다", async (status, body, line) => {
+    globalThis.fetch = vi.fn(async () => new Response(body, { status })) as unknown as typeof fetch;
+
+    const code = await runAinectoCli(["tools", "call", "update_projects", "{}"], io);
+
+    expect(code).toBe(1);
+    expect(errors.join("")).toBe(`Error: ${line}\n`);
+  });
+
+  it("★--json 이면 서버의 오류 봉투(messages{ko,en} 포함)가 details 에 그대로 실린다", async () => {
+    const body = rpcError(403, "No access.", { code: "PROJECT_PERMISSION_DENIED", messages: { ko: "권한이 없습니다.", en: "No access." } });
+    globalThis.fetch = vi.fn(async () => new Response(body, { status: 403 })) as unknown as typeof fetch;
+
+    const code = await runAinectoCli(["tools", "call", "update_projects", "{}", "--json"], io);
+
+    expect(code).toBe(1);
+    expect(JSON.parse(errors.join(""))).toMatchObject({
+      ok: false,
+      error: {
+        code: "MCP_ERROR",
+        message: "PROJECT_PERMISSION_DENIED: No access.",
+        details: { code: 403, data: { code: "PROJECT_PERMISSION_DENIED", messages: { ko: "권한이 없습니다." } } },
+      },
+    });
+  });
+
+  it("본문이 JSON-RPC 오류가 아니면 지금처럼 상태 코드만", async () => {
+    globalThis.fetch = vi.fn(async () => new Response("<html>forbidden</html>", { status: 403 })) as unknown as typeof fetch;
+
+    const code = await runAinectoCli(["tools", "call", "update_projects", "{}"], io);
+
+    expect(code).toBe(1);
+    expect(errors.join("")).toBe("Error: MCP HTTP request failed with HTTP 403.\n");
+  });
+
   it("auth 실패도 같은 자리를 지난다", async () => {
     const code = await runAinectoCli(["auth", "nope", "--json"], io);
 

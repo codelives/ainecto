@@ -148,7 +148,7 @@ export class McpRpcClient {
         const details = rateLimitDetails(undefined, response.error.data);
         throw new RateLimitedError(rateLimitMessage(`MCP ${method}`, details), details);
       }
-      throw new McpRpcError(response.error.message, "MCP_ERROR", response.error);
+      throw new McpRpcError(describeRpcError(response.error), "MCP_ERROR", response.error);
     }
     return response.result;
   }
@@ -171,6 +171,12 @@ export class McpRpcClient {
       return rateLimitedResponse(text, response.headers.get("retry-after"));
     }
     if (!response.ok) {
+      // ★HTTP 오류여도 본문이 JSON-RPC 오류 봉투면(서버는 도구 안 권한 거절 403 을 HTTP 403 으로 보낸다) ★그대로 돌려준다 —
+      //   HTTP 200 안의 오류와 같은 길(코드·거절 문장 보존, 브리지는 호스트에 서버의 말을 넘긴다). 429 도 같은 판정을 쓴다.
+      const envelope = rpcErrorEnvelope(text);
+      if (envelope) {
+        return envelope;
+      }
       // ★서버가 이유를 말했으면({@code {"error","error_description"}}) 그 한 줄을 그대로 보여 준다 — 틀린 에이전트
       //   이름(AGENT_NAME_INVALID)·상한(AGENT_LIMIT)은 사람이 설정을 고쳐야 하는 오류라 상태 코드만으로는 못 고친다.
       const serverError = parseServerError(text);
@@ -222,22 +228,47 @@ export class McpRpcClient {
  * 봉투가 아니면(프록시·에지의 429) 대기 정보를 담은 {@link RateLimitedError}.
  */
 function rateLimitedResponse(text: string, retryAfter: string | null): JsonRpcResponse {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = undefined;
-  }
-  if (isJsonRpcResponse(parsed) && "error" in parsed) {
-    const data = isRecord(parsed.error.data) ? parsed.error.data : {};
+  const envelope = rpcErrorEnvelope(text);
+  if (envelope) {
+    const data = isRecord(envelope.error.data) ? envelope.error.data : {};
     const seconds = parseRetryAfter(retryAfter);
     if (data.retryAfterSeconds === undefined && seconds !== undefined) {
-      parsed.error.data = { ...data, retryAfterSeconds: seconds };
+      envelope.error.data = { ...data, retryAfterSeconds: seconds };
     }
-    return parsed;
+    return envelope;
   }
-  const details = rateLimitDetails(retryAfter, parsed);
+  const details = rateLimitDetails(retryAfter, parseJsonOrUndefined(text));
   throw new RateLimitedError(rateLimitMessage("MCP HTTP request", details), details);
+}
+
+/** HTTP 오류 본문이 JSON-RPC 오류 봉투면 그 봉투, 아니면(HTML·OAuth 꼴 {@code {"error","error_description"}}·빈 본문) undefined. */
+function rpcErrorEnvelope(text: string): JsonRpcFailure | undefined {
+  const parsed = parseJsonOrUndefined(text);
+  return isJsonRpcResponse(parsed) && "error" in parsed && isRecord(parsed.error) ? parsed : undefined;
+}
+
+function parseJsonOrUndefined(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * JSON-RPC 오류의 사람이 읽을 한 줄 — {@code data.code}(도메인 오류 코드)가 있으면 {@code CODE: 문장}, 없으면 문장만.
+ * 문장은 {@code error.message} → {@code data.message} → {@code data.messages.en/ko} 순 첫 값. 원본 봉투는 오류 details 에 그대로 남는다.
+ */
+export function describeRpcError(error: JsonRpcFailure["error"]): string {
+  const data = isRecord(error.data) ? error.data : {};
+  const messages = isRecord(data.messages) ? data.messages : {};
+  const sentence = [error.message, data.message, messages.en, messages.ko]
+    .find((value): value is string => typeof value === "string" && value.trim() !== "");
+  const code = typeof data.code === "string" && data.code.trim() ? data.code.trim() : undefined;
+  if (!code) {
+    return sentence ?? `JSON-RPC error ${error.code}`;
+  }
+  return describeServerError({ error: code, description: sentence });
 }
 
 /**
