@@ -3504,7 +3504,10 @@
                 "PROJECT_UNARCHIVED",
                 "DOCUMENT_UPDATED",
                 "DOCUMENT_STALE_REMINDER",
-                "CONVERSATION_MESSAGE"
+                "CONVERSATION_MESSAGE",
+                "SHARE_GRANTED",
+                "SHARE_INVITED",
+                "SHARE_ACCEPTED"
               ]
             },
             "uniqueItems": true
@@ -3701,7 +3704,10 @@
                 "PROJECT_UNARCHIVED",
                 "DOCUMENT_UPDATED",
                 "DOCUMENT_STALE_REMINDER",
-                "CONVERSATION_MESSAGE"
+                "CONVERSATION_MESSAGE",
+                "SHARE_GRANTED",
+                "SHARE_INVITED",
+                "SHARE_ACCEPTED"
               ]
             },
             "uniqueItems": true
@@ -4601,7 +4607,7 @@
                 },
                 "basedOn": {
                   "type": "array",
-                  "description": "Documents this one is based on (at most 50). kind TRACK (default) records the source version and tells this document's owner when the source is updated so they can review it; REFERENCE is a plain link. If you read the source with get_document (or get_version), pass its readVersion as version — if that version was overwritten after you read it you get 409, read again. If readVersion is null (changes not yet saved as a version, or a type whose get_document does not return the whole content) read it with get_version and pass that readVersion, or omit version (always omit it when get_version's readVersion is null too). Omitting version records the latest version at save time and does not prove what you read. An existing tracking relation is confirmed to that version; an existing reference is promoted to tracking; kind REFERENCE never demotes a tracking relation (use document_relations SET_KIND). Relations not listed are left as they are.",
+                  "description": "Documents this one is based on (at most 50). Put only documents you actually used as a basis as TRACK; leave out sibling documents written alongside this one, or add them as REFERENCE. kind TRACK (default) records the source version and tells this document's owner when the source is updated so they can review it; REFERENCE is a plain link. If you read the source with get_document (or get_version), pass its readVersion as version — if that version was overwritten after you read it you get 409, read again. If readVersion is null (changes not yet saved as a version, or a type whose get_document does not return the whole content) read it with get_version and pass that readVersion, or omit version (always omit it when get_version's readVersion is null too). Omitting version records the latest version at save time and does not prove what you read. An existing tracking relation is confirmed to that version; an existing reference is promoted to tracking; kind REFERENCE never demotes a tracking relation (use document_relations SET_KIND). Relations not listed are left as they are.",
                   "items": {
                     "type": "object",
                     "properties": {
@@ -5082,7 +5088,7 @@
     },
     {
       "name": "document_relations",
-      "description": "Change what a document references or tracks — needs edit access to that document. ADD {sourceUuid, kind?, version?}: kind TRACK (default) records the source version and tells the document's owner when the source is updated, so they can review it; REFERENCE is a plain link. SET_KIND {relationId, kind, version?}: promote a reference to tracking, or demote tracking to a reference. CONFIRM {relationId, version?}: record that this document reflects the source version (after you re-read it and updated this document). REMOVE {relationId}. version is the readVersion get_document or get_version returned (409 VERSION_CHANGED_SINCE_READ if it was overwritten after you read it — read again); omit it to record the latest version at save time (not proof of what you read). ADD, promote and CONFIRM need read access to the source; demote and REMOVE do not (so a source you can no longer read can still be cleaned up). At most 50 operations and 50 relations per document; a source or relation may appear once per call (400 DUPLICATE_OPERATION). One call is one transaction: if any operation is refused nothing changes and the error names operationIndex. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Sends no email or inbox notification. Returns relations: the document's relation block after the change (same shape as get_document.relations).\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Change what a document references or tracks — needs edit access to that document. To read relationIds without changing anything, call list_document_relations. ADD {sourceUuid, kind?, version?}: kind TRACK (default) records the source version and tells the document's owner when the source is updated, so they can review it; REFERENCE is a plain link. SET_KIND {relationId, kind, version?}: promote a reference to tracking, or demote tracking to a reference. CONFIRM {relationId, version?}: record that this document reflects the source version (after you re-read it and updated this document). REMOVE {relationId}. version is the readVersion get_document or get_version returned (409 VERSION_CHANGED_SINCE_READ if it was overwritten after you read it — read again); omit it to record the latest version at save time (not proof of what you read). ADD, promote and CONFIRM need read access to the source; demote and REMOVE do not (so a source you can no longer read can still be cleaned up). At most 50 operations and 50 relations per document; a source or relation may appear once per call (400 DUPLICATE_OPERATION). One call is one transaction: if any operation is refused nothing changes and the error names operationIndex. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Sends no email or inbox notification. Returns relations: the document's relation block after the change (same shape as list_document_relations).\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5112,7 +5118,7 @@
                 },
                 "relationId": {
                   "type": "integer",
-                  "description": "SET_KIND · CONFIRM · REMOVE: relationId from relations.items"
+                  "description": "SET_KIND · CONFIRM · REMOVE: relationId from list_document_relations"
                 },
                 "kind": {
                   "type": "string",
@@ -5327,7 +5333,7 @@
     },
     {
       "name": "get_document",
-      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; kanban → board {viewer, columns: each column's first 20 cards as short lines (the same lines as kanban_list_cards with boardUuid) + hasMore/nextAfter} (more cards via kanban_list_cards boardUuid; full cards with allowedTransitions, people and links via kanban_list_cards cardUuids or cardKeys); design → the canvas index only: pages, mockups {id,title,page,x,y,w,h,htmlBytes,renderHash} and notes (read mockup HTML with design_get_boards; change with design_apply_changes using revision as baseRevision). Design mockups carry relation counts only here. document_relations returns the full list (with relationId) as the result of each change; people see it in the web panel. erd → metadata only (read tables/refs via erd_list_*). latestVersionNumber = the newest saved version (as list_versions numbers it; null if none); currentVersion is the version number shown to people — the same number once a version is saved (1 before any). writing is set while an AI agent is writing this document (who, last write, when the notice ends); the body may still be incomplete — if it is another agent, avoid overwriting its work and tell the user. null when nobody is writing. readVersion = {number, hash} only when this response carries the whole content of that saved version (markdown, openapi, html) — pass it as version in basedOn or document_relations to record exactly what you read; null when there are changes not yet saved as a version, or for types whose full content this tool does not return (diagram, erd: read get_version instead) (file: omit version). relations = the documents this one references or tracks: counts {references, tracking, stale (needs review — the source was updated), hidden}, items (a source you cannot read shows only relationId/kind/hidden), trackedBy. Pass latestVersionNumber in documentVersions of kanban_card_action to say which version you read.",
+      "description": "Read a document. The body comes back for the types whose create/update take one: markdown → content; openapi → content (the spec text) + format/specVersion/pathCount/operationCount; html → content (the HTML text); file → file {filename, contentType, sizeBytes, viewerKind} + content for text/CSV (first 64 KB); diagram → diagramSource/sourceLanguage/edgeStyle/isModule/metadata; kanban → board {viewer, columns: each column's first 20 cards as short lines (the same lines as kanban_list_cards with boardUuid) + hasMore/nextAfter} (more cards via kanban_list_cards boardUuid; full cards with allowedTransitions, people and links via kanban_list_cards cardUuids or cardKeys); design → the canvas index only: pages, mockups {id,title,page,x,y,w,h,htmlBytes,renderHash} and notes (read mockup HTML with design_get_boards; change with design_apply_changes using revision as baseRevision). Design mockups carry relation counts only here. Call list_document_relations for the full list (with relationId). erd → metadata only (read tables/refs via erd_list_*). latestVersionNumber = the newest saved version (as list_versions numbers it; null if none); currentVersion is the version number shown to people — the same number once a version is saved (1 before any). writing is set while an AI agent is writing this document (who, last write, when the notice ends); the body may still be incomplete — if it is another agent, avoid overwriting its work and tell the user. null when nobody is writing. readVersion = {number, hash} only when this response carries the whole content of that saved version (markdown, openapi, html) — pass it as version in basedOn or document_relations to record exactly what you read; null when there are changes not yet saved as a version, or for types whose full content this tool does not return (diagram, erd: read get_version instead) (file: omit version). relations = the documents this one references or tracks: counts {references, tracking, stale (needs review — the source was updated), hidden}, items (a source you cannot read shows only relationId/kind/hidden), trackedBy. Design mockups carry the counts only — list_document_relations has the items. Pass latestVersionNumber in documentVersions of kanban_card_action to say which version you read.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5416,7 +5422,7 @@
     },
     {
       "name": "invite_project_members",
-      "description": "Give one person access to a project. A member of the team the project is shared through gets access at once (status ADDED, no email); so does someone who already accepted an earlier invitation to this project whose access had lapsed. Anyone else gets one invitation email and access opens when they accept it from that email (INVITED); whether the address already has an AiNecto account is never revealed. If the person already has access or a pending invitation, nothing is changed and no email is sent (ALREADY_MEMBER / ALREADY_INVITED); changing an existing role is done in the AiNecto app. Sharing a project needs a Team plan and owner or admin rights on it; people outside the team can only be VIEWER. Refusals are error 403 GRANT_NOT_ALLOWED with reason and nextAction; TEAM_REQUIRED also lists candidates (orgUuid, orgName). If the project or the team is unclear, do not pick one yourself: show the candidates (from list_projects, or from the TEAM_REQUIRED error) and get the user's confirmation first. If you only have a person's name, ask the user for the email address. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Example: {\"projectUuid\":\"<uuid>\",\"email\":\"kim@example.com\",\"role\":\"VIEWER\"} returns {\"status\":\"INVITED\",\"mailSent\":true,...}; a teammate as editor, {\"projectUuid\":\"<uuid>\",\"email\":\"lee@company.com\",\"role\":\"EDITOR\"}, returns {\"status\":\"ADDED\",\"mailSent\":false,...}. Returns status, projectUuid, projectUrl, grant, mailSent and nextAction.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "description": "Give one person access to a project. role is required: if the user has not said which role to give, ask them first and never assume one (a call without role is refused with reason ROLE_REQUIRED). A member of the team the project is shared through gets access at once (status ADDED, no email); so does someone who already accepted an earlier invitation to this project whose access had lapsed. Anyone else gets one invitation email and access opens when they accept it from that email (INVITED); whether the address already has an AiNecto account is never revealed. If the address already has a pending invitation, the invitation email is sent again (ALREADY_INVITED, mailSent true). If the person already has access, nothing is changed (ALREADY_MEMBER); to change the role of someone already invited or added, use update_project_members. Sharing a project needs a Team plan and owner or admin rights on it; people outside the team can only be VIEWER. Refusals are error GRANT_NOT_ALLOWED with reason, a message to pass on to the user as is (message; messages.ko/en) and nextAction; TEAM_REQUIRED also lists candidates (orgUuid, orgName). If the project or the team is unclear, do not pick one yourself: show the candidates (from list_projects, or from the TEAM_REQUIRED error) and get the user's confirmation first. If you only have a person's name, ask the user for the email address. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Example: {\"projectUuid\":\"<uuid>\",\"email\":\"kim@example.com\",\"role\":\"VIEWER\"} returns {\"status\":\"INVITED\",\"mailSent\":true,...}; a teammate as editor, {\"projectUuid\":\"<uuid>\",\"email\":\"lee@company.com\",\"role\":\"EDITOR\"}, returns {\"status\":\"ADDED\",\"mailSent\":false,...}. Returns status, projectUuid, projectUrl, grant, mailSent and nextAction.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5434,7 +5440,7 @@
           },
           "role": {
             "type": "string",
-            "description": "Role to give. Always set it explicitly; people outside the team can only be VIEWER.",
+            "description": "Role to give (required). If the user has not said which role, ask them first; never assume one. People outside the team can only be VIEWER.",
             "enum": [
               "ADMIN",
               "EDITOR",
@@ -5454,8 +5460,7 @@
           }
         },
         "required": [
-          "projectUuid",
-          "role"
+          "projectUuid"
         ],
         "additionalProperties": false
       },
@@ -5477,6 +5482,31 @@
         },
         "required": [
           "projectUuid"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "list_document_relations",
+      "description": "List what a document references or tracks, with the relationId that document_relations needs. Read only; needs read access to the document. Returns relations: counts {references, tracking, stale (needs review — the source was updated), hidden}; items, all of them (at most 50 — a source you cannot read shows only relationId/kind/hidden); and trackedBy, one page of the documents tracking this one (pass nextCursor as trackedByCursor for the next page; hasMore says if there are more).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "documentUuid": {
+            "type": "string",
+            "description": "Document UUID"
+          },
+          "trackedByCursor": {
+            "type": "string",
+            "description": "trackedBy.nextCursor of the previous page; omit for the first page"
+          }
+        },
+        "required": [
+          "documentUuid"
         ],
         "additionalProperties": false
       },
@@ -6057,7 +6087,7 @@
                 },
                 "basedOn": {
                   "type": "array",
-                  "description": "Documents this one is based on (at most 50). kind TRACK (default) records the source version and tells this document's owner when the source is updated so they can review it; REFERENCE is a plain link. If you read the source with get_document (or get_version), pass its readVersion as version — if that version was overwritten after you read it you get 409, read again. If readVersion is null (changes not yet saved as a version, or a type whose get_document does not return the whole content) read it with get_version and pass that readVersion, or omit version (always omit it when get_version's readVersion is null too). Omitting version records the latest version at save time and does not prove what you read. An existing tracking relation is confirmed to that version; an existing reference is promoted to tracking; kind REFERENCE never demotes a tracking relation (use document_relations SET_KIND). Relations not listed are left as they are.",
+                  "description": "Documents this one is based on (at most 50). Put only documents you actually used as a basis as TRACK; leave out sibling documents written alongside this one, or add them as REFERENCE. kind TRACK (default) records the source version and tells this document's owner when the source is updated so they can review it; REFERENCE is a plain link. If you read the source with get_document (or get_version), pass its readVersion as version — if that version was overwritten after you read it you get 409, read again. If readVersion is null (changes not yet saved as a version, or a type whose get_document does not return the whole content) read it with get_version and pass that readVersion, or omit version (always omit it when get_version's readVersion is null too). Omitting version records the latest version at save time and does not prove what you read. An existing tracking relation is confirmed to that version; an existing reference is promoted to tracking; kind REFERENCE never demotes a tracking relation (use document_relations SET_KIND). Relations not listed are left as they are.",
                   "items": {
                     "type": "object",
                     "properties": {
@@ -6167,6 +6197,51 @@
       },
       "annotations": {
         "destructiveHint": true,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "update_project_members",
+      "description": "Change the role of one person who is already invited to or added to a project (a pending invitation too), with the same rules as the AiNecto app. role is required: if the user has not said which role to give, ask them first and never assume one (a call without role is refused with reason ROLE_REQUIRED). Only an owner or admin of the project can change roles; people outside the team can only be VIEWER. Refusals are error GRANT_NOT_ALLOWED with reason, a message to pass on to the user as is (message; messages.ko/en) and nextAction. If the person has no invitation or access on this project itself, the call fails with 404: invite them with invite_project_members instead. To add someone new, use invite_project_members. Targets are UUIDs only; names are never matched and may repeat. Look the UUID up first, and when more than one candidate fits what the user said, ask which one. Example: {\"projectUuid\":\"<uuid>\",\"email\":\"kim@example.com\",\"role\":\"EDITOR\"} returns {\"status\":\"ROLE_CHANGED\",\"previousRole\":\"VIEWER\",\"grant\":{...,\"role\":\"EDITOR\"},...}. Returns status, projectUuid, projectUrl, grant, previousRole and nextAction.\n\nRetries: send a unique clientMutationId with each write; if you retry the same call (for example after a timeout or lost response), send the same clientMutationId and the server returns the first result instead of running it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "projectUuid": {
+            "type": "string",
+            "description": "Project UUID."
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address of the person. Give exactly one of email or userId."
+          },
+          "userId": {
+            "type": "string",
+            "description": "User id of the person. Give exactly one of email or userId."
+          },
+          "role": {
+            "type": "string",
+            "description": "New role (required). If the user has not said which role, ask them first; never assume one. People outside the team can only be VIEWER.",
+            "enum": [
+              "ADMIN",
+              "EDITOR",
+              "VIEWER"
+            ]
+          },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\x21-\\x7E]{1,128}$",
+            "description": "Idempotency key for this call (visible ASCII, at most 128 characters). Reusing it with the same arguments returns the first result (marked idempotentReplay); reusing it with different arguments is rejected with 409."
+          }
+        },
+        "required": [
+          "projectUuid"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "destructiveHint": false,
         "readOnlyHint": false
       }
     },
