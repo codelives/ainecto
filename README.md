@@ -192,6 +192,46 @@ The server tools behind them (`list_notifications`, `list_agent_todos`, `update_
 `list_history`) are generated commands too (`ainecto notifications list`, `ainecto agent-todos list`,
 `ainecto agent-todos update -f …`, `ainecto history list`) once the server exposes them.
 
+## Terminal Sessions
+
+`ainecto term` keeps terminal sessions running after you close the terminal window — no tmux or cmux
+needed. A background process, started on demand, owns each session and keeps its screen, so agents and
+scripts can type into a session and read its screen, and you can attach from any terminal app. It runs on
+this machine only; it does not use your AiNecto sign-in.
+
+```bash
+ainecto term new api --cwd ~/code/api -- claude   # start a session (without a command: your login shell)
+ainecto term ls [--json]
+ainecto term send api "run the tests"             # types the text, without Enter
+ainecto term key api enter                        # one key — see below
+ainecto term read api [--lines N] [--scrollback] [--json]
+ainecto term wait api --match 'passed' [--timeout 600]   # until a screen line matches (seconds)
+ainecto term attach api                           # detach with Ctrl-\ then d
+ainecto term kill api
+ainecto term kill-server                          # every session and the background process
+ainecto term restore                              # after a reboot: start again what was running
+```
+
+- Keys for `key`: `enter`, `tab`, `shift-tab`, `escape`, `backspace`, `delete`, `space`, `up`, `down`,
+  `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `ctrl-a` … `ctrl-z` (`ctrl+c`, `esc` and `return`
+  are accepted too).
+- `send --paste` sends the text as a bracketed paste when the app asked for one. To send text that starts
+  with `-`, put it after `--`.
+- In `attach`, press `Ctrl-\` twice to send one `Ctrl-\` to the app.
+- Inside a session, `AINECTO_TERM_SESSION` holds its name. A name does not change; to rename, kill the
+  session and start it again.
+- `restore` starts again each session that was running (name, folder, command) with the environment of the
+  shell you run it from. It does not bring back what the programs had in memory, and nothing restarts on its
+  own after a reboot. A session that exits by itself is forgotten; `kill` and `kill-server` forget theirs.
+- Files are in `~/.ainecto/term/` (folder only you can read): the control socket, `sessions.json` (what
+  `restore` starts) and `daemon.log` (one line per request and one per answer; kept to 10 MB plus one older
+  file, `daemon.log.1`). Typed text, screens and environment values are not logged.
+- A command that gets no answer from the background process within 10 seconds stops with an error and
+  removes nothing.
+- Platforms: macOS, and Linux with glibc on Node.js 20.8.0 or newer (the rest of the CLI runs on Node 18).
+  Not Windows yet. It uses the optional dependency `node-pty`, which ships prebuilt binaries — no compiler
+  needed. If it could not be installed, `ainecto term` says so and the other commands keep working.
+
 ## Connector Mode
 
 ```bash
@@ -211,7 +251,7 @@ This is the entry `setup --local` and `init --mcp --local` write — you normall
   "mcpServers": {
     "ainecto": {
       "command": "npx",
-      "args": ["-y", "@ainecto/mcp@0.12.2"]
+      "args": ["-y", "@ainecto/mcp@0.13.0"]
     }
   }
 }
