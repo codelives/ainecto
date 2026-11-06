@@ -294,3 +294,92 @@ describe("ainecto term — review #82 follow-ups", () => {
     expect(daemonPids()).toHaveLength(1);
   }, LONG);
 });
+
+/**
+ * 시퀀스를 앞·뒤로 나눠 내는 실제 프로그램(리뷰 #83 B1). 표준입력 `go<n>` → 사례 n 의 앞부분, `next<n>` → 뒷부분을 내고
+ * 1.5초 동안 받은 답(사례의 answer 정규식) 수를 `DONE-<n>=<수>` 로(답을 세지 않는 사례는 -1).
+ */
+interface SplitCase {
+  name: string;
+  before: string;
+  after: string;
+  /** 화면에 있어야 할 글자. */
+  shows: string;
+  /** 화면에 있으면 안 되는 꼬리 글자. */
+  notShown: string[];
+  /** 질의 사례 — 받은 답을 세는 정규식. */
+  answer?: string;
+}
+
+const SPLIT_CASES: SplitCase[] = [
+  { name: "charset select ESC ( 0", before: "\x1b(", after: "0qqq\x1b(B LINE\r\n", shows: "─── LINE", notShown: ["0qqq"] },
+  { name: "SGR with a BEL inside", before: "\x1b[31\x07", after: "mRED\x1b[0m\r\n", shows: "RED", notShown: ["mRED"] },
+  { name: "CPR with a BEL inside", before: "\x1b[\x07", after: "6n", shows: "", notShown: ["6n"], answer: "\\x1b\\[\\d+;\\d+R" },
+  { name: "OSC 8 link", before: "\x1b]8;;https://ainecto.com", after: "\x1b\\LINK\x1b]8;;\x1b\\\r\n", shows: "LINK", notShown: ["ainecto.com"] },
+  { name: "DCS query DECRQSS", before: "\x1bP$q", after: "m\x1b\\", shows: "", notShown: ["$q", "m"], answer: "\\x1bP[01]\\$r[^\\x1b]*\\x1b\\\\" },
+  { name: "CPR split after ESC [", before: "\x1b[", after: "6n", shows: "", notShown: ["6n"], answer: "\\x1b\\[\\d+;\\d+R" },
+];
+
+const CASE_PROBE = [
+  `const CASES = ${JSON.stringify(SPLIT_CASES.map(({ before, after, answer }) => ({ before, after, answer })))};`,
+  "process.stdin.setRawMode(true);",
+  "let input = ''; let counting = null;",
+  "process.stdin.on('data', (chunk) => {",
+  "  const text = chunk.toString('latin1');",
+  "  if (counting) counting.seen += text;",
+  "  input += text;",
+  "  let m;",
+  "  while ((m = /(go|next)(\\d)/.exec(input))) {",
+  "    input = input.slice(m.index + m[0].length);",
+  "    const k = Number(m[2]); const c = CASES[k];",
+  "    if (m[1] === 'go') { process.stdout.write(c.before); continue; }",
+  "    counting = { seen: '' };",
+  "    process.stdout.write(c.after);",
+  "    setTimeout(() => {",
+  "      const n = c.answer ? (counting.seen.match(new RegExp(c.answer, 'g')) || []).length : -1;",
+  "      counting = null;",
+  "      process.stdout.write('\\r\\nDONE-' + k + '=' + n + '\\r\\n');",
+  "    }, 1500);",
+  "  }",
+  "});",
+].join("\n");
+
+describe("ainecto term — review #83 B1: a new attach between the two halves of a sequence", () => {
+  SPLIT_CASES.forEach((splitCase, index) => {
+    it(`${splitCase.name}: the old attach, the new attach and read agree — text and attributes, one answer`, async () => {
+      const name = `b1-${index}`;
+      await ok("term", "new", name, "--", process.execPath, "-e", CASE_PROBE);
+      await sleep(500);
+      const a = attachInPty(name, 80, 24);
+      await until(async () => (await sessions())[0]?.clients === 1, "A attached");
+
+      await ok("term", "send", name, `go${index}`);
+      await sleep(300);
+      const b = attachInPty(name, 80, 24);
+      await until(async () => (await sessions())[0]?.clients === 2, "B attached");
+      await sleep(300);
+      await ok("term", "send", name, `next${index}`);
+      await ok("term", "wait", name, "--match", `^DONE-${index}=`, "--timeout", "10");
+      await sleep(300);
+
+      const read = await screen(name);
+      const done = read.find((line) => line.startsWith(`DONE-${index}=`)) ?? "";
+      if (splitCase.answer) {
+        expect(Number(done.split("=")[1])).toBe(1);
+      }
+      for (const view of [a, b]) {
+        expect(visible(view.text(), 24)).toEqual(read);
+        for (const tail of splitCase.notShown) {
+          expect(view.text()).not.toContain(tail);
+        }
+        if (splitCase.shows) {
+          expect(view.text()).toContain(splitCase.shows);
+        }
+      }
+      expect(b.cells()).toEqual(a.cells());
+      a.pty.kill();
+      b.pty.kill();
+    }, LONG);
+  });
+});
+

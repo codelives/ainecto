@@ -84,12 +84,29 @@ describe("term query filter — a reader that joins mid-stream (review #82 Q1)",
     expect(stream.forkForNewReader().push("6n", true)).toBe("");
   });
 
-  it("does not show a new reader the rest of a string it never saw the start of", () => {
+  it("holds a string until the parser ends it, so a reader who joins in the middle gets it whole (review #83 B1)", () => {
     const stream = new QueryFilter();
-    expect(stream.push("\x1b]0;long ti", false)).toBe("\x1b]0;long ti");
+    expect(stream.push("\x1b]0;long ti", false)).toBe("");
     const late = stream.forkForNewReader();
-    expect(late.push("tle\x07after", false)).toBe("after");
-    expect(stream.push("tle\x07after", false)).toBe("tle\x07after");
+    expect(late.push("tle\x07after", false)).toBe("\x1b]0;long title\x07after");
+    expect(stream.push("tle\x07after", false)).toBe("\x1b]0;long title\x07after");
+  });
+
+  it("keeps an ESC intermediate until its final byte — ESC ( then B is one charset selection (review #83 B1)", () => {
+    const stream = new QueryFilter();
+    expect(stream.push("\x1b(", false)).toBe("");
+    expect(stream.forkForNewReader().push("BHELLO", false)).toBe("\x1b(BHELLO");
+  });
+
+  it("runs a C0 inside a CSI without ending it — ESC [ 31 BEL then m is still SGR 31 (review #83 B1)", () => {
+    const stream = new QueryFilter();
+    expect(stream.push("\x1b[31\x07", false)).toBe("\x07");
+    const late = stream.forkForNewReader();
+    expect(late.push("mRED", false)).toBe("\x1b[31mRED");
+    // 질의를 빼는 쪽에서도 SGR 은 SGR 이다.
+    expect(stream.forkForNewReader().push("mRED", true)).toBe("\x1b[31mRED");
+    const query = new QueryFilter();
+    expect(query.push("\x1b[\x07", true) + query.forkForNewReader().push("6n", true)).toBe("\x07");
   });
 
   it("hands a held colour query to the new reader whole", () => {

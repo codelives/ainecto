@@ -164,6 +164,21 @@ export function attachInPty(name: string, cols: number, rows: number) {
     bufferType: () => view.buffer.active.type,
     modes: () => view.modes,
     palette: () => palette,
+    /** 보이는 칸마다 글자·색·속성 — 화면끼리 속성까지 대조한다. */
+    cells: () => {
+      const buffer = view.buffer.active;
+      const out: string[] = [];
+      for (let row = 0; row < rows; row += 1) {
+        const line = buffer.getLine(buffer.viewportY + row);
+        for (let col = 0; col < cols; col += 1) {
+          const cell = line?.getCell(col);
+          out.push(cell
+            ? [cell.getChars(), cell.getFgColorMode(), cell.getFgColor(), cell.getBgColorMode(), cell.getBgColor(), cell.isBold(), cell.isItalic(), cell.isUnderline(), cell.isInverse()].join("|")
+            : "");
+        }
+      }
+      return out;
+    },
     text: () => {
       const buffer = view.buffer.active;
       const lines: string[] = [];

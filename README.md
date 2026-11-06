@@ -226,8 +226,11 @@ ainecto term restore                              # after a reboot: start again 
 - Files are in `~/.ainecto/term/` (folder only you can read): the control socket, `sessions.json` (what
   `restore` starts) and `daemon.log` (one line per request and one per answer; kept to 10 MB plus one older
   file, `daemon.log.1`). Typed text, screens and environment values are not logged.
-- A command that gets no answer from the background process within 10 seconds stops with an error and
-  removes nothing.
+- How long a command waits, three separate limits:
+  - Each request to the running background process waits up to 10 seconds for its answer; then the
+    command stops with an error and removes nothing.
+  - Starting the background process waits up to 10 seconds per try for it to report ready, at most 3 tries.
+  - `wait` itself waits until `--timeout` (without it, until the pattern appears or the session ends).
 - Platforms: macOS, and Linux with glibc on Node.js 20.8.0 or newer (the rest of the CLI runs on Node 18).
   Not Windows yet. It uses the optional dependency `node-pty`, which ships prebuilt binaries — no compiler
   needed. If it could not be installed, `ainecto term` says so and the other commands keep working.
