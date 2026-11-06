@@ -9,6 +9,8 @@
  *
  * 덩어리 사이에 걸친 시퀀스는 끝날 때까지 붙잡는다. 클라이언트마다 인스턴스 하나가 상태를 이어 가므로 주인이 바뀌는
  * 순간에도 반쪽 시퀀스가 두 번 나가지 않는다. 질의가 될 수 없는 OSC·DCS(제목·링크·그림)는 머리만 보고 바로 흘린다.
+ * 새로 붙는 클라이언트는 세션이 들고 있는 필터의 {@link QueryFilter.forkForNewReader} 로 시작한다(리뷰 #82 Q1).
+ * 설정과 질의가 한 OSC 에 섞여 있으면 질의 부분만 뺀다(리뷰 #82 Q2).
  */
 type StringMode =
   /** OSC 번호·DCS 머리를 읽는 중(붙잡음). */
@@ -16,7 +18,9 @@ type StringMode =
   /** 질의일 수 있는 문자열 — 끝까지 붙잡는다. */
   | "query"
   /** 질의가 될 수 없는 문자열 — 흘리며 끝만 찾는다. */
-  | "pass";
+  | "pass"
+  /** 앞부분을 못 본 새 독자에게 남은 문자열 — 끝까지 아무것도 내보내지 않는다. */
+  | "skip";
 
 type State =
   | { kind: "ground" }
@@ -36,6 +40,19 @@ const WINDOW_REPORTS = new Set(["11", "13", "14", "15", "16", "18", "19", "20", 
 
 export class QueryFilter {
   private state: State = { kind: "ground" };
+
+  /**
+   * 같은 경계에서 시작하는 새 필터 — 지금까지의 출력을 직렬화 화면으로만 받은 새 독자(attach)용.
+   * 붙잡혀 있던 반쪽 시퀀스(CSI·질의 문자열 머리)는 그대로 이어받아 완성될 때 통째로 내보낸다 — 직렬화 화면은
+   * 파서의 반쪽 상태를 담지 않으므로 이렇게 해야 새 화면에 꼬리 글자가 찍히지 않고 질의도 온전히 받는다.
+   * 이미 흘려보낸 문자열(pass)의 나머지는 새 독자에게 버린다(skip) — 앞부분을 못 봤다.
+   */
+  forkForNewReader(): QueryFilter {
+    const fork = new QueryFilter();
+    const state = this.state;
+    fork.state = state.kind === "string" && state.mode === "pass" ? { ...state, mode: "skip" } : { ...state };
+    return fork;
+  }
 
   /** strip=false 면 시퀀스를 그대로 내보낸다(덩어리 경계 상태만 이어 간다). */
   push(chunk: string, strip: boolean): string {
@@ -93,14 +110,15 @@ export class QueryFilter {
 
   private stringStep(state: Extract<State, { kind: "string" }>, char: string, strip: boolean): string {
     const passing = state.mode === "pass";
+    const skipping = state.mode === "skip";
     if (state.escaped) {
       if (char === "\\") {
         // ST — 문자열 끝.
         this.state = { kind: "ground" };
-        return passing ? ESC + char : this.finish(state.held + ESC + char, strip);
+        return skipping ? "" : passing ? ESC + char : this.finish(state.held + ESC + char, strip);
       }
       // ESC 다음이 \ 가 아니다 — 문자열은 ESC 앞에서 끝났고 그 ESC 가 새 시퀀스를 연다.
-      const ended = passing ? "" : this.finish(state.held, strip);
+      const ended = passing || skipping ? "" : this.finish(state.held, strip);
       this.state = { kind: "esc" };
       return ended + this.step(char, strip);
     }
@@ -110,6 +128,9 @@ export class QueryFilter {
     }
     if (char === CAN || char === SUB || (char === BEL && state.type === "osc")) {
       this.state = { kind: "ground" };
+      if (skipping) {
+        return "";
+      }
       if (char === BEL && !passing) {
         return this.finish(state.held + char, strip);
       }
@@ -118,6 +139,9 @@ export class QueryFilter {
     }
     if (passing) {
       return char;
+    }
+    if (skipping) {
+      return "";
     }
     const held = state.held + char;
     if (state.mode === "query") {
@@ -133,9 +157,9 @@ export class QueryFilter {
     return "";
   }
 
-  /** 붙잡은 문자열 하나가 끝났다 — 질의면 버린다. */
+  /** 붙잡은 문자열 하나가 끝났다 — 질의 부분을 뺀다. */
   private finish(whole: string, strip: boolean): string {
-    return strip && isStringQuery(whole) ? "" : whole;
+    return strip ? withoutQueries(whole) : whole;
   }
 }
 
@@ -181,11 +205,42 @@ function isCsiQuery(params: string, final: string): boolean {
   }
 }
 
-/** 붙잡은 OSC·DCS 문자열 전체가 질의인지. */
-function isStringQuery(whole: string): boolean {
+/** 붙잡은 OSC·DCS 문자열에서 질의 부분만 뺀 것 — 전부 질의면 빈 문자열, 질의가 없으면 그대로. */
+function withoutQueries(whole: string): string {
   if (whole.startsWith(`${ESC}]`)) {
-    const fields = whole.slice(2).replace(/(\x07|\x1b\\)$/, "").split(";");
-    return QUERYABLE_OSC.has(fields[0] ?? "") && fields.slice(1).includes("?");
+    return oscWithoutQueries(whole);
   }
-  return /^\x1bP[\d;]*[$+]q/.test(whole);
+  return /^\x1bP[\d;]*[$+]q/.test(whole) ? "" : whole;
+}
+
+/**
+ * OSC 에서 «?» 매개변수만 뺀다(리뷰 #82 Q2 — XTerm 은 한 OSC 에 설정과 질의를 섞을 수 있다).
+ *   4·5 : 번호;명세 짝이 여럿 — 질의가 아닌 짝만 남긴다.
+ *   10–19 : 명세가 Ps, Ps+1, … 차례로 — 질의가 아닌 것만 제 번호의 OSC 로 따로 낸다(자리를 지우면 번호가 밀린다).
+ *   52 : 클립보드 «?» 는 질의뿐이다.
+ * 끝맺음(BEL·ST·없음)은 원래 것을 그대로 쓴다. 짝이 안 맞는 꼴은 손대지 않는다.
+ */
+function oscWithoutQueries(whole: string): string {
+  const terminator = whole.endsWith(BEL) ? BEL : whole.endsWith(`${ESC}\\`) ? `${ESC}\\` : "";
+  const [command = "", ...fields] = whole.slice(2, whole.length - terminator.length).split(";");
+  if (!QUERYABLE_OSC.has(command) || !fields.includes("?")) {
+    return whole;
+  }
+  if (command === "4" || command === "5") {
+    if (fields.length % 2 !== 0) {
+      return whole;
+    }
+    const kept: string[] = [];
+    for (let index = 0; index < fields.length; index += 2) {
+      if (fields[index + 1] !== "?") {
+        kept.push(fields[index] ?? "", fields[index + 1] ?? "");
+      }
+    }
+    return kept.length > 0 ? `${ESC}]${command};${kept.join(";")}${terminator}` : "";
+  }
+  if (command === "52") {
+    return "";
+  }
+  const first = Number(command);
+  return fields.map((spec, offset) => (spec === "?" ? "" : `${ESC}]${first + offset};${spec}${terminator}`)).join("");
 }

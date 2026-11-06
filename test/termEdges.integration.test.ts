@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { existsSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { openTermClient, type TermClient } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
@@ -166,5 +166,131 @@ describe("ainecto term — review #81 edge cases", () => {
     await until(() => processesWith("late") === 0, "late PTY gone");
     const manifest = JSON.parse(await readFile(join(rig.home, ".ainecto/term/sessions.json"), "utf8")) as { sessions: unknown[] };
     expect(manifest.sessions).toEqual([]);
+  }, LONG);
+});
+
+/**
+ * 시퀀스를 반으로 끊어 내보내는 작은 실제 프로그램(리뷰 #82 Q1·Q2). 표준입력 명령:
+ *   half<n> → `ESC [` 만 · cpr<n> → `6n` 을 마저 내고 1.5초 동안 받은 커서 위치 답 수를 `CPR-<n>=<수>` 로
+ *   red<n> → `31mRED-<n>` 을 마저 · osc<n> → 팔레트 1번 설정 + 2번 질의를 한 OSC 로 내고 답 수를 `OSC-<n>=<수>` 로.
+ */
+const SPLIT_PROBE = [
+  "process.stdin.setRawMode(true);",
+  "let input = ''; let counting = null;",
+  "process.stdin.on('data', (chunk) => {",
+  "  const text = chunk.toString('latin1');",
+  "  if (counting) counting.seen += text;",
+  "  input += text;",
+  "  let m;",
+  "  while ((m = /(half|cpr|red|osc)(\\d)/.exec(input))) {",
+  "    input = input.slice(m.index + m[0].length);",
+  "    const cmd = m[1], n = m[2];",
+  "    if (cmd === 'half') process.stdout.write('\\x1b[');",
+  "    if (cmd === 'red') process.stdout.write('31mRED-' + n + '\\x1b[0m\\r\\n');",
+  "    if (cmd === 'cpr' || cmd === 'osc') {",
+  "      counting = { seen: '' };",
+  "      process.stdout.write(cmd === 'cpr' ? '6n' : '\\x1b]4;1;rgb:ff/00/00;2;?\\x07');",
+  "      const answer = cmd === 'cpr' ? /\\x1b\\[\\d+;\\d+R/g : /\\x1b\\]4;2;[^\\x07]*\\x07/g;",
+  "      setTimeout(() => {",
+  "        const count = (counting.seen.match(answer) || []).length;",
+  "        counting = null;",
+  "        process.stdout.write('\\r\\n' + cmd.toUpperCase() + '-' + n + '=' + count + '\\r\\n');",
+  "      }, 1500);",
+  "    }",
+  "  }",
+  "});",
+].join("\n");
+
+async function probeCount(name: string, label: string, round: number): Promise<number> {
+  await ok("term", "wait", name, "--match", `^${label}-${round}=`, "--timeout", "10");
+  const line = (await screen(name)).find((text) => text.startsWith(`${label}-${round}=`)) ?? "";
+  return Number(line.split("=")[1]);
+}
+
+/** 보이는 화면 줄(뒤 빈 줄 걷음) — read 결과와 대조한다. */
+function visible(text: string, rows: number): string[] {
+  const lines = text.split("\n").slice(-rows).map((line) => line.trimEnd());
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
+describe("ainecto term — review #82 follow-ups", () => {
+  it("Q1: an attach that lands inside a split sequence still gets the whole sequence — one CPR answer, no tail text", async () => {
+    await ok("term", "new", "split", "--", process.execPath, "-e", SPLIT_PROBE);
+    await sleep(500);
+    const a = attachInPty("split", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 1, "A attached");
+
+    await ok("term", "send", "split", "half1");
+    await sleep(300);
+    const b = attachInPty("split", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 2, "B attached");
+    await sleep(300);
+    await ok("term", "send", "split", "cpr1");
+    expect(await probeCount("split", "CPR", 1)).toBe(1);
+
+    await ok("term", "send", "split", "half2");
+    await sleep(300);
+    const c = attachInPty("split", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 3, "C attached");
+    await sleep(300);
+    await ok("term", "send", "split", "red2");
+    await ok("term", "wait", "split", "--match", "^RED-2$", "--timeout", "10");
+    await sleep(300);
+
+    const read = await screen("split");
+    for (const view of [a, b, c]) {
+      expect(view.text()).not.toContain("6n");
+      expect(view.text()).not.toContain("31m");
+      expect(visible(view.text(), 24)).toEqual(read);
+    }
+    for (const view of [a, b, c]) {
+      view.pty.kill();
+    }
+  }, LONG);
+
+  it("Q2: an OSC that sets one colour and asks another keeps the setting on every screen and is answered once", async () => {
+    await ok("term", "new", "palette", "--", process.execPath, "-e", SPLIT_PROBE);
+    await sleep(500);
+    const a = attachInPty("palette", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 1, "A attached");
+    const b = attachInPty("palette", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 2, "B attached");
+    await sleep(300);
+    await ok("term", "send", "palette", "osc3");
+    expect(await probeCount("palette", "OSC", 3)).toBe(1);
+    expect(a.palette().get(1)).toBe("rgb:ff/00/00");
+    expect(b.palette().get(1)).toBe("rgb:ff/00/00");
+    a.pty.kill();
+    b.pty.kill();
+  }, LONG);
+
+  it("S1: a daemon that held the lock past its starter's wait and then resumes stops on its own and frees the lock", async () => {
+    // 매니페스트 자리를 FIFO 로 — 데몬은 잠금·daemon.json 뒤, bind 전의 매니페스트 읽기에서 실제로 멈춘다(시험 훅 없음).
+    const dir = join(rig.home, ".ainecto/term");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    execFileSync("mkfifo", [join(dir, "sessions.json")]);
+
+    const failed = await cli("term", "new", "s1", "--json", "--", "/bin/sh");
+    expect(failed.code).toBe(1);
+    expect((JSON.parse(failed.stderr) as { error: { code: string } }).error.code).toBe("TERM_DAEMON_START");
+    const [stuck] = daemonPids();
+    expect(stuck).toBeDefined();
+    expect(failed.stderr).toContain(`pid ${stuck}`);
+
+    // 다시 움직이게 한다 — 기다리던 부모는 이미 떠났다.
+    writeFileSync(join(dir, "sessions.json"), '{"sessions":[]}\n');
+    await until(() => daemonPids().length === 0, "the resumed daemon stops on its own");
+    expect(existsSync(join(dir, "ctl.sock"))).toBe(false);
+    const log = await readFile(join(dir, "daemon.log"), "utf8");
+    expect(log).toContain('"event":"ready_unread"');
+    expect(log).toContain('"reason":"no sessions"');
+
+    // 멈춤 장치(FIFO)를 걷고 — 잠금이 풀렸으니 새 데몬이 뜬다.
+    await rm(join(dir, "sessions.json"));
+    await ok("term", "new", "s2", "--", "/bin/sh");
+    expect(daemonPids()).toHaveLength(1);
   }, LONG);
 });

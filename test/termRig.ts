@@ -141,6 +141,21 @@ export function attachInPty(name: string, cols: number, rows: number) {
   });
   // 진짜 터미널처럼 — 앱이 보낸 질의(커서 위치 등)에 이 화면이 답한다.
   view.onData((answer) => pty.write(answer));
+  // 헤드리스는 팔레트를 들고 있지 않다 — 진짜 터미널처럼 OSC 4 설정을 적용하고 «?» 에 답한다(리뷰 #82 Q2).
+  const palette = new Map<number, string>();
+  view.parser.registerOscHandler(4, (data) => {
+    const fields = data.split(";");
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const slot = Number(fields[index]);
+      const spec = fields[index + 1] ?? "";
+      if (spec === "?") {
+        pty.write(`\x1b]4;${slot};${palette.get(slot) ?? "rgb:0000/0000/0000"}\x07`);
+      } else {
+        palette.set(slot, spec);
+      }
+    }
+    return true;
+  });
   const exit = new Promise<number>((done) => pty.onExit(({ exitCode }) => done(exitCode)));
   return {
     pty,
@@ -148,6 +163,7 @@ export function attachInPty(name: string, cols: number, rows: number) {
     raw: () => raw,
     bufferType: () => view.buffer.active.type,
     modes: () => view.modes,
+    palette: () => palette,
     text: () => {
       const buffer = view.buffer.active;
       const lines: string[] = [];

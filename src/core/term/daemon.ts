@@ -42,9 +42,20 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
   const { paths } = options;
   await ensurePrivateDir(paths.dir);
   const log = new DaemonLog(paths.log, paths.previousLog);
+  // 준비 통보 — 띄운 쪽이 이미 떠났으면(준비 대기 10초가 지난 뒤 다시 움직인 경우 — 리뷰 #82 S1) 통보 실패를
+  // 남기고 데몬의 보통 수명을 그대로 산다. 통보 실패가 데몬을 반쯤 뜬 채로 두지 않는다.
+  const notify = (readiness: DaemonReadiness): boolean => {
+    try {
+      options.ready(readiness);
+      return true;
+    } catch (error) {
+      log.write({ event: "ready_unread", pid: process.pid, status: readiness.status, message: errorMessage(error) });
+      return false;
+    }
+  };
   if (!(await claimDaemon(paths, options.version))) {
     log.write({ event: "daemon_locked", pid: process.pid });
-    options.ready({ status: "locked" });
+    notify({ status: "locked" });
     return 1;
   }
   log.enableRotation();
@@ -59,13 +70,16 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
   const daemon = new TermDaemon(paths, log, manifest);
   await daemon.listen();
   log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: paths.socket });
-  options.ready({ status: "ready" });
   process.on("SIGTERM", () => void daemon.shutdown("SIGTERM"));
   process.on("SIGINT", () => void daemon.shutdown("SIGINT"));
   process.on("uncaughtException", (error) => {
     log.write({ event: "daemon_crash", pid: process.pid, error: error.stack ?? error.message });
     process.exit(1);
   });
+  if (!notify({ status: "ready" })) {
+    // 붙으러 올 쪽이 없다 — 세션·연결이 없으면 보통의 유휴 종료로 끝난다(잠금은 프로세스가 끝날 때 OS 가 푼다).
+    daemon.stopIfIdle();
+  }
   return await daemon.finished;
 }
 
@@ -187,7 +201,7 @@ class TermDaemon {
       if (connection.attachedTo) {
         this.log.write({ event: "detach", conn: connection.id, name: connection.attachedTo.name, reason: "connection closed" });
       }
-      this.idleCheck();
+      this.stopIfIdle();
     });
   }
 
@@ -348,7 +362,7 @@ class TermDaemon {
       }
     }
     this.log.write({ event: "session_exit", name: session.name, pid: session.info().pid, exitCode, signal, kept });
-    this.idleCheck();
+    this.stopIfIdle();
   }
 
   private async restore(env: Record<string, string>): Promise<{ restored: string[]; running: string[]; failed: { name: string; code: string; message: string }[] }> {
@@ -379,7 +393,8 @@ class TermDaemon {
       .catch((error) => this.log.write({ event: "manifest_error", message: errorMessage(error) }));
   }
 
-  private idleCheck(): void {
+  /** 세션 0개·연결 0개면 끝낸다. */
+  stopIfIdle(): void {
     if (!this.shuttingDown && this.sessions.size === 0 && this.connections.size === 0) {
       void this.shutdown("no sessions");
     }

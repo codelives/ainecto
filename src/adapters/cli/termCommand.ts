@@ -227,19 +227,33 @@ async function attach(paths: TermPaths, name: string, io: CliIO): Promise<number
 async function daemonCommand(paths: TermPaths, argv: string[]): Promise<number> {
   const args = parseArgs(argv, { "ready-fd": "count" });
   const readyFd = countFlag(args.flags["ready-fd"]);
+  let channelOpen = readyFd !== undefined;
+  /** 준비 한 줄 — 채널은 한 번만 쓰고 닫는다. 띄운 쪽이 떠났으면 쓰기가 실패하고(EPIPE) 그 오류를 부른 쪽이 다룬다. */
   const ready = (readiness: DaemonReadiness): void => {
     if (readyFd === undefined) {
       process.stderr.write(`${readiness.status === "locked" ? "Another term daemon is already running." : readiness.status}\n`);
       return;
     }
-    writeSync(readyFd, `${JSON.stringify(readiness)}\n`);
-    closeSync(readyFd);
+    if (!channelOpen) {
+      return;
+    }
+    channelOpen = false;
+    try {
+      writeSync(readyFd, `${JSON.stringify(readiness)}\n`);
+    } finally {
+      closeSync(readyFd);
+    }
   };
   let code: number;
   try {
     code = await runDaemon({ paths, version: CLI_VERSION, ready });
   } catch (error) {
-    ready({ status: "error", message: error instanceof Error ? error.message : String(error) });
+    try {
+      ready({ status: "error", message: error instanceof Error ? error.message : String(error) });
+    } catch (notifyError) {
+      // 띄운 쪽이 이미 떠났다 — stderr 는 daemon.log 로 간다.
+      process.stderr.write(`ainecto term daemon: could not report the start failure: ${notifyError instanceof Error ? notifyError.message : String(notifyError)}\n`);
+    }
     throw error;
   }
   // PTY 소켓 등 남은 핸들이 프로세스를 붙잡지 않게 끝낸다 — 정리는 runDaemon 이 마쳤다.

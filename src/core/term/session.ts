@@ -67,6 +67,11 @@ export class TermSession {
   private readonly watchers = new Map<SessionSink, boolean>();
   /** 크기를 정하는 쪽 — 마지막으로 붙거나 입력한 클라이언트(tmux `window-size latest`). */
   private sizeOwner: SessionSink | undefined;
+  /**
+   * 출력 흐름의 시퀀스 경계 — 붙은 클라이언트가 없어도 모든 출력을 따라간다. 새 attach 의 필터는 여기서 갈라
+   * 시작한다(직렬화 화면은 파서의 반쪽 시퀀스를 담지 않는다 — 리뷰 #82 Q1).
+   */
+  private readonly boundary = new QueryFilter();
   /** 헤드리스 화면에 넣은 쓰기마다 «이 덩어리의 질의에 헤드리스가 답하나» — 맨 앞이 지금 그리는 덩어리다. */
   private readonly headlessAnswers: boolean[] = [];
   private exited = false;
@@ -147,7 +152,7 @@ export class TermSession {
    * 직렬화는 빈 쓰기의 콜백 안에서 한다 — xterm 은 쓰기 순서대로 그리고 각 쓰기 직후 콜백을 부른다.
    */
   attach(sink: SessionSink, cols: number, rows: number): void {
-    const state: AttachState = { pending: [], cols, rows, filter: new QueryFilter() };
+    const state: AttachState = { pending: [], cols, rows, filter: this.boundary.forkForNewReader() };
     this.attached.set(sink, state);
     this.takeSize(sink, state);
     this.writeScreen("", false, () => {
@@ -226,6 +231,7 @@ export class TermSession {
   }
 
   private handleOutput(data: string): void {
+    this.boundary.push(data, false);
     this.writeScreen(data, this.sizeOwner === undefined, () => this.notifyWatchers());
     for (const [sink, state] of this.attached) {
       const text = state.filter.push(data, sink !== this.sizeOwner);

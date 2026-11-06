@@ -14,6 +14,8 @@ import { DAEMON_LOG_MAX_BYTES } from "./limits";
 export type DaemonLogRecord =
   | { event: "daemon_start"; pid: number; version: string; socket: string }
   | { event: "daemon_locked"; pid: number }
+  /** 준비 한 줄을 띄운 쪽에 못 전했다 — 띄운 쪽이 이미 떠났다(리뷰 #82 S1). 데몬은 계속 산다. */
+  | { event: "ready_unread"; pid: number; status: string; message: string }
   | { event: "daemon_stop"; pid: number; reason: string }
   | { event: "daemon_crash"; pid: number; error: string }
   | { event: "request"; id: string; conn: number; op: string; name?: string; textLength?: number; key?: string }

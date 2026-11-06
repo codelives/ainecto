@@ -63,4 +63,39 @@ describe("term query filter", () => {
     expect(strip("a\x1b]11;?\x1b[6nb")).toBe("ab");
     expect(strip("a\x1b]0;t\x1b[31mb")).toBe("a\x1b]0;t\x1b[31mb");
   });
+
+  it("keeps the settings of an OSC that mixes settings and queries (review #82 Q2)", () => {
+    expect(strip("\x1b]4;1;rgb:ff/00/00;2;?\x07")).toBe("\x1b]4;1;rgb:ff/00/00\x07");
+    expect(strip("\x1b]4;1;?;2;?\x1b\\")).toBe("");
+    // 10–19 는 자리가 번호다 — 질의를 지우면 번호가 밀리므로 남는 설정을 제 번호로 따로 낸다.
+    expect(strip("\x1b]10;?;blue\x07")).toBe("\x1b]11;blue\x07");
+    expect(strip("\x1b]10;red;?\x07")).toBe("\x1b]10;red\x07");
+    expect(strip("\x1b]52;c;?\x07")).toBe("");
+    expect(strip("\x1b]52;c;aGk=\x07")).toBe("\x1b]52;c;aGk=\x07");
+  });
 });
+
+describe("term query filter — a reader that joins mid-stream (review #82 Q1)", () => {
+  it("hands a half-read CSI to the new reader whole, so the tail is not printed as text", () => {
+    const stream = new QueryFilter();
+    expect(stream.push("x\x1b[", false)).toBe("x");
+    const late = stream.forkForNewReader();
+    expect(late.push("31mRED", false)).toBe("\x1b[31mRED");
+    expect(stream.forkForNewReader().push("6n", true)).toBe("");
+  });
+
+  it("does not show a new reader the rest of a string it never saw the start of", () => {
+    const stream = new QueryFilter();
+    expect(stream.push("\x1b]0;long ti", false)).toBe("\x1b]0;long ti");
+    const late = stream.forkForNewReader();
+    expect(late.push("tle\x07after", false)).toBe("after");
+    expect(stream.push("tle\x07after", false)).toBe("tle\x07after");
+  });
+
+  it("hands a held colour query to the new reader whole", () => {
+    const stream = new QueryFilter();
+    expect(stream.push("\x1b]11;", false)).toBe("");
+    expect(stream.forkForNewReader().push("?\x07", false)).toBe("\x1b]11;?\x07");
+  });
+});
+
