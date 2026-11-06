@@ -19,7 +19,8 @@
     "ainecto": "dist/bin/ainecto.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "build": "tsup && node scripts/chmod-bins.mjs",

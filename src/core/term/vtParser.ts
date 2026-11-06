@@ -4,8 +4,9 @@
  * 그 뒤 출력이 이어진다. 사례마다 예외를 덧대는 대신 표 자체를 같게 둔다 — 시험이 설치된 xterm 의 표와 바이트 단위로
  * 대조하고, 같은 입력을 두 파서에 넣어 매 코드 포인트의 상태를 비교한다(xterm 을 올리면 거기서 깨진다).
  *
- * 원본: xterm.js src/common/parser/EscapeSequenceParser.ts(VT500_TRANSITION_TABLE · parse 의 OSC_END/DCS_UNHOOK)
- * 와 src/common/parser/Constants.ts. Copyright (c) 2017 The xterm.js authors. MIT License.
+ * 원본: xterm.js 6.0.0 src/common/parser/EscapeSequenceParser.ts(VT500_TRANSITION_TABLE · parse 의 OSC_END/DCS_UNHOOK)
+ * 와 src/common/parser/Constants.ts. Copyright (c) 2017-2019, The xterm.js authors. MIT License —
+ * 저작권 고지와 허가문 전문은 저장소 최상위 THIRD_PARTY_NOTICES.md(패키지에 함께 실린다, 리뷰 #84 L1).
  * 원본의 표는 Paul Williams 의 DEC ANSI 파서 상태도(https://vt100.net/emu/dec_ansi_parser)를 따른다.
  */
 
