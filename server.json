@@ -3,7 +3,7 @@
   "name": "com.ainecto/mcp",
   "title": "AiNecto",
   "description": "Shared project memory for people and AI agents: documents, ERD, diagrams, boards, design mockups.",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "websiteUrl": "https://ainecto.com/en/?utm_source=mcpregistry&utm_medium=referral&utm_campaign=agent-directory",
   "repository": {
     "url": "https://github.com/codelives/ainecto",
@@ -19,7 +19,7 @@
     {
       "registryType": "npm",
       "identifier": "@ainecto/mcp",
-      "version": "0.12.1",
+      "version": "0.12.2",
       "runtimeHint": "npx",
       "runtimeArguments": [
         {
