@@ -60,8 +60,8 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
   await daemon.listen();
   log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: paths.socket });
   options.ready({ status: "ready" });
-  process.on("SIGTERM", () => void daemon.shutdown("SIGTERM", false));
-  process.on("SIGINT", () => void daemon.shutdown("SIGINT", false));
+  process.on("SIGTERM", () => void daemon.shutdown("SIGTERM"));
+  process.on("SIGINT", () => void daemon.shutdown("SIGINT"));
   process.on("uncaughtException", (error) => {
     log.write({ event: "daemon_crash", pid: process.pid, error: error.stack ?? error.message });
     process.exit(1);
@@ -95,10 +95,14 @@ class TermDaemon {
   private readonly connections = new Set<Connection>();
   private readonly server: Server;
   private nextConnection = 1;
+  /** 띄우는 중인 이름 — new·restore 가 같은 이름을 겹쳐 띄우지 않게(리뷰 #81 T1). */
+  private readonly starting = new Set<string>();
   private inflight = 0;
-  /** 끝내는 중에 처리 중인 요청이 다 끝나면 부른다. */
-  private drained: (() => void) | undefined;
+  /** 처리 중인 요청 수가 줄 때마다 깨운다. */
+  private inflightWaiters: (() => void)[] = [];
+  /** 새 요청을 받지 않는다 — 이후 요청은 RETRY. */
   private shuttingDown = false;
+  private stopping = false;
   private manifestWrite: Promise<void> = Promise.resolve();
   private resolveFinished: (code: number) => void = () => undefined;
   readonly finished = new Promise<number>((resolve) => {
@@ -132,24 +136,14 @@ class TermDaemon {
     await chmod(this.paths.socket, PRIVATE_FILE_MODE);
   }
 
-  async shutdown(reason: string, killSessions: boolean): Promise<void> {
-    if (this.shuttingDown) {
+  /** 끝낸다 — 세션·매니페스트는 건드리지 않는다(SIGTERM·세션 0). 세션까지 끝내는 kill-server 는 handle 이 먼저 정리한다. */
+  async shutdown(reason: string): Promise<void> {
+    if (this.stopping) {
       return;
     }
-    this.shuttingDown = true;
-    this.server.close();
-    if (killSessions) {
-      for (const session of this.sessions.values()) {
-        session.kill();
-      }
-      this.sessions.clear();
-      this.updateManifest(() => []);
-    }
-    if (this.inflight > 0) {
-      await new Promise<void>((resolve) => {
-        this.drained = resolve;
-      });
-    }
+    this.stopping = true;
+    this.stopAccepting();
+    await this.inflightAtMost(0);
     await this.manifestWrite;
     for (const connection of this.connections) {
       connection.end();
@@ -163,6 +157,21 @@ class TermDaemon {
     }
     this.log.write({ event: "daemon_stop", pid: process.pid, reason });
     this.resolveFinished(0);
+  }
+
+  /** 리스너를 닫고 이후 요청에 RETRY 를 답한다. 여러 번 불러도 한 번. */
+  private stopAccepting(): void {
+    if (!this.shuttingDown) {
+      this.shuttingDown = true;
+      this.server.close();
+    }
+  }
+
+  /** 처리 중인 요청이 `remaining` 개 이하가 될 때까지 기다린다. */
+  private async inflightAtMost(remaining: number): Promise<void> {
+    while (this.inflight > remaining) {
+      await new Promise<void>((resolve) => this.inflightWaiters.push(resolve));
+    }
   }
 
   private accept(socket: Socket): void {
@@ -212,8 +221,8 @@ class TermDaemon {
         response = { id: request.id, ok: false, error: { code: errorCode(error), message: errorMessage(error) } };
       } finally {
         this.inflight -= 1;
-        if (this.inflight === 0) {
-          this.drained?.();
+        for (const wake of this.inflightWaiters.splice(0)) {
+          wake();
         }
       }
     }
@@ -234,9 +243,6 @@ class TermDaemon {
     switch (request.op) {
       case "new": {
         assertSessionName(request.name);
-        if (this.sessions.has(request.name)) {
-          throw new TermError("TERM_SESSION_EXISTS", `A session named "${request.name}" already exists.`);
-        }
         const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString() };
         const session = await this.startSession(entry, request.env, request.cols, request.rows);
         this.updateManifest((entries) => [...entries.filter((item) => item.name !== entry.name), entry]);
@@ -262,8 +268,17 @@ class TermDaemon {
         return { data: { name: request.name, killed: true } };
       }
       case "kill-server": {
+        // ★먼저 새 요청을 막고, 이미 받은 생성(new·restore)을 마치게 한 «뒤» 일괄로 끝낸다 — 성공을 답한 생성이
+        //   목록·매니페스트에서 빠지거나 남지 않는다(리뷰 #81 T7). 남은 처리 중 요청은 이 요청 하나다.
+        this.stopAccepting();
+        await this.inflightAtMost(1);
         const names = [...this.sessions.keys()];
-        return { data: { killed: names }, after: () => void this.shutdown("kill-server", true) };
+        for (const session of this.sessions.values()) {
+          session.kill();
+        }
+        this.sessions.clear();
+        this.updateManifest(() => []);
+        return { data: { killed: names }, after: () => void this.shutdown("kill-server") };
       }
       case "restore":
         return { data: await this.restore(request.env) };
@@ -296,15 +311,27 @@ class TermDaemon {
     return session;
   }
 
+  /**
+   * 세션을 띄우는 곳은 여기 하나(new·restore). ★이름은 첫 await «전에» 확보한다 — 검사와 등록 사이에 같은 이름의
+   * 다른 요청이 끼어 PTY 를 둘 띄우지 못하게(리뷰 #81 T1). 실패하면 확보를 푼다.
+   */
   private async startSession(entry: ManifestEntry, env: Record<string, string>, cols?: number, rows?: number): Promise<TermSession> {
-    await assertDirectory(entry.cwd);
-    const session = await TermSession.start(
-      { ...entry, env, cols, rows },
-      (ended, exitCode, signal) => this.sessionEnded(ended, exitCode, signal),
-    );
-    this.sessions.set(entry.name, session);
-    this.log.write({ event: "session_start", name: entry.name, pid: session.info().pid, cwd: entry.cwd, shell: entry.command === null });
-    return session;
+    if (this.sessions.has(entry.name) || this.starting.has(entry.name)) {
+      throw new TermError("TERM_SESSION_EXISTS", `A session named "${entry.name}" already exists.`);
+    }
+    this.starting.add(entry.name);
+    try {
+      await assertDirectory(entry.cwd);
+      const session = await TermSession.start(
+        { ...entry, env, cols, rows },
+        (ended, exitCode, signal) => this.sessionEnded(ended, exitCode, signal),
+      );
+      this.sessions.set(entry.name, session);
+      this.log.write({ event: "session_start", name: entry.name, pid: session.info().pid, cwd: entry.cwd, shell: entry.command === null });
+      return session;
+    } finally {
+      this.starting.delete(entry.name);
+    }
   }
 
   /**
@@ -329,7 +356,7 @@ class TermDaemon {
     const running: string[] = [];
     const failed: { name: string; code: string; message: string }[] = [];
     for (const entry of this.manifest) {
-      if (this.sessions.has(entry.name)) {
+      if (this.sessions.has(entry.name) || this.starting.has(entry.name)) {
         running.push(entry.name);
         continue;
       }
@@ -354,7 +381,7 @@ class TermDaemon {
 
   private idleCheck(): void {
     if (!this.shuttingDown && this.sessions.size === 0 && this.connections.size === 0) {
-      void this.shutdown("no sessions", false);
+      void this.shutdown("no sessions");
     }
   }
 }

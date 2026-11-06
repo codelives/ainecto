@@ -2,6 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { termRuntimeProblem } from "../src/core/term/daemonLock";
 
 /**
  * 데몬 잠금 실물 시험(설계 2-1 v3) — 별도 프로세스 셋이 진짜 OS 잠금을 다툰다.
@@ -14,22 +15,25 @@ const LOCK_MODULE = join(ROOT, "src/core/term/daemonLock.ts");
 const PATHS_MODULE = join(ROOT, "src/core/term/paths.ts");
 
 let home: string;
+let otherHome: string;
 
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "aterm-lock-"));
+  otherHome = await mkdtemp(join(tmpdir(), "aterm-lock-"));
 });
 
 afterEach(async () => {
   await rm(home, { recursive: true, force: true });
+  await rm(otherHome, { recursive: true, force: true });
 });
 
 /** 잠금을 한 번 잡아 보고 결과를 한 줄 쓴 뒤, 잡았으면 표준입력이 닫힐 때까지 쥐고 있는 프로세스. */
-function contender(): { child: ChildProcess; verdict: Promise<string> } {
+function contender(where: string = home): { child: ChildProcess; verdict: Promise<string> } {
   const script = [
     `import { mkdirSync } from "node:fs";`,
     `const { acquireDaemonLock } = await import(${JSON.stringify(LOCK_MODULE)});`,
     `const { termPaths } = await import(${JSON.stringify(PATHS_MODULE)});`,
-    `const paths = termPaths(${JSON.stringify(home)});`,
+    `const paths = termPaths(${JSON.stringify(where)});`,
     `mkdirSync(paths.dir, { recursive: true, mode: 0o700 });`,
     `const result = await acquireDaemonLock(paths);`,
     `process.stdout.write(result.held ? "held\\n" : "locked\\n");`,
@@ -70,4 +74,25 @@ describe("term daemon lock (real processes)", () => {
     c.child.stdin?.end();
     await exited(c.child);
   }, 60_000);
+
+  it("two different homes hold their own locks at the same time (Linux: the abstract name keeps the folder)", async () => {
+    const a = contender(home);
+    expect(await a.verdict).toBe("held");
+    const b = contender(otherHome);
+    expect(await b.verdict).toBe("held");
+    a.child.stdin?.end();
+    b.child.stdin?.end();
+    await Promise.all([exited(a.child), exited(b.child)]);
+  }, 60_000);
+});
+
+describe("term runtime floor", () => {
+  it("needs Node 20.8.0 on Linux for the abstract-socket lock, any supported Node on macOS, and refuses other platforms", () => {
+    expect(termRuntimeProblem("linux", "18.20.8")).toMatch(/needs Node\.js 20\.8\.0 or newer \(this is 18\.20\.8\)/);
+    expect(termRuntimeProblem("linux", "20.7.0")).toMatch(/20\.8\.0/);
+    expect(termRuntimeProblem("linux", "20.8.0")).toBeUndefined();
+    expect(termRuntimeProblem("linux", "22.20.0")).toBeUndefined();
+    expect(termRuntimeProblem("darwin", "18.0.0")).toBeUndefined();
+    expect(termRuntimeProblem("win32", "22.20.0")).toMatch(/not supported on win32/);
+  });
 });

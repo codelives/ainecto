@@ -1,6 +1,7 @@
 import { constants, openSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
+import { TermError } from "./errors";
 import type { TermPaths } from "./paths";
 
 /**
@@ -16,6 +17,47 @@ import type { TermPaths } from "./paths";
  */
 export type DaemonLockResult = { held: true } | { held: false };
 
+/**
+ * Linux 추상 이름공간 소켓에 «이름 있는» bind 를 Node 가 지원하는 첫 판 — Node net 문서 «IPC support» 변경 이력 20.8.0.
+ * 그 아래는 첫 NUL 뒤 이름이 잘리거나(18 — uid·폴더 구분이 사라져 다른 HOME 의 데몬끼리 잠금이 부딪침) bind 가
+ * EINVAL(20.7) 이다(리뷰 #81 T6). ★CLI 전체의 하한(engines >=18)이 아니라 term 만의 하한이다.
+ */
+const LINUX_ABSTRACT_SOCKET_NODE: readonly [number, number, number] = [20, 8, 0];
+
+/** term 을 이 런타임에서 쓸 수 없으면 그 이유(사람 말). 쓸 수 있으면 undefined. */
+export function termRuntimeProblem(platform: NodeJS.Platform = process.platform, nodeVersion: string = process.versions.node): string | undefined {
+  if (platform === "darwin") {
+    return undefined;
+  }
+  if (platform === "linux") {
+    return versionAtLeast(nodeVersion, LINUX_ABSTRACT_SOCKET_NODE)
+      ? undefined
+      : `ainecto term on Linux needs Node.js ${LINUX_ABSTRACT_SOCKET_NODE.join(".")} or newer (this is ${nodeVersion}): its daemon lock is `
+        + "an abstract Unix socket, which older Node cannot bind by name. Other ainecto commands work on this Node.";
+  }
+  return `ainecto term is not supported on ${platform} yet (macOS and Linux only).`;
+}
+
+/** 데몬을 띄우기 «전에»(클라이언트) 그리고 잠금을 잡기 전에(데몬) 부른다. */
+export function assertTermRuntime(): void {
+  const problem = termRuntimeProblem();
+  if (problem) {
+    throw new TermError("TERM_RUNTIME_UNSUPPORTED", problem);
+  }
+}
+
+function versionAtLeast(version: string, minimum: readonly [number, number, number]): boolean {
+  const parts = version.split(".").map((part) => Number.parseInt(part, 10));
+  for (let index = 0; index < minimum.length; index += 1) {
+    const have = parts[index] ?? 0;
+    const need = minimum[index] ?? 0;
+    if (have !== need) {
+      return have > need;
+    }
+  }
+  return true;
+}
+
 /** macOS `sys/fcntl.h` `#define O_EXLOCK 0x00000020` — Node 가 상수를 주지 않는다. */
 const DARWIN_O_EXLOCK = 0x20;
 
@@ -24,6 +66,7 @@ let heldFd: number | undefined;
 let heldServer: Server | undefined;
 
 export async function acquireDaemonLock(paths: TermPaths): Promise<DaemonLockResult> {
+  assertTermRuntime();
   if (process.platform === "darwin") {
     try {
       heldFd = openSync(
@@ -57,5 +100,6 @@ export async function acquireDaemonLock(paths: TermPaths): Promise<DaemonLockRes
       });
     });
   }
-  throw new Error(`ainecto term is not supported on ${process.platform} yet (macOS and Linux only).`);
+  // assertTermRuntime 이 이미 막았다 — 여기 오면 위 두 플랫폼 분기와 그 함수가 어긋난 것이다.
+  throw new TermError("TERM_RUNTIME_UNSUPPORTED", `No daemon lock for ${process.platform}.`);
 }

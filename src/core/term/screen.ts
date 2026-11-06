@@ -57,3 +57,12 @@ export function terminalResetSequence(
   }
   return `${reset}\x1b[?25h`;
 }
+
+/**
+ * 세션 앱이 켠 모드를 모를 때(attach 중 데몬 연결이 끊김·detach 응답 없음) 사용자 터미널을 되돌리는 글자 —
+ * 앱이 켤 수 있는 모드를 모두 켜졌다고 보고 같은 함수로 만든다(규칙을 두 벌 두지 않는다, 리뷰 #81 T5).
+ */
+export const FULL_TERMINAL_RESET = terminalResetSequence(
+  { mouseTrackingMode: "any", sendFocusMode: true, bracketedPasteMode: true, applicationCursorKeysMode: true, applicationKeypadMode: true },
+  true,
+);

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { openTermClient, termRequest } from "../../core/term/client";
 import { runDaemon, type DaemonReadiness } from "../../core/term/daemon";
 import { DETACH_HINT, DetachKeyScanner } from "../../core/term/detachKey";
+import { FULL_TERMINAL_RESET } from "../../core/term/screen";
 import { TermError } from "../../core/term/errors";
 import { KEY_NAMES } from "../../core/term/keys";
 import { termPaths, type TermPaths } from "../../core/term/paths";
@@ -165,7 +166,8 @@ async function attach(paths: TermPaths, name: string, io: CliIO): Promise<number
   }
   const scanner = new DetachKeyScanner();
   let finished = false;
-  let finish: (code: number, reset: string, note: string) => void = () => undefined;
+  /** reset = 데몬이 알려 준 되돌림 글자(base64). 없으면(연결이 끊김) 모든 모드를 끄는 글자. */
+  let finish: (code: number, reset: string | undefined, note: string) => void = () => undefined;
   const done = new Promise<number>((resolveDone) => {
     finish = (code, reset, note) => {
       if (finished) {
@@ -176,7 +178,7 @@ async function attach(paths: TermPaths, name: string, io: CliIO): Promise<number
       io.stdout.off("resize", onResize);
       io.stdin.setRawMode(false);
       io.stdin.pause();
-      io.stdout.write(Buffer.from(reset, "base64"));
+      io.stdout.write(reset === undefined ? FULL_TERMINAL_RESET : Buffer.from(reset, "base64"));
       io.stderr.write(`\r\n[${note}]\r\n`);
       client.close();
       resolveDone(code);
@@ -190,7 +192,7 @@ async function attach(paths: TermPaths, name: string, io: CliIO): Promise<number
     if (scanned.detach) {
       client.request({ op: "detach" }).then(
         (data) => finish(0, resetField(data), `detached from ${name}`),
-        (error: unknown) => finish(1, "", `detach failed: ${error instanceof Error ? error.message : String(error)}`),
+        (error: unknown) => finish(1, undefined, `detach failed: ${error instanceof Error ? error.message : String(error)}`),
       );
     }
   };
@@ -207,7 +209,7 @@ async function attach(paths: TermPaths, name: string, io: CliIO): Promise<number
       finish(0, event.reset, `${name} exited (${event.signal ? `signal ${event.signal}` : `code ${event.exitCode}`})`);
     }
   });
-  client.onClose(() => finish(1, "", "lost the connection to the term daemon"));
+  client.onClose(() => finish(1, undefined, "lost the connection to the term daemon"));
   try {
     await client.request({ op: "attach", name, cols: io.stdout.columns, rows: io.stdout.rows });
   } catch (error) {
@@ -368,8 +370,8 @@ function linesField(data: unknown): string[] {
   return [];
 }
 
-function resetField(data: unknown): string {
-  return data && typeof data === "object" && "reset" in data && typeof data.reset === "string" ? data.reset : "";
+function resetField(data: unknown): string | undefined {
+  return data && typeof data === "object" && "reset" in data && typeof data.reset === "string" ? data.reset : undefined;
 }
 
 function restoreSummary(data: unknown): string {

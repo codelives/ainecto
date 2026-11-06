@@ -8,6 +8,7 @@ import type { IPty } from "node-pty";
 import { TermError } from "./errors";
 import { keyBytes, pasteBytes } from "./keys";
 import type { TermEvent } from "./protocol";
+import { QueryFilter } from "./queryFilter";
 import { screenLines, terminalResetSequence, type ReadRange } from "./screen";
 
 /**
@@ -48,11 +49,16 @@ interface AttachState {
   pending: string[] | null;
   cols: number;
   rows: number;
+  /** 이 클라이언트에게 가는 출력에서 질의를 뺄지 — 주인이 아니면 뺀다(queryFilter.ts). */
+  filter: QueryFilter;
 }
 
 /**
  * 세션 하나 = node-pty 프로세스 하나 + 헤드리스 화면 하나(설계 2-2·2-3).
  * 출력은 ① 헤드리스 화면 ② 붙은 클라이언트들로 나눠 흘린다.
+ * ★앱의 터미널 질의(커서 위치 등)에 답하는 쪽은 하나다(리뷰 #81 T2): 출력을 흘리는 순간 주인(크기 주인)이 있으면
+ *   그 터미널만 질의를 받아 답하고, 없으면 헤드리스 화면이 답해 PTY 로 돌려준다. 이 판정은 출력 덩어리마다 한 번 —
+ *   헤드리스는 쓰기 순서대로 그리므로 덩어리마다 «헤드리스가 답하나»를 줄 세워 두고 그 덩어리를 그리는 동안 본다.
  * ★node-pty 는 스레드 안전하지 않다 — 데몬 메인 스레드에서만 다룬다.
  */
 export class TermSession {
@@ -61,6 +67,8 @@ export class TermSession {
   private readonly watchers = new Map<SessionSink, boolean>();
   /** 크기를 정하는 쪽 — 마지막으로 붙거나 입력한 클라이언트(tmux `window-size latest`). */
   private sizeOwner: SessionSink | undefined;
+  /** 헤드리스 화면에 넣은 쓰기마다 «이 덩어리의 질의에 헤드리스가 답하나» — 맨 앞이 지금 그리는 덩어리다. */
+  private readonly headlessAnswers: boolean[] = [];
   private exited = false;
 
   private constructor(
@@ -84,6 +92,7 @@ export class TermSession {
     const serializer = new serializeAddon.SerializeAddon();
     screen.loadAddon(serializer);
     const session = new TermSession(spec, pty, screen, serializer);
+    screen.onData((answer) => session.answerQuery(answer));
     pty.onData((data) => session.handleOutput(data));
     pty.onExit(({ exitCode, signal }) => {
       session.handleExit(exitCode, signal ?? 0);
@@ -138,10 +147,10 @@ export class TermSession {
    * 직렬화는 빈 쓰기의 콜백 안에서 한다 — xterm 은 쓰기 순서대로 그리고 각 쓰기 직후 콜백을 부른다.
    */
   attach(sink: SessionSink, cols: number, rows: number): void {
-    const state: AttachState = { pending: [], cols, rows };
+    const state: AttachState = { pending: [], cols, rows, filter: new QueryFilter() };
     this.attached.set(sink, state);
     this.takeSize(sink, state);
-    this.screen.write("", () => {
+    this.writeScreen("", false, () => {
       sink.send({ event: "screen", d: Buffer.from(this.serializer.serialize(), "utf8").toString("base64") });
       for (const data of state.pending ?? []) {
         sink.send({ event: "out", d: Buffer.from(data, "utf8").toString("base64") });
@@ -167,7 +176,8 @@ export class TermSession {
     if (this.sizeOwner !== sink) {
       this.takeSize(sink, state);
     }
-    this.pty.write(bytes.toString("utf8"));
+    // ★바이트 그대로 — 덩어리마다 글자로 바꾸면 경계에 걸친 한글·이모지가 깨진다(리뷰 #81 T3).
+    this.pty.write(bytes);
   }
 
   resizeFrom(sink: SessionSink, cols: number, rows: number): void {
@@ -216,14 +226,34 @@ export class TermSession {
   }
 
   private handleOutput(data: string): void {
-    this.screen.write(data, () => this.notifyWatchers());
+    this.writeScreen(data, this.sizeOwner === undefined, () => this.notifyWatchers());
     for (const [sink, state] of this.attached) {
+      const text = state.filter.push(data, sink !== this.sizeOwner);
+      if (text.length === 0) {
+        continue;
+      }
       if (state.pending) {
-        state.pending.push(data);
+        state.pending.push(text);
       } else {
-        sink.send({ event: "out", d: Buffer.from(data, "utf8").toString("base64") });
+        sink.send({ event: "out", d: Buffer.from(text, "utf8").toString("base64") });
       }
     }
+  }
+
+  /** 헤드리스 화면의 질의 응답 — 지금 그리는 덩어리를 흘릴 때 주인이 없었으면 PTY 로 돌려준다. */
+  private answerQuery(answer: string): void {
+    if (!this.exited && this.headlessAnswers[0] === true) {
+      this.pty.write(answer);
+    }
+  }
+
+  /** 헤드리스 화면에 쓰는 곳은 여기 하나 — 덩어리마다 «헤드리스가 답하나»를 같은 순서로 줄 세운다. */
+  private writeScreen(data: string, headlessAnswers: boolean, done?: () => void): void {
+    this.headlessAnswers.push(headlessAnswers);
+    this.screen.write(data, () => {
+      this.headlessAnswers.shift();
+      done?.();
+    });
   }
 
   private notifyWatchers(): void {
@@ -255,7 +285,7 @@ export class TermSession {
     if (this.exited) {
       return Promise.resolve();
     }
-    return new Promise((resolve) => this.screen.write("", resolve));
+    return new Promise((resolve) => this.writeScreen("", false, resolve));
   }
 }
 

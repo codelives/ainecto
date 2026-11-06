@@ -5,6 +5,7 @@ import { connect, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
 import type { DaemonReadiness } from "./daemon";
+import { assertTermRuntime } from "./daemonLock";
 import { TermError } from "./errors";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "./limits";
 import type { TermPaths } from "./paths";
@@ -148,6 +149,8 @@ export async function openTermClient(paths: TermPaths, options: { start: boolean
     if (started === DAEMON_START_ATTEMPTS) {
       throw new TermError("TERM_DAEMON_START", notListening(paths));
     }
+    // 띄우기 «전에» 런타임을 본다 — 못 쓰는 런타임에서 데몬을 띄워 알 수 없는 오류를 받지 않게(리뷰 #81 T6).
+    assertTermRuntime();
     await ensurePrivateDir(paths.dir);
     const readiness = await spawnDaemon(paths);
     if (readiness.status === "error") {
@@ -184,7 +187,15 @@ export async function termRequest(
  * 자기 자신을 `term daemon --ready-fd 3` 으로 detached 로 띄우고 준비 한 줄을 기다린다.
  * ★지금 실행 중인 같은 CLI(같은 node·같은 실행 인자)로 띄운다 — 판이 다른 데몬이 섞이지 않게.
  */
-async function spawnDaemon(paths: TermPaths): Promise<DaemonReadiness> {
+/**
+ * 띄운 데몬의 결과 — 준비 한 줄, 또는 {@link DAEMON_RESPONSE_TIMEOUT_MS} 안에 아무 말이 없음(silent).
+ * ★silent 여도 그 자식을 죽이지 않는다 — 시간 초과는 잠금 탈취·소켓 삭제의 근거가 아니다(설계 2-1, 리뷰 #81 T4).
+ *   기다림을 멈추고 한 번의 시도로 센다. 그 자식이 잠금을 쥐고 멈췄다면 다음 시도들이 «locked» 를 받고,
+ *   마지막 오류가 daemon.json 의 pid 를 알려 준다.
+ */
+type SpawnOutcome = DaemonReadiness | { status: "silent" };
+
+async function spawnDaemon(paths: TermPaths): Promise<SpawnOutcome> {
   const entry = process.argv[1];
   if (!entry) {
     throw new TermError("TERM_DAEMON_START", "Cannot find the ainecto entry script to start the term daemon.");
@@ -207,8 +218,10 @@ async function spawnDaemon(paths: TermPaths): Promise<DaemonReadiness> {
     child.kill();
     throw new TermError("TERM_DAEMON_START", "Could not open the readiness pipe to the term daemon.");
   }
+  let timer: NodeJS.Timeout | undefined;
   try {
-    return await new Promise<DaemonReadiness>((resolve, reject) => {
+    return await new Promise<SpawnOutcome>((resolve, reject) => {
+      timer = setTimeout(() => resolve({ status: "silent" }), DAEMON_RESPONSE_TIMEOUT_MS);
       const decoder = new LineDecoder();
       channel.on("data", (chunk: Buffer) => {
         const line = decoder.push(chunk)[0];
@@ -222,6 +235,7 @@ async function spawnDaemon(paths: TermPaths): Promise<DaemonReadiness> {
       });
     });
   } finally {
+    clearTimeout(timer);
     channel.destroy();
     child.unref();
   }
