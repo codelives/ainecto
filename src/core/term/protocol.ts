@@ -16,6 +16,7 @@ export type TermRequestBody =
   | { op: "read"; name: string; scrollback: boolean; lines?: number }
   | { op: "kill"; name: string }
   | { op: "kill-server" }
+  | { op: "restore"; env: Record<string, string> }
   | { op: "attach"; name: string; cols: number; rows: number }
   | { op: "detach" }
   | { op: "watch"; name: string };
@@ -124,6 +125,8 @@ export function parseClientMessage(line: string): TermClientMessage {
     case "kill":
     case "watch":
       return { id, op, name: stringField(record, "name") };
+    case "restore":
+      return { id, op, env: stringMapField(record, "env") };
     case "attach":
       return { id, op, name: stringField(record, "name"), cols: sizeField(record, "cols"), rows: sizeField(record, "rows") };
     default:

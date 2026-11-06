@@ -19,7 +19,8 @@ export type DaemonLogRecord =
   | { event: "session_start"; name: string; pid: number; cwd: string; shell: boolean }
   | { event: "session_exit"; name: string; pid: number; exitCode: number; signal: number; kept: boolean }
   | { event: "attach"; conn: number; name: string }
-  | { event: "detach"; conn: number; name: string; reason: string };
+  | { event: "detach"; conn: number; name: string; reason: string }
+  | { event: "manifest_error"; message: string };
 
 export class DaemonLog {
   constructor(private readonly path: string) {}

@@ -23,6 +23,7 @@ export const TERM_HELP_LINES: readonly string[] = [
   "  ainecto term wait <name> --match REGEX [--timeout SECONDS] [--lines N] [--scrollback]   until a screen line matches",
   `  ainecto term attach <name>                                watch and type in your terminal; detach with ${DETACH_HINT}`,
   "  ainecto term kill <name> · ainecto term kill-server",
+  "  ainecto term restore [--json]                             start again the sessions that were running when the daemon or the machine stopped",
 ];
 
 interface TermCommandInput {
@@ -79,12 +80,16 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
       const data = result.daemon ? result.data : { killed: [] };
       return print(input, data, result.daemon ? "Stopped the term daemon and its sessions." : "No term daemon is running.");
     }
+    case "restore": {
+      const result = await termRequest(paths, { op: "restore", env: stringEnv() }, { start: true });
+      return print(input, result.daemon ? result.data : undefined, restoreSummary(result.daemon ? result.data : undefined));
+    }
     case "attach":
       return await attach(paths, singleName(parseArgs(rest, {}).positionals, "term attach <name>"), input.io);
     case "daemon":
       return await daemonCommand(paths, rest);
     default:
-      throw usage(`term new|ls|send|key|read|wait|attach|kill|kill-server — see ainecto --help`);
+      throw usage(`term new|ls|send|key|read|wait|attach|kill|kill-server|restore — see ainecto --help`);
   }
 }
 
@@ -365,4 +370,19 @@ function linesField(data: unknown): string[] {
 
 function resetField(data: unknown): string {
   return data && typeof data === "object" && "reset" in data && typeof data.reset === "string" ? data.reset : "";
+}
+
+function restoreSummary(data: unknown): string {
+  const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+  const names = (key: string): string[] => (Array.isArray(record[key]) ? record[key].filter((item): item is string => typeof item === "string") : []);
+  const failed = Array.isArray(record.failed) ? record.failed : [];
+  const parts = [
+    names("restored").length ? `Restored: ${names("restored").join(", ")}` : "",
+    names("running").length ? `Already running: ${names("running").join(", ")}` : "",
+    ...failed.map((failure: unknown) => {
+      const item = failure && typeof failure === "object" ? (failure as Record<string, unknown>) : {};
+      return `Could not restore ${String(item.name)}: ${String(item.message)}`;
+    }),
+  ].filter(Boolean);
+  return parts.length ? parts.join("\n") : "Nothing to restore.";
 }

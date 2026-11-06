@@ -5,6 +5,7 @@ import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateF
 import { acquireDaemonLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
+import { readManifest, writeManifest, type ManifestEntry } from "./manifest";
 import type { TermPaths } from "./paths";
 import {
   encodeLine,
@@ -46,7 +47,15 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
     options.ready({ status: "locked" });
     return 1;
   }
-  const daemon = new TermDaemon(paths, log);
+  let manifest: ManifestEntry[];
+  try {
+    manifest = await readManifest(paths.manifest);
+  } catch (error) {
+    // 깨진 매니페스트가 데몬을 막지 않게 — 빈 목록으로 시작하고, 다음 쓰기가 덮는다. 이유는 남긴다.
+    log.write({ event: "manifest_error", message: errorMessage(error) });
+    manifest = [];
+  }
+  const daemon = new TermDaemon(paths, log, manifest);
   await daemon.listen();
   await writeFile(paths.daemonInfo, `${JSON.stringify({ pid: process.pid, version: options.version, startedAt: new Date().toISOString() })}\n`, {
     mode: PRIVATE_FILE_MODE,
@@ -60,14 +69,6 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
     process.exit(1);
   });
   return await daemon.finished;
-}
-
-/** 세션을 띄우는 데 쓰는 사실 — 이름·cwd·명령·만든 시각. */
-interface SessionEntry {
-  name: string;
-  cwd: string;
-  command: string[] | null;
-  createdAt: string;
 }
 
 interface Handled {
@@ -85,6 +86,7 @@ class TermDaemon {
   /** 끝내는 중에 처리 중인 요청이 다 끝나면 부른다. */
   private drained: (() => void) | undefined;
   private shuttingDown = false;
+  private manifestWrite: Promise<void> = Promise.resolve();
   private resolveFinished: (code: number) => void = () => undefined;
   readonly finished = new Promise<number>((resolve) => {
     this.resolveFinished = resolve;
@@ -93,6 +95,7 @@ class TermDaemon {
   constructor(
     private readonly paths: TermPaths,
     private readonly log: DaemonLog,
+    private manifest: ManifestEntry[],
   ) {
     this.server = createServer((socket) => this.accept(socket));
   }
@@ -127,12 +130,14 @@ class TermDaemon {
         session.kill();
       }
       this.sessions.clear();
+      this.updateManifest(() => []);
     }
     if (this.inflight > 0) {
       await new Promise<void>((resolve) => {
         this.drained = resolve;
       });
     }
+    await this.manifestWrite;
     for (const connection of this.connections) {
       connection.end();
     }
@@ -219,8 +224,9 @@ class TermDaemon {
         if (this.sessions.has(request.name)) {
           throw new TermError("TERM_SESSION_EXISTS", `A session named "${request.name}" already exists.`);
         }
-        const entry: SessionEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString() };
+        const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString() };
         const session = await this.startSession(entry, request.env, request.cols, request.rows);
+        this.updateManifest((entries) => [...entries.filter((item) => item.name !== entry.name), entry]);
         return { data: session.info() };
       }
       case "ls":
@@ -239,12 +245,15 @@ class TermDaemon {
         const session = this.session(request.name);
         this.sessions.delete(request.name);
         session.kill();
+        this.updateManifest((entries) => entries.filter((item) => item.name !== request.name));
         return { data: { name: request.name, killed: true } };
       }
       case "kill-server": {
         const names = [...this.sessions.keys()];
         return { data: { killed: names }, after: () => void this.shutdown("kill-server", true) };
       }
+      case "restore":
+        return { data: await this.restore(request.env) };
       case "attach": {
         const session = this.session(request.name);
         connection.attachedTo = session;
@@ -274,7 +283,7 @@ class TermDaemon {
     return session;
   }
 
-  private async startSession(entry: SessionEntry, env: Record<string, string>, cols?: number, rows?: number): Promise<TermSession> {
+  private async startSession(entry: ManifestEntry, env: Record<string, string>, cols?: number, rows?: number): Promise<TermSession> {
     await assertDirectory(entry.cwd);
     const session = await TermSession.start(
       { ...entry, env, cols, rows },
@@ -285,13 +294,49 @@ class TermDaemon {
     return session;
   }
 
-  /** 세션이 스스로 끝났다 — 표에서 뺀다. kill 로 지운 세션은 이미 표에 없다. */
+  /**
+   * 세션이 스스로 끝났다. ★매니페스트에서 지우는 것은 «신호 없이» 끝났을 때만이다 — 신호로 끝난 세션(재부팅·로그아웃 때
+   * 시스템이 보낸 SIGTERM·SIGHUP 포함)은 `restore` 가 다시 띄울 수 있게 남긴다. kill 로 지운 세션은 이미 표에 없다.
+   */
   private sessionEnded(session: TermSession, exitCode: number, signal: number): void {
-    if (this.sessions.get(session.name) === session) {
+    const current = this.sessions.get(session.name) === session;
+    const kept = current && signal !== 0;
+    if (current) {
       this.sessions.delete(session.name);
+      if (!kept) {
+        this.updateManifest((entries) => entries.filter((item) => item.name !== session.name));
+      }
     }
-    this.log.write({ event: "session_exit", name: session.name, pid: session.info().pid, exitCode, signal, kept: false });
+    this.log.write({ event: "session_exit", name: session.name, pid: session.info().pid, exitCode, signal, kept });
     this.idleCheck();
+  }
+
+  private async restore(env: Record<string, string>): Promise<{ restored: string[]; running: string[]; failed: { name: string; code: string; message: string }[] }> {
+    const restored: string[] = [];
+    const running: string[] = [];
+    const failed: { name: string; code: string; message: string }[] = [];
+    for (const entry of this.manifest) {
+      if (this.sessions.has(entry.name)) {
+        running.push(entry.name);
+        continue;
+      }
+      try {
+        await this.startSession(entry, env);
+        restored.push(entry.name);
+      } catch (error) {
+        failed.push({ name: entry.name, code: errorCode(error), message: errorMessage(error) });
+      }
+    }
+    return { restored, running, failed };
+  }
+
+  /** 매니페스트는 데몬 하나만 쓴다 — 쓰기를 한 줄로 세운다. */
+  private updateManifest(change: (entries: ManifestEntry[]) => ManifestEntry[]): void {
+    this.manifest = change(this.manifest);
+    const snapshot = this.manifest;
+    this.manifestWrite = this.manifestWrite
+      .then(() => writeManifest(this.paths.manifest, snapshot))
+      .catch((error) => this.log.write({ event: "manifest_error", message: errorMessage(error) }));
   }
 
   private idleCheck(): void {

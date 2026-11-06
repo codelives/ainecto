@@ -1,7 +1,7 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import headless from "@xterm/headless";
@@ -141,7 +141,7 @@ describe("ainecto term — real daemon and PTY", () => {
     await assertLogPairs();
   }, LONG);
 
-  it("wait fails with a code on timeout and when the session ends", async () => {
+  it("wait fails with a code on timeout and when the session ends; a normal exit leaves the manifest", async () => {
     await ok("term", "new", "w", "--", "/bin/sh");
     const timeout = await json("term", "wait", "w", "--match", "NEVER", "--timeout", "1");
     expect(timeout).toMatchObject({ ok: false, error: { code: "TERM_WAIT_TIMEOUT" } });
@@ -153,6 +153,8 @@ describe("ainecto term — real daemon and PTY", () => {
     const ended = await waiting;
     expect(ended.code).toBe(1);
     expect(JSON.parse(ended.stderr)).toMatchObject({ error: { code: "TERM_SESSION_ENDED" } });
+    const manifest = JSON.parse(await readFile(join(rig.home, ".ainecto/term/sessions.json"), "utf8")) as { sessions: unknown[] };
+    expect(manifest.sessions).toEqual([]);
   }, LONG);
 
   it("send --paste and cursor keys follow the modes the app turned on", async () => {
@@ -232,6 +234,39 @@ describe("ainecto term — real daemon and PTY", () => {
       previous = next;
     }
     await assertLogPairs();
+  }, LONG);
+
+  it("after the daemon is killed, restore starts the sessions again with the same name, cwd and command", async () => {
+    const work = join(rig.home, "work");
+    await mkdir(work);
+    await ok("term", "new", "r1", "--cwd", work, "--", "/bin/sh");
+    // HUP 을 무시하는 자식 — 데몬이 죽어도 산다. 잠금 fd 를 물려받았다면 새 데몬이 영영 못 뜬다.
+    await ok("term", "new", "r2", "--", "/bin/sh", "-c", "trap '' HUP; while :; do sleep 1; done");
+    const before = await sessions();
+    const survivor = before.find((session) => session.name === "r2")?.pid ?? 0;
+    for (const pid of daemonPids()) {
+      process.kill(pid, "SIGKILL");
+    }
+    await until(() => daemonPids().length === 0, "daemon killed");
+    expect(await ok("term", "ls")).toBe("No term sessions.\n");
+
+    try {
+      const restored = await json("term", "restore");
+      expect(restored).toMatchObject({ ok: true, data: { restored: ["r1", "r2"], running: [], failed: [] } });
+      const after = await sessions();
+      expect(after.map(({ name, cwd, command }) => ({ name, cwd, command })).sort((x, y) => x.name.localeCompare(y.name)))
+        .toEqual(before.map(({ name, cwd, command }) => ({ name, cwd, command })).sort((x, y) => x.name.localeCompare(y.name)));
+      await ok("term", "send", "r1", 'echo "$AINECTO_TERM_SESSION in $(pwd)"');
+      await ok("term", "key", "r1", "enter");
+      await ok("term", "wait", "r1", "--match", `^r1 in ${work}$`, "--timeout", "10");
+      expect(await json("term", "restore")).toMatchObject({ data: { restored: [], running: ["r1", "r2"] } });
+    } finally {
+      try {
+        process.kill(survivor, "SIGKILL");
+      } catch {
+        // 이미 끝났다.
+      }
+    }
   }, LONG);
 
   it("attach shows the screen so far, types into the session, follows the attacher's size and detaches on Ctrl-\\ d", async () => {
