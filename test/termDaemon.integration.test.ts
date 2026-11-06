@@ -1,128 +1,29 @@
-import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import headless from "@xterm/headless";
-import * as nodePty from "node-pty";
+import { mkdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "../src/core/term/limits";
+import {
+  assertLogPairs,
+  attachInPty,
+  cli,
+  daemonPids,
+  exited,
+  json,
+  LONG,
+  ok,
+  rig,
+  ROOT,
+  screen,
+  sessions,
+  sleep,
+  TSX,
+  until,
+  useTermRig,
+} from "./termRig";
 
-/**
- * `ainecto term` 실물 시험 — 진짜 CLI 프로세스·진짜 데몬·진짜 PTY. 가짜·호출 횟수 세기 없음.
- * 시험마다 HOME 을 새로 만들어 데몬·소켓·매니페스트가 섞이지 않는다.
- * CLI 는 tsx 로 소스를 바로 돌린다(빌드 전에도 돈다). `--conditions=<표지>` 는 아무 일도 하지 않는 Node 실행 인자로,
- * 데몬이 같은 실행 인자로 떠서 `ps` 에 표지가 보인다 — 이 시험의 데몬만 센다.
- */
-const ROOT = resolve(__dirname, "..");
-const ENTRY = join(ROOT, "src/bin/ainecto.ts");
-const TSX = execFileSync(process.execPath, ["--input-type=module", "-e", "console.log(import.meta.resolve('tsx'))"], { cwd: ROOT, encoding: "utf8" }).trim();
-const LONG = 60_000;
-
-interface Rig {
-  home: string;
-  marker: string;
-  env: NodeJS.ProcessEnv;
-  nodeArgs: string[];
-}
-
-interface Run {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-let rig: Rig;
-
-beforeEach(async () => {
-  // 실제 경로로 — 맥의 /var 는 /private/var 의 링크라 CLI 가 보고하는 cwd 와 글자가 다르다.
-  const home = await realpath(await mkdtemp(join(tmpdir(), "aterm-")));
-  const marker = `aterm-${randomUUID().slice(0, 8)}`;
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
-  delete env.AINECTO_TERM_SESSION;
-  rig = { home, marker, env, nodeArgs: ["--import", TSX, `--conditions=${marker}`, ENTRY] };
-});
-
-afterEach(async () => {
-  for (const pid of daemonPids()) {
-    process.kill(pid, "SIGKILL");
-  }
-  await until(() => daemonPids().length === 0, "daemons gone");
-  await rm(rig.home, { recursive: true, force: true });
-});
-
-function cli(...args: string[]): Promise<Run> {
-  return new Promise((done) => {
-    execFile(process.execPath, [...rig.nodeArgs, ...args], { env: rig.env, cwd: rig.home }, (error, stdout, stderr) => {
-      const code = error && typeof error.code === "number" ? error.code : 0;
-      done({ code, stdout, stderr });
-    });
-  });
-}
-
-async function ok(...args: string[]): Promise<string> {
-  const run = await cli(...args);
-  expect(run.stderr, `ainecto ${args.join(" ")}`).toBe("");
-  expect(run.code, `ainecto ${args.join(" ")}`).toBe(0);
-  return run.stdout;
-}
-
-async function json(...args: string[]): Promise<Record<string, unknown>> {
-  const run = await cli(...args, "--json");
-  return JSON.parse(run.code === 0 ? run.stdout : run.stderr) as Record<string, unknown>;
-}
-
-async function sessions(): Promise<{ name: string; pid: number; cwd: string; command: string[] | null; clients: number; cols: number; rows: number }[]> {
-  const result = await json("term", "ls");
-  return (result.data as { sessions: never[] }).sessions;
-}
-
-async function screen(name: string): Promise<string[]> {
-  const result = await json("term", "read", name);
-  return (result.data as { lines: string[] }).lines;
-}
-
-/** 이 시험의 데몬 pid — 실행 인자에 표지와 `term daemon` 이 있는 프로세스. */
-function daemonPids(): number[] {
-  const table = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
-  return table.split("\n")
-    .filter((line) => line.includes(rig.marker) && line.includes("term daemon"))
-    .map((line) => Number(line.trim().split(/\s+/)[0]));
-}
-
-async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    if (await check()) {
-      return;
-    }
-    await sleep(50);
-  }
-  throw new Error(`timed out waiting for: ${what}`);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((done) => setTimeout(done, ms));
-}
-
-function exited(child: ChildProcess): Promise<number | null> {
-  return new Promise((done) => {
-    if (child.exitCode !== null) {
-      done(child.exitCode);
-      return;
-    }
-    child.once("exit", (code) => done(code));
-  });
-}
-
-/** daemon.log — 요청마다 같은 id 의 응답 줄이 있다(설계 7 ⑤). */
-async function assertLogPairs(): Promise<void> {
-  const records = (await readFile(join(rig.home, ".ainecto/term/daemon.log"), "utf8"))
-    .trim().split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as { event: string; id?: string });
-  const requests = records.filter((record) => record.event === "request").map((record) => record.id);
-  const responses = new Set(records.filter((record) => record.event === "response").map((record) => record.id));
-  expect(requests.length).toBeGreaterThan(0);
-  expect(requests.filter((id) => !responses.has(id))).toEqual([]);
-}
+/** `ainecto term` 실물 시험 — 진짜 CLI 프로세스·진짜 데몬·진짜 PTY(틀은 termRig.ts). */
+useTermRig();
 
 describe("ainecto term — real daemon and PTY", () => {
   it("new · send · key · wait · read · ls · kill, and the daemon leaves with the last session", async () => {
@@ -335,34 +236,3 @@ describe("ainecto term — real daemon and PTY", () => {
     expect(outer.raw()).toContain("[alt exited (code 0)]");
   }, LONG);
 });
-
-/** 사람이 쓰는 터미널 대신 진짜 PTY 안에서 `term attach` 를 돌리고, 그 화면을 헤드리스 터미널로 본다. */
-function attachInPty(name: string, cols: number, rows: number) {
-  const view = new headless.Terminal({ cols, rows, allowProposedApi: true });
-  let raw = "";
-  const pty = nodePty.spawn(process.execPath, [...rig.nodeArgs, "term", "attach", name], {
-    cols,
-    rows,
-    cwd: rig.home,
-    env: Object.fromEntries(Object.entries(rig.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
-  });
-  pty.onData((data) => {
-    raw += data;
-    view.write(data);
-  });
-  const exit = new Promise<number>((done) => pty.onExit(({ exitCode }) => done(exitCode)));
-  return {
-    pty,
-    exit,
-    raw: () => raw,
-    bufferType: () => view.buffer.active.type,
-    text: () => {
-      const buffer = view.buffer.active;
-      const lines: string[] = [];
-      for (let index = 0; index < buffer.length; index += 1) {
-        lines.push(buffer.getLine(index)?.translateToString(true) ?? "");
-      }
-      return lines.join("\n");
-    },
-  };
-}
