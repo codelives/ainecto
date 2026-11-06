@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile, chmod } from "node:fs/promises";
+import { chmodIfPermissive, isNodeError } from "../fs/privateFiles";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -109,22 +110,4 @@ export async function tokenStoreDirectoryPermissions(path: string): Promise<{ mo
 
 export async function removeTokenStoreForTests(path: string): Promise<void> {
   await rm(dirname(path), { recursive: true, force: true });
-}
-
-function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === code;
-}
-
-async function chmodIfPermissive(path: string, mode: number): Promise<void> {
-  try {
-    const result = await stat(path);
-    if ((result.mode & 0o077) !== 0) {
-      await chmod(path, mode);
-    }
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) {
-      return;
-    }
-    throw error;
-  }
 }
