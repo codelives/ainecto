@@ -15,6 +15,7 @@ import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands
 import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
+import { executeTermCommand, TERM_HELP_LINES } from "./termCommand";
 import { systemCommandRunner } from "../../core/setup/commandRunner";
 import { homedir } from "node:os";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
@@ -38,6 +39,10 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     if (parsed.help || parsed.positionals.length === 0) {
       io.stdout.write(helpText());
       return 0;
+    }
+    // ★term 은 이 기기 안의 터미널 다중화다 — 서버·로그인·에이전트 이름을 쓰지 않는다(KAN-738 1단계).
+    if (parsed.positionals[0] === "term") {
+      return await executeTermCommand({ argv: parsed.positionals.slice(1), json: parsed.json, io });
     }
 
     const resolved = resolveEndpoint({ env: parsed.env, endpoint: parsed.endpoint });
@@ -326,6 +331,11 @@ function parseGlobalArgs(argv: string[]): GlobalArgs {
     if (!arg) {
       continue;
     }
+    if (arg === "--") {
+      // ★`--` 뒤는 하위 명령의 몫이다 — `term new x -- claude --version` 의 --version 을 여기서 먹으면 CLI 판이 찍힌다.
+      result.positionals.push(...argv.slice(index));
+      break;
+    }
     if (arg === "--env") {
       result.env = assertEnv(requireValue(arg, argv[++index]));
     } else if (arg === "--endpoint") {
@@ -426,6 +436,9 @@ function helpText(): string {
     "  ainecto init [--mcp] [--local] [--dry-run] [--json]   AiNecto rules for this repository (--mcp also writes .mcp.json and .cursor/mcp.json with the server address; --local writes the local relay instead)",
     "  ainecto init --agent NAME                             name the agent working in this folder: writes .ainecto/agent.local (do not commit it) and puts the name in .mcp.json, .cursor/mcp.json and .codex/config.toml",
     "  ainecto init --undo",
+    "",
+    "Terminal sessions on this machine (no tmux or cmux needed; macOS and Linux):",
+    ...TERM_HELP_LINES,
     "",
   ].join("\n");
 }

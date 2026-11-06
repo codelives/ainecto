@@ -1,0 +1,297 @@
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import headless from "@xterm/headless";
+import * as nodePty from "node-pty";
+
+/**
+ * `ainecto term` 실물 시험 — 진짜 CLI 프로세스·진짜 데몬·진짜 PTY. 가짜·호출 횟수 세기 없음.
+ * 시험마다 HOME 을 새로 만들어 데몬·소켓·매니페스트가 섞이지 않는다.
+ * CLI 는 tsx 로 소스를 바로 돌린다(빌드 전에도 돈다). `--conditions=<표지>` 는 아무 일도 하지 않는 Node 실행 인자로,
+ * 데몬이 같은 실행 인자로 떠서 `ps` 에 표지가 보인다 — 이 시험의 데몬만 센다.
+ */
+const ROOT = resolve(__dirname, "..");
+const ENTRY = join(ROOT, "src/bin/ainecto.ts");
+const TSX = execFileSync(process.execPath, ["--input-type=module", "-e", "console.log(import.meta.resolve('tsx'))"], { cwd: ROOT, encoding: "utf8" }).trim();
+const LONG = 60_000;
+
+interface Rig {
+  home: string;
+  marker: string;
+  env: NodeJS.ProcessEnv;
+  nodeArgs: string[];
+}
+
+interface Run {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+let rig: Rig;
+
+beforeEach(async () => {
+  // 실제 경로로 — 맥의 /var 는 /private/var 의 링크라 CLI 가 보고하는 cwd 와 글자가 다르다.
+  const home = await realpath(await mkdtemp(join(tmpdir(), "aterm-")));
+  const marker = `aterm-${randomUUID().slice(0, 8)}`;
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  delete env.AINECTO_TERM_SESSION;
+  rig = { home, marker, env, nodeArgs: ["--import", TSX, `--conditions=${marker}`, ENTRY] };
+});
+
+afterEach(async () => {
+  for (const pid of daemonPids()) {
+    process.kill(pid, "SIGKILL");
+  }
+  await until(() => daemonPids().length === 0, "daemons gone");
+  await rm(rig.home, { recursive: true, force: true });
+});
+
+function cli(...args: string[]): Promise<Run> {
+  return new Promise((done) => {
+    execFile(process.execPath, [...rig.nodeArgs, ...args], { env: rig.env, cwd: rig.home }, (error, stdout, stderr) => {
+      const code = error && typeof error.code === "number" ? error.code : 0;
+      done({ code, stdout, stderr });
+    });
+  });
+}
+
+async function ok(...args: string[]): Promise<string> {
+  const run = await cli(...args);
+  expect(run.stderr, `ainecto ${args.join(" ")}`).toBe("");
+  expect(run.code, `ainecto ${args.join(" ")}`).toBe(0);
+  return run.stdout;
+}
+
+async function json(...args: string[]): Promise<Record<string, unknown>> {
+  const run = await cli(...args, "--json");
+  return JSON.parse(run.code === 0 ? run.stdout : run.stderr) as Record<string, unknown>;
+}
+
+async function sessions(): Promise<{ name: string; pid: number; cwd: string; command: string[] | null; clients: number; cols: number; rows: number }[]> {
+  const result = await json("term", "ls");
+  return (result.data as { sessions: never[] }).sessions;
+}
+
+async function screen(name: string): Promise<string[]> {
+  const result = await json("term", "read", name);
+  return (result.data as { lines: string[] }).lines;
+}
+
+/** 이 시험의 데몬 pid — 실행 인자에 표지와 `term daemon` 이 있는 프로세스. */
+function daemonPids(): number[] {
+  const table = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  return table.split("\n")
+    .filter((line) => line.includes(rig.marker) && line.includes("term daemon"))
+    .map((line) => Number(line.trim().split(/\s+/)[0]));
+}
+
+async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (await check()) {
+      return;
+    }
+    await sleep(50);
+  }
+  throw new Error(`timed out waiting for: ${what}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((done) => setTimeout(done, ms));
+}
+
+function exited(child: ChildProcess): Promise<number | null> {
+  return new Promise((done) => {
+    if (child.exitCode !== null) {
+      done(child.exitCode);
+      return;
+    }
+    child.once("exit", (code) => done(code));
+  });
+}
+
+/** daemon.log — 요청마다 같은 id 의 응답 줄이 있다(설계 7 ⑤). */
+async function assertLogPairs(): Promise<void> {
+  const records = (await readFile(join(rig.home, ".ainecto/term/daemon.log"), "utf8"))
+    .trim().split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as { event: string; id?: string });
+  const requests = records.filter((record) => record.event === "request").map((record) => record.id);
+  const responses = new Set(records.filter((record) => record.event === "response").map((record) => record.id));
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.filter((id) => !responses.has(id))).toEqual([]);
+}
+
+describe("ainecto term — real daemon and PTY", () => {
+  it("new · send · key · wait · read · ls · kill, and the daemon leaves with the last session", async () => {
+    await ok("term", "new", "s1", "--", "/bin/sh");
+    await ok("term", "send", "s1", 'printf "\\033[31m빨강\\033[0m %s\\n" "$AINECTO_TERM_SESSION"');
+    await ok("term", "key", "s1", "enter");
+    expect(await ok("term", "wait", "s1", "--match", "^빨강 s1$", "--timeout", "10")).toBe("빨강 s1\n");
+    expect(await screen("s1")).toContain("빨강 s1");
+    const [listed] = await sessions();
+    expect(listed).toMatchObject({ name: "s1", command: ["/bin/sh"], cwd: rig.home, clients: 0 });
+    expect(daemonPids()).toHaveLength(1);
+
+    await ok("term", "kill", "s1");
+    await until(() => daemonPids().length === 0, "daemon exits after the last session");
+    expect(existsSync(join(rig.home, ".ainecto/term/ctl.sock"))).toBe(false);
+    expect(await ok("term", "ls")).toBe("No term sessions.\n");
+    await assertLogPairs();
+  }, LONG);
+
+  it("wait fails with a code on timeout and when the session ends", async () => {
+    await ok("term", "new", "w", "--", "/bin/sh");
+    const timeout = await json("term", "wait", "w", "--match", "NEVER", "--timeout", "1");
+    expect(timeout).toMatchObject({ ok: false, error: { code: "TERM_WAIT_TIMEOUT" } });
+
+    const waiting = cli("term", "wait", "w", "--match", "NEVER", "--json");
+    await sleep(500);
+    await ok("term", "send", "w", "exit");
+    await ok("term", "key", "w", "enter");
+    const ended = await waiting;
+    expect(ended.code).toBe(1);
+    expect(JSON.parse(ended.stderr)).toMatchObject({ error: { code: "TERM_SESSION_ENDED" } });
+  }, LONG);
+
+  it("send --paste and cursor keys follow the modes the app turned on", async () => {
+    await ok("term", "new", "modes", "--", "/bin/sh", "-c", "printf '\\033[?2004h\\033[?1h'; stty -echo; exec cat -v");
+    await ok("term", "new", "plain", "--", "/bin/sh", "-c", "stty -echo; exec cat -v");
+    await sleep(300);
+    for (const name of ["modes", "plain"]) {
+      await ok("term", "send", name, "--paste", "hi");
+      await ok("term", "key", name, "up");
+      await ok("term", "key", name, "enter");
+    }
+    await ok("term", "wait", "modes", "--match", "hi", "--timeout", "10");
+    await ok("term", "wait", "plain", "--match", "hi", "--timeout", "10");
+    expect(await screen("modes")).toContain("^[[200~hi^[[201~^[OA");
+    expect(await screen("plain")).toContain("hi^[[A");
+  }, LONG);
+
+  it("a second daemon started by hand stops on the lock", async () => {
+    await ok("term", "new", "a", "--", "/bin/sh");
+    const second = await cli("term", "daemon");
+    expect(second.code).toBe(1);
+    expect(second.stderr).toContain("Another term daemon is already running.");
+    expect(daemonPids()).toHaveLength(1);
+  }, LONG);
+
+  it("five concurrent new commands end with one daemon and five sessions", async () => {
+    const runs = await Promise.all(["c1", "c2", "c3", "c4", "c5"].map((name) => cli("term", "new", name, "--", "/bin/sh")));
+    expect(runs.map((run) => [run.code, run.stderr])).toEqual(runs.map(() => [0, ""]));
+    expect((await sessions()).map((session) => session.name).sort()).toEqual(["c1", "c2", "c3", "c4", "c5"]);
+    expect(daemonPids()).toHaveLength(1);
+    await assertLogPairs();
+  }, LONG);
+
+  it("#67 order: a starter stopped before the lock wakes up later and leaves — still one daemon", async () => {
+    const starter = spawn(process.execPath, [...rig.nodeArgs, "term", "daemon"], { env: rig.env, cwd: rig.home, stdio: "ignore" });
+    process.kill(starter.pid ?? 0, "SIGSTOP");
+    // 멈춘 시점이 잠금 «전»이었는지 확인 — Node·tsx 가 뜨기 전이라 폴더도 아직 없다.
+    expect(existsSync(join(rig.home, ".ainecto/term/ctl.sock"))).toBe(false);
+
+    await ok("term", "new", "b", "--", "/bin/sh");
+    const winner = daemonPids().filter((pid) => pid !== starter.pid);
+    expect(winner).toHaveLength(1);
+
+    process.kill(starter.pid ?? 0, "SIGCONT");
+    expect(await exited(starter)).toBe(1);
+    expect(daemonPids()).toEqual(winner);
+    expect((await sessions()).map((session) => session.name)).toEqual(["b"]);
+  }, LONG);
+
+  it("while the daemon's event loop is stopped, another command waits and cleans nothing up", async () => {
+    await ok("term", "new", "c", "--", "/bin/sh");
+    const [daemon] = daemonPids();
+    process.kill(daemon ?? 0, "SIGSTOP");
+    let finished = false;
+    const listing = cli("term", "ls").then((run) => {
+      finished = true;
+      return run;
+    });
+    await sleep(1500);
+    expect(finished).toBe(false);
+    expect(daemonPids()).toEqual([daemon]);
+    expect(existsSync(join(rig.home, ".ainecto/term/ctl.sock"))).toBe(true);
+    process.kill(daemon ?? 0, "SIGCONT");
+    const run = await listing;
+    expect(run.code).toBe(0);
+    expect(run.stdout).toContain("c");
+  }, LONG);
+
+  it("the last kill racing a new: the new session lives, one daemon at a time", async () => {
+    let previous = "k0";
+    await ok("term", "new", previous, "--", "/bin/sh");
+    for (const next of ["k1", "k2", "k3", "k4"]) {
+      const [killed, started] = await Promise.all([cli("term", "kill", previous), cli("term", "new", next, "--", "/bin/sh")]);
+      expect([killed.code, killed.stderr, started.code, started.stderr]).toEqual([0, "", 0, ""]);
+      expect((await sessions()).map((session) => session.name)).toEqual([next]);
+      expect(daemonPids()).toHaveLength(1);
+      previous = next;
+    }
+    await assertLogPairs();
+  }, LONG);
+
+  it("attach shows the screen so far, types into the session, follows the attacher's size and detaches on Ctrl-\\ d", async () => {
+    await ok("term", "new", "t", "--", "/bin/sh");
+    await ok("term", "send", "t", "echo BEFORE-ATTACH");
+    await ok("term", "key", "t", "enter");
+    await ok("term", "wait", "t", "--match", "^BEFORE-ATTACH$", "--timeout", "10");
+
+    const outer = attachInPty("t", 100, 30);
+    await until(() => outer.text().includes("BEFORE-ATTACH"), "first screen in the attached terminal");
+    outer.pty.write("echo TYPED-IN-ATTACH\r");
+    await ok("term", "wait", "t", "--match", "^TYPED-IN-ATTACH$", "--timeout", "10");
+    expect(await sessions()).toMatchObject([{ name: "t", clients: 1, cols: 100, rows: 30 }]);
+
+    outer.pty.write("\x1c");
+    outer.pty.write("d");
+    expect(await outer.exit).toBe(0);
+    expect(outer.raw()).toContain("[detached from t]");
+    expect(await sessions()).toMatchObject([{ name: "t", clients: 0 }]);
+  }, LONG);
+
+  it("attach restores the user's terminal when the session app was on the alternate screen and the session ends", async () => {
+    await ok("term", "new", "alt", "--", "/bin/sh", "-c", "printf '\\033[?1049h\\033[2J\\033[HALT-SCREEN'; read line");
+    await ok("term", "wait", "alt", "--match", "ALT-SCREEN", "--timeout", "10");
+    const outer = attachInPty("alt", 80, 24);
+    await until(() => outer.text().includes("ALT-SCREEN") && outer.bufferType() === "alternate", "alternate screen in the attached terminal");
+    await ok("term", "key", "alt", "enter");
+    expect(await outer.exit).toBe(0);
+    await until(() => outer.bufferType() === "normal", "attached terminal back on the normal screen");
+    expect(outer.raw()).toContain("[alt exited (code 0)]");
+  }, LONG);
+});
+
+/** 사람이 쓰는 터미널 대신 진짜 PTY 안에서 `term attach` 를 돌리고, 그 화면을 헤드리스 터미널로 본다. */
+function attachInPty(name: string, cols: number, rows: number) {
+  const view = new headless.Terminal({ cols, rows, allowProposedApi: true });
+  let raw = "";
+  const pty = nodePty.spawn(process.execPath, [...rig.nodeArgs, "term", "attach", name], {
+    cols,
+    rows,
+    cwd: rig.home,
+    env: Object.fromEntries(Object.entries(rig.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+  });
+  pty.onData((data) => {
+    raw += data;
+    view.write(data);
+  });
+  const exit = new Promise<number>((done) => pty.onExit(({ exitCode }) => done(exitCode)));
+  return {
+    pty,
+    exit,
+    raw: () => raw,
+    bufferType: () => view.buffer.active.type,
+    text: () => {
+      const buffer = view.buffer.active;
+      const lines: string[] = [];
+      for (let index = 0; index < buffer.length; index += 1) {
+        lines.push(buffer.getLine(index)?.translateToString(true) ?? "");
+      }
+      return lines.join("\n");
+    },
+  };
+}
