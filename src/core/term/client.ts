@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
 import type { DaemonReadiness } from "./daemon";
 import { TermError } from "./errors";
+import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "./limits";
 import type { TermPaths } from "./paths";
 import {
   encodeLine,
@@ -20,8 +21,8 @@ import {
 
 /**
  * 제어 소켓 연결 하나. 요청마다 id 를 붙이고 같은 id 의 응답으로 푼다. 응답이 아닌 줄은 이벤트(attach·watch).
- * ★응답을 기다리는 시간 상한은 두지 않는다 — 설계 2-1 «데몬 응답 대기 시간»은 값이 결재되지 않았다.
- *   늦으면 기다릴 뿐이고, 아무것도 정리하지 않는다(소켓을 지우거나 새 데몬을 띄우지 않는다).
+ * ★요청 하나의 응답은 {@link DAEMON_RESPONSE_TIMEOUT_MS} 까지 기다리고, 넘으면 «데몬 응답 없음»으로 끝난다.
+ *   아무것도 정리하지 않는다(소켓을 지우거나 새 데몬을 띄우지 않는다 — 설계 2-1). 이벤트 흐름에는 상한이 없다.
  */
 export class TermClient {
   private readonly decoder = new LineDecoder();
@@ -29,7 +30,10 @@ export class TermClient {
   private eventHandler: (event: TermEvent) => void = () => undefined;
   private closeHandler: () => void = () => undefined;
 
-  private constructor(private readonly socket: Socket) {
+  private constructor(
+    private readonly socket: Socket,
+    private readonly paths: TermPaths,
+  ) {
     socket.on("data", (chunk: Buffer) => {
       for (const line of this.decoder.push(chunk)) {
         this.receive(line);
@@ -37,7 +41,7 @@ export class TermClient {
     });
     socket.on("close", () => {
       for (const { reject } of this.pending.values()) {
-        reject(new TermError("TERM_DAEMON_GONE", "The term daemon closed the connection before answering — see ~/.ainecto/term/daemon.log."));
+        reject(new TermError("TERM_DAEMON_GONE", `The term daemon closed the connection before answering — see ${paths.log}.`));
       }
       this.pending.clear();
       this.closeHandler();
@@ -46,12 +50,12 @@ export class TermClient {
     socket.on("error", () => undefined);
   }
 
-  static connect(socketPath: string): Promise<TermClient> {
+  static connect(paths: TermPaths): Promise<TermClient> {
     return new Promise((resolve, reject) => {
-      const socket = connect(socketPath);
+      const socket = connect(paths.socket);
       socket.once("connect", () => {
         socket.off("error", reject);
-        resolve(new TermClient(socket));
+        resolve(new TermClient(socket, paths));
       });
       socket.once("error", reject);
     });
@@ -60,7 +64,28 @@ export class TermClient {
   request(body: TermRequestBody): Promise<unknown> {
     const id = randomUUID();
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        const pid = daemonPid(this.paths);
+        reject(new TermError(
+          "TERM_DAEMON_NO_RESPONSE",
+          `The term daemon${pid ? ` (pid ${pid})` : ""} did not answer "${body.op}" within ${DAEMON_RESPONSE_TIMEOUT_MS / 1000} s. `
+            + "It may be stopped or busy; nothing was cleaned up. "
+            + `${pid ? `If it is stopped: kill -CONT ${pid}. If it hangs: kill ${pid}. ` : ""}See ${this.paths.log}.`,
+        ));
+        // ★우리 연결만 끊는다 — end() 는 멈춘 데몬이 끝을 받아 줄 때까지 연결을 붙잡아 명령이 끝나지 않는다.
+        this.socket.destroy();
+      }, DAEMON_RESPONSE_TIMEOUT_MS);
+      this.pending.set(id, {
+        resolve: (data) => {
+          clearTimeout(timer);
+          resolve(data);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
       const request: TermRequest = { ...body, id };
       this.socket.write(encodeLine(request));
     });
@@ -105,12 +130,13 @@ export class TermClient {
  * 데몬에 붙는다. 없으면(`start`) 띄우고 다시 붙는다(설계 2-1 «뜨는 때»).
  * ★클라이언트는 소켓 파일을 «절대» 지우지 않는다. `ENOENT`·`ECONNREFUSED` 면 데몬을 띄울 뿐이고, 그 데몬이
  *   잠금을 못 잡으면(다른 데몬이 살아 있거나 뜨는 중) 다시 붙어 본다. 하나만 뜨는 것은 잠금이 보장한다.
+ *   띄우기는 {@link DAEMON_START_ATTEMPTS} 번까지 — 잠금을 쥔 데몬이 bind 전에 멈춰 있으면 그 pid 를 알려 주고 끝난다.
  * `start` 가 false 면(ls·read 등) 데몬이 없을 때 undefined — 세션이 없다는 뜻이다.
  */
 export async function openTermClient(paths: TermPaths, options: { start: boolean }): Promise<TermClient | undefined> {
-  for (;;) {
+  for (let started = 0; ; started += 1) {
     try {
-      return await TermClient.connect(paths.socket);
+      return await TermClient.connect(paths);
     } catch (error) {
       if (!isNodeError(error, "ENOENT") && !isNodeError(error, "ECONNREFUSED") && !isNodeError(error, "ECONNRESET")) {
         throw error;
@@ -118,6 +144,9 @@ export async function openTermClient(paths: TermPaths, options: { start: boolean
       if (!options.start) {
         return undefined;
       }
+    }
+    if (started === DAEMON_START_ATTEMPTS) {
+      throw new TermError("TERM_DAEMON_START", notListening(paths));
     }
     await ensurePrivateDir(paths.dir);
     const readiness = await spawnDaemon(paths);
@@ -211,4 +240,34 @@ function parseReadiness(line: string): DaemonReadiness {
     }
   }
   return { status: "error", message: `unexpected readiness line: ${line}` };
+}
+
+/** daemon.json 의 pid — 안내용. 없거나 못 읽으면 undefined. */
+function daemonPid(paths: TermPaths): number | undefined {
+  try {
+    const value: unknown = JSON.parse(readFileSync(paths.daemonInfo, "utf8"));
+    const pid = value && typeof value === "object" && "pid" in value ? value.pid : undefined;
+    return typeof pid === "number" ? pid : undefined;
+  } catch {
+    // 안내 문장에 pid 를 못 넣을 뿐이다 — 오류 자체는 호출한 쪽이 낸다.
+    return undefined;
+  }
+}
+
+function notListening(paths: TermPaths): string {
+  const pid = daemonPid(paths);
+  const holder = pid !== undefined && isAlive(pid)
+    ? `Daemon pid ${pid} holds the lock but is not listening on ${paths.socket} — it may be stopped (kill -CONT ${pid}) or hung (kill ${pid}).`
+    : "No running daemon answered.";
+  return `Could not reach the term daemon after starting it ${DAEMON_START_ATTEMPTS} times. ${holder} See ${paths.log}.`;
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM = 살아 있지만 남의 프로세스(같은 사용자 폴더라 드물다).
+    return isNodeError(error, "EPERM");
+  }
 }

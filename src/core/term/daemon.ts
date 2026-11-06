@@ -33,20 +33,21 @@ export interface DaemonOptions {
  * 상주 프로세스 `ainecto term daemon`(설계 2-1). 반환값은 끝날 때의 종료 코드.
  *
  *   시작: ① 잠금을 비차단으로 잡는다 — 못 잡으면 다른 데몬이 살아 있으니 바로 끝낸다
- *         ② 잡은 쪽만 옛 ctl.sock 을 지우고 bind ③ pid 는 daemon.json 에 안내용으로만.
+ *         ② 잡은 쪽만 pid 를 daemon.json 에(안내용 — 판정에 쓰지 않는다) ③ 옛 ctl.sock 을 지우고 bind.
+ *         ★②를 bind «전에» 쓴다 — 잠금을 쥔 채 bind 전에 멈춘 데몬이 있으면 클라이언트가 그 pid 를 알려 줄 수 있다.
  *   끝: 세션 0개 + 연결 0개가 되면, 또는 kill-server·SIGTERM 이면. 리스너를 먼저 닫고, 그 뒤에 온 요청에는
  *       RETRY 를 답하고, 처리 중인 요청을 마친 뒤 자기 소켓을 지우고 끝난다. 잠금은 프로세스가 끝날 때 OS 가 푼다.
  */
 export async function runDaemon(options: DaemonOptions): Promise<number> {
   const { paths } = options;
   await ensurePrivateDir(paths.dir);
-  const log = new DaemonLog(paths.log);
-  const lock = await acquireDaemonLock(paths);
-  if (!lock.held) {
+  const log = new DaemonLog(paths.log, paths.previousLog);
+  if (!(await claimDaemon(paths, options.version))) {
     log.write({ event: "daemon_locked", pid: process.pid });
     options.ready({ status: "locked" });
     return 1;
   }
+  log.enableRotation();
   let manifest: ManifestEntry[];
   try {
     manifest = await readManifest(paths.manifest);
@@ -57,9 +58,6 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
   }
   const daemon = new TermDaemon(paths, log, manifest);
   await daemon.listen();
-  await writeFile(paths.daemonInfo, `${JSON.stringify({ pid: process.pid, version: options.version, startedAt: new Date().toISOString() })}\n`, {
-    mode: PRIVATE_FILE_MODE,
-  });
   log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: paths.socket });
   options.ready({ status: "ready" });
   process.on("SIGTERM", () => void daemon.shutdown("SIGTERM", false));
@@ -69,6 +67,21 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
     process.exit(1);
   });
   return await daemon.finished;
+}
+
+/**
+ * 데몬 자리를 차지한다 — 잠금을 잡고, 잡았으면 pid 를 daemon.json 에 쓴다. 못 잡으면 false.
+ * 데몬 시작의 ①②이고, 시험이 «잠금을 쥔 채 bind 전에 멈춘 데몬»을 같은 코드로 만든다.
+ */
+export async function claimDaemon(paths: TermPaths, version: string): Promise<boolean> {
+  const lock = await acquireDaemonLock(paths);
+  if (!lock.held) {
+    return false;
+  }
+  await writeFile(paths.daemonInfo, `${JSON.stringify({ pid: process.pid, version, startedAt: new Date().toISOString() })}\n`, {
+    mode: PRIVATE_FILE_MODE,
+  });
+  return true;
 }
 
 interface Handled {

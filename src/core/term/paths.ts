@@ -20,6 +20,8 @@ export interface TermPaths {
   manifest: string;
   /** 데몬 로그 — JSON 한 줄씩. */
   log: string;
+  /** 크기를 넘겨 밀려난 직전 로그 — 하나만 남는다. */
+  previousLog: string;
 }
 
 export function termPaths(home: string = homedir()): TermPaths {
@@ -34,5 +36,6 @@ export function termPaths(home: string = homedir()): TermPaths {
     daemonInfo: join(dir, "daemon.json"),
     manifest: join(dir, "sessions.json"),
     log: join(dir, "daemon.log"),
+    previousLog: join(dir, "daemon.log.1"),
   };
 }

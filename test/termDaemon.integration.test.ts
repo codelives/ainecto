@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import headless from "@xterm/headless";
 import * as nodePty from "node-pty";
+import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "../src/core/term/limits";
 
 /**
  * `ainecto term` 실물 시험 — 진짜 CLI 프로세스·진짜 데몬·진짜 PTY. 가짜·호출 횟수 세기 없음.
@@ -204,23 +205,58 @@ describe("ainecto term — real daemon and PTY", () => {
     expect((await sessions()).map((session) => session.name)).toEqual(["b"]);
   }, LONG);
 
-  it("while the daemon's event loop is stopped, another command waits and cleans nothing up", async () => {
+  it("while the daemon is stopped, a command gives up after 10 s with the daemon pid — and cleans nothing up", async () => {
     await ok("term", "new", "c", "--", "/bin/sh");
     const [daemon] = daemonPids();
     process.kill(daemon ?? 0, "SIGSTOP");
-    let finished = false;
-    const listing = cli("term", "ls").then((run) => {
-      finished = true;
-      return run;
-    });
-    await sleep(1500);
-    expect(finished).toBe(false);
-    expect(daemonPids()).toEqual([daemon]);
-    expect(existsSync(join(rig.home, ".ainecto/term/ctl.sock"))).toBe(true);
-    process.kill(daemon ?? 0, "SIGCONT");
-    const run = await listing;
-    expect(run.code).toBe(0);
-    expect(run.stdout).toContain("c");
+    try {
+      const startedAt = Date.now();
+      const run = await cli("term", "ls", "--json");
+      const elapsed = Date.now() - startedAt;
+      expect(run.code).toBe(1);
+      const error = (JSON.parse(run.stderr) as { error: { code: string; message: string } }).error;
+      expect(error.code).toBe("TERM_DAEMON_NO_RESPONSE");
+      expect(error.message).toContain(`pid ${daemon}`);
+      expect(elapsed).toBeGreaterThanOrEqual(DAEMON_RESPONSE_TIMEOUT_MS);
+      expect(elapsed).toBeLessThan(DAEMON_RESPONSE_TIMEOUT_MS + 5_000);
+      expect(daemonPids()).toEqual([daemon]);
+      expect(existsSync(join(rig.home, ".ainecto/term/ctl.sock"))).toBe(true);
+    } finally {
+      process.kill(daemon ?? 0, "SIGCONT");
+    }
+    expect((await sessions()).map((session) => session.name)).toEqual(["c"]);
+  }, LONG);
+
+  it("a daemon that holds the lock but never binds: new gives up after 3 starts and names its pid", async () => {
+    const holder = spawn(process.execPath, ["--import", TSX, "--input-type=module", "-e", [
+      `import { mkdirSync } from "node:fs";`,
+      `const { claimDaemon } = await import(${JSON.stringify(join(ROOT, "src/core/term/daemon.ts"))});`,
+      `const { termPaths } = await import(${JSON.stringify(join(ROOT, "src/core/term/paths.ts"))});`,
+      `const paths = termPaths(${JSON.stringify(rig.home)});`,
+      `mkdirSync(paths.dir, { recursive: true, mode: 0o700 });`,
+      `process.stdout.write((await claimDaemon(paths, "test")) ? "held\\n" : "locked\\n");`,
+      `process.stdin.resume();`,
+    ].join("\n")], { cwd: ROOT, stdio: ["pipe", "pipe", "inherit"] });
+    try {
+      const held = await new Promise<string>((done) => holder.stdout?.once("data", (chunk: Buffer) => done(chunk.toString("utf8").trim())));
+      expect(held).toBe("held");
+
+      const run = await cli("term", "new", "x", "--json", "--", "/bin/sh");
+      expect(run.code).toBe(1);
+      const error = (JSON.parse(run.stderr) as { error: { code: string; message: string } }).error;
+      expect(error.code).toBe("TERM_DAEMON_START");
+      expect(error.message).toContain(`pid ${holder.pid}`);
+      expect(error.message).toContain(`${DAEMON_START_ATTEMPTS} times`);
+      const locked = (await readFile(join(rig.home, ".ainecto/term/daemon.log"), "utf8"))
+        .split("\n").filter((line) => line.includes('"daemon_locked"'));
+      expect(locked).toHaveLength(DAEMON_START_ATTEMPTS);
+      expect(daemonPids()).toEqual([]);
+    } finally {
+      holder.kill("SIGKILL");
+      await exited(holder);
+    }
+    await ok("term", "new", "x", "--", "/bin/sh");
+    expect(daemonPids()).toHaveLength(1);
   }, LONG);
 
   it("the last kill racing a new: the new session lives, one daemon at a time", async () => {
