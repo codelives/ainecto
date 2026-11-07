@@ -1,3 +1,4 @@
+import { TERM_STRING_HOLD_MAX_CHARS } from "./limits";
 import { VtAction, VtState, vtStep, type VtActionValue, type VtStateValue } from "./vtParser";
 
 /**
@@ -14,6 +15,8 @@ import { VtAction, VtState, vtStep, type VtActionValue, type VtStateValue } from
  *   경계에서 이어진다. 이 파일이 정하는 것은 «끝난 시퀀스가 질의인가»뿐이다.
  *
  * 한 시퀀스는 파서가 GROUND 를 떠난 때부터 끝날 때까지 붙잡았다가 통째로 내보내거나(질의면) 뺀다.
+ * 단 쥔 글자가 TERM_STRING_HOLD_MAX_CHARS 를 넘으면(큰 이미지·클립보드 문자열 — 질의일 수 없는 길이) 앞부분을 내보내고
+ * 끝까지 쌓지 않고 흘린다. 그 사이 갈라져 붙은 새 독자는 앞부분이 없으므로 그 시퀀스의 남은 부분을 버린다(리뷰 #84 M1).
  * 시퀀스 중간에 파서가 «실행»하는 C0(BEL·CR·LF 등)은 바로 내보낸다 — 파서도 그 자리에서 실행하고 시퀀스를 이어 가므로
  * «C0 효과 → 나중 디스패치» 순서가 같다.
  */
@@ -23,8 +26,13 @@ export class QueryFilter {
   private held = "";
   /** 파서가 의미로 모은 글자 — 매개변수·중간 글자·끝 글자·OSC/DCS 본문. 질의 판정에 쓴다. */
   private meaning = "";
-  /** 방금 ESC 로 끝난 문자열을 통째로 뺐다 — 그 ESC 가 여는 `ESC \`(ST)도 뺀다. */
+  /** 방금 ESC 로 끝난 문자열을 통째로 뺐다(또는 꼬리를 버렸다) — 그 ESC 가 여는 `ESC \`(ST)도 뺀다. */
   private dropTerminator = false;
+  /**
+   * 지금 시퀀스가 상한을 넘었나(리뷰 #84 M1). none — 보통(끝날 때까지 쥔다) · pass — 앞부분은 이미 내보냈다, 끝까지
+   * 바로 흘린다 · skip — 앞부분을 못 받은 새 독자다, 끝 글자까지 버린다.
+   */
+  private overflow: Overflow = "none";
 
   /**
    * 같은 경계에서 시작하는 새 필터 — 지금까지의 출력을 직렬화 화면으로만 받은 새 독자(attach)용.
@@ -36,6 +44,7 @@ export class QueryFilter {
     fork.held = this.held;
     fork.meaning = this.meaning;
     fork.dropTerminator = this.dropTerminator;
+    fork.overflow = this.overflow === "none" ? "none" : "skip";
     return fork;
   }
 
@@ -75,9 +84,20 @@ export class QueryFilter {
       this.begin(char);
       return ended;
     }
+    if (this.overflow !== "none") {
+      return this.overflow === "pass" ? char : "";
+    }
     this.held += char;
     if (MEANINGFUL.has(action)) {
       this.meaning += char;
+    }
+    if (this.held.length > TERM_STRING_HOLD_MAX_CHARS) {
+      // 질의일 수 없는 길이 — 쥔 앞부분을 내보내고 이 시퀀스가 끝날 때까지 흘린다.
+      const head = this.held;
+      this.held = "";
+      this.meaning = "";
+      this.overflow = "pass";
+      return this.release(head);
     }
     return "";
   }
@@ -85,15 +105,23 @@ export class QueryFilter {
   private begin(char: string): void {
     this.held = char;
     this.meaning = "";
+    this.overflow = "none";
   }
 
   /** 끝난 시퀀스 — 질의면 빼거나(설정과 섞인 OSC 는 설정만 남겨) 그대로 내보낸다. */
   private complete(action: VtActionValue, terminator: string, strip: boolean): string {
+    if (this.overflow !== "none") {
+      return this.completeOverflow(terminator);
+    }
     const whole = this.held + terminator;
     const meaning = DISPATCHES.has(action) ? this.meaning + terminator : this.meaning;
     const held = this.held;
     this.held = "";
     this.meaning = "";
+    if (this.dropTerminator && action === VtAction.ESC_DISPATCH && meaning === "\\") {
+      // 통째로 뺀(또는 꼬리를 버린) 문자열을 닫던 ST — 앞이 없으니 누구에게도 보내지 않는다.
+      return this.release("");
+    }
     if (!strip || terminator === CAN || terminator === SUB) {
       // 비주인이 아니거나, 취소(CAN·SUB)로 끝나 디스패치되지 않은 시퀀스.
       return this.release(whole);
@@ -102,10 +130,6 @@ export class QueryFilter {
       case VtAction.CSI_DISPATCH:
         return this.release(isCsiQuery(meaning.slice(0, -1), meaning.slice(-1)) ? "" : whole);
       case VtAction.ESC_DISPATCH:
-        if (this.dropTerminator && meaning === "\\") {
-          // 통째로 뺀 문자열을 닫던 ST.
-          return this.release("");
-        }
         // ESC Z (DECID) 는 옛 장치 속성 질의다.
         return this.release(meaning === "Z" ? "" : whole);
       case VtAction.OSC_END: {
@@ -124,6 +148,18 @@ export class QueryFilter {
     }
   }
 
+  /** 상한을 넘은 시퀀스의 끝 — 흘리던 쪽은 끝 글자도 흘리고, 앞부분이 없는 새 독자는 끝 글자까지 버린다. */
+  private completeOverflow(terminator: string): string {
+    const skipped = this.overflow === "skip";
+    this.overflow = "none";
+    if (!skipped) {
+      return this.release(terminator);
+    }
+    // ESC 로 끝났으면(끝 글자 "") 그 ESC 가 여는 ST 도 버린다.
+    this.dropTerminator = terminator === "";
+    return "";
+  }
+
   /** ESC 로 끝난 문자열을 통째로 뺐으면 뒤따르는 ST 도 뺄 차례다. */
   private releaseString(text: string, terminator: string): string {
     this.dropTerminator = text === "" && terminator === "";
@@ -135,6 +171,9 @@ export class QueryFilter {
     return text;
   }
 }
+
+/** 상한을 넘은 시퀀스의 처리 — QueryFilter.overflow. */
+type Overflow = "none" | "pass" | "skip";
 
 const ESC = "\x1b";
 const CAN = "\x18";

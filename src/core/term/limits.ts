@@ -17,3 +17,12 @@ export const DAEMON_START_ATTEMPTS = 3;
 
 /** daemon.log 가 이 크기를 넘으면 daemon.log.1 하나만 남기고 새로 쓴다. */
 export const DAEMON_LOG_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * 질의 필터가 끝나지 않은 시퀀스 하나를 쥐고 있을 수 있는 최대 글자 수(JS 문자열 길이 — xterm.js 와 같은 단위).
+ * 넘으면 쥐고 있던 앞부분을 내보내고, 그 시퀀스가 끝날 때까지 나머지는 쌓지 않고 바로 흘려보낸다(질의 판정 안 함 —
+ * 질의는 이보다 훨씬 짧다). 그 사이 새로 붙은 독자는 앞부분이 없으므로 남은 꼬리를 버린다(리뷰 #84 M1,
+ * 사용자 확인 2026-11-07 «1MB·넘으면 흘려보냄»). 참고 — xterm.js 6.0.0 PAYLOAD_LIMIT 10,000,000 · tmux 기본
+ * input-buffer-size 1,048,576 바이트(둘 다 넘으면 버린다; 우리는 중계라 버리지 않는다).
+ */
+export const TERM_STRING_HOLD_MAX_CHARS = 1_048_576;

@@ -3,6 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { openTermClient, type TermClient } from "../src/core/term/client";
+import { TERM_STRING_HOLD_MAX_CHARS } from "../src/core/term/limits";
 import { termPaths } from "../src/core/term/paths";
 import { attachInPty, cli, daemonPids, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
@@ -430,3 +431,49 @@ describe("ainecto term — review #83 B1: a new attach between the two halves of
   });
 });
 
+/** 상한을 넘는 OSC 52(클립보드 설정)를 끝 없이 낸 뒤(`head<n>`), 나중에 꼬리·끝·표지 줄을 내는(`tail<n>`) 실제 프로그램(리뷰 #84 M1). */
+const OVER_LIMIT = TERM_STRING_HOLD_MAX_CHARS + 1000;
+const BIG_PROBE = [
+  "process.stdin.setRawMode(true);",
+  "let input = '';",
+  "process.stdin.on('data', (chunk) => {",
+  "  input += chunk.toString('latin1');",
+  "  let m;",
+  "  while ((m = /(head|tail)(\\d)/.exec(input))) {",
+  "    input = input.slice(m.index + m[0].length);",
+  `    if (m[1] === 'head') process.stdout.write('\\x1b]52;c;' + 'A'.repeat(${OVER_LIMIT}));`,
+  "    else process.stdout.write('TAILMARK\\x07\\r\\nAFTER-' + m[2] + '\\r\\n');",
+  "  }",
+  "});",
+].join("\n");
+
+describe("ainecto term — review #84 M1: a string longer than the hold limit", () => {
+  it("reaches the attached screen before it ends; an attach that joins after its head does not print its tail", async () => {
+    await ok("term", "new", "big", "--", process.execPath, "-e", BIG_PROBE);
+    await sleep(500);
+    const a = attachInPty("big", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 1, "A attached");
+    await sleep(300);
+
+    await ok("term", "send", "big", "head1");
+    const head = "\x1b]52;c;" + "A".repeat(OVER_LIMIT);
+    await until(() => a.raw().includes(head), "A got the unfinished string");
+
+    const b = attachInPty("big", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 2, "B attached");
+    await sleep(300);
+    await ok("term", "send", "big", "tail1");
+    await ok("term", "wait", "big", "--match", "^AFTER-1$", "--timeout", "10");
+    await sleep(300);
+
+    const read = await screen("big");
+    expect(a.raw()).toContain(head + "TAILMARK\x07");
+    expect(b.raw()).not.toContain("TAILMARK");
+    expect(b.raw()).not.toContain("AAAA");
+    for (const view of [a, b]) {
+      expect(visible(view.text(), 24)).toEqual(read);
+    }
+    a.pty.kill();
+    b.pty.kill();
+  }, LONG);
+});

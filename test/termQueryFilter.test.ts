@@ -1,3 +1,4 @@
+import { TERM_STRING_HOLD_MAX_CHARS } from "../src/core/term/limits";
 import { QueryFilter } from "../src/core/term/queryFilter";
 
 /** 질의 필터 — 질의만 빠지고 나머지 바이트는 한 글자도 바뀌지 않는다. 덩어리를 어디서 잘라도 결과가 같다. */
@@ -125,3 +126,49 @@ describe("term query filter — a reader that joins mid-stream (review #82 Q1)",
   });
 });
 
+describe("term query filter — a string longer than the hold limit (review #84 M1)", () => {
+  const LIMIT = TERM_STRING_HOLD_MAX_CHARS;
+  /** 앞부분까지 정확히 상한만큼 쥐게 되는 OSC 52(클립보드 설정 — 질의 아님) 머리와 본문. */
+  const OSC52 = "\x1b]52;c;";
+  const filled = (intro: string) => "A".repeat(LIMIT - intro.length);
+
+  for (const strip of [false, true]) {
+    it(`${strip ? "non-owner" : "owner"}: holds up to the limit, then lets the held head and every later chunk out at once`, () => {
+      const filter = new QueryFilter();
+      expect(filter.push(OSC52 + filled(OSC52), strip)).toBe("");
+      // 한 글자 넘는 순간 쥐고 있던 앞부분이 나간다 — 끝(BEL)을 기다리지 않는다.
+      expect(filter.push("B", strip)).toBe(OSC52 + filled(OSC52) + "B");
+      // 그 뒤는 쌓지 않는다 — 덩어리마다 바로 그대로 나간다(끝 글자까지).
+      expect(filter.push("CCC", strip)).toBe("CCC");
+      expect(filter.push("D\x07after", strip)).toBe("D\x07after");
+      // 끝난 뒤에는 다시 보통 필터 — 상한 아래 질의는 여전히 빠진다.
+      expect(filter.push("\x1b]11;?\x07x\x1b[6ny", strip)).toBe(strip ? "xy" : "\x1b]11;?\x07x\x1b[6ny");
+    });
+  }
+
+  it("lets a DCS (sixel) over the limit through the same way, ended by ESC \\", () => {
+    const intro = "\x1bPq";
+    const filter = new QueryFilter();
+    expect(filter.push(intro + filled(intro), true)).toBe("");
+    expect(filter.push("~~", true)).toBe(intro + filled(intro) + "~~");
+    expect(filter.push("-\x1b\\z", true)).toBe("-\x1b\\z");
+  });
+
+  it("a reader that joins after the head went out drops the rest of that string — tail and terminator — then reads normally", () => {
+    for (const end of ["\x07", "\x1b\\"]) {
+      for (const strip of [false, true]) {
+        const stream = new QueryFilter();
+        stream.push(OSC52 + filled(OSC52) + "B", false);
+        const late = stream.forkForNewReader();
+        expect(late.push("TAIL" + end + "after\x1b[6n", strip), JSON.stringify({ end, strip })).toBe(strip ? "after" : "after\x1b[6n");
+        expect(stream.push("TAIL" + end + "after", false)).toBe("TAIL" + end + "after");
+      }
+    }
+  });
+
+  it("a string under the limit is still held whole and judged — a long query is still dropped", () => {
+    const query = "\x1b]4;" + Array.from({ length: 256 }, (_, slot) => `${slot};?`).join(";") + "\x07";
+    expect(query.length).toBeLessThan(LIMIT);
+    expect(new QueryFilter().push(`a${query}b`, true)).toBe("ab");
+  });
+});
