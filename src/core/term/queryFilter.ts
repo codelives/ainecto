@@ -160,8 +160,9 @@ const WINDOW_REPORTS = new Set(["11", "13", "14", "15", "16", "18", "19", "20", 
 function isCsiQuery(params: string, final: string): boolean {
   switch (final) {
     case "n":
-      // DSR — 장치 상태·커서 위치 등 «보고하라»뿐이다.
-      return true;
+      // DSR(CSI Ps n) · DEC DSR(CSI ? Ps n) 만 «보고하라»다 — xterm.js 6 InputHandler 도 이 두 꼴만 DSR 로 받는다.
+      // CSI > Ps n 은 XTerm 의 «키 수정자 옵션 끄기»(modifyOtherKeys 등) — 설정이라 모든 화면에 가야 한다(리뷰 #84 Q1).
+      return /^\??[\d;:]*$/.test(params);
     case "c":
       // DA1(CSI c, CSI 0 c) · DA2(CSI > c) · DA3(CSI = c).
       return /^[>=]?0?$/.test(params);

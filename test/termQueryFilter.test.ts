@@ -45,6 +45,15 @@ describe("term query filter", () => {
     }
   });
 
+  it("keeps CSI > Ps n — it turns a key modifier option off, it does not ask (review #84 Q1)", () => {
+    // modifyOtherKeys 켜기(CSI > 4 ; 2 m) → 질의(CSI 6 n) → 끄기(CSI > 4 n): 비주인에게서 질의만 빠진다.
+    expect(strip("a\x1b[>4;2mb\x1b[6nc\x1b[>4nd")).toBe("a\x1b[>4;2mbc\x1b[>4nd");
+    for (const reset of ["\x1b[>n", "\x1b[>0n", "\x1b[>1n", "\x1b[>2n", "\x1b[>4n"]) {
+      expect(strip(`a${reset}b`), JSON.stringify(reset)).toBe(`a${reset}b`);
+      expect(strip(`a${reset}b`, [3]), JSON.stringify(reset)).toBe(`a${reset}b`);
+    }
+  });
+
   it("gives the same result wherever the chunks are cut", () => {
     const input = "x\x1b[6ny\x1b]11;?\x1b\\z\x1b[31mr\x1b]0;t\x07w";
     const expected = "xyz\x1b[31mr\x1b]0;t\x07w";

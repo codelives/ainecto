@@ -201,6 +201,32 @@ const SPLIT_PROBE = [
   "});",
 ].join("\n");
 
+/**
+ * modifyOtherKeys 를 켜고(CSI > 4 ; 2 m) 커서 위치를 묻고(CSI 6 n) 다시 끄는(CSI > 4 n) 실제 프로그램(리뷰 #84 Q1).
+ * 표준입력 `keys<n>` → 셋을 내고 1.5초 동안 받은 커서 위치 답 수를 `KEYS-<n>=<수>` 로.
+ */
+const MODKEYS_PROBE = [
+  "process.stdin.setRawMode(true);",
+  "let input = ''; let counting = null;",
+  "process.stdin.on('data', (chunk) => {",
+  "  const text = chunk.toString('latin1');",
+  "  if (counting) counting.seen += text;",
+  "  input += text;",
+  "  let m;",
+  "  while ((m = /keys(\\d)/.exec(input))) {",
+  "    input = input.slice(m.index + m[0].length);",
+  "    const n = m[1];",
+  "    counting = { seen: '' };",
+  "    process.stdout.write('\\x1b[>4;2m\\x1b[6n\\x1b[>4n');",
+  "    setTimeout(() => {",
+  "      const count = (counting.seen.match(/\\x1b\\[\\d+;\\d+R/g) || []).length;",
+  "      counting = null;",
+  "      process.stdout.write('\\r\\nKEYS-' + n + '=' + count + '\\r\\n');",
+  "    }, 1500);",
+  "  }",
+  "});",
+].join("\n");
+
 async function probeCount(name: string, label: string, round: number): Promise<number> {
   await ok("term", "wait", name, "--match", `^${label}-${round}=`, "--timeout", "10");
   const line = (await screen(name)).find((text) => text.startsWith(`${label}-${round}=`)) ?? "";
@@ -263,6 +289,27 @@ describe("ainecto term — review #82 follow-ups", () => {
     expect(await probeCount("palette", "OSC", 3)).toBe(1);
     expect(a.palette().get(1)).toBe("rgb:ff/00/00");
     expect(b.palette().get(1)).toBe("rgb:ff/00/00");
+    a.pty.kill();
+    b.pty.kill();
+  }, LONG);
+
+  it("Q1 (review #84): every screen gets modifyOtherKeys on and off (CSI > 4 n); only the CPR query is kept from the non-owner", async () => {
+    await ok("term", "new", "modkeys", "--", process.execPath, "-e", MODKEYS_PROBE);
+    await sleep(500);
+    const a = attachInPty("modkeys", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 1, "A attached");
+    const b = attachInPty("modkeys", 80, 24);
+    await until(async () => (await sessions())[0]?.clients === 2, "B attached");
+    await sleep(300);
+    await ok("term", "send", "modkeys", "keys1");
+    expect(await probeCount("modkeys", "KEYS", 1)).toBe(1);
+    for (const view of [a, b]) {
+      expect(view.raw()).toContain("\x1b[>4;2m");
+      expect(view.raw()).toContain("\x1b[>4n");
+    }
+    // 주인(마지막에 붙은 B)만 질의를 받는다.
+    expect(b.raw()).toContain("\x1b[6n");
+    expect(a.raw()).not.toContain("\x1b[6n");
     a.pty.kill();
     b.pty.kill();
   }, LONG);
