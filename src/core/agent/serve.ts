@@ -3,6 +3,7 @@ import { ClaudeAgentProcess, type ClaudeSpawn, type TurnOutcome } from "./claude
 import { AgentCallError, type AgentHttp } from "./http";
 import { AGENT_TURN_TIMEOUT_MS, nextRetryDelay } from "./limits";
 import type { AgentLogRecord } from "./log";
+import { agentPromptText, type AgentTurnContext } from "./prompt";
 import { replyForOutcome, type AgentReply } from "./reply";
 import type { AgentSessionMap } from "./sessions";
 
@@ -10,6 +11,8 @@ export interface AgentOffer {
   turnUuid: string;
   conversationUuid: string;
   text: string;
+  /** 서버가 아는 맥락(대화의 프로젝트·열린 문서). */
+  context?: AgentTurnContext;
 }
 
 export interface ServeDeps {
@@ -132,7 +135,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     let reply: AgentReply | undefined;
     let failure: string | undefined;
     try {
-      outcome = await proc.runTurn(offer.text, deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
+      outcome = await proc.runTurn(agentPromptText(offer.text, offer.context), deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
       if (outcome.kind === "timeout") {
         await proc.stop();
       }
@@ -238,7 +241,12 @@ function offersIn(res: Record<string, unknown>): AgentOffer[] {
   return res.offers.flatMap((o) => {
     const offer = o as Record<string, unknown>;
     return typeof offer.turnUuid === "string" && typeof offer.conversationUuid === "string" && typeof offer.text === "string"
-      ? [{ turnUuid: offer.turnUuid, conversationUuid: offer.conversationUuid, text: offer.text }]
+      ? [{
+        turnUuid: offer.turnUuid,
+        conversationUuid: offer.conversationUuid,
+        text: offer.text,
+        context: offer.context && typeof offer.context === "object" ? (offer.context as AgentTurnContext) : undefined,
+      }]
       : [];
   });
 }

@@ -18,8 +18,8 @@ class FakeServer implements AgentHttp {
   private polls: Array<Record<string, unknown> | AgentCallError> = [];
   private waiting: (() => void) | undefined;
 
-  offer(turnUuid: string, conversationUuid: string, text: string): void {
-    this.push({ state: "OPEN", offers: [{ turnUuid, conversationUuid, text }] });
+  offer(turnUuid: string, conversationUuid: string, text: string, context?: Record<string, unknown>): void {
+    this.push({ state: "OPEN", offers: [{ turnUuid, conversationUuid, text, context }] });
   }
 
   push(response: Record<string, unknown> | AgentCallError): void {
@@ -130,6 +130,21 @@ describe("ainecto agent serve", () => {
     expect(records.filter((r) => r.event === "agent_response").map((r) => r.turnUuid)).toEqual(["t1", "t2"]);
     expect(result).toEqual({ exitCode: 0, reason: "signal" });
     expect(w.server.calls.at(-1)?.op).toBe("close");
+  });
+
+  it("★서버가 준 맥락(대화의 프로젝트·열린 문서)을 Claude stdin 한 줄 앞머리로 넣는다", async () => {
+    const w = startServe();
+    w.server.offer("t1", "conv-a", "이 프로젝트에 문서 만들어", {
+      project: { uuid: "p-1", name: "MCP 완주 테스트", workspaceUuid: "w-1", workspaceName: "라이언" },
+      openDocument: { uuid: "d".repeat(32), title: "원고", type: "markdown" },
+    });
+    const reply = await until(() => w.server.replies()[0]);
+    w.server.offer("t2", "conv-a", "맥락 없음");
+    const plain = await until(() => w.server.replies()[1]);
+    await finish(w);
+    // 가짜 claude 는 stdin 한 줄을 그대로 «got <글>» 로 돌려준다.
+    expect(String(reply.reply)).toContain('got [AiNecto context — "this project" / "this document" mean these] project «MCP 완주 테스트» (projectUuid p-1, workspace «라이언» w-1) · open document «원고» (documentUuid ' + "d".repeat(32) + ", markdown)\n\n이 프로젝트에 문서 만들어 #1");
+    expect(String(plain.reply)).toMatch(/^got 맥락 없음 #2/);
   });
 
   it("대화가 바뀌면 앞 프로세스를 내리고, 돌아오면 그 대화의 세션으로 --resume", async () => {
