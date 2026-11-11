@@ -27,7 +27,10 @@ export type DaemonLogRecord =
   | { event: "detach"; conn: number; name: string; reason: string }
   | { event: "manifest_error"; message: string };
 
-export class DaemonLog {
+/**
+ * JSON 한 줄 로그 — 레코드 모양만 다르고 쓰기·회전·권한은 한 벌이다(데몬 로그 · 원격 터미널 로그 `remote.log`).
+ */
+export class DaemonLog<R extends { event: string } = DaemonLogRecord> {
   private rotating = false;
 
   constructor(
@@ -42,7 +45,7 @@ export class DaemonLog {
     this.rotating = true;
   }
 
-  write(record: DaemonLogRecord): void {
+  write(record: R): void {
     const line = `${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`;
     try {
       if (this.rotating) {

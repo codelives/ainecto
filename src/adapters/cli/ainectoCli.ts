@@ -16,6 +16,7 @@ import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { executeTermCommand, TERM_HELP_LINES } from "./termCommand";
+import { AGENT_HELP_LINES, executeAgentServe, isAgentCommand } from "./agentCommand";
 import { systemCommandRunner } from "../../core/setup/commandRunner";
 import { homedir } from "node:os";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
@@ -156,6 +157,10 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         json: parsed.json,
         io,
       });
+    }
+
+    if (isAgentCommand(domain, action)) {
+      return await executeAgentServe({ endpoint: resolved.endpoint, auth: connect().auth, io });
     }
 
     if (domain === "auth") {
@@ -436,6 +441,9 @@ function helpText(): string {
     "  ainecto init [--mcp] [--local] [--dry-run] [--json]   AiNecto rules for this repository (--mcp also writes .mcp.json and .cursor/mcp.json with the server address; --local writes the local relay instead)",
     "  ainecto init --agent NAME                             name the agent working in this folder: writes .ainecto/agent.local (do not commit it) and puts the name in .mcp.json, .cursor/mcp.json and .codex/config.toml",
     "  ainecto init --undo",
+    "",
+    "Your PC agent (requests from AiNecto Chat, answered by Claude Code on this machine):",
+    ...AGENT_HELP_LINES,
     "",
     "Terminal sessions on this machine (no tmux or cmux needed; macOS and Linux):",
     ...TERM_HELP_LINES,
