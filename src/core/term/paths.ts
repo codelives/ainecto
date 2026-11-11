@@ -22,6 +22,9 @@ export interface TermPaths {
   log: string;
   /** 크기를 넘겨 밀려난 직전 로그 — 하나만 남는다. */
   previousLog: string;
+  /** 원격 터미널 브리지 로그(`term remote`) — JSON 한 줄씩, 데몬 로그와 같은 쓰기·회전. */
+  remoteLog: string;
+  previousRemoteLog: string;
 }
 
 export function termPaths(home: string = homedir()): TermPaths {
@@ -37,5 +40,7 @@ export function termPaths(home: string = homedir()): TermPaths {
     manifest: join(dir, "sessions.json"),
     log: join(dir, "daemon.log"),
     previousLog: join(dir, "daemon.log.1"),
+    remoteLog: join(dir, "remote.log"),
+    previousRemoteLog: join(dir, "remote.log.1"),
   };
 }
