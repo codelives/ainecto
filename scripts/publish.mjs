@@ -25,6 +25,10 @@
  * 사용:
  *   npm run release -- --otp=123456   # 실제 퍼블리시 (2FA 코드 필요)
  *   npm run release -- --dry-run      # 무엇이 나갈지만 확인
+ *   npm run release -- --tag=next --otp=123456   # 시험판 — 꼬리표 next 로(세 이름 모두). latest 는 그대로.
+ *
+ * ★시험판 판 번호(0.14.0-next.1 처럼 «-» 가 든 것)는 --tag 없이 올리지 않는다 — 꼬리표를 빼면 npm 이 latest 를
+ *   옮겨 기본 설치(`npx ainecto@latest`)가 시험판이 된다. --tag=latest 로 시험판을 올리는 것도 막는다.
  *
  * ★코드가 만료돼 중간에 끊기면 «새 코드로 그냥 다시» 돌리면 된다 — 이미 올라간 이름은 건너뛴다.
  */
@@ -45,9 +49,25 @@ const CLI_BIN = "ainecto";
 const dryRun = process.argv.includes("--dry-run");
 /** 2FA 일회용 코드. npm 은 publish 마다 요구하고 코드는 금방 만료된다. */
 const otpArg = process.argv.find((a) => a.startsWith("--otp="));
+/** 배포 꼬리표(dist-tag) — 없으면 npm 기본(latest). 세 이름 모두에 같은 값을 넘긴다. */
+const tagArg = process.argv.find((a) => a.startsWith("--tag="));
+const tag = tagArg?.slice("--tag=".length);
 const original = readFileSync(PKG, "utf8");
 const parsed = JSON.parse(original);
 const primaryName = parsed.name;
+
+if (tagArg !== undefined && !/^[a-z][a-z0-9-]*$/.test(tag)) {
+  console.error(`--tag 값 «${tag}» 이 꼬리표 모양이 아닙니다(예: --tag=next).`);
+  process.exit(1);
+}
+const prerelease = String(parsed.version).includes("-");
+if (prerelease && (tag === undefined || tag === "latest")) {
+  console.error(
+    `${parsed.version} 은 시험판입니다 — latest 가 아닌 꼬리표를 주세요(예: --tag=next).\n` +
+      "   꼬리표 없이 올리면 latest 가 이 판으로 옮겨 기본 설치가 시험판이 됩니다.",
+  );
+  process.exit(1);
+}
 
 // ★주 이름과 브리지 bin 을 강제한다. setup·init 이 쓰는 MCP 항목(`npx -y @ainecto/mcp@<판>`)과 MCP Registry 가
 //   npx 의 «범위 뗀 패키지 이름 = bin» 규칙으로 `mcp` 를 실행한다 — 이 둘이 어긋나면 모든 세션의 연결이 안 뜬다.
@@ -147,9 +167,10 @@ function publish(name, note = "") {
   }
   // ★--ignore-scripts: prepack 은 위에서 «한 번» 돌았고 dist 가 방금 만들어진 것임을 확인했다.
   const args = ["publish", "--access", "public", "--ignore-scripts"];
+  if (tag) args.push("--tag", tag);
   if (dryRun) args.push("--dry-run");
   if (otpArg) args.push(otpArg);
-  console.log(`\n▶ ${label}  (npm publish --access public --ignore-scripts${otpArg ? " --otp=******" : ""}${dryRun ? " --dry-run" : ""})`);
+  console.log(`\n▶ ${label}  (npm publish --access public --ignore-scripts${tag ? ` --tag ${tag}` : ""}${otpArg ? " --otp=******" : ""}${dryRun ? " --dry-run" : ""})`);
   execFileSync("npm", args, { cwd: ROOT, stdio: "inherit" });
 }
 
@@ -221,4 +242,6 @@ if (failure) {
   process.exit(1);
 }
 
-console.log(dryRun ? "\n(dry-run) 실제로 올리지 않았습니다." : `\n${RELEASES.length} 이름 모두 ${parsed.version} 을 퍼블리시했습니다.`);
+console.log(dryRun
+  ? `\n(dry-run) 실제로 올리지 않았습니다.${tag ? ` 꼬리표: ${tag}` : ""}`
+  : `\n${RELEASES.length} 이름 모두 ${parsed.version} 을 퍼블리시했습니다${tag ? ` — 꼬리표 ${tag}(latest 는 그대로)` : ""}.`);
