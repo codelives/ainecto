@@ -1,6 +1,7 @@
 // 시험용 «codex app-server» — 진짜 자식 프로세스, 줄 하나 = JSON-RPC 메시지 하나(실측 모양: jsonrpc 칸 없음).
 // 받은 인자를 FAKE_CODEX_ARGS_LOG 에 한 줄씩 남긴다. `--version` 은 한 줄 출력하고 끝난다.
-// account/read 는 FAKE_CODEX_ACCOUNT=none 이면 로그인 안 됨. thread/resume 의 threadId 가 "thr-gone" 이면 오류.
+// account/read 는 FAKE_CODEX_ACCOUNT=none 이면 로그인 안 됨. config/read 는 사용자 설정의 MCP 서버 셋(ainecto·node_repl·openaiDeveloperDocs)을 돌려주고,
+// thread/start·resume 은 config 칸에서 `mcp_servers.<이름>.enabled=false` 로 끄지 않은 서버만 띄운다(startupStatus). thread/resume 의 threadId 가 "thr-gone" 이면 오류.
 // turn/start 의 글로 동작을 고른다:
 //   "write-card" → 읽기 하나 · 만들기(created) · 고치기 · 칸반 카드 · 다른 MCP 서버 도구 결과 뒤 답
 //   "approval"   → 우리에게 mcpServer/elicitation/request 를 묻고, 받은 답을 그대로 답 글에 싣는다
@@ -34,6 +35,14 @@ const complete = (turnId, status, text, error = null) => {
   out({ method: "turn/completed", params: { threadId: thread, turn: { id: turnId, status, error, items: [] } } });
 };
 const reply = (text) => JSON.stringify({ reply: text });
+
+function startServers(config = {}) {
+  for (const name of ["ainecto", "node_repl", "openaiDeveloperDocs"]) {
+    if (config?.[`mcp_servers.${name}.enabled`] === false) continue;
+    out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name, status: "starting", error: null } });
+    out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name, status: "ready", error: null } });
+  }
+}
 
 function act(turnId, text) {
   if (text === "crash") process.exit(3);
@@ -86,11 +95,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         ? { account: null, requiresOpenaiAuth: true }
         : { account: { type: "chatgpt", email: "someone@example.com", planType: "pro" }, requiresOpenaiAuth: true } });
       return;
+    case "config/read":
+      out({ id, result: { config: { mcp_servers: { ainecto: { command: "node" }, node_repl: { command: "node" }, openaiDeveloperDocs: { url: "https://x" } } } } });
+      return;
     case "thread/start":
       thread = `thr-${process.pid}`;
-      out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name: "ainecto", status: "starting", error: null } });
-      out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name: "ainecto", status: "ready", error: null } });
-      out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name: "node_repl", status: "ready", error: null } });
+      startServers(params.config);
       out({ id, result: { thread: { id: thread }, approvalPolicy: params.approvalPolicy, sandbox: params.sandbox } });
       return;
     case "thread/resume":
@@ -99,6 +109,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         return;
       }
       thread = params.threadId;
+      startServers(params.config);
       out({ id, result: { thread: { id: thread } } });
       return;
     case "turn/start": {

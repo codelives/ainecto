@@ -5,6 +5,7 @@ import {
   CODEX,
   codexAuthFromAccount,
   codexInitializeParams,
+  codexOtherMcpServersOff,
   codexServerRequestAnswer,
   codexThreadResumeParams,
   codexThreadStartParams,
@@ -267,9 +268,13 @@ class CodexSession implements AgentSession {
   private async start(resumeRef: string | undefined): Promise<void> {
     await this.rpc.request("initialize", codexInitializeParams(this.deps.clientVersion));
     this.rpc.notify("initialized");
+    // 사용자 설정의 다른 MCP 서버(컴퓨터 조작 등)는 이 대화에서 끈다 — 이름은 이 프로세스가 읽은 설정에서.
+    const read = await this.rpc.request("config/read", { cwd: this.deps.cwd });
+    const off = codexOtherMcpServersOff(read.config);
+    this.deps.log.write({ event: "agent_mcp_servers_off", pid: this.child.pid, agent: this.agent, names: off.names });
     const method = resumeRef ? "thread/resume" : "thread/start";
     const result = await this.rpc.request(method,
-      resumeRef ? codexThreadResumeParams(resumeRef, this.deps.cwd) : codexThreadStartParams(this.deps.cwd));
+      resumeRef ? codexThreadResumeParams(resumeRef, this.deps.cwd, off.config) : codexThreadStartParams(this.deps.cwd, off.config));
     const id = (result.thread as { id?: unknown } | undefined)?.id;
     if (typeof id !== "string") throw new Error(`${method} returned no thread id`);
     this.sessionRef = id;

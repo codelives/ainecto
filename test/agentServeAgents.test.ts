@@ -33,7 +33,25 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     expect(codexSpawned(w)).toEqual([["app-server"]]);
     const records = logRecords(w);
     expect(records.filter((r) => r.event === "agent_request").map((r) => r.agent)).toEqual(["claude-code", "codex"]);
-    expect(records.filter((r) => r.event === "agent_rpc").map((r) => r.method)).toEqual(["initialize", "thread/start", "turn/start"]);
+    expect(records.filter((r) => r.event === "agent_rpc").map((r) => r.method))
+      .toEqual(["initialize", "config/read", "thread/start", "turn/start"]);
+    expectPairedLines(w);
+  });
+
+  it("Codex: 사용자 설정의 다른 MCP 서버는 끄고 AiNecto 만 띄운다(thread/start·resume 모두) · 끈 이름을 남긴다", async () => {
+    const w = startServe({ installed: ["codex"] });
+    w.server.offer("t1", "conv-a", "one", undefined, "codex");
+    await until(() => w.server.replies()[0]);
+    w.server.offer("t2", "conv-b", "two", undefined, "codex");
+    await until(() => w.server.replies()[1]);
+    w.server.offer("t3", "conv-a", "three", undefined, "codex");
+    await until(() => w.server.replies()[2]);
+    await finish(w);
+
+    const records = logRecords(w);
+    expect(records.filter((r) => r.event === "agent_mcp_server").map((r) => r.name)).toEqual(["ainecto", "ainecto", "ainecto"]);
+    expect(records.filter((r) => r.event === "agent_mcp_servers_off").map((r) => r.names))
+      .toEqual([["node_repl", "openaiDeveloperDocs"], ["node_repl", "openaiDeveloperDocs"], ["node_repl", "openaiDeveloperDocs"]]);
     expectPairedLines(w);
   });
 

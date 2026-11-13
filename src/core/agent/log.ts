@@ -25,6 +25,8 @@ export type AgentLogRecord =
   | { event: "agent_server_request"; pid: number; agent: string; method: string; answer: string }
   /** Codex 가 띄운 MCP 서버 상태 — AiNecto 밖의 서버(사용자 기본 설정)도 뜨는지 여기서 본다. */
   | { event: "agent_mcp_server"; pid: number; agent: string; name: string; status: string; error?: string }
+  /** Codex: 이 대화에서 끈 사용자 설정의 MCP 서버 이름. */
+  | { event: "agent_mcp_servers_off"; pid: number; agent: string; names: string[] }
   | { event: "agent_request"; turnUuid: string; agent: string; conversationUuid: string; pid: number; textLength: number }
   | { event: "agent_response"; turnUuid: string; agent: string; ms: number; outcome: string; status: string; errorCode?: string; subtype?: string;
       sessionId?: string; documents: number; createdDocuments: number; cards: number; numTurns?: number; costUsd?: number }

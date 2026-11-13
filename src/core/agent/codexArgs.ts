@@ -9,9 +9,14 @@ import { AINECTO_MCP_SERVER, type AgentAuthStatus, type AgentTurnResult, type Ai
  *   <li>{@code approval_policy="never"} — 묻지 않는다. 승인이 필요한 일은 묻지 않고 거절된다(실측: 쓰기 도구도 거절 → 아래 도구별 승인).</li>
  *   <li>{@code sandbox_mode="read-only"} — 명령 실행은 읽기만(파일 쓰기·네트워크 막힘).</li>
  *   <li>쓰기 도구마다 {@code tools.<이름>.approval_mode="approve"} — 서버 readOnlyHint 가 진실원({@code writeToolNames}).</li>
+ *   <li>{@link FEATURES_OFF} — 내장 셸·플러그인·앱·컴퓨터/브라우저 조작·이미지 생성을 끈다.</li>
+ *   <li>사용자 설정의 다른 MCP 서버는 thread/start·resume 의 {@code config} 로 끈다({@link codexOtherMcpServersOff}).</li>
  * </ul>
- * ★막지 못한 것(실측·확인 범위 밖): 내장 셸 도구 자체를 끄는 설정, 사용자 기본 설정의 다른 MCP 서버·플러그인을 닫는 설정.
- * 읽기 전용 셸 명령(파일 읽기)은 돈다. 다른 MCP 서버는 {@code agent_mcp_server} 로그 줄로 보인다.
+ * 실측(2026-11-13, 증적 {@code evidence/kan1075/codex-mcp-close/}, 모델 호출 0): 끄기 전에는 AiNecto 말고 cua_repl·node_repl·
+ * codex_apps·openaiDeveloperDocs 가 떴고, 끈 뒤에는 AiNecto 만 떴다. {@code codex debug prompt-input} 의 도구 목록에서
+ * exec_command·write_stdin·cua_repl·request_plugin_install 이 빠졌다.
+ * ★못 막은 것: 하위 Agent 도구(collaboration/spawn_agent 등)를 끄는 설정은 찾지 못했다 — 하위 Agent 는 같은 설정을 물려받는다고 보지만
+ * 재지 않았다. apply_patch(파일 쓰기)는 목록에 남지만 read-only 샌드박스가 막는다.
  */
 
 export const CODEX = "codex";
@@ -22,6 +27,9 @@ const THREAD_POLICY = { approvalPolicy: "never", sandbox: "read-only" } as const
 /** {@code -c key=value} 의 key 에 넣어도 되는 도구 이름(점·따옴표가 없는 것). 서버 도구 이름은 모두 이 꼴이다. */
 const CONFIG_KEY_PART = /^[A-Za-z0-9_-]+$/;
 
+/** 끄는 Codex 기능 — 이름은 {@code codex features list} 그대로. 셸은 shell_tool, cua_repl 같은 플러그인 MCP 는 plugins 로 꺼진다(실측). */
+const FEATURES_OFF = ["shell_tool", "plugins", "apps", "computer_use", "browser_use", "image_generation"] as const;
+
 export function codexAppServerArgs(bridge: AinectoBridge, writeTools: Iterable<string>): string[] {
   const server = `mcp_servers.${AINECTO_MCP_SERVER}`;
   const config = [
@@ -29,6 +37,7 @@ export function codexAppServerArgs(bridge: AinectoBridge, writeTools: Iterable<s
     `${server}.args=[${bridge.args.map(tomlString).join(",")}]`,
     'approval_policy="never"',
     'sandbox_mode="read-only"',
+    ...FEATURES_OFF.map((feature) => `features.${feature}=false`),
     ...[...writeTools].filter((tool) => CONFIG_KEY_PART.test(tool)).sort()
       .map((tool) => `${server}.tools.${tool}.approval_mode="approve"`),
   ];
@@ -44,13 +53,26 @@ export function codexInitializeParams(clientVersion: string): Record<string, unk
   return { clientInfo: { name: "ainecto-cli", title: "AiNecto CLI", version: clientVersion } };
 }
 
-export function codexThreadStartParams(cwd: string): Record<string, unknown> {
-  return { cwd, ...THREAD_POLICY };
+/**
+ * {@code config/read} 결과의 {@code config} → AiNecto 말고 사용자 설정에 있는 MCP 서버를 모두 끄는 덮어쓰기(순수 함수).
+ * 점 표기 키({@code mcp_servers.<이름>.enabled})만 듣는다(실측: 중첩 표기는 AiNecto 까지 안 떴다).
+ * ★설정 키로 못 쓰는 이름(점·따옴표 등)이 있으면 그 서버를 끌 수 없으므로 오류 — 세션을 시작하지 않는다.
+ */
+export function codexOtherMcpServersOff(config: unknown): { names: string[]; config: Record<string, boolean> } {
+  const servers = config && typeof config === "object" ? (config as { mcp_servers?: unknown }).mcp_servers : undefined;
+  const names = servers && typeof servers === "object" ? Object.keys(servers).filter((name) => name !== AINECTO_MCP_SERVER).sort() : [];
+  const bad = names.filter((name) => !CONFIG_KEY_PART.test(name));
+  if (bad.length > 0) throw new Error(`cannot turn off Codex MCP server(s) ${bad.map((name) => JSON.stringify(name)).join(", ")}`);
+  return { names, config: Object.fromEntries(names.map((name) => [`mcp_servers.${name}.enabled`, false] as const)) };
+}
+
+export function codexThreadStartParams(cwd: string, serversOff: Record<string, boolean>): Record<string, unknown> {
+  return { cwd, ...THREAD_POLICY, config: serversOff };
 }
 
 /** {@code excludeTurns} — 지난 차례를 통째로 돌려받지 않는다(서버가 «full-history hydration is deprecated» 를 알렸다). */
-export function codexThreadResumeParams(threadId: string, cwd: string): Record<string, unknown> {
-  return { threadId, cwd, ...THREAD_POLICY, excludeTurns: true };
+export function codexThreadResumeParams(threadId: string, cwd: string, serversOff: Record<string, boolean>): Record<string, unknown> {
+  return { threadId, cwd, ...THREAD_POLICY, config: serversOff, excludeTurns: true };
 }
 
 export function codexTurnStartParams(threadId: string, text: string, outputSchema: Record<string, unknown>): Record<string, unknown> {

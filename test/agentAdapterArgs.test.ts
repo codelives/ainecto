@@ -4,6 +4,7 @@ import { claudeAuthFromJson } from "../src/core/agent/claudeCode";
 import {
   codexAppServerArgs,
   codexAuthFromAccount,
+  codexOtherMcpServersOff,
   codexServerRequestAnswer,
   codexThreadResumeParams,
   codexThreadStartParams,
@@ -13,22 +14,38 @@ import {
 const bridge = ainectoBridge("/usr/bin/node", "/opt/ainecto/dist/bin/ainecto.js", "https://dev.ainecto.com/mcp");
 
 describe("Codex app-server 고정 설정(실측 그대로)", () => {
-  it("AiNecto 브리지 · never · read-only · 쓰기 도구마다 approve — 다른 것은 싣지 않는다", () => {
+  it("AiNecto 브리지 · never · read-only · 내장 셸·플러그인·앱·컴퓨터/브라우저 조작·이미지 끔 · 쓰기 도구마다 approve", () => {
     expect(codexAppServerArgs(bridge, new Set(["kanban_apply_changes", "create_documents", "bad.name"]))).toEqual([
       "app-server",
       "-c", 'mcp_servers.ainecto.command="/usr/bin/node"',
       "-c", 'mcp_servers.ainecto.args=["/opt/ainecto/dist/bin/ainecto.js","--endpoint","https://dev.ainecto.com/mcp","mcp"]',
       "-c", 'approval_policy="never"',
       "-c", 'sandbox_mode="read-only"',
+      "-c", "features.shell_tool=false",
+      "-c", "features.plugins=false",
+      "-c", "features.apps=false",
+      "-c", "features.computer_use=false",
+      "-c", "features.browser_use=false",
+      "-c", "features.image_generation=false",
       "-c", 'mcp_servers.ainecto.tools.create_documents.approval_mode="approve"',
       "-c", 'mcp_servers.ainecto.tools.kanban_apply_changes.approval_mode="approve"',
     ]);
   });
 
-  it("thread/start·resume 에도 같은 정책 · resume 은 지난 차례를 받지 않는다", () => {
-    expect(codexThreadStartParams("/w")).toEqual({ cwd: "/w", approvalPolicy: "never", sandbox: "read-only" });
-    expect(codexThreadResumeParams("thr-1", "/w"))
-      .toEqual({ threadId: "thr-1", cwd: "/w", approvalPolicy: "never", sandbox: "read-only", excludeTurns: true });
+  it("thread/start·resume 에도 같은 정책과 서버 끄기 · resume 은 지난 차례를 받지 않는다", () => {
+    const off = { "mcp_servers.node_repl.enabled": false };
+    expect(codexThreadStartParams("/w", off)).toEqual({ cwd: "/w", approvalPolicy: "never", sandbox: "read-only", config: off });
+    expect(codexThreadResumeParams("thr-1", "/w", off))
+      .toEqual({ threadId: "thr-1", cwd: "/w", approvalPolicy: "never", sandbox: "read-only", config: off, excludeTurns: true });
+  });
+
+  it("사용자 설정의 다른 MCP 서버는 AiNecto 만 빼고 전부 끈다 — 설정 키로 못 쓰는 이름이면 시작하지 않는다", () => {
+    expect(codexOtherMcpServersOff({ mcp_servers: { ainecto: {}, "dev-ainecto": { url: "x" }, node_repl: {} } }))
+      .toEqual({ names: ["dev-ainecto", "node_repl"],
+        config: { "mcp_servers.dev-ainecto.enabled": false, "mcp_servers.node_repl.enabled": false } });
+    expect(codexOtherMcpServersOff({})).toEqual({ names: [], config: {} });
+    expect(codexOtherMcpServersOff(undefined)).toEqual({ names: [], config: {} });
+    expect(() => codexOtherMcpServersOff({ mcp_servers: { "a.b": {} } })).toThrow(/a\.b/);
   });
 
   it("Codex 가 묻는 것은 전부 거절 — 모양은 schema 그대로, 모르는 요청은 JSON-RPC 오류", () => {
