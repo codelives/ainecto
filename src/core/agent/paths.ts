@@ -4,9 +4,9 @@ import { join } from "node:path";
 /** `ainecto agent serve` 의 파일 자리 — ★한 곳. 폴더는 {@code ~/.ainecto/agent}, 0700. */
 export interface AgentPaths {
   dir: string;
-  /** Claude 의 cwd — 빈 폴더(K5). */
+  /** Agent 의 cwd — 빈 폴더(K5). */
   work: string;
-  /** 대화 uuid → Claude 세션 id. 대화가 바뀌면 {@code --resume}. */
+  /** (대화 uuid, Agent) → 세션 값(Claude session_id · Codex threadId). 대화가 바뀌면 재개. */
   sessions: string;
   /** JSON 한 줄 로그. */
   log: string;

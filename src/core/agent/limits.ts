@@ -10,10 +10,10 @@ export const AGENT_CALL_TIMEOUT_MS = 10_000;
 export const AGENT_RETRY_MIN_MS = 500;
 export const AGENT_RETRY_MAX_MS = 10_000;
 
-/** B3 — 요청 하나(Claude 한 차례)의 기한. 넘으면 그 프로세스를 내리고 FAILED 로 답한다. */
+/** B3 — 요청 하나(Agent 한 차례)의 기한. 넘으면 그 차례를 멈추고 프로세스를 내린 뒤 FAILED 로 답한다. */
 export const AGENT_TURN_TIMEOUT_MS = 15 * 60_000;
 
-/** B6 — Claude 프로세스를 멈출 때 한 단계마다 기다리는 시간(stdin 닫기 → SIGTERM → SIGKILL). */
+/** B6 — Agent 프로세스를 멈출 때 한 단계마다 기다리는 시간(stdin 닫기 → SIGTERM → SIGKILL · Codex turn/interrupt 답 기다림). */
 export const AGENT_STOP_WAIT_MS = 5_000;
 
 /** 다음 다시 하기 간격(B2). */

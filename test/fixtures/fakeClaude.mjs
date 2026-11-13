@@ -4,25 +4,63 @@
 //   "bad-schema" → structured_output 에 모르는 칸
 //   "hang"       → 답하지 않는다(기한 시험)
 //   "crash"      → code 3 으로 끝난다
+//   "write-card" → 만들기(created)·고치기·칸반 카드 결과(쓰기 셋) + 읽기 하나 뒤 reply
+// control_request interrupt 가 오면 붙잡힌 차례를 error_during_execution 으로 끝낸다(실측 모양).
+// `--version` · `auth status --json`(FAKE_CLAUDE_AUTH=out 이면 로그인 안 됨) 은 한 번 출력하고 끝난다.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 if (process.env.FAKE_CLAUDE_ARGS_LOG) appendFileSync(process.env.FAKE_CLAUDE_ARGS_LOG, `${JSON.stringify(args)}\n`);
+if (args[0] === "--version") {
+  process.stdout.write("9.9.9 (Claude Code)\n");
+  process.exit(0);
+}
+if (args[0] === "auth" && args[1] === "status") {
+  const loggedIn = process.env.FAKE_CLAUDE_AUTH !== "out";
+  process.stdout.write(`${JSON.stringify(loggedIn
+    ? { loggedIn, authMethod: "claude.ai", email: "someone@example.com", subscriptionType: "max" }
+    : { loggedIn, authMethod: "none" })}\n`);
+  process.exit(loggedIn ? 0 : 1);
+}
 const resume = args.indexOf("--resume");
 const sessionId = resume >= 0 ? args[resume + 1] : `sess-${process.pid}`;
 const out = (e) => process.stdout.write(`${JSON.stringify(e)}\n`);
 let started = false;
 let seen = 0;
+let hanging = false;
+const doc = (tag) => `📄 Open in AiNecto: https://dev.ainecto.com/app/docs/${tag.repeat(32)}`;
+const tool = (id, name, texts) => {
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input: {} }] } });
+  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: texts.map((text) => ({ type: "text", text })) }] } });
+};
 createInterface({ input: process.stdin }).on("line", (line) => {
-  const text = JSON.parse(line).message.content;
+  const message = JSON.parse(line);
+  if (message.type === "control_request") {
+    out({ type: "control_response", response: { subtype: "success", request_id: message.request_id } });
+    if (hanging) {
+      hanging = false;
+      out({ type: "result", subtype: "error_during_execution", is_error: true, session_id: sessionId });
+    }
+    return;
+  }
+  const text = message.message.content;
   seen += 1;
   if (!started) {
     started = true;
     out({ type: "system", subtype: "init", session_id: sessionId, tools: ["StructuredOutput"] });
   }
   if (text === "crash") process.exit(3);
-  if (text === "hang") return;
+  if (text === "hang") {
+    hanging = true;
+    return;
+  }
+  if (text === "write-card") {
+    tool("r1", "mcp__ainecto__list_documents", ['{"documents":[]}', doc("a")]);
+    tool("w1", "mcp__ainecto__create_documents", [`{"count":1,"created":[{"uuid":"${"c".repeat(32)}","type":"markdown","title":"새 문서"}]}`, doc("c")]);
+    tool("w2", "mcp__ainecto__update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
+    tool("w3", "mcp__ainecto__kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")]);
+  }
   if (text === "write-doc") {
     out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "mcp__ainecto__list_documents", input: {} }] } });
     out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "{}" }, { type: "text", text: "📄 다른 문서: https://dev.ainecto.com/app/docs/" + "a".repeat(32) }] }] } });

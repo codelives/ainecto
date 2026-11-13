@@ -1,21 +1,25 @@
-import { spawnSync } from "node:child_process";
 import { hostname } from "node:os";
 import type { TokenProvider } from "../../core/auth/oauth";
 import { ensurePrivateDir } from "../../core/fs/privateFiles";
 import { McpRpcClient } from "../../core/mcp/rpcClient";
-import { agentMcpConfig, agentReplySchema, claudeAgentArgs, claudeAgentEnv } from "../../core/agent/claudeArgs";
-import { spawnClaude } from "../../core/agent/claudeProcess";
+import { agentEnv, agentReplySchema, ainectoBridge, type AgentAdapter, type AgentId } from "../../core/agent/agents";
+import { spawnAgent } from "../../core/agent/child";
+import { claudeAgentArgs, claudeMcpConfig } from "../../core/agent/claudeArgs";
+import { claudeCodeAdapter } from "../../core/agent/claudeCode";
+import { codexAdapter } from "../../core/agent/codex";
+import { codexAppServerArgs } from "../../core/agent/codexArgs";
 import { writeToolNames } from "../../core/agent/documents";
 import { createAgentHttp } from "../../core/agent/http";
 import { openAgentLog } from "../../core/agent/log";
 import { agentPaths } from "../../core/agent/paths";
+import { checkAgents, openAgents } from "../../core/agent/readiness";
 import { runAgentServe } from "../../core/agent/serve";
 import { AgentSessionMap } from "../../core/agent/sessions";
 import { CLI_VERSION } from "../../core/version";
 import type { CliIO } from "./ainectoCli";
 
 export const AGENT_HELP_LINES: readonly string[] = [
-  "  ainecto agent serve [--env prod|dev]   answer «My agent» requests from AiNecto Chat with Claude Code on this machine (Ctrl+C to stop; log: ~/.ainecto/agent/agent.log)",
+  "  ainecto agent serve [--env prod|dev]   answer «My agent» requests from AiNecto Chat with Claude Code or Codex on this machine (Ctrl+C to stop; log: ~/.ainecto/agent/agent.log)",
 ];
 
 export function isAgentCommand(domain: string | undefined, action: string | undefined): boolean {
@@ -23,19 +27,15 @@ export function isAgentCommand(domain: string | undefined, action: string | unde
 }
 
 /**
- * `ainecto agent serve` — 이 기기의 Claude Code 를 «내 Agent»로 띄워 둔다(KAN-1075). 로그인은 CLI 로그인(OAuth) 하나.
+ * `ainecto agent serve` — 이 기기의 Claude Code·Codex 를 «내 Agent»로 띄워 둔다(KAN-1075). 로그인은 CLI 로그인(OAuth) 하나.
+ * 설치·로그인은 시작할 때 한 번 본다(모델 호출 0) — 나중에 로그인했으면 serve 를 다시 띄운다.
  */
 export async function executeAgentServe(input: { endpoint: string; auth: TokenProvider; io: CliIO }): Promise<number> {
-  const claude = spawnSync("claude", ["--version"], { encoding: "utf8" });
-  if (claude.error || claude.status !== 0) {
-    throw new Error("Claude Code (`claude`) is not on PATH. Install Claude Code and sign in, then run `ainecto agent serve` again.");
-  }
   const paths = agentPaths();
   await ensurePrivateDir(paths.dir);
   await ensurePrivateDir(paths.work);
   const log = openAgentLog(paths);
   const host = hostname();
-  log.write({ event: "serve_start", pid: process.pid, version: CLI_VERSION, endpoint: input.endpoint, host, claude: claude.stdout.trim() });
 
   // 쓰기 도구 = 서버 표시(readOnlyHint) — 문서 줄은 그 결과에서만 뽑는다.
   const rpc = new McpRpcClient({ endpoint: input.endpoint, tokenProvider: input.auth, channel: "cli" });
@@ -51,27 +51,47 @@ export async function executeAgentServe(input: { endpoint: string; auth: TokenPr
     throw error;
   }
 
+  // 브리지 = 지금 돌고 있는 이 CLI 그대로(같은 node · 같은 스크립트 · 같은 서버 주소).
+  const cliScript = process.argv[1];
+  if (!cliScript) throw new Error("Cannot find the path of this CLI to start the AiNecto bridge for the agents.");
+  const bridge = ainectoBridge(process.execPath, cliScript, input.endpoint);
+  const shared = { spawnImpl: spawnAgent, cwd: paths.work, env: agentEnv(process.env), log, writeTools };
+  const mcpConfig = claudeMcpConfig(bridge);
+  const all: AgentAdapter[] = [
+    claudeCodeAdapter({ ...shared, args: ({ textMaxCharacters, resumeSessionId }) =>
+      claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters), mcpConfig, resumeSessionId }) }),
+    codexAdapter({ ...shared, appServerArgs: codexAppServerArgs(bridge, writeTools), clientVersion: CLI_VERSION }),
+  ];
+  const checks = await checkAgents(all, log);
+  log.write({ event: "serve_start", pid: process.pid, version: CLI_VERSION, endpoint: input.endpoint, host,
+    agents: checks.map(({ id, installed, ready, version }) => ({ id, installed, ready, ...(version ? { version } : {}) })) });
+  const agents = openAgents(checks);
+  if (agents.length === 0) {
+    throw new Error("Neither Claude Code (`claude`) nor Codex (`codex`) is on PATH. Install one and sign in, then run `ainecto agent serve` again.");
+  }
+  for (const check of checks) {
+    const name = all.find((adapter) => adapter.id === check.id)?.displayName ?? check.id;
+    if (check.installed && !check.ready) {
+      input.io.stderr.write(`${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
+        + `Requests to ${name} will be refused until you sign in and run \`ainecto agent serve\` again.\n`);
+    }
+  }
+  const adapters = new Map<AgentId, AgentAdapter>(all.filter((adapter) => agents.some((a) => a.id === adapter.id))
+    .map((adapter) => [adapter.id, adapter]));
+
   const sessions = new AgentSessionMap(paths.sessions);
   await sessions.load();
   const controller = new AbortController();
   const onSignal = () => controller.abort();
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
-  // 브리지 = 지금 돌고 있는 이 CLI 그대로(같은 node · 같은 스크립트 · 같은 서버 주소).
-  const cliScript = process.argv[1];
-  if (!cliScript) throw new Error("Cannot find the path of this CLI to start the AiNecto bridge for Claude Code.");
-  const mcpConfig = agentMcpConfig(process.execPath, cliScript, input.endpoint);
   try {
     const result = await runAgentServe({
       http: createAgentHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),
       log,
       sessions,
-      writeTools,
-      claudeArgs: ({ textMaxCharacters, resumeSessionId }) =>
-        claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters), mcpConfig, resumeSessionId }),
-      spawnImpl: spawnClaude,
-      cwd: paths.work,
-      env: claudeAgentEnv(process.env),
+      adapters,
+      agents,
       hostName: host,
       cliVersion: CLI_VERSION,
       print: (line) => input.io.stderr.write(`${line}\n`),

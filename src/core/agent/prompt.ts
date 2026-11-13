@@ -1,5 +1,5 @@
 /**
- * Claude 에 넣는 한 줄 — 서버가 준 맥락(대화의 프로젝트·열린 문서)을 앞머리 한 줄로 붙인다(순수 함수).
+ * Agent(Claude Code·Codex)에 넣는 한 줄 — 서버가 준 맥락(대화의 프로젝트·열린 문서)을 앞머리 한 줄로 붙인다(순수 함수).
  * «이 프로젝트»·«이 문서»가 무엇인지 Agent 가 되묻지 않게(KAN-1075 dev 종단 P0). 맥락이 없으면 글 그대로.
  */
 export interface AgentTurnContext {
