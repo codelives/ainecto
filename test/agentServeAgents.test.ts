@@ -26,7 +26,7 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     await finish(w);
 
     expect(w.server.calls[0]).toEqual({ op: "open", body: { hostName: "test-host", cliVersion: "0.0.0",
-      agents: [{ id: "claude-code", ready: true }, { id: "codex", ready: true }] } });
+      agents: [{ id: "claude-code", ready: true }, { id: "codex", ready: true }], features: ["stop"] } });
     expect(String(claude.reply)).toMatch(/^got hello #1 in sess-/);
     expect(codex).toMatchObject({ status: "DONE", documentUuids: [] });
     expect(String(codex.reply)).toMatch(/^got hello #1 in thr-\d+$/);
@@ -166,6 +166,24 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     expect(codexSpawned(w)).toHaveLength(2);
     const interrupt = logRecords(w).find((r) => r.event === "agent_rpc_response" && r.method === "turn/interrupt");
     expect(interrupt).toMatchObject({ ok: true });
+    expectPairedLines(w);
+  });
+
+  it("Codex «중단» — turn/interrupt 로 그 차례만 멈추고 STOPPED · 같은 app-server 로 다음 요청을 잇는다", async () => {
+    const w = startServe({ installed: ["codex"] });
+    w.server.offer("t1", "conv-a", "hang", undefined, "codex");
+    await until(() => logRecords(w).find((r) => r.event === "agent_rpc" && r.method === "turn/start"));
+    await new Promise((r) => setTimeout(r, 100));
+    w.server.push({ state: "OPEN", offers: [], stops: ["t1"] });
+    const stopped = await until(() => w.server.replies()[0]);
+    w.server.offer("t2", "conv-a", "after", undefined, "codex");
+    const after = await until(() => w.server.replies()[1]);
+    await finish(w);
+
+    expect(stopped).toMatchObject({ turnUuid: "t1", status: "STOPPED" });
+    expect(after.status).toBe("DONE");
+    expect(codexSpawned(w)).toHaveLength(1);
+    expect(logRecords(w).find((r) => r.event === "agent_rpc_response" && r.method === "turn/interrupt")).toMatchObject({ ok: true });
     expectPairedLines(w);
   });
 

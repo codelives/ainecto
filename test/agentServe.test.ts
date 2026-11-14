@@ -119,4 +119,53 @@ describe("ainecto agent serve", () => {
     await finish(w);
     expect(reply.status).toBe("DONE");
   });
+
+  it("★웹 «중단» — poll 의 stops 가 진행 중 차례를 멈추고 STOPPED(그때까지 만든 문서) · 같은 세션으로 다음 요청을 잇는다", async () => {
+    const w = startServe();
+    w.server.offer("t1", "conv-a", "write-then-hang");
+    await until(() => logRecords(w).find((r) => r.event === "agent_request" && r.turnUuid === "t1"));
+    await new Promise((r) => setTimeout(r, 100));
+    w.server.push({ state: "OPEN", offers: [], stops: ["t1"] });
+    const stopped = await until(() => w.server.replies()[0]);
+    w.server.push({ state: "OPEN", offers: [], stops: ["t1"] });   // 답이 갈 때까지 서버가 다시 실어도 한 번만
+    w.server.offer("t2", "conv-a", "next");
+    const next = await until(() => w.server.replies()[1]);
+    await finish(w);
+
+    expect(stopped).toMatchObject({ turnUuid: "t1", status: "STOPPED", documentUuids: ["c".repeat(32)], createdDocumentUuids: ["c".repeat(32)] });
+    expect(stopped.errorCode).toBeUndefined();
+    const sessionId = /in (sess-\d+)$/.exec(String(next.reply))?.[1];
+    expect(String(next.reply)).toBe(`got next #2 in ${sessionId}`);   // 같은 프로세스·같은 세션의 두 번째 줄
+    expect(spawned(w)).toHaveLength(1);
+    expect(JSON.parse(readFileSync(w.sessionsPath, "utf8")).conversations["conv-a"].sessionId).toBe(sessionId);
+    expect(w.server.replies()).toHaveLength(2);
+    const stops = logRecords(w).filter((r) => r.event === "stop_request");
+    expect(stops).toEqual([expect.objectContaining({ turnUuid: "t1", running: true })]);
+    expect(logRecords(w).find((r) => r.event === "agent_response" && r.turnUuid === "t1")?.status).toBe("STOPPED");
+  });
+
+  it("시작 전에 멈춘 차례는 Agent 에 넣지 않고 STOPPED", async () => {
+    const w = startServe();
+    w.server.push({ state: "OPEN", offers: [{ turnUuid: "t1", conversationUuid: "conv-a", text: "hang" }], stops: ["t1"] });
+    const stopped = await until(() => w.server.replies()[0]);
+    await finish(w);
+    expect(stopped).toMatchObject({ turnUuid: "t1", status: "STOPPED", documentUuids: [] });
+  });
+
+  it("open 에 features(stop)를 알린다 · 옛 서버가 400 INVALID 로 거절하면 features 없이 다시 연다", async () => {
+    const w = startServe();
+    await until(() => w.server.calls.find((c) => c.op === "poll"));
+    await finish(w);
+    expect(w.server.calls[0]).toMatchObject({ op: "open", body: { features: ["stop"] } });
+
+    const old = startServe({ oldServer: true });
+    old.server.offer("t1", "conv-a", "hello");
+    const reply = await until(() => old.server.replies()[0]);
+    await finish(old);
+    const opens = old.server.calls.filter((c) => c.op === "open");
+    expect(opens).toHaveLength(2);
+    expect(opens[1]?.body.features).toBeUndefined();
+    expect(reply.status).toBe("DONE");
+    expect(logRecords(old).some((r) => r.event === "open_without_features")).toBe(true);
+  });
 });

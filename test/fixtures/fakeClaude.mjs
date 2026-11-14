@@ -3,6 +3,7 @@
 //   "write-doc"  → create_documents 결과(📄) + list_documents 결과(📄, 읽기) 뒤 reply
 //   "bad-schema" → structured_output 에 모르는 칸
 //   "hang"       → 답하지 않는다(기한 시험)
+//   "write-then-hang" → 문서 하나를 만든 뒤 답하지 않는다(중단 시험 — 그때까지 한 일이 남는가)
 //   "crash"      → code 3 으로 끝난다
 //   "write-card" → 만들기(created)·고치기·칸반 카드 결과(쓰기 셋) + 읽기 하나 뒤 reply
 // control_request interrupt 가 오면 붙잡힌 차례를 error_during_execution 으로 끝낸다(실측 모양).
@@ -53,6 +54,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (text === "crash") process.exit(3);
   if (text === "hang") {
+    hanging = true;
+    return;
+  }
+  if (text === "write-then-hang") {
+    tool("w1", "mcp__ainecto__create_documents", [`{"count":1,"created":[{"uuid":"${"c".repeat(32)}","type":"markdown","title":"반쯤"}]}`, doc("c")]);
     hanging = true;
     return;
   }

@@ -79,8 +79,8 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
     if (!check.installed) continue;
     if (check.ready) {
       input.io.stderr.write(check.auth === "apiKey"
-        ? `${name}: runs on your own API key (billed to your ${BILLED_TO[check.id]} API account).\n`
-        : `${name}: runs on your subscription login (uses your plan's limits).\n`);
+        ? `${name}: runs on your own API key (billed to your ${BILLED_TO[check.id]} API account; AiNecto credits are not used).\n`
+        : `${name}: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).\n`);
     } else {
       input.io.stderr.write(`${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
         + `Requests to ${name} will be refused until you sign in and run \`ainecto agent serve\` again.\n`);

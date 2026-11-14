@@ -4,7 +4,7 @@ import { AgentCallError, type AgentHttp } from "./http";
 import { AGENT_TURN_TIMEOUT_MS, nextRetryDelay } from "./limits";
 import type { AgentLogRecord } from "./log";
 import { agentPromptText, type AgentTurnContext } from "./prompt";
-import { clip, replyForOutcome, type AgentReply } from "./reply";
+import { clip, replyForOutcome, stoppedReply, type AgentReply } from "./reply";
 import type { AgentSessionMap } from "./sessions";
 
 export interface AgentOffer {
@@ -38,6 +38,9 @@ export interface ServeResult {
   reason: string;
 }
 
+/** open 에 알리는 이 CLI 의 기능 — 서버 {@code PcFeature} 의 id 와 같은 글(선 위의 계약). stop = poll 의 {@code stops} 를 읽고 STOPPED 로 답한다. */
+export const PC_FEATURES = ["stop"] as const;
+
 interface ServerLimits {
   pollHoldSeconds: number;
   textMaxCharacters: number;
@@ -51,7 +54,7 @@ interface ServerLimits {
  * ★받은 turnUuid 는 다시 넣지 않는다(서버가 답 올 때까지 같은 요청을 다시 준다 — K4).
  */
 export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
-  const opened = await deps.http.call("open", { hostName: deps.hostName, cliVersion: deps.cliVersion, agents: deps.agents });
+  const opened = await openLink(deps);
   const linkId = String(opened.linkId);
   deps.http.useLinkToken(String(opened.linkToken));
   const limits = serverLimits(opened.limits);
@@ -65,6 +68,18 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   const live = new Map<AgentId, AgentSession>();
   const received = new Set<string>();
   const queue: AgentOffer[] = [];
+  /** 웹이 «중단»을 누른 turn — 진행 중이면 그 차례를 멈추고, 아직 시작 전이면 돌리지 않고 STOPPED 로 답한다. */
+  const stopping = new Set<string>();
+  /** 지금 Agent 에 들어간 차례(없으면 undefined) — 멈춤 지시가 이것을 멈춘다. */
+  let current: { turnUuid: string; session: AgentSession } | undefined;
+
+  const requestStop = (turnUuid: string) => {
+    if (stopping.has(turnUuid)) return;
+    stopping.add(turnUuid);
+    const running = current?.turnUuid === turnUuid;
+    deps.log.write({ event: "stop_request", turnUuid, running, queued: queue.some((o) => o.turnUuid === turnUuid) });
+    if (running) void current?.session.interrupt();
+  };
 
   const stop = (reason: string, code: number, message?: string) => {
     if (stopReason) return;
@@ -106,6 +121,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           queue.push(offer);
           wakeWorker?.();
         }
+        for (const turnUuid of stopsIn(res)) requestStop(turnUuid);
       } catch (error) {
         if (stopReason) return;
         if (error instanceof AgentCallError && !error.retryable) {
@@ -146,13 +162,22 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         deps.log.write({ event: "agent_request", turnUuid: offer.turnUuid, agent: offer.agent, conversationUuid: offer.conversationUuid,
           pid: session?.pid ?? -1, textLength: offer.text.length });
       }
+      if (stopping.has(offer.turnUuid)) {
+        reply = stoppedReply(undefined, limits);   // 시작 전에 멈춤 — 돌리지 않는다
+        return reply;
+      }
       if (!adapter || !session) {
         failure = "agent not installed";
         reply = { status: "FAILED", errorCode: "AGENT_NOT_INSTALLED", documentUuids: [],
           reply: clip(`이 PC 에는 «${offer.agent}» 가 설치되어 있지 않아요.`, limits.textMaxCharacters) };
         return reply;
       }
-      outcome = await session.send(agentPromptText(offer.text, offer.context), deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
+      current = { turnUuid: offer.turnUuid, session };
+      try {
+        outcome = await session.send(agentPromptText(offer.text, offer.context), deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
+      } finally {
+        current = undefined;
+      }
       if (outcome.kind === "timeout") {
         // 그 차례를 먼저 멈추고(더 쓰지 않게) 프로세스를 내린다 — 다음 요청은 새 프로세스.
         await session.interrupt();
@@ -165,7 +190,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       } else if (session.sessionRef) {
         await deps.sessions.set(offer.conversationUuid, adapter.id, session.sessionRef);
       }
-      reply = replyForOutcome(outcome, limits, adapter.displayName);
+      // 멈춘 차례 — 세션은 살아 있고(재개 값도 위에서 저장) 다음 요청은 같은 세션으로 «이어서» 간다.
+      reply = stopping.has(offer.turnUuid) ? stoppedReply(outcome, limits) : replyForOutcome(outcome, limits, adapter.displayName);
       return reply;
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
@@ -258,6 +284,26 @@ function serverLimits(value: unknown): ServerLimits {
     return n;
   };
   return { pollHoldSeconds: num("pollHoldSeconds"), textMaxCharacters: num("textMaxCharacters"), documentsMax: num("documentsMax") };
+}
+
+/**
+ * link 를 연다 — 이 CLI 의 기능(features)을 알린다. ★옛 서버는 open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다 → 그때만
+ * features 없이 한 번 더 연다(옛 서버는 멈춤 지시를 보내지 않는다).
+ */
+async function openLink(deps: ServeDeps): Promise<Record<string, unknown>> {
+  const base = { hostName: deps.hostName, cliVersion: deps.cliVersion, agents: deps.agents };
+  try {
+    return await deps.http.call("open", { ...base, features: [...PC_FEATURES] });
+  } catch (error) {
+    if (!(error instanceof AgentCallError) || error.status !== 400 || error.code !== "INVALID") throw error;
+    deps.log.write({ event: "open_without_features", features: [...PC_FEATURES] });
+    return await deps.http.call("open", base);
+  }
+}
+
+/** poll 의 멈출 turn — 옛 서버는 이 칸이 없다. */
+function stopsIn(res: Record<string, unknown>): string[] {
+  return Array.isArray(res.stops) ? res.stops.filter((t): t is string => typeof t === "string") : [];
 }
 
 function offersIn(res: Record<string, unknown>): AgentOffer[] {

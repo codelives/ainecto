@@ -31,6 +31,9 @@ export class FakeServer implements AgentHttp {
   private polls: Array<Record<string, unknown> | AgentCallError> = [];
   private waiting: (() => void) | undefined;
 
+  /** @param oldServer 옛 서버 — open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다. */
+  constructor(private readonly oldServer = false) {}
+
   offer(turnUuid: string, conversationUuid: string, text: string, context?: Record<string, unknown>, agent?: string): void {
     this.push({ state: "OPEN", offers: [{ turnUuid, conversationUuid, text, context, ...(agent ? { agent } : {}) }] });
   }
@@ -49,6 +52,7 @@ export class FakeServer implements AgentHttp {
   async call(op: AgentOp, body: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
     this.calls.push({ op, body });
     if (op === "open") {
+      if (this.oldServer && body.features !== undefined) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       return { linkId: "11111111-1111-4111-8111-111111111111", linkToken: "tok", limits: { pollHoldSeconds: 20, textMaxCharacters: 10_000, documentsMax: 50 } };
     }
     if (op !== "poll") return {};
@@ -84,6 +88,8 @@ export interface WorldOptions {
   sessionsFile?: Record<string, unknown>;
   /** Agent 환경에 더할 값(예: 시험용 가짜 ANTHROPIC_API_KEY). */
   env?: Record<string, string>;
+  /** 옛 서버(open 의 features 를 모른다). */
+  oldServer?: boolean;
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -95,7 +101,7 @@ export function startServe(options: WorldOptions = {}): World {
   const logPath = join(dir, "agent.log");
   const sessionsPath = join(dir, "sessions.json");
   if (options.sessionsFile) writeFileSync(sessionsPath, JSON.stringify(options.sessionsFile));
-  const server = new FakeServer();
+  const server = new FakeServer(options.oldServer);
   const stop = new AbortController();
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
   const shared = { spawnImpl: fakeSpawn, cwd: dir,

@@ -17,6 +17,8 @@ export type AgentLogRecord =
   | { event: "agent_probe_response"; callId: string; agent: string; probe: "detect" | "auth"; ok: boolean; installed?: boolean;
       version?: string; ready?: boolean; mode?: string; method?: string; plan?: string; detail?: string; ms: number }
   | { event: "offer"; turnUuid: string; conversationUuid: string; agent: string; duplicate: boolean }
+  | { event: "stop_request"; turnUuid: string; running: boolean; queued: boolean }
+  | { event: "open_without_features"; features: string[] }
   | { event: "process_start"; pid: number; agent: string; conversationUuid: string; resume: boolean }
   | { event: "process_exit"; pid: number; agent: string; conversationUuid: string; code: number | null; signal: string | null }
   | { event: "agent_rpc"; pid: number; agent: string; id: number; method: string }

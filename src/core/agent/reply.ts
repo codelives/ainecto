@@ -1,7 +1,8 @@
 import type { TurnOutcome } from "./agents";
 
 export interface AgentReply {
-  status: "DONE" | "FAILED";
+  /** STOPPED = 웹 «중단»으로 멈춘 차례 — 그때까지 한 문서·카드를 싣는다. */
+  status: "DONE" | "FAILED" | "STOPPED";
   reply: string;
   documentUuids: string[];
   /** {@code documentUuids} 가운데 새로 만든 것 — 비면 싣지 않는다(서버 선택 칸). */
@@ -20,15 +21,7 @@ export function replyForOutcome(
   limits: { textMaxCharacters: number; documentsMax: number },
   agentName: string,
 ): AgentReply {
-  const facts = outcome.kind === "result" ? outcome.facts : undefined;
-  const documentUuids = facts ? facts.documents.slice(0, limits.documentsMax) : [];
-  const createdDocumentUuids = facts ? facts.createdDocuments.filter((uuid) => documentUuids.includes(uuid)) : [];
-  const cardUuids = facts ? facts.cards.slice(0, limits.documentsMax) : [];
-  const attached = {
-    documentUuids,
-    ...(createdDocumentUuids.length > 0 ? { createdDocumentUuids } : {}),
-    ...(cardUuids.length > 0 ? { cardUuids } : {}),
-  };
+  const attached = attachedWork(outcome, limits);
   const failed = (errorCode: string, text: string): AgentReply =>
     ({ status: "FAILED", errorCode, reply: clip(text, limits.textMaxCharacters), ...attached });
   switch (outcome.kind) {
@@ -54,6 +47,31 @@ export function replyForOutcome(
       return failed("SCHEMA_VIOLATION", `답 형식이 어긋났어요.\n${raw}`);
     }
   }
+}
+
+/**
+ * 웹 «중단»으로 멈춘 차례의 답(순수 함수) — 어떻게 끝났든(멈춤 결과·기한·프로세스 끝) STOPPED 로, 그때까지 쓰기 도구가 만든 문서·카드를
+ * 싣는다(Edwin #1790 «그때까지 작성된 결과는 유지»).
+ */
+export function stoppedReply(outcome: TurnOutcome | undefined, limits: { textMaxCharacters: number; documentsMax: number }): AgentReply {
+  return {
+    status: "STOPPED",
+    reply: clip("중단했어요. 그때까지 한 일(문서·카드)은 남아 있어요.", limits.textMaxCharacters),
+    ...(outcome ? attachedWork(outcome, limits) : { documentUuids: [] }),
+  };
+}
+
+/** 쓰기 도구 결과의 문서·카드(상한 안) — 빈 선택 칸은 싣지 않는다. */
+function attachedWork(outcome: TurnOutcome, limits: { documentsMax: number }) {
+  const facts = outcome.kind === "result" ? outcome.facts : undefined;
+  const documentUuids = facts ? facts.documents.slice(0, limits.documentsMax) : [];
+  const createdDocumentUuids = facts ? facts.createdDocuments.filter((uuid) => documentUuids.includes(uuid)) : [];
+  const cardUuids = facts ? facts.cards.slice(0, limits.documentsMax) : [];
+  return {
+    documentUuids,
+    ...(createdDocumentUuids.length > 0 ? { createdDocumentUuids } : {}),
+    ...(cardUuids.length > 0 ? { cardUuids } : {}),
+  };
 }
 
 function codePoints(text: string): number {
