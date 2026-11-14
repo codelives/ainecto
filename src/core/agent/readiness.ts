@@ -18,7 +18,7 @@ export interface AgentCheck {
  * serve 시작 때 Agent 마다 설치 감지 → (설치됐으면) 인증 확인. ★모델 호출 0. 확인마다 {@code agent_probe} 1줄 + {@code agent_probe_response} 1줄.
  * 확인이 던져도 그 Agent 만 «준비 안 됨»으로 두고 나머지는 계속한다.
  */
-export async function checkAgents(adapters: readonly AgentAdapter[], log: DaemonLog<AgentLogRecord>, requireApiKey: boolean): Promise<AgentCheck[]> {
+export async function checkAgents(adapters: readonly AgentAdapter[], log: DaemonLog<AgentLogRecord>): Promise<AgentCheck[]> {
   return await Promise.all(adapters.map(async (adapter): Promise<AgentCheck> => {
     const detected = await probe(log, adapter.id, "detect", () => adapter.detect(),
       (d) => ({ installed: d.installed, version: d.version, detail: d.detail }));
@@ -27,15 +27,13 @@ export async function checkAgents(adapters: readonly AgentAdapter[], log: Daemon
     }
     const auth = await probe(log, adapter.id, "auth", () => adapter.authStatus(),
       (a) => ({ ready: a.ready, mode: a.mode, method: a.method, plan: a.plan, detail: a.detail }));
-    // 운영: 구독 로그인은 준비 안 됨(약관 — 사용자 본인 API 키만).
-    const blocked = requireApiKey && auth?.ready === true && auth.mode !== "apiKey";
     return {
       id: adapter.id,
       installed: true,
       version: detected.version,
-      ready: auth?.ready === true && !blocked,
+      ready: auth?.ready === true,
       auth: auth?.ready === true ? auth.mode : undefined,
-      detail: blocked ? "signed in with a subscription; production accepts only your own API key" : auth?.detail,
+      detail: auth?.detail,
     };
   }));
 }

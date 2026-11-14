@@ -55,18 +55,18 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     expectPairedLines(w);
   });
 
-  it("운영: Claude Code 차례가 구독 로그인(init apiKeySource none)으로 돌면 그 자리에서 멈추고 FAILED AGENT_AUTH_NOT_ALLOWED", async () => {
-    const w = startServe({ installed: ["claude-code"], requireApiKey: true });
+  it("구독 로그인(init apiKeySource none)으로 돌아도 멈추지 않고 답한다 — 출처 이름은 남긴다(운영도 구독 허용, 11-14)", async () => {
+    const w = startServe({ installed: ["claude-code"] });
     w.server.offer("t1", "conv-a", "hello");
     const reply = await until(() => w.server.replies()[0]);
     await finish(w);
-    expect(reply).toMatchObject({ status: "FAILED", errorCode: "AGENT_AUTH_NOT_ALLOWED" });
-    expect(logRecords(w).find((r) => r.event === "agent_auth_blocked")).toMatchObject({ agent: "claude-code", apiKeySource: "none" });
+    expect(reply).toMatchObject({ status: "DONE" });
+    expect(logRecords(w).find((r) => r.event === "agent_auth_source")).toMatchObject({ agent: "claude-code", apiKeySource: "none" });
     expectPairedLines(w);
   });
 
-  it("운영: 키 변수가 있어 API 키로 돌면 그대로 답한다", async () => {
-    const w = startServe({ installed: ["claude-code"], requireApiKey: true, env: { ANTHROPIC_API_KEY: "test-placeholder-not-a-key" } });
+  it("키 변수가 있어 API 키로 돌면 그대로 답한다", async () => {
+    const w = startServe({ installed: ["claude-code"], env: { ANTHROPIC_API_KEY: "test-placeholder-not-a-key" } });
     w.server.offer("t1", "conv-a", "hello");
     const reply = await until(() => w.server.replies()[0]);
     await finish(w);

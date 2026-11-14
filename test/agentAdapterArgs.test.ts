@@ -15,7 +15,7 @@ const bridge = ainectoBridge("/usr/bin/node", "/opt/ainecto/dist/bin/ainecto.js"
 
 describe("Codex app-server 고정 설정(실측 그대로)", () => {
   it("AiNecto 브리지 · never · read-only · 내장 셸·플러그인·앱·컴퓨터/브라우저 조작·이미지 끔 · 쓰기 도구마다 approve", () => {
-    expect(codexAppServerArgs(bridge, new Set(["kanban_apply_changes", "create_documents", "bad.name"]), false)).toEqual([
+    expect(codexAppServerArgs(bridge, new Set(["kanban_apply_changes", "create_documents", "bad.name"]))).toEqual([
       "app-server",
       "-c", 'mcp_servers.ainecto.command="/usr/bin/node"',
       "-c", 'mcp_servers.ainecto.args=["/opt/ainecto/dist/bin/ainecto.js","--endpoint","https://dev.ainecto.com/mcp","mcp"]',
@@ -101,10 +101,8 @@ describe("Claude Code 고정 설정 · 인증 읽기", () => {
     expect(claudeAuthFromJson("Not logged in", 1, "", true)).toMatchObject({ ready: true, mode: "apiKey" });
   });
 
-  it("운영이면 Codex 를 API 키 로그인만 쓰게 띄운다(forced_login_method) — dev 는 그대로", () => {
-    const prod = codexAppServerArgs(bridge, new Set<string>(), true);
-    expect(prod.slice(-2)).toEqual(["-c", 'forced_login_method="api"']);
-    expect(codexAppServerArgs(bridge, new Set<string>(), false)).not.toContain('forced_login_method="api"');
+  it("Codex 로그인 방식을 강제하지 않는다 — 운영도 구독 로그인을 받는다(사용자 11-14 «허용해»)", () => {
+    expect(codexAppServerArgs(bridge, new Set<string>()).join(" ")).not.toContain("forced_login_method");
   });
 
   it("Agent 환경에서 AINECTO_TOKEN 을 뺀다(브리지는 CLI 로그인만)", () => {

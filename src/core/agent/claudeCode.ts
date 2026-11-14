@@ -15,8 +15,6 @@ export interface ClaudeCodeDeps {
   log: DaemonLog<AgentLogRecord>;
   /** 서버 tools/list 에서 readOnlyHint 가 아닌 도구 이름. */
   writeTools: ReadonlySet<string>;
-  /** 운영이면 true — API 키로 돌 때만 받는다({@link requiresApiKey}). */
-  requireApiKey: boolean;
   /** K5 고정 인자 — 글 상한(서버 값)과 이어 붙일 세션으로 만든다({@code claudeAgentArgs}). */
   args(input: { textMaxCharacters: number; resumeSessionId?: string }): string[];
 }
@@ -154,14 +152,9 @@ class ClaudeCodeSession implements AgentSession {
     }
     if (event.type === "system" && event.subtype === "init" && typeof event.session_id === "string") {
       this.sessionRef = event.session_id;
-      // 운영: 이 차례가 API 키로 돌지 않으면(구독 로그인) 그 자리에서 멈추고 프로세스를 내린다.
+      // 이 차례가 실제로 무엇으로 도는지(출처 이름 — 키 값 아님)를 남긴다. 운영도 구독 로그인을 받는다(사용자 11-14 «허용해»).
       const source = typeof event.apiKeySource === "string" ? event.apiKeySource : "none";
       this.deps.log.write({ event: "agent_auth_source", pid: this.child.pid, agent: this.agent, apiKeySource: source });
-      if (this.deps.requireApiKey && source !== "ANTHROPIC_API_KEY") {
-        this.deps.log.write({ event: "agent_auth_blocked", pid: this.child.pid, agent: this.agent, apiKeySource: source });
-        this.finish({ kind: "authNotAllowed", detail: `apiKeySource ${source}` });
-        void this.child.stop();
-      }
       return;
     }
     const content = (event.message as { content?: unknown } | undefined)?.content;

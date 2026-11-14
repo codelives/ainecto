@@ -39,20 +39,10 @@ export interface AgentTurnResult {
 export type TurnOutcome =
   | { kind: "result"; result: AgentTurnResult; facts: WriteFacts }
   | { kind: "timeout" }
-  | { kind: "exited"; code: number | null; signal: string | null; stderrTail: string }
-  /** 운영인데 구독 로그인으로 돌려 해서 멈춘 차례({@link requiresApiKey}). */
-  | { kind: "authNotAllowed"; detail: string };
+  | { kind: "exited"; code: number | null; signal: string | null; stderrTail: string };
 
 /** Agent 가 무엇으로 인증해 도는가 — 과금 주체. 서버 연결 계약의 {@code auth} 칸과 같은 글이다. */
 export type AgentAuthMode = "apiKey" | "subscription";
-
-/**
- * ★운영(--env prod)은 사용자 본인 API 키로 도는 Agent 만 받는다(KAN-1075, 사용자 승인 2026-11-14 — 제3자 구독 로그인 약관 대비).
- * 가르는 값은 이미 있는 CLI 환경 하나다(새 플래그 없음). 준비 확인·Codex 인자·Claude 차례 확인이 모두 이 판정을 쓴다.
- */
-export function requiresApiKey(env: "prod" | "dev"): boolean {
-  return env === "prod";
-}
 
 export interface AgentDetection {
   installed: boolean;

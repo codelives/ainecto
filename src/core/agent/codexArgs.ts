@@ -30,15 +30,7 @@ const CONFIG_KEY_PART = /^[A-Za-z0-9_-]+$/;
 /** 끄는 Codex 기능 — 이름은 {@code codex features list} 그대로. 셸은 shell_tool, cua_repl 같은 플러그인 MCP 는 plugins 로 꺼진다(실측). */
 const FEATURES_OFF = ["shell_tool", "plugins", "apps", "computer_use", "browser_use", "image_generation"] as const;
 
-/**
- * 운영이면 ChatGPT 로그인을 쓰지 못하게 한다 — 실측(11-14, 모델 호출 0): 이 값이면 app-server 가 ChatGPT 로그인을 무시해
- * account/read 가 null 이고, 사용자가 {@code codex login --with-api-key} 로 넣은 API 키 로그인만 쓴다. 준비 확인·대화 둘 다 같은 인자.
- */
-export function codexLoginArgs(requireApiKey: boolean): string[] {
-  return requireApiKey ? ["-c", 'forced_login_method="api"'] : [];
-}
-
-export function codexAppServerArgs(bridge: AinectoBridge, writeTools: Iterable<string>, requireApiKey: boolean): string[] {
+export function codexAppServerArgs(bridge: AinectoBridge, writeTools: Iterable<string>): string[] {
   const server = `mcp_servers.${AINECTO_MCP_SERVER}`;
   const config = [
     `${server}.command=${tomlString(bridge.command)}`,
@@ -49,7 +41,7 @@ export function codexAppServerArgs(bridge: AinectoBridge, writeTools: Iterable<s
     ...[...writeTools].filter((tool) => CONFIG_KEY_PART.test(tool)).sort()
       .map((tool) => `${server}.tools.${tool}.approval_mode="approve"`),
   ];
-  return ["app-server", ...config.flatMap((entry) => ["-c", entry]), ...codexLoginArgs(requireApiKey)];
+  return ["app-server", ...config.flatMap((entry) => ["-c", entry])];
 }
 
 /** TOML 기본 문자열 — JSON 문자열 표기는 TOML 기본 문자열로도 읽힌다(\" \\ \uXXXX). */
@@ -113,7 +105,7 @@ export function codexAuthFromAccount(result: Record<string, unknown>): AgentAuth
   const plan = typeof account?.planType === "string" ? account.planType : undefined;
   if (account) return { ready: true, mode: method === "apiKey" ? "apiKey" : "subscription", method, plan };
   if (result.requiresOpenaiAuth === false) return { ready: true, method: "none-required" };
-  return { ready: false, detail: "not signed in with an API key or ChatGPT (run `codex login --with-api-key`, or `codex login` outside production)" };
+  return { ready: false, detail: "not signed in with an API key or ChatGPT (run `codex login`, or `codex login --with-api-key`)" };
 }
 
 /**

@@ -23,7 +23,5 @@ describe("agent reply — Claude 결과 → 서버 답", () => {
     expect(replyForOutcome({ kind: "result", facts: { documents: [], createdDocuments: [], cards: [] }, result: { isError: true, subtype: "error_max_turns" } }, limits, "Claude Code").errorCode).toBe("AGENT_ERROR");
     expect(replyForOutcome({ kind: "timeout" }, limits, "Claude Code").errorCode).toBe("TURN_TIMEOUT");
     expect(replyForOutcome({ kind: "exited", code: 3, signal: null, stderrTail: "" }, limits, "Claude Code").errorCode).toBe("AGENT_EXITED");
-    expect(replyForOutcome({ kind: "authNotAllowed", detail: "apiKeySource none" }, limits, "Claude Code"))
-      .toMatchObject({ status: "FAILED", errorCode: "AGENT_AUTH_NOT_ALLOWED" });
   });
 });

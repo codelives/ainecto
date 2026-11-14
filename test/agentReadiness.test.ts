@@ -10,11 +10,11 @@ import { AgentSessionMap } from "../src/core/agent/sessions";
 import { DaemonLog } from "../src/core/term/daemonLog";
 import { fakeSpawn } from "./support/agentServeWorld";
 
-function world(env: Record<string, string>, spawnImpl: AgentSpawn = fakeSpawn, requireApiKey = false) {
+function world(env: Record<string, string>, spawnImpl: AgentSpawn = fakeSpawn) {
   const dir = mkdtempSync(join(tmpdir(), "agent-ready-"));
   const logPath = join(dir, "agent.log");
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
-  const shared = { spawnImpl, cwd: dir, env: { ...process.env, ANTHROPIC_API_KEY: "", ...env }, log, writeTools: new Set<string>(), requireApiKey };
+  const shared = { spawnImpl, cwd: dir, env: { ...process.env, ANTHROPIC_API_KEY: "", ...env }, log, writeTools: new Set<string>() };
   const adapters = [
     claudeCodeAdapter({ ...shared, args: () => [] }),
     codexAdapter({ ...shared, appServerArgs: ["app-server"], clientVersion: "0.0.0" }),
@@ -26,7 +26,7 @@ function world(env: Record<string, string>, spawnImpl: AgentSpawn = fakeSpawn, r
 describe("serve 시작 때 Agent 준비 확인(모델 호출 0)", () => {
   it("둘 다 설치·로그인 — 판 · 준비됨, 확인마다 요청 줄 + 응답 줄 · 계정 식별값은 남기지 않는다", async () => {
     const w = world({});
-    const checks = await checkAgents(w.adapters, w.log, false);
+    const checks = await checkAgents(w.adapters, w.log);
     expect(checks).toEqual([
       { id: "claude-code", installed: true, version: "9.9.9 (Claude Code)", ready: true, auth: "subscription", detail: undefined },
       { id: "codex", installed: true, version: "codex-cli 0.0.0-fake", ready: true, auth: "subscription", detail: undefined },
@@ -46,7 +46,7 @@ describe("serve 시작 때 Agent 준비 확인(모델 호출 0)", () => {
 
   it("로그인 안 됨이면 설치됨 · 준비 안 됨 — open 에는 ready:false 로 싣는다", async () => {
     const w = world({ FAKE_CLAUDE_AUTH: "out", FAKE_CODEX_ACCOUNT: "none" });
-    const checks = await checkAgents(w.adapters, w.log, false);
+    const checks = await checkAgents(w.adapters, w.log);
     expect(checks.map(({ id, installed, ready }) => ({ id, installed, ready }))).toEqual([
       { id: "claude-code", installed: true, ready: false },
       { id: "codex", installed: true, ready: false },
@@ -58,29 +58,17 @@ describe("serve 시작 때 Agent 준비 확인(모델 호출 0)", () => {
     const onlyClaude: AgentSpawn = (command, args, opts) =>
       fakeSpawn(command === "codex" ? "ainecto-no-such-binary-for-test" : command, args, opts);
     const w = world({}, onlyClaude);
-    const checks = await checkAgents(w.adapters, w.log, false);
+    const checks = await checkAgents(w.adapters, w.log);
     expect(checks[1]).toMatchObject({ id: "codex", installed: false, ready: false, detail: "ENOENT" });
     expect(openAgents(checks)).toEqual([{ id: "claude-code", ready: true, auth: "subscription" }]);
     expect(w.records().filter((r) => r.event === "agent_probe" && r.agent === "codex").map((r) => r.probe)).toEqual(["detect"]);
   });
 });
 
-describe("운영(--env prod)은 사용자 본인 API 키 모드만 — 모델 호출 0", () => {
-  it("구독 로그인이면 준비 안 됨 — Claude 는 auth subscription, Codex 는 API 로그인 강제로 ChatGPT 로그인을 못 씀", async () => {
-    const w = world({}, fakeSpawn, true);
-    const checks = await checkAgents(w.adapters, w.log, true);
-    expect(checks.map(({ id, ready, auth }) => ({ id, ready, auth }))).toEqual([
-      { id: "claude-code", ready: false, auth: "subscription" },
-      { id: "codex", ready: false, auth: undefined },
-    ]);
-    expect(checks[0]?.detail).toMatch(/API key/);
-    expect(checks[1]?.detail).toMatch(/codex login --with-api-key/);
-    expect(openAgents(checks)).toEqual([{ id: "claude-code", ready: false, auth: "subscription" }, { id: "codex", ready: false }]);
-  });
-
+describe("인증 방식은 정보 — 구독도 API 키도 준비됨(운영도 구독 허용, 11-14) · 모델 호출 0", () => {
   it("키 변수가 있으면 Claude 는 apiKey(값은 읽지 않는다) · Codex 는 API 키 로그인이면 apiKey — 둘 다 준비됨", async () => {
-    const w = world({ ANTHROPIC_API_KEY: "test-placeholder-not-a-key", FAKE_CODEX_ACCOUNT: "apiKey" }, fakeSpawn, true);
-    const checks = await checkAgents(w.adapters, w.log, true);
+    const w = world({ ANTHROPIC_API_KEY: "test-placeholder-not-a-key", FAKE_CODEX_ACCOUNT: "apiKey" });
+    const checks = await checkAgents(w.adapters, w.log);
     expect(openAgents(checks)).toEqual([{ id: "claude-code", ready: true, auth: "apiKey" }, { id: "codex", ready: true, auth: "apiKey" }]);
     expect(readFileSync(w.logPath, "utf8")).not.toContain("test-placeholder-not-a-key");
   });
