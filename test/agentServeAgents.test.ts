@@ -71,6 +71,9 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     const reply = await until(() => w.server.replies()[0]);
     await finish(w);
     expect(reply).toMatchObject({ status: "DONE" });
+    // 실제로 무엇으로 돌았는지는 차례마다 init 의 출처 이름으로 남긴다(키 값은 남기지 않는다).
+    expect(logRecords(w).find((r) => r.event === "agent_auth_source")).toMatchObject({ agent: "claude-code", apiKeySource: "ANTHROPIC_API_KEY" });
+    expect(readFileSync(w.logPath, "utf8")).not.toContain("test-placeholder-not-a-key");
   });
 
   it("같은 대화에서 두 Agent 를 번갈아도 각자 세션이 살아 있다(프로세스 하나씩 · 후속은 같은 세션)", async () => {

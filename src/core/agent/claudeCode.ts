@@ -156,6 +156,7 @@ class ClaudeCodeSession implements AgentSession {
       this.sessionRef = event.session_id;
       // 운영: 이 차례가 API 키로 돌지 않으면(구독 로그인) 그 자리에서 멈추고 프로세스를 내린다.
       const source = typeof event.apiKeySource === "string" ? event.apiKeySource : "none";
+      this.deps.log.write({ event: "agent_auth_source", pid: this.child.pid, agent: this.agent, apiKeySource: source });
       if (this.deps.requireApiKey && source !== "ANTHROPIC_API_KEY") {
         this.deps.log.write({ event: "agent_auth_blocked", pid: this.child.pid, agent: this.agent, apiKeySource: source });
         this.finish({ kind: "authNotAllowed", detail: `apiKeySource ${source}` });

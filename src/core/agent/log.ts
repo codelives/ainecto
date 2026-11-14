@@ -29,6 +29,8 @@ export type AgentLogRecord =
   | { event: "agent_mcp_servers_off"; pid: number; agent: string; names: string[] }
   /** 운영인데 구독 로그인으로 돌려 해서 그 차례를 멈췄다(키 값은 남기지 않는다 — 출처 이름만). */
   | { event: "agent_auth_blocked"; pid: number; agent: string; apiKeySource: string }
+  /** Claude: 이 프로세스가 실제로 무엇으로 도는지(init 의 출처 이름 — 구독이면 none). 키 값은 남기지 않는다. */
+  | { event: "agent_auth_source"; pid: number; agent: string; apiKeySource: string }
   | { event: "agent_request"; turnUuid: string; agent: string; conversationUuid: string; pid: number; textLength: number }
   | { event: "agent_response"; turnUuid: string; agent: string; ms: number; outcome: string; status: string; errorCode?: string; subtype?: string;
       sessionId?: string; documents: number; createdDocuments: number; cards: number; numTurns?: number; costUsd?: number }
