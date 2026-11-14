@@ -15,6 +15,8 @@ export interface ClaudeCodeDeps {
   log: DaemonLog<AgentLogRecord>;
   /** 서버 tools/list 에서 readOnlyHint 가 아닌 도구 이름. */
   writeTools: ReadonlySet<string>;
+  /** 운영이면 true — API 키로 돌 때만 받는다({@link requiresApiKey}). */
+  requireApiKey: boolean;
   /** K5 고정 인자 — 글 상한(서버 값)과 이어 붙일 세션으로 만든다({@code claudeAgentArgs}). */
   args(input: { textMaxCharacters: number; resumeSessionId?: string }): string[];
 }
@@ -34,15 +36,23 @@ export function claudeCodeAdapter(deps: ClaudeCodeDeps): AgentAdapter {
       if (run.spawnError || run.timedOut) {
         return { ready: false, detail: run.spawnError ?? "timed out" };
       }
-      return claudeAuthFromJson(run.stdout, run.code, run.stderrTail);
+      return claudeAuthFromJson(run.stdout, run.code, run.stderrTail, hasApiKeyVariable(deps.env));
     },
     open: ({ conversationUuid, resumeRef, textMaxCharacters }) =>
       new ClaudeCodeSession(conversationUuid, resumeRef, deps.args({ textMaxCharacters, resumeSessionId: resumeRef }), deps),
   };
 }
 
-/** {@code claude auth status --json} 출력 → 준비 여부(순수 함수). 로그인 안 됨이면 종료 코드가 0 이 아닐 수 있어 출력부터 본다. */
-export function claudeAuthFromJson(stdout: string, code: number | null, stderrTail: string): AgentAuthStatus {
+/** 키 변수가 있는가 — ★값은 읽지 않는다(있는지만). 실측: {@code claude -p} 는 이 변수가 있으면 그 키로 돈다(init {@code apiKeySource}). */
+function hasApiKeyVariable(env: NodeJS.ProcessEnv): boolean {
+  return (env.ANTHROPIC_API_KEY ?? "") !== "";
+}
+
+/**
+ * {@code claude auth status --json} 출력 + 키 변수 유무 → 준비 여부(순수 함수). 로그인 안 됨이면 종료 코드가 0 이 아닐 수 있어 출력부터 본다.
+ * ★실측(11-14): auth status 는 키 변수를 보이지 않는다(저장된 claude.ai 로그인만) — 그래서 키 변수가 있으면 API 키 모드로 본다.
+ */
+export function claudeAuthFromJson(stdout: string, code: number | null, stderrTail: string, apiKeyVariable: boolean): AgentAuthStatus {
   let parsed: Record<string, unknown> | undefined;
   try {
     const value: unknown = JSON.parse(stdout);
@@ -50,11 +60,14 @@ export function claudeAuthFromJson(stdout: string, code: number | null, stderrTa
   } catch {
     // 아래에서 이유를 싣는다.
   }
+  if (apiKeyVariable) return { ready: true, mode: "apiKey", method: "ANTHROPIC_API_KEY" };
   if (!parsed) {
     return { ready: false, detail: `unreadable auth status (exit ${code ?? "-"})${stderrTail ? `: ${stderrTail}` : ""}` };
   }
+  const ready = parsed.loggedIn === true;
   return {
-    ready: parsed.loggedIn === true,
+    ready,
+    ...(ready ? { mode: "subscription" as const } : {}),
     method: typeof parsed.authMethod === "string" ? parsed.authMethod : undefined,
     plan: typeof parsed.subscriptionType === "string" ? parsed.subscriptionType : undefined,
   };
@@ -141,6 +154,13 @@ class ClaudeCodeSession implements AgentSession {
     }
     if (event.type === "system" && event.subtype === "init" && typeof event.session_id === "string") {
       this.sessionRef = event.session_id;
+      // 운영: 이 차례가 API 키로 돌지 않으면(구독 로그인) 그 자리에서 멈추고 프로세스를 내린다.
+      const source = typeof event.apiKeySource === "string" ? event.apiKeySource : "none";
+      if (this.deps.requireApiKey && source !== "ANTHROPIC_API_KEY") {
+        this.deps.log.write({ event: "agent_auth_blocked", pid: this.child.pid, agent: this.agent, apiKeySource: source });
+        this.finish({ kind: "authNotAllowed", detail: `apiKeySource ${source}` });
+        void this.child.stop();
+      }
       return;
     }
     const content = (event.message as { content?: unknown } | undefined)?.content;

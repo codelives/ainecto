@@ -82,6 +82,10 @@ export interface WorldOptions {
   installed?: AgentId[];
   /** sessions.json 에 미리 둘 내용. */
   sessionsFile?: Record<string, unknown>;
+  /** 운영처럼 API 키 모드만 받는다(--env prod). */
+  requireApiKey?: boolean;
+  /** Agent 환경에 더할 값(예: 시험용 가짜 ANTHROPIC_API_KEY). */
+  env?: Record<string, string>;
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -96,8 +100,9 @@ export function startServe(options: WorldOptions = {}): World {
   const server = new FakeServer();
   const stop = new AbortController();
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
-  const shared = { spawnImpl: fakeSpawn, cwd: dir, env: { ...process.env, FAKE_CLAUDE_ARGS_LOG: argsLog, FAKE_CODEX_ARGS_LOG: codexArgsLog },
-    log, writeTools: WRITE_TOOLS };
+  const shared = { spawnImpl: fakeSpawn, cwd: dir,
+    env: { ...process.env, ANTHROPIC_API_KEY: "", FAKE_CLAUDE_ARGS_LOG: argsLog, FAKE_CODEX_ARGS_LOG: codexArgsLog, ...options.env },
+    log, writeTools: WRITE_TOOLS, requireApiKey: options.requireApiKey === true };
   const all: AgentAdapter[] = [
     claudeCodeAdapter({ ...shared, args: ({ resumeSessionId }) => (resumeSessionId ? ["--resume", resumeSessionId] : []) }),
     codexAdapter({ ...shared, appServerArgs: ["app-server"], clientVersion: "0.0.0" }),

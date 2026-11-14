@@ -55,6 +55,24 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     expectPairedLines(w);
   });
 
+  it("운영: Claude Code 차례가 구독 로그인(init apiKeySource none)으로 돌면 그 자리에서 멈추고 FAILED AGENT_AUTH_NOT_ALLOWED", async () => {
+    const w = startServe({ installed: ["claude-code"], requireApiKey: true });
+    w.server.offer("t1", "conv-a", "hello");
+    const reply = await until(() => w.server.replies()[0]);
+    await finish(w);
+    expect(reply).toMatchObject({ status: "FAILED", errorCode: "AGENT_AUTH_NOT_ALLOWED" });
+    expect(logRecords(w).find((r) => r.event === "agent_auth_blocked")).toMatchObject({ agent: "claude-code", apiKeySource: "none" });
+    expectPairedLines(w);
+  });
+
+  it("운영: 키 변수가 있어 API 키로 돌면 그대로 답한다", async () => {
+    const w = startServe({ installed: ["claude-code"], requireApiKey: true, env: { ANTHROPIC_API_KEY: "test-placeholder-not-a-key" } });
+    w.server.offer("t1", "conv-a", "hello");
+    const reply = await until(() => w.server.replies()[0]);
+    await finish(w);
+    expect(reply).toMatchObject({ status: "DONE" });
+  });
+
   it("같은 대화에서 두 Agent 를 번갈아도 각자 세션이 살아 있다(프로세스 하나씩 · 후속은 같은 세션)", async () => {
     const w = startServe({ installed: ["claude-code", "codex"] });
     w.server.offer("t1", "conv-a", "one", undefined, "codex");

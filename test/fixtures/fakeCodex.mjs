@@ -91,9 +91,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "initialized":
       return;
     case "account/read":
-      out({ id, result: process.env.FAKE_CODEX_ACCOUNT === "none"
-        ? { account: null, requiresOpenaiAuth: true }
-        : { account: { type: "chatgpt", email: "someone@example.com", planType: "pro" }, requiresOpenaiAuth: true } });
+      // FAKE_CODEX_ACCOUNT: none(로그인 안 됨) · apiKey(API 키 로그인) · 기본 ChatGPT. 실측: forced_login_method="api" 면 ChatGPT 로그인은 account null.
+      out({ id, result: { requiresOpenaiAuth: true, account: process.env.FAKE_CODEX_ACCOUNT === "none" ? null
+        : process.env.FAKE_CODEX_ACCOUNT === "apiKey" ? { type: "apiKey" }
+        : args.includes('forced_login_method="api"') ? null
+        : { type: "chatgpt", email: "someone@example.com", planType: "pro" } } });
       return;
     case "config/read":
       out({ id, result: { config: { mcp_servers: { ainecto: { command: "node" }, node_repl: { command: "node" }, openaiDeveloperDocs: { url: "https://x" } } } } });

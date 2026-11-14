@@ -2,7 +2,8 @@ import { hostname } from "node:os";
 import type { TokenProvider } from "../../core/auth/oauth";
 import { ensurePrivateDir } from "../../core/fs/privateFiles";
 import { McpRpcClient } from "../../core/mcp/rpcClient";
-import { agentEnv, agentReplySchema, ainectoBridge, type AgentAdapter, type AgentId } from "../../core/agent/agents";
+import { agentEnv, agentReplySchema, ainectoBridge, requiresApiKey, type AgentAdapter, type AgentId } from "../../core/agent/agents";
+import type { AinectoEnv } from "../../core/config/endpoints";
 import { spawnAgent } from "../../core/agent/child";
 import { claudeAgentArgs, claudeMcpConfig } from "../../core/agent/claudeArgs";
 import { claudeCodeAdapter } from "../../core/agent/claudeCode";
@@ -30,7 +31,15 @@ export function isAgentCommand(domain: string | undefined, action: string | unde
  * `ainecto agent serve` — 이 기기의 Claude Code·Codex 를 «내 Agent»로 띄워 둔다(KAN-1075). 로그인은 CLI 로그인(OAuth) 하나.
  * 설치·로그인은 시작할 때 한 번 본다(모델 호출 0) — 나중에 로그인했으면 serve 를 다시 띄운다.
  */
-export async function executeAgentServe(input: { endpoint: string; auth: TokenProvider; io: CliIO }): Promise<number> {
+/** serve 시작 안내 — Agent 마다 과금 주체와, 운영에서 막혔을 때 고치는 법. */
+const BILLED_TO: Readonly<Record<AgentId, string>> = { "claude-code": "Anthropic", codex: "OpenAI" };
+const API_KEY_FIX: Readonly<Record<AgentId, string>> = {
+  "claude-code": "set ANTHROPIC_API_KEY in this shell",
+  codex: "run `codex login --with-api-key`",
+};
+
+export async function executeAgentServe(input: { endpoint: string; env: AinectoEnv; auth: TokenProvider; io: CliIO }): Promise<number> {
+  const requireApiKey = requiresApiKey(input.env);
   const paths = agentPaths();
   await ensurePrivateDir(paths.dir);
   await ensurePrivateDir(paths.work);
@@ -55,23 +64,32 @@ export async function executeAgentServe(input: { endpoint: string; auth: TokenPr
   const cliScript = process.argv[1];
   if (!cliScript) throw new Error("Cannot find the path of this CLI to start the AiNecto bridge for the agents.");
   const bridge = ainectoBridge(process.execPath, cliScript, input.endpoint);
-  const shared = { spawnImpl: spawnAgent, cwd: paths.work, env: agentEnv(process.env), log, writeTools };
+  const shared = { spawnImpl: spawnAgent, cwd: paths.work, env: agentEnv(process.env), log, writeTools, requireApiKey };
   const mcpConfig = claudeMcpConfig(bridge);
   const all: AgentAdapter[] = [
     claudeCodeAdapter({ ...shared, args: ({ textMaxCharacters, resumeSessionId }) =>
       claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters), mcpConfig, resumeSessionId }) }),
-    codexAdapter({ ...shared, appServerArgs: codexAppServerArgs(bridge, writeTools), clientVersion: CLI_VERSION }),
+    codexAdapter({ ...shared, appServerArgs: codexAppServerArgs(bridge, writeTools, requireApiKey), clientVersion: CLI_VERSION }),
   ];
-  const checks = await checkAgents(all, log);
+  const checks = await checkAgents(all, log, requireApiKey);
   log.write({ event: "serve_start", pid: process.pid, version: CLI_VERSION, endpoint: input.endpoint, host,
-    agents: checks.map(({ id, installed, ready, version }) => ({ id, installed, ready, ...(version ? { version } : {}) })) });
+    agents: checks.map(({ id, installed, ready, auth, version }) =>
+      ({ id, installed, ready, ...(auth ? { auth } : {}), ...(version ? { version } : {}) })) });
   const agents = openAgents(checks);
   if (agents.length === 0) {
     throw new Error("Neither Claude Code (`claude`) nor Codex (`codex`) is on PATH. Install one and sign in, then run `ainecto agent serve` again.");
   }
   for (const check of checks) {
     const name = all.find((adapter) => adapter.id === check.id)?.displayName ?? check.id;
-    if (check.installed && !check.ready) {
+    if (!check.installed) continue;
+    if (check.ready) {
+      input.io.stderr.write(check.auth === "apiKey"
+        ? `${name}: runs on your own API key (billed to your ${BILLED_TO[check.id]} API account).\n`
+        : `${name}: runs on your subscription login (uses your plan's limits).\n`);
+    } else if (check.auth === "subscription") {
+      input.io.stderr.write(`${name} is signed in with a subscription, which production does not accept. `
+        + `To use it here, ${API_KEY_FIX[check.id]}, then run \`ainecto agent serve\` again.\n`);
+    } else {
       input.io.stderr.write(`${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
         + `Requests to ${name} will be refused until you sign in and run \`ainecto agent serve\` again.\n`);
     }

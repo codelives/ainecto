@@ -34,6 +34,9 @@ export function replyForOutcome(
   switch (outcome.kind) {
     case "timeout":
       return failed("TURN_TIMEOUT", "제한 시간 안에 끝나지 않아 멈췄어요. 다시 보내 주세요.");
+    case "authNotAllowed":
+      return failed("AGENT_AUTH_NOT_ALLOWED",
+        "운영에서는 API 키로 로그인한 Agent 만 쓸 수 있어요. 이 요청은 구독 로그인으로 실행되려 해서 멈췄어요.");
     case "exited":
       return failed("AGENT_EXITED", `${agentName} 가 끝났어요(code ${outcome.code ?? "-"}${outcome.signal ? `, ${outcome.signal}` : ""}).`
         + (outcome.stderrTail ? `\n${outcome.stderrTail}` : ""));

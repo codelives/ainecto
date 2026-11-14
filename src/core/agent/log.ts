@@ -9,13 +9,13 @@ import type { AgentPaths } from "./paths";
  */
 export type AgentLogRecord =
   | { event: "serve_start"; pid: number; version: string; endpoint: string; host: string;
-      agents: Array<{ id: string; installed: boolean; ready: boolean; version?: string }> }
+      agents: Array<{ id: string; installed: boolean; ready: boolean; auth?: string; version?: string }> }
   | { event: "serve_stop"; pid: number; reason: string }
   | { event: "agent_call"; callId: string; op: string; turnUuid?: string; bytes: number }
   | { event: "agent_call_response"; callId: string; op: string; ok: boolean; status?: number; code?: string; error?: string; ms: number; offers?: number }
   | { event: "agent_probe"; callId: string; agent: string; probe: "detect" | "auth" }
   | { event: "agent_probe_response"; callId: string; agent: string; probe: "detect" | "auth"; ok: boolean; installed?: boolean;
-      version?: string; ready?: boolean; method?: string; plan?: string; detail?: string; ms: number }
+      version?: string; ready?: boolean; mode?: string; method?: string; plan?: string; detail?: string; ms: number }
   | { event: "offer"; turnUuid: string; conversationUuid: string; agent: string; duplicate: boolean }
   | { event: "process_start"; pid: number; agent: string; conversationUuid: string; resume: boolean }
   | { event: "process_exit"; pid: number; agent: string; conversationUuid: string; code: number | null; signal: string | null }
@@ -27,6 +27,8 @@ export type AgentLogRecord =
   | { event: "agent_mcp_server"; pid: number; agent: string; name: string; status: string; error?: string }
   /** Codex: 이 대화에서 끈 사용자 설정의 MCP 서버 이름. */
   | { event: "agent_mcp_servers_off"; pid: number; agent: string; names: string[] }
+  /** 운영인데 구독 로그인으로 돌려 해서 그 차례를 멈췄다(키 값은 남기지 않는다 — 출처 이름만). */
+  | { event: "agent_auth_blocked"; pid: number; agent: string; apiKeySource: string }
   | { event: "agent_request"; turnUuid: string; agent: string; conversationUuid: string; pid: number; textLength: number }
   | { event: "agent_response"; turnUuid: string; agent: string; ms: number; outcome: string; status: string; errorCode?: string; subtype?: string;
       sessionId?: string; documents: number; createdDocuments: number; cards: number; numTurns?: number; costUsd?: number }

@@ -48,7 +48,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   seen += 1;
   if (!started) {
     started = true;
-    out({ type: "system", subtype: "init", session_id: sessionId, tools: ["StructuredOutput"] });
+    out({ type: "system", subtype: "init", session_id: sessionId, tools: ["StructuredOutput"],
+      apiKeySource: process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : "none" });
   }
   if (text === "crash") process.exit(3);
   if (text === "hang") {

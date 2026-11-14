@@ -5,6 +5,7 @@ import {
   CODEX,
   codexAuthFromAccount,
   codexInitializeParams,
+  codexLoginArgs,
   codexOtherMcpServersOff,
   codexServerRequestAnswer,
   codexThreadResumeParams,
@@ -23,6 +24,8 @@ export interface CodexDeps {
   log: DaemonLog<AgentLogRecord>;
   /** 서버 tools/list 에서 readOnlyHint 가 아닌 도구 이름. */
   writeTools: ReadonlySet<string>;
+  /** 운영이면 true — API 키 로그인만 쓴다({@link codexLoginArgs}). */
+  requireApiKey: boolean;
   /** 대화용 app-server 인자({@code codexAppServerArgs}). */
   appServerArgs: string[];
   /** initialize 의 clientInfo.version. */
@@ -39,7 +42,7 @@ export function codexAdapter(deps: CodexDeps): AgentAdapter {
     displayName: "Codex",
     detect: () => detectByVersion(deps.spawnImpl, CODEX, { cwd: deps.cwd, env: deps.env, timeoutMs: AGENT_CALL_TIMEOUT_MS }),
     async authStatus() {
-      const server = startAppServer(deps, ["app-server"], {});
+      const server = startAppServer(deps, ["app-server", ...codexLoginArgs(deps.requireApiKey)], {});
       try {
         const read = (async () => {
           await server.rpc.request("initialize", codexInitializeParams(deps.clientVersion));

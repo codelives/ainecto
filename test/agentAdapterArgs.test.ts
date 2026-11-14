@@ -15,7 +15,7 @@ const bridge = ainectoBridge("/usr/bin/node", "/opt/ainecto/dist/bin/ainecto.js"
 
 describe("Codex app-server 고정 설정(실측 그대로)", () => {
   it("AiNecto 브리지 · never · read-only · 내장 셸·플러그인·앱·컴퓨터/브라우저 조작·이미지 끔 · 쓰기 도구마다 approve", () => {
-    expect(codexAppServerArgs(bridge, new Set(["kanban_apply_changes", "create_documents", "bad.name"]))).toEqual([
+    expect(codexAppServerArgs(bridge, new Set(["kanban_apply_changes", "create_documents", "bad.name"]), false)).toEqual([
       "app-server",
       "-c", 'mcp_servers.ainecto.command="/usr/bin/node"',
       "-c", 'mcp_servers.ainecto.args=["/opt/ainecto/dist/bin/ainecto.js","--endpoint","https://dev.ainecto.com/mcp","mcp"]',
@@ -59,8 +59,8 @@ describe("Codex app-server 고정 설정(실측 그대로)", () => {
 
   it("account/read → 준비 여부 · 이메일은 싣지 않는다", () => {
     const signedIn = codexAuthFromAccount({ account: { type: "chatgpt", email: "a@b.c", planType: "pro" }, requiresOpenaiAuth: true });
-    expect(signedIn).toEqual({ ready: true, method: "chatgpt", plan: "pro" });
-    expect(codexAuthFromAccount({ account: { type: "apiKey" }, requiresOpenaiAuth: true })).toEqual({ ready: true, method: "apiKey" });
+    expect(signedIn).toEqual({ ready: true, mode: "subscription", method: "chatgpt", plan: "pro" });
+    expect(codexAuthFromAccount({ account: { type: "apiKey" }, requiresOpenaiAuth: true })).toEqual({ ready: true, mode: "apiKey", method: "apiKey" });
     expect(codexAuthFromAccount({ account: null, requiresOpenaiAuth: true })).toMatchObject({ ready: false });
     expect(codexAuthFromAccount({ account: null, requiresOpenaiAuth: false })).toMatchObject({ ready: true });
   });
@@ -92,10 +92,19 @@ describe("Claude Code 고정 설정 · 인증 읽기", () => {
   });
 
   it("claude auth status --json → 준비 여부(실측 칸 이름) · 못 읽으면 준비 안 됨", () => {
-    expect(claudeAuthFromJson('{"loggedIn":true,"authMethod":"claude.ai","email":"a@b.c","subscriptionType":"max"}', 0, ""))
-      .toEqual({ ready: true, method: "claude.ai", plan: "max" });
-    expect(claudeAuthFromJson('{"loggedIn":false,"authMethod":"none"}', 1, "")).toEqual({ ready: false, method: "none", plan: undefined });
-    expect(claudeAuthFromJson("Not logged in", 1, "")).toMatchObject({ ready: false, detail: "unreadable auth status (exit 1)" });
+    expect(claudeAuthFromJson('{"loggedIn":true,"authMethod":"claude.ai","email":"a@b.c","subscriptionType":"max"}', 0, "", false))
+      .toEqual({ ready: true, mode: "subscription", method: "claude.ai", plan: "max" });
+    expect(claudeAuthFromJson('{"loggedIn":false,"authMethod":"none"}', 1, "", false)).toEqual({ ready: false, method: "none", plan: undefined });
+    expect(claudeAuthFromJson("Not logged in", 1, "", false)).toMatchObject({ ready: false, detail: "unreadable auth status (exit 1)" });
+    // 실측: auth status 는 키 변수를 보이지 않는다 — 키 변수가 있으면 `-p` 가 그 키를 쓰므로 apiKey(로그인 안 됐어도 준비됨).
+    expect(claudeAuthFromJson('{"loggedIn":true,"authMethod":"claude.ai"}', 0, "", true)).toMatchObject({ ready: true, mode: "apiKey" });
+    expect(claudeAuthFromJson("Not logged in", 1, "", true)).toMatchObject({ ready: true, mode: "apiKey" });
+  });
+
+  it("운영이면 Codex 를 API 키 로그인만 쓰게 띄운다(forced_login_method) — dev 는 그대로", () => {
+    const prod = codexAppServerArgs(bridge, new Set<string>(), true);
+    expect(prod.slice(-2)).toEqual(["-c", 'forced_login_method="api"']);
+    expect(codexAppServerArgs(bridge, new Set<string>(), false)).not.toContain('forced_login_method="api"');
   });
 
   it("Agent 환경에서 AINECTO_TOKEN 을 뺀다(브리지는 CLI 로그인만)", () => {
