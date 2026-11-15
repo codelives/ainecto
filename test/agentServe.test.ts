@@ -44,6 +44,16 @@ describe("ainecto agent serve", () => {
     expect(String(plain.reply)).toMatch(/^got 맥락 없음 #2/);
   });
 
+  it("웹에서 메시지에 붙인 파일(KAN-1110)은 이름만 맥락 줄에 — 내용은 이 PC 에 없다고 함께", async () => {
+    const w = startServe();
+    w.server.offer("t1", "conv-a", "이 파일 봐 줘", {
+      attachments: [{ filename: "기획서.pdf" }, { filename: "" }, null, { filename: "표.csv" }],
+    });
+    const reply = await until(() => w.server.replies()[0]);
+    await finish(w);
+    expect(String(reply.reply)).toContain('got [AiNecto context — "this project" / "this document" mean these] attached files «기획서.pdf», «표.csv» (names only — the files are not available on this machine)\n\n이 파일 봐 줘 #1');
+  });
+
   it("대화가 바뀌면 앞 프로세스를 내리고, 돌아오면 그 대화의 세션으로 --resume", async () => {
     const w = startServe();
     w.server.offer("t1", "conv-a", "one");
