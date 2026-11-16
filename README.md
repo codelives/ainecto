@@ -197,7 +197,7 @@ The server tools behind them (`list_notifications`, `list_agent_todos`, `update_
 `ainecto term` keeps terminal sessions running after you close the terminal window — no tmux or cmux
 needed. A background process, started on demand, owns each session and keeps its screen, so agents and
 scripts can type into a session and read its screen, and you can attach from any terminal app. It runs on
-this machine only; it does not use your AiNecto sign-in.
+this machine only; it does not use your AiNecto sign-in, except `term remote`.
 
 ```bash
 ainecto term new api --cwd ~/code/api -- claude   # start a session (without a command: your login shell)
@@ -210,6 +210,7 @@ ainecto term attach api                           # detach with Ctrl-\ then d
 ainecto term kill api
 ainecto term kill-server                          # every session and the background process
 ainecto term restore                              # after a reboot: start again what was running
+ainecto term remote api                           # show it in AiNecto on the web and type there (Ctrl+C to stop)
 ```
 
 - Keys for `key`: `enter`, `tab`, `shift-tab`, `escape`, `backspace`, `delete`, `space`, `up`, `down`,
@@ -223,6 +224,9 @@ ainecto term restore                              # after a reboot: start again 
 - `restore` starts again each session that was running (name, folder, command) with the environment of the
   shell you run it from. It does not bring back what the programs had in memory, and nothing restarts on its
   own after a reboot. A session that exits by itself is forgotten; `kill` and `kill-server` forget theirs.
+- `remote` uses your AiNecto sign-in: open Terminal in AiNecto on the web to see the session as plain text
+  (no colors yet) and type into it. It runs until you press Ctrl+C, close it on the web, or the session
+  ends. One remote terminal per account; its log is `~/.ainecto/term/remote.log`.
 - Files are in `~/.ainecto/term/` (folder only you can read): the control socket, `sessions.json` (what
   `restore` starts) and `daemon.log` (one line per request and one per answer; kept to 10 MB plus one older
   file, `daemon.log.1`). Typed text, screens and environment values are not logged.
