@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AgentLogRecord } from "../src/core/agent/log";
+import type { AgentReply } from "../src/core/agent/reply";
 import { AgentRunLog } from "../src/core/agent/runs";
 import { resumeTodo, runTodo, type AgentTodo } from "../src/core/agent/todoRun";
 import { AgentToolError, type AgentTools } from "../src/core/agent/tools";
@@ -34,7 +35,7 @@ async function world(answer: (tool: string, args: Record<string, unknown>) => Re
   const deps = {
     tools, log, textMaxCharacters: 4000, signal: new AbortController().signal,
     runs: { started: (c: string, w?: string) => runs.started(c, w, "codex"), finished: (c: string) => runs.finished(c) },
-    runAgent: async () => ({ status: "DONE" as const, reply: "끝" }),
+    runAgent: async (): Promise<AgentReply> => ({ status: "DONE", reply: "끝", documentUuids: [] }),
   };
   const left = () => (JSON.parse(readFileSync(join(dir, "runs.json"), "utf8")) as { runs: Array<{ cardUuid: string }> }).runs
     .map((r) => r.cardUuid);
