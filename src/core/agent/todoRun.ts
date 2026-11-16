@@ -1,5 +1,4 @@
 import type { DaemonLog } from "../term/daemonLog";
-import type { AgentId } from "./agents";
 import type { AgentLogRecord } from "./log";
 import { clip, type AgentReply } from "./reply";
 import { AgentToolError, type AgentTools } from "./tools";
@@ -206,9 +205,8 @@ export interface RunTracker {
 }
 
 export interface TodoRunDeps {
+  /** ★그 할 일 신원의 입구(tools.ts toolsAs) — 수락·진행·글·결과 댓글이 그 신원으로 기록된다(사람만 승인 규칙도). */
   tools: AgentTools;
-  /** 이 차례를 도는 Agent — 실행 대화 글을 그 Agent 종류로 남긴다. */
-  agent: AgentId;
   runs?: RunTracker;
   log: DaemonLog<AgentLogRecord>;
   textMaxCharacters: number;
@@ -318,8 +316,7 @@ async function startWork(tools: AgentTools, cardUuid: string): Promise<string> {
 
 /** 실행 대화에 글 — 서버가 카드로 그 사람의 실행 대화를 찾아 준다. 대화 uuid 를 돌려준다. */
 async function postToRun(deps: TodoRunDeps, cardUuid: string, workId: string, body: string): Promise<string> {
-  const res = await deps.tools.call("send_auto_run_message", { cardUuid, workId, body: clip(body, deps.textMaxCharacters) },
-    { as: deps.agent });
+  const res = await deps.tools.call("send_auto_run_message", { cardUuid, workId, body: clip(body, deps.textMaxCharacters) });
   if (typeof res.conversationUuid !== "string") {
     throw new AgentToolError("send_auto_run_message returned no conversationUuid.", "send_auto_run_message", "MCP_PROTOCOL_ERROR");
   }

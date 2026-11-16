@@ -8,6 +8,8 @@ export interface RunEntry {
   cardUuid: string;
   /** 그 카드의 AI 작업 — 수락 직후(작업 열기 전)에는 아직 없다. */
   workId?: string;
+  /** 돌던 종류(claude-code · codex) — 다시 켜면 그 종류의 신원으로 잇는다. */
+  agent?: string;
   startedAt: string;
 }
 
@@ -31,7 +33,8 @@ export class AgentRunLog {
       for (const value of Array.isArray(parsed.runs) ? parsed.runs : []) {
         const e = (value ?? {}) as Partial<RunEntry>;
         if (typeof e.cardUuid === "string" && typeof e.startedAt === "string") {
-          runs.set(e.cardUuid, { cardUuid: e.cardUuid, ...(typeof e.workId === "string" ? { workId: e.workId } : {}), startedAt: e.startedAt });
+          runs.set(e.cardUuid, { cardUuid: e.cardUuid, ...(typeof e.workId === "string" ? { workId: e.workId } : {}),
+            ...(typeof e.agent === "string" ? { agent: e.agent } : {}), startedAt: e.startedAt });
         }
       }
     } catch (error) {
@@ -45,9 +48,9 @@ export class AgentRunLog {
   }
 
   /** 돌기 시작(수락 직후) · 작업이 열리면 workId 를 더한다 — 처음 적은 시각은 그대로. */
-  async started(cardUuid: string, workId?: string): Promise<void> {
+  async started(cardUuid: string, workId: string | undefined, agent: string): Promise<void> {
     const before = this.runs.get(cardUuid);
-    this.runs.set(cardUuid, { cardUuid, ...(workId ?? before?.workId ? { workId: workId ?? before?.workId } : {}),
+    this.runs.set(cardUuid, { cardUuid, ...(workId ?? before?.workId ? { workId: workId ?? before?.workId } : {}), agent,
       startedAt: before?.startedAt ?? new Date().toISOString() });
     await this.save();
   }

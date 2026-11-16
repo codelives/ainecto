@@ -12,7 +12,7 @@ export type AgentLogRecord =
       agents: Array<{ id: string; installed: boolean; ready: boolean; auth?: string; version?: string }> }
   | { event: "serve_stop"; pid: number; reason: string }
   /** {@code op: "tool"} = 서버 MCP 도구(tools.ts) — {@code tool} 은 앞머리 없는 도구 이름. */
-  | { event: "agent_call"; callId: string; op: string; tool?: string; agent?: string; turnUuid?: string; bytes: number }
+  | { event: "agent_call"; callId: string; op: string; tool?: string; agent?: string; agentName?: string; turnUuid?: string; bytes: number }
   | { event: "agent_call_response"; callId: string; op: string; tool?: string; ok: boolean; status?: number; code?: string; error?: string; ms: number; offers?: number }
   | { event: "agent_probe"; callId: string; agent: string; probe: "detect" | "auth" }
   | { event: "agent_probe_response"; callId: string; agent: string; probe: "detect" | "auth"; ok: boolean; installed?: boolean;

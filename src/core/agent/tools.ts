@@ -22,9 +22,18 @@ export class AgentToolError extends Error {
   }
 }
 
+/** 서버가 link 를 열 때 그 종류에 이어 준 신원(user_agents) — 종류 + 신원 이름. */
+export interface AgentIdentity {
+  agent: AgentId;
+  name: string;
+}
+
 export interface AgentToolCallOptions {
-  /** 이 호출을 그 Agent 를 대신해 부른다 — {@code X-AiNecto-Agent} 헤더(그 Agent 의 clientInfo 이름). 없으면 serve 자신(헤더 없음). */
-  as?: AgentId;
+  /**
+   * 이 호출을 그 신원으로 부른다 — {@code X-AiNecto-Agent-Name}(신원 이름) + {@code X-AiNecto-Agent}(그 종류의 clientInfo 이름).
+   * 없으면 serve 자신(이름 없는 연결).
+   */
+  as?: AgentIdentity;
 }
 
 export interface AgentTools {
@@ -47,25 +56,26 @@ export interface AgentToolClient {
  */
 export function createAgentTools(input: {
   client: AgentToolClient;
-  /** {@link AgentToolCallOptions.as} 의 클라이언트 — 그 Agent 종류 헤더를 싣는다. */
-  clientAs?: (agent: AgentId) => AgentToolClient;
+  /** {@link AgentToolCallOptions.as} 의 클라이언트 — 그 신원 이름·종류 헤더를 싣는다. */
+  clientAs?: (identity: AgentIdentity) => AgentToolClient;
   log: DaemonLog<AgentLogRecord>;
 }): AgentTools {
-  const asClients = new Map<AgentId, AgentToolClient>();
-  const clientFor = (agent: AgentId | undefined): AgentToolClient => {
-    if (!agent || !input.clientAs) return input.client;
-    let found = asClients.get(agent);
+  const asClients = new Map<string, AgentToolClient>();
+  const clientFor = (identity: AgentIdentity | undefined): AgentToolClient => {
+    if (!identity || !input.clientAs) return input.client;
+    const key = `${identity.agent}\u0000${identity.name}`;
+    let found = asClients.get(key);
     if (!found) {
-      found = input.clientAs(agent);
-      asClients.set(agent, found);
+      found = input.clientAs(identity);
+      asClients.set(key, found);
     }
     return found;
   };
 
-  async function logged<T>(tool: string, bytes: number, run: () => Promise<T>, agent?: AgentId): Promise<T> {
+  async function logged<T>(tool: string, bytes: number, run: () => Promise<T>, as?: AgentIdentity): Promise<T> {
     const callId = randomUUID();
     const started = Date.now();
-    input.log.write({ event: "agent_call", callId, op: "tool", tool, ...(agent ? { agent } : {}), bytes });
+    input.log.write({ event: "agent_call", callId, op: "tool", tool, ...(as ? { agent: as.agent, agentName: as.name } : {}), bytes });
     let outcome: { ok: boolean; code?: string; error?: string } = { ok: false, error: "no response" };
     try {
       const value = await run();
@@ -93,6 +103,14 @@ export function createAgentTools(input: {
     list() {
       return logged("tools/list", 0, () => input.client.toolsList());
     },
+  };
+}
+
+/** 늘 그 신원으로 부르는 입구 — 할 일 한 건의 모든 호출(임대·카드 동작·글)이 같은 신원이게. */
+export function toolsAs(tools: AgentTools, identity: AgentIdentity): AgentTools {
+  return {
+    call: (tool, args, options) => tools.call(tool, args, { as: identity, ...options }),
+    list: () => tools.list(),
   };
 }
 

@@ -22,7 +22,7 @@ import { CLI_VERSION } from "../../core/version";
 import type { CliIO } from "./ainectoCli";
 
 export const AGENT_HELP_LINES: readonly string[] = [
-  "  ainecto agent serve [--env prod|dev]   answer «My agent» requests from AiNecto Chat with Claude Code or Codex on this machine, and run the auto-run cards handed to this folder's agent (ainecto init --agent NAME) (Ctrl+C to stop; log: ~/.ainecto/agent/agent.log)",
+  "  ainecto agent serve [--env prod|dev]   answer «My agent» requests from AiNecto Chat with Claude Code or Codex on this machine, and run the auto-run cards handed to them (name one: ainecto init --agent NAME) (Ctrl+C to stop; log: ~/.ainecto/agent/agent.log)",
 ];
 
 export function isAgentCommand(domain: string | undefined, action: string | undefined): boolean {
@@ -37,8 +37,8 @@ export function isAgentCommand(domain: string | undefined, action: string | unde
 const BILLED_TO: Readonly<Record<AgentId, string>> = { "claude-code": "Anthropic", codex: "OpenAI" };
 
 /**
- * @param agentName 이 폴더의 에이전트 이름({@code .ainecto/agent.local}) — 있으면 serve 의 도구 호출과 Agent 브리지가 그 이름으로 붙고,
- *                  그 에이전트에게 넘긴 자동 실행 카드(할 일)도 받는다.
+ * @param agentName 이 폴더의 에이전트 이름({@code .ainecto/agent.local}, 선택) — 있으면 할 일을 돌리는 한 종류의 신원 이름으로 open 에 싣는다.
+ *                  없어도 할 일은 받는다(신원 이름 = 종류 id — 서버가 정한다).
  */
 export async function executeAgentServe(input: { endpoint: string; env: AinectoEnv; auth: TokenProvider; io: CliIO; agentName?: string }): Promise<number> {
   const paths = agentPaths();
@@ -49,13 +49,14 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
 
   // 쓰기 도구 = 서버 표시(readOnlyHint) — 문서 줄은 그 결과에서만 뽑는다.
   // ★serve 의 서버 MCP 도구 호출은 이 한 입구(로그 요청 1줄 + 응답 1줄) — 도구 목록·할 일·카드 동작 모두.
-  const client = () => new McpRpcClient({ endpoint: input.endpoint, tokenProvider: input.auth, channel: "cli", agentName: input.agentName });
+  //   serve 자신(도구 목록)은 이름 없는 연결 · 할 일은 서버가 종류마다 이어 준 신원으로(이름 + 그 종류의 Agent 헤더).
+  const client = (agentName?: string) =>
+    new McpRpcClient({ endpoint: input.endpoint, tokenProvider: input.auth, channel: "cli", ...(agentName ? { agentName } : {}) });
   const tools = createAgentTools({
     client: client(),
-    // 그 Agent 를 대신해 부르는 도구(실행 대화 글)는 그 Agent 의 종류 헤더로 — 서버가 실제로 도는 Agent 를 안다.
-    clientAs: (agent) => {
-      const as = client();
-      as.useAgent(AGENT_MCP_CLIENT_NAMES[agent]);
+    clientAs: (identity) => {
+      const as = client(identity.name);
+      as.useAgent(AGENT_MCP_CLIENT_NAMES[identity.agent]);
       return as;
     },
     log,

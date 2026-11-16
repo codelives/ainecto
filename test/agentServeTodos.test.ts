@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { finish, logRecords, spawned, startServe, until } from "./support/agentServeWorld";
+import { AgentCallError } from "../src/core/agent/http";
+import { codexSpawned, finish, logRecords, spawned, startServe, until } from "./support/agentServeWorld";
 import { FakeTools } from "./support/fakeTools";
 
 const CARD = "c".repeat(32);
@@ -22,16 +23,17 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
       "send_auto_run_message", "send_auto_run_message", "kanban_list_cards", "create_comments", "report_work_progress",
       ...tools.tools().slice(10),
     ]);
-    expect(tools.calls[0]?.args).toEqual({ state: ["OPEN"], kinds: ["CARD_ASSIGNED", "DECISION_ANSWERED"], agent: "me" });
+    expect(tools.calls[0]?.args).toEqual({ state: ["OPEN"], kinds: ["CARD_ASSIGNED", "DECISION_ANSWERED"], agent: "u-claude-code" });
     expect(tools.calls[1]?.args).toEqual({ items: [{ todoId: "todo-1", action: "claim" }] });
     // ★request_review 는 부르지 않는다 — 승인은 주인이 웹에서(서버가 검토 요청을 대신 한다).
     expect(named(tools, "kanban_card_action").map((c) => c.args.action)).toEqual(["accept", "start"]);
     expect(named(tools, "start_work")).toHaveLength(0);   // start 결과의 card.work.workId 를 쓴다
     const [opening, answer] = named(tools, "send_auto_run_message");
     expect(opening?.args).toEqual({ cardUuid: CARD, workId: "work-1", body: "«로그인 고치기» 작업을 시작했어요." });
-    // 실행 대화 글은 실제로 도는 Agent 종류로(X-AiNecto-Agent) — 나머지 serve 호출은 serve 자신.
-    expect(named(tools, "send_auto_run_message").map((c) => c.as)).toEqual(["claude-code", "claude-code"]);
-    expect(tools.calls.filter((c) => c.tool !== "send_auto_run_message").every((c) => c.as === undefined)).toBe(true);
+    // ★모든 호출(목록·임대·수락·글·결과 댓글)이 그 종류의 신원으로 — 이름(X-AiNecto-Agent-Name) + 종류(X-AiNecto-Agent).
+    expect(tools.calls.every((c) => c.as?.agent === "claude-code" && c.as.name === "pc-agent")).toBe(true);
+    // 폴더 이름은 할 일을 돌리는 한 종류에만 실려 open 에 간다(계약 5-1).
+    expect(w.server.calls[0]?.body.agents).toEqual([{ id: "claude-code", ready: true, name: "pc-agent" }]);
     // 가짜 claude 는 받은 글을 «got <글>» 로 돌려준다 — 지시문에 카드·workId·판단 요청 순서(주인 userId)가 들어갔다.
     const body = String(answer?.args.body);
     expect(body).toMatch(/^got \[AiNecto auto-run\] /);
@@ -54,7 +56,7 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(records.filter((r) => r.event === "todo_run").map((r) => r.todoId)).toEqual(["todo-1"]);
     expect(records.find((r) => r.event === "todo_run_result")).toMatchObject({ todoId: "todo-1", outcome: "review_requested",
       workId: "work-1", conversationUuid: `conv-${CARD}` });
-    expect(w.printed).toContain("Auto-run cards handed to your agent «pc-agent» also run here (in Claude Code).");
+    expect(w.printed).toContain("Auto-run cards handed to Claude Code (pc-agent) run here.");
   });
 
   it("★판단 요청으로 막히면 검토 요청 없이 기다린다 · 답(DECISION_ANSWERED)이 오면 같은 대화·같은 세션·같은 workId 로 답 댓글을 넣어 잇고 complete", async () => {
@@ -175,7 +177,7 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     await until(() => logRecords(first).find((r) => r.event === "agent_request"));
     await finish(first);   // PC 끔 — 할 일은 수락이 이미 닫았다
     const saved = JSON.parse(readFileSync(first.runsPath, "utf8")) as { runs: Array<Record<string, unknown>> };
-    expect(saved.runs).toEqual([{ cardUuid: CARD, workId: "work-1", startedAt: expect.any(String) }]);
+    expect(saved.runs).toEqual([{ cardUuid: CARD, workId: "work-1", agent: "claude-code", startedAt: expect.any(String) }]);
     expect(logRecords(first).find((r) => r.event === "todo_run_result")).toMatchObject({ outcome: "stopped" });
     expect(tools.todos.filter((t) => t.state === "OPEN")).toHaveLength(0);
 
@@ -215,14 +217,97 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(logRecords(w).find((r) => r.event === "todo_run_result")).toMatchObject({ outcome: "review_requested" });
   });
 
-  it("이 폴더에 에이전트 이름이 없으면 할 일은 받지 않고 시작 줄에 이유를 한 줄", async () => {
+  it("★폴더 이름이 없어도 받는다 — 서버가 준 종류 신원(이름 = 종류 id)으로", async () => {
     const tools = new FakeTools();
+    tools.addCard({ uuid: CARD, title: "카드" });
     tools.addTodo("todo-1", "CARD_ASSIGNED", CARD);
     const w = startServe({ todos: { tools } });
+    await until(() => logRecords(w).find((r) => r.event === "todo_run_result"));
+    await finish(w);
+    expect(w.server.calls[0]?.body.agents).toEqual([{ id: "claude-code", ready: true }]);
+    expect(w.printed).toContain("Auto-run cards handed to Claude Code (claude-code) run here.");
+    expect(spawned(w)).toEqual([["--agent", "claude-code"]]);
+    expect(logRecords(w).find((r) => r.event === "todo_run_result")).toMatchObject({ outcome: "review_requested" });
+  });
+
+  it("★종류 둘 — 각자 자기 agentUuid 로 받고, 그 종류의 어댑터·신원으로 돈다(한 줄로 하나씩)", async () => {
+    const tools = new FakeTools();
+    tools.addCard({ uuid: CARD, title: "클로드 몫" });
+    tools.addCard({ uuid: CARD_B, title: "코덱스 몫" });
+    tools.addTodo("todo-claude", "CARD_ASSIGNED", CARD, undefined, "u-claude-code");
+    tools.addTodo("todo-codex", "CARD_ASSIGNED", CARD_B, undefined, "u-codex");
+    const w = startServe({ todos: { tools, agentName: "tester" }, installed: ["claude-code", "codex"], pollHoldSeconds: 0.05 });
+    await until(() => logRecords(w).filter((r) => r.event === "todo_run_result").length >= 2 ? true : undefined);
+    await finish(w);
+
+    expect(w.server.calls[0]?.body.agents).toEqual([{ id: "claude-code", ready: true, name: "tester" }, { id: "codex", ready: true }]);
+    expect(w.printed).toContain("Auto-run cards handed to Claude Code (tester) and Codex (codex) run here.");
+    expect(named(tools, "list_agent_todos").map((c) => c.args.agent)).toEqual(expect.arrayContaining(["u-claude-code", "u-codex"]));
+    const records = logRecords(w);
+    expect(records.filter((r) => r.event === "agent_request").map((r) => [r.todoId, r.agent])).toEqual([
+      ["todo-claude", "claude-code"], ["todo-codex", "codex"]]);
+    expect(records.filter((r) => r.event === "todo_run_result").map((r) => r.outcome)).toEqual(["review_requested", "review_requested"]);
+    // 한 번에 하나 — 둘째 할 일의 시작은 첫째의 끝 뒤.
+    const order = records.filter((r) => r.event === "todo_run" || r.event === "todo_run_result").map((r) => `${r.event}:${r.todoId}`);
+    expect(order).toEqual(["todo_run:todo-claude", "todo_run_result:todo-claude", "todo_run:todo-codex", "todo_run_result:todo-codex"]);
+    // 각 할 일의 호출은 그 신원으로 · 브리지 이름도 그 신원.
+    const asOf = (cardUuid: string) => new Set(tools.calls.filter((c) => c.args.cardUuid === cardUuid).map((c) => `${c.as?.agent}/${c.as?.name}`));
+    expect([...asOf(CARD)]).toEqual(["claude-code/tester"]);
+    expect([...asOf(CARD_B)]).toEqual(["codex/codex"]);
+    expect(spawned(w)).toEqual([["--agent", "tester"]]);
+    expect(codexSpawned(w)).toEqual([["app-server", "--agent", "codex"]]);
+    expect(String(named(tools, "send_auto_run_message").find((c) => c.args.cardUuid === CARD_B && String(c.args.body).startsWith("got "))
+      ?.args.body)).toMatch(/^got \[AiNecto auto-run\] /);
+  });
+
+  it("★신원이 null 인 종류(AGENT_LIMIT)는 건너뛰고 알린다 — 다른 종류는 그대로 받는다", async () => {
+    const tools = new FakeTools();
+    tools.addCard({ uuid: CARD, title: "카드" });
+    tools.addTodo("todo-1", "CARD_ASSIGNED", CARD);
+    tools.addTodo("todo-codex", "CARD_ASSIGNED", CARD_B, undefined, "u-codex");
+    const w = startServe({ todos: { tools }, installed: ["claude-code", "codex"], openAgents: [
+      { id: "claude-code", kindLabel: "Claude Code", ready: true, agentUuid: "u-claude-code", name: "claude-code", error: null },
+      { id: "codex", kindLabel: "Codex", ready: true, agentUuid: null, name: null, error: "AGENT_LIMIT" },
+    ] });
+    await until(() => logRecords(w).find((r) => r.event === "todo_run_result"));
+    await finish(w);
+    expect(named(tools, "list_agent_todos").map((c) => c.args.agent).every((a) => a === "u-claude-code")).toBe(true);
+    expect(tools.todo("todo-codex")?.state).toBe("OPEN");
+    expect(w.printed).toContain("Codex: AiNecto refused its agent identity (AGENT_LIMIT), so auto-run cards for Codex are not taken here. "
+      + "Archive an agent you no longer use in AiNecto, then start `ainecto agent serve` again.");
+    expect(w.printed).toContain("Auto-run cards handed to Claude Code (claude-code) run here.");
+  });
+
+  it("신원이 하나도 없으면(옛 서버 — 응답에 agents 없음) 할 일은 받지 않고 한 줄 · Chat 은 그대로", async () => {
+    const tools = new FakeTools();
+    tools.addTodo("todo-1", "CARD_ASSIGNED", CARD);
+    const w = startServe({ todos: { tools }, openAgents: null });
     w.server.offer("t1", "conv-a", "hello");
     await until(() => w.server.replies()[0]);
     await finish(w);
     expect(tools.calls).toHaveLength(0);
-    expect(w.printed).toContain("Auto-run cards are not taken here: this folder has no agent name. Run `ainecto init --agent NAME` here, then start `ainecto agent serve` again.");
+    expect(w.printed).toContain("Auto-run cards are not taken here: AiNecto did not give this connection an agent identity (update the server, or sign in to Claude Code or Codex).");
+  });
+
+  it("★폴더 이름을 서버가 거절하면(400 AGENT_NAME_INVALID) 분명한 안내와 함께 끝낸다", async () => {
+    const tools = new FakeTools();
+    const w = startServe({ todos: { tools, agentName: "Bad Name" },
+      openError: new AgentCallError("name must be lowercase", "open", 400, "AGENT_NAME_INVALID") });
+    const result = await w.done;
+    expect(result).toEqual({ exitCode: 1, reason: "agent_name_invalid" });
+    expect(w.printed).toEqual(["AiNecto did not accept the agent name «Bad Name» in this folder's .ainecto/agent.local (name must be lowercase). "
+      + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto agent serve` again."]);
+    expect(w.server.calls.map((c) => c.op)).toEqual(["open"]);
+  });
+
+  it("agents[].name 을 모르는 서버는 이름만 빼고 다시 연다(features 는 그대로)", async () => {
+    const tools = new FakeTools();
+    const w = startServe({ todos: { tools, agentName: "tester" }, rejectNames: true });
+    await until(() => named(tools, "list_agent_todos")[0]);
+    await finish(w);
+    const opens = w.server.calls.filter((c) => c.op === "open").map((c) => c.body);
+    expect(opens.map((b) => [b.agents, b.features])).toEqual([
+      [[{ id: "claude-code", ready: true, name: "tester" }], ["stop"]], [[{ id: "claude-code", ready: true }], ["stop"]]]);
+    expect(w.printed).toContain("Auto-run cards handed to Claude Code (claude-code) run here.");
   });
 });

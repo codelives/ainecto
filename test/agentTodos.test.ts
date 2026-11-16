@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { AGENT_MCP_CLIENT_NAMES, ainectoBridge } from "../src/core/agent/agents";
 import type { AgentLogRecord } from "../src/core/agent/log";
 import { answerComments, renewDelayMs, todosIn } from "../src/core/agent/todoRun";
-import { AgentToolError, createAgentTools } from "../src/core/agent/tools";
+import { folderKind, identitiesIn, openAgentsBody } from "../src/core/agent/serve";
+import { AgentToolError, createAgentTools, toolsAs } from "../src/core/agent/tools";
 import { McpRpcError } from "../src/core/mcp/rpcClient";
 import { DaemonLog } from "../src/core/term/daemonLog";
 
@@ -49,21 +50,25 @@ describe("serve 의 서버 MCP 도구 입구(tools.ts)", () => {
     expect(await isError.tools.call("start_work", {}).catch((e: unknown) => e)).toMatchObject({ tool: "start_work", message: "nope" });
   });
 
-  it("★as = 그 Agent 를 대신해 부른다 — 그 Agent 종류의 클라이언트(헤더)로 · 요청 줄에 agent", async () => {
+  it("★as = 그 신원으로 부른다 — 신원(종류·이름)마다 클라이언트 하나(이름·종류 헤더) · 요청 줄에 agent·agentName", async () => {
     const used: string[] = [];
     const path = join(mkdtempSync(join(tmpdir(), "agent-tools-")), "agent.log");
     const log = new DaemonLog<AgentLogRecord>(path, `${path}.1`);
     const client = (label: string) => ({ toolsCall: async () => { used.push(label); return { content: [{ type: "text", text: "{}" }] }; },
       toolsList: async () => [] });
     const made: string[] = [];
-    const tools = createAgentTools({ client: client("serve"), clientAs: (agent) => { made.push(agent); return client(agent); }, log });
-    await tools.call("send_auto_run_message", {}, { as: "codex" });
-    await tools.call("send_auto_run_message", {}, { as: "codex" });
+    const tools = createAgentTools({ client: client("serve"),
+      clientAs: (id) => { made.push(`${id.agent}/${id.name}`); return client(id.name); }, log });
+    const codex = { agent: "codex", name: "codex" } as const;
+    await tools.call("send_auto_run_message", {}, { as: codex });
+    await toolsAs(tools, codex).call("kanban_card_action", {});
+    await tools.call("list_agent_todos", {}, { as: { agent: "claude-code", name: "tester" } });
     await tools.call("list_agent_todos", {});
-    expect(used).toEqual(["codex", "codex", "serve"]);
-    expect(made).toEqual(["codex"]);   // Agent 마다 하나
+    expect(used).toEqual(["codex", "codex", "tester", "serve"]);
+    expect(made).toEqual(["codex/codex", "claude-code/tester"]);   // 신원마다 하나
     const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(lines.filter((l) => l.event === "agent_call").map((l) => l.agent)).toEqual(["codex", "codex", undefined]);
+    expect(lines.filter((l) => l.event === "agent_call").map((l) => [l.agent, l.agentName]))
+      .toEqual([["codex", "codex"], ["codex", "codex"], ["claude-code", "tester"], [undefined, undefined]]);
   });
 
   it("Agent 종류 헤더 값 = 서버 AgentTypeResolver 표의 이름", () => {
@@ -110,6 +115,33 @@ describe("할 일 순수 함수(todoRun.ts)", () => {
     ] };
     expect(answerComments(listed, 3).map((c) => c.id)).toEqual([2, 3, 4]);
     expect(answerComments(listed, undefined).map((c) => c.id)).toEqual([4]);
+  });
+});
+
+describe("link 열기의 종류별 신원(계약 5-1)", () => {
+  const agents = [{ id: "claude-code", ready: true, auth: "subscription" }, { id: "codex", ready: true }] as const;
+
+  it("폴더 이름은 할 일을 돌리는 한 종류에만 — 준비된 기본 Agent, 없으면 처음 준비된 것", () => {
+    expect(openAgentsBody(agents, "tester")).toEqual([
+      { id: "claude-code", ready: true, auth: "subscription", name: "tester" }, { id: "codex", ready: true }]);
+    expect(openAgentsBody(agents, undefined)).toEqual([{ id: "claude-code", ready: true, auth: "subscription" }, { id: "codex", ready: true }]);
+    expect(folderKind([{ id: "claude-code", ready: false }, { id: "codex", ready: true }])).toBe("codex");
+    expect(folderKind([{ id: "claude-code", ready: false }])).toBeUndefined();
+  });
+
+  it("응답 agents[] → 신원(agentUuid·name 이 있고 이 PC 에 어댑터가 있는 것) · null 신원은 건너뛰고 이유(AGENT_LIMIT)만", () => {
+    const adapters = new Map([["claude-code", {}], ["codex", {}]] as const);
+    expect(identitiesIn([
+      { id: "claude-code", kindLabel: "Claude Code", ready: true, agentUuid: "u-claude", name: "tester", error: null },
+      { id: "codex", kindLabel: "Codex", ready: true, agentUuid: null, name: null, error: "AGENT_LIMIT" },
+      { id: "antigravity", ready: true, agentUuid: "u-x", name: "x" },
+    ], adapters)).toEqual({ identities: [{ agent: "claude-code", agentUuid: "u-claude", name: "tester" }],
+      refused: [{ agent: "codex", error: "AGENT_LIMIT" }] });
+    expect(identitiesIn([{ id: "codex", ready: false, agentUuid: null, name: null, error: null }], adapters))
+      .toEqual({ identities: [], refused: [] });
+    expect(identitiesIn(undefined, adapters)).toEqual({ identities: [], refused: [] });   // 옛 서버
+    expect(identitiesIn([{ id: "codex", agentUuid: "u-codex", name: "codex" }], new Map([["claude-code", {}]] as const)))
+      .toEqual({ identities: [], refused: [] });   // 이 PC 에 없는 종류
   });
 });
 

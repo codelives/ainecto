@@ -33,6 +33,13 @@ export class FakeServer implements AgentHttp {
   private polls: Array<Record<string, unknown> | AgentCallError> = [];
   private waiting: (() => void) | undefined;
 
+  /** open 이 돌려줄 agents[](계약 5-1) — "auto" 면 받은 agents 마다 신원(u-<종류>, 이름 = 받은 name 또는 종류 id), 없으면 옛 서버(칸 없음). */
+  openAgents: "auto" | unknown[] | undefined;
+  /** open 을 이 오류로 거절한다(이름 규칙 위반 등). */
+  openError: AgentCallError | undefined;
+  /** agents[].name 을 모르는 서버(400 INVALID). */
+  rejectNames = false;
+
   /** @param oldServer 옛 서버 — open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다. */
   constructor(private readonly oldServer = false, private readonly pollHoldSeconds = 20) {}
 
@@ -54,8 +61,16 @@ export class FakeServer implements AgentHttp {
   async call(op: AgentOp, body: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
     this.calls.push({ op, body });
     if (op === "open") {
+      if (this.openError) throw this.openError;
       if (this.oldServer && body.features !== undefined) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
-      return { linkId: "11111111-1111-4111-8111-111111111111", linkToken: "tok", limits: { pollHoldSeconds: this.pollHoldSeconds, textMaxCharacters: 10_000, documentsMax: 50 } };
+      const sent = (Array.isArray(body.agents) ? body.agents : []) as Array<Record<string, unknown>>;
+      if (this.rejectNames && sent.some((a) => a.name !== undefined)) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
+      const agents = this.openAgents === "auto"
+        ? sent.map((a) => a.ready ? { id: a.id, ready: true, agentUuid: `u-${String(a.id)}`, name: a.name ?? a.id, error: null }
+          : { id: a.id, ready: false, agentUuid: null, name: null, error: null })
+        : this.openAgents;
+      return { linkId: "11111111-1111-4111-8111-111111111111", linkToken: "tok",
+        limits: { pollHoldSeconds: this.pollHoldSeconds, textMaxCharacters: 10_000, documentsMax: 50 }, ...(agents ? { agents } : {}) };
     }
     if (op !== "poll") return {};
     for (;;) {
@@ -102,6 +117,12 @@ export interface WorldOptions {
   todos?: { tools: AgentTools; agentName?: string };
   /** runs.json 에 미리 둘 글(그대로 쓴다 — 깨진 파일 시험). */
   runsFile?: string;
+  /** open 응답 agents[] — 기본: 할 일을 받으면 "auto"(종류마다 신원), 아니면 없음(옛 서버). */
+  openAgents?: "auto" | unknown[] | null;
+  /** open 거절. */
+  openError?: AgentCallError;
+  /** agents[].name 을 모르는 서버. */
+  rejectNames?: boolean;
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -116,6 +137,9 @@ export function startServe(options: WorldOptions = {}): World {
   if (options.runsFile !== undefined) writeFileSync(runsPath, options.runsFile);
   if (options.sessionsFile) writeFileSync(sessionsPath, JSON.stringify(options.sessionsFile));
   const server = new FakeServer(options.oldServer, options.pollHoldSeconds);
+  server.openAgents = options.openAgents === null ? undefined : options.openAgents ?? (options.todos ? "auto" : undefined);
+  server.openError = options.openError;
+  server.rejectNames = options.rejectNames ?? false;
   const stop = new AbortController();
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
   const shared = { spawnImpl: fakeSpawn, cwd: dir,

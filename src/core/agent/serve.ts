@@ -9,7 +9,7 @@ import type { AgentSessionMap } from "./sessions";
 import type { AgentRunLog } from "./runs";
 import { claimTodo, closeTodo, keepLease, resumeTodo, runTodo, TODO_KINDS, todosIn, type AgentTodo, type ClaimedTodo, type LeaseKeeper,
   type TodoOutcome } from "./todoRun";
-import type { AgentTools } from "./tools";
+import { toolsAs, type AgentIdentity, type AgentTools } from "./tools";
 
 export interface AgentOffer {
   turnUuid: string;
@@ -27,8 +27,8 @@ export interface ServeDeps {
   sessions: AgentSessionMap;
   /** 이 PC 에 설치된 Agent 의 어댑터. */
   adapters: ReadonlyMap<AgentId, AgentAdapter>;
-  /** open 에 알릴 Agent(설치된 것 · ready = 로그인 확인). */
-  agents: ReadonlyArray<{ id: AgentId; ready: boolean }>;
+  /** open 에 알릴 Agent(설치된 것 · ready = 로그인 확인 · auth = 과금 주체). */
+  agents: ReadonlyArray<{ id: AgentId; ready: boolean; auth?: string }>;
   hostName: string;
   cliVersion: string;
   print(line: string): void;
@@ -36,8 +36,9 @@ export interface ServeDeps {
   signal: AbortSignal;
   turnTimeoutMs?: number;
   /**
-   * 에이전트 할 일(자동 실행된 칸반 카드 — KAN-1113)도 받는다. {@code agentName} = 이 serve 의 이름 붙은 에이전트(폴더의
-   * {@code .ainecto/agent.local}) — 없으면 할 일은 받지 않는다(서버는 이름 없는 연결의 «내 몫»을 사람 몫으로 본다).
+   * 에이전트 할 일(자동 실행된 칸반 카드 — KAN-1113)도 받는다. ★받는 신원은 서버가 open 응답에 종류마다 준다(agents[].agentUuid·name).
+   * {@code agentName} = 폴더의 {@code .ainecto/agent.local}(선택) — 있으면 할 일을 돌리는 한 종류({@link folderKind})의 신원 이름으로
+   * open 에 싣는다. 없으면 신원 이름 = 종류 id(서버가 정한다).
    */
   todos?: { tools: AgentTools; agentName?: string; runs?: AgentRunLog };
 }
@@ -60,7 +61,12 @@ interface ServerLimits {
 type Job =
   | { kind: "chat"; offer: AgentOffer }
   /** 가져간 서버 할 일(임대 있음) 또는 다시 켜서 잇는 카드(RESUME — 임대 없음). */
-  | { kind: "todo"; todo: AgentTodo; claimed?: ClaimedTodo; lease?: LeaseKeeper };
+  | { kind: "todo"; todo: AgentTodo; identity: ServeIdentity; claimed?: ClaimedTodo; lease?: LeaseKeeper };
+
+/** 서버가 그 종류에 이어 준 신원(open 응답 agents[]) — 할 일을 받는 단위. */
+export interface ServeIdentity extends AgentIdentity {
+  agentUuid: string;
+}
 
 /** Agent 한 차례 — 멈춤 표의 열쇠는 Chat 이면 turnUuid, 할 일이면 {@link todoKey}. */
 interface TurnJob {
@@ -93,22 +99,35 @@ const TODO_NOTES: Readonly<Record<TodoOutcome, string>> = {
  * ★받은 turnUuid 는 다시 넣지 않는다(서버가 답 올 때까지 같은 요청을 다시 준다 — K4).
  */
 export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
-  const opened = await openLink(deps);
+  const folderName = deps.todos?.agentName;
+  let opened: Record<string, unknown>;
+  try {
+    opened = await openLink(deps, openAgentsBody(deps.agents, folderName));
+  } catch (error) {
+    if (error instanceof AgentCallError && error.status === 400 && error.code === "AGENT_NAME_INVALID") {
+      deps.print(`AiNecto did not accept the agent name «${folderName ?? ""}» in this folder's .ainecto/agent.local (${error.message}). `
+        + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto agent serve` again.");
+      return { exitCode: 1, reason: "agent_name_invalid" };
+    }
+    throw error;
+  }
   const linkId = String(opened.linkId);
   deps.http.useLinkToken(String(opened.linkToken));
   const limits = serverLimits(opened.limits);
-  const names = deps.agents.map((a) => deps.adapters.get(a.id)?.displayName ?? a.id).join(" / ");
+  const displayName = (id: AgentId) => deps.adapters.get(id)?.displayName ?? id;
+  const names = deps.agents.map((a) => displayName(a.id)).join(" / ");
   deps.print(`Connected to AiNecto as ${deps.hostName}. Requests to «My agent» in AiNecto Chat now run in ${names} on this machine. Press Ctrl+C to stop.`);
-  // 할 일은 로그인된 Agent 하나로 돈다 — 서버 기본 Agent 가 준비됐으면 그것.
-  const todoAgent = deps.agents.find((a) => a.ready && a.id === DEFAULT_AGENT)?.id ?? deps.agents.find((a) => a.ready)?.id;
-  const todos = deps.todos?.agentName && todoAgent
-    ? { tools: deps.todos.tools, agentName: deps.todos.agentName, runs: deps.todos.runs, agent: todoAgent } : undefined;
+  // ★할 일 신원 = open 응답의 종류별 신원(이 PC 에 어댑터가 있는 것만). 신원이 없는 종류(준비 안 됨·AGENT_LIMIT)는 받지 않는다.
+  const { identities, refused } = identitiesIn(opened.agents, deps.adapters);
+  for (const r of refused) {
+    deps.print(`${displayName(r.agent)}: AiNecto refused its agent identity (${r.error}), so auto-run cards for ${displayName(r.agent)} are not taken here.`
+      + (r.error === "AGENT_LIMIT" ? " Archive an agent you no longer use in AiNecto, then start `ainecto agent serve` again." : ""));
+  }
+  const todos = deps.todos && identities.length > 0 ? { tools: deps.todos.tools, runs: deps.todos.runs, identities } : undefined;
   if (todos) {
-    deps.print(`Auto-run cards handed to your agent «${todos.agentName}» also run here (in ${deps.adapters.get(todos.agent)?.displayName ?? todos.agent}).`);
-  } else if (deps.todos) {
-    deps.print(deps.todos.agentName
-      ? "Auto-run cards are not taken here: no agent on this machine is signed in."
-      : "Auto-run cards are not taken here: this folder has no agent name. Run `ainecto init --agent NAME` here, then start `ainecto agent serve` again.");
+    deps.print(`Auto-run cards handed to ${identities.map((i) => `${displayName(i.agent)} (${i.name})`).join(" and ")} run here.`);
+  } else if (deps.todos && refused.length === 0) {
+    deps.print("Auto-run cards are not taken here: AiNecto did not give this connection an agent identity (update the server, or sign in to Claude Code or Codex).");
   }
 
   const stopController = new AbortController();
@@ -304,21 +323,22 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     }
   };
 
-  /** 할 일 한 건 — 같은 실행기(runTurn, 이 serve 의 이름으로). 끝나면 잠금을 풀고 할 일 줄을 깨운다. */
+  /** 할 일 한 건 — 같은 실행기(runTurn) · ★그 할 일 신원의 종류 어댑터 · 브리지 이름 = 그 신원. 끝나면 잠금을 풀고 할 일 줄을 깨운다. */
   const runTodoJob = async (job: Extract<Job, { kind: "todo" }>) => {
     const t = todos!;
-    const { claimed } = job;
+    const { claimed, identity } = job;
+    const runs = t.runs;
     let outcome: TodoOutcome | undefined;
     try {
       outcome = await runTodo({
-        tools: t.tools,
-        agent: t.agent,
-        ...(t.runs ? { runs: t.runs } : {}),
+        tools: toolsAs(t.tools, identity),
+        ...(runs ? { runs: { started: (cardUuid, workId) => runs.started(cardUuid, workId, identity.agent),
+          finished: (cardUuid) => runs.finished(cardUuid) } } : {}),
         log: deps.log,
         textMaxCharacters: limits.textMaxCharacters,
         signal: stopController.signal,
         runAgent: ({ todoId, conversationUuid, text }) =>
-          runTurn({ key: todoKey(todoId), todoId, conversationUuid, agent: t.agent, text, agentName: t.agentName }),
+          runTurn({ key: todoKey(todoId), todoId, conversationUuid, agent: identity.agent, text, agentName: identity.name }),
       }, job.todo);
     } catch {
       // 이유는 todo_run_result 줄에 — 임대(또는 runs.json 줄)는 그대로 두어 다시 가져간다.
@@ -326,10 +346,10 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       job.lease?.stop();
     }
     if (claimed && (stopReason || outcome === "stopped")) {
-      await closeTodo(t.tools, deps.log, claimed, "release");
+      await closeTodo(toolsAs(t.tools, identity), deps.log, claimed, "release");
     } else if (claimed && outcome !== undefined && claimed.todo.kind === "DECISION_ANSWERED") {
       // 카드 배정 할 일은 수락이 닫았다 — 답을 받은 할 일은 다 돌았으니 닫는다.
-      await closeTodo(t.tools, deps.log, claimed, "complete", TODO_NOTES[outcome]);
+      await closeTodo(toolsAs(t.tools, identity), deps.log, claimed, "complete", TODO_NOTES[outcome]);
     }
     todoInFlight = undefined;
     wakeTodos?.();
@@ -354,48 +374,65 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     }
   })();
 
-  /** 열린 할 일에서 하나를 가져간다(한 번에 하나) — 남이 쥔 것은 건너뛰고 다음 것. 도구 실패는 다음 주기에 다시. */
-  const takeTodo = async (): Promise<void> => {
+  /**
+   * 그 신원의 열린 할 일에서 하나를 가져간다(한 번에 하나) — 남이 쥔 것은 건너뛰고 다음 것. 가져갔으면 true. 도구 실패는 던진다(다음 주기에 다시).
+   * 목록·임대·그 뒤 모든 호출이 그 신원으로 간다({@code agent: <agentUuid>}).
+   */
+  const takeTodo = async (identity: ServeIdentity): Promise<boolean> => {
+    const tools = toolsAs(todos!.tools, identity);
     let after: string | undefined;
     do {
-      const page = todosIn(await todos!.tools.call("list_agent_todos",
-        { state: ["OPEN"], kinds: [...TODO_KINDS], agent: "me", ...(after ? { after } : {}) }));
+      const page = todosIn(await tools.call("list_agent_todos",
+        { state: ["OPEN"], kinds: [...TODO_KINDS], agent: identity.agentUuid, ...(after ? { after } : {}) }));
       for (const todo of page.items) {
-        if (stopReason) return;
-        const claimed = await claimTodo(todos!.tools, deps.log, todo);
+        if (stopReason) return false;
+        const claimed = await claimTodo(tools, deps.log, todo);
         if (!claimed) continue;
         todoInFlight = todo.cardUuid;
-        const lease = keepLease(todos!.tools, deps.log, claimed, () => requestStop(todoKey(todo.todoId)));
-        queue.push({ kind: "todo", todo, claimed, lease });
+        const lease = keepLease(tools, deps.log, claimed, () => requestStop(todoKey(todo.todoId)));
+        queue.push({ kind: "todo", todo, identity, claimed, lease });
         wakeWorker?.();
-        return;
+        return true;
       }
       after = page.next;
     } while (after && !stopReason);
+    return false;
   };
 
   /** 할 일 줄 — ★주기는 Chat poll 과 같은 값(서버가 준 pollHoldSeconds). 한 건이 끝나면 바로 다음 것을 본다. */
   const todoLoop = (async () => {
     if (!todos) return;
-    // 이 PC 가 돌다 끊긴 카드(runs.json) 먼저 — 잇는지는 runTodo 가 서버의 지금 카드로 판정한다.
-    let resumes: AgentTodo[] = [];
+    // 이 PC 가 돌다 끊긴 카드(runs.json) 먼저 — 그 카드를 돌던 종류의 신원으로. 잇는지는 runTodo 가 서버의 지금 카드로 판정한다.
+    // 그 종류의 신원이 지금 없으면(그 Agent 를 못 씀) 줄을 그대로 두고 건너뛴다.
+    let resumes: Array<{ todo: AgentTodo; identity: ServeIdentity }> = [];
     try {
-      resumes = todos.runs ? (await todos.runs.load()).map(resumeTodo) : [];
+      resumes = todos.runs ? (await todos.runs.load()).flatMap((entry) => {
+        const identity = todos.identities.find((i) => i.agent === (entry.agent ?? todos.identities[0]?.agent));
+        return identity ? [{ todo: resumeTodo(entry), identity }] : [];
+      }) : [];
     } catch {
       // 비운 파일을 못 썼다 — 이어 가기만 못 할 뿐(이유는 runs_load 줄).
     }
+    /** 다음에 먼저 볼 신원 — 종류 둘이 번갈아 기회를 얻게. */
+    let turn = 0;
     while (!stopReason) {
       if (!todoInFlight) {
         const resume = resumes.shift();
         if (resume) {
-          todoInFlight = resume.cardUuid;
-          queue.push({ kind: "todo", todo: resume });
+          todoInFlight = resume.todo.cardUuid;
+          queue.push({ kind: "todo", todo: resume.todo, identity: resume.identity });
           wakeWorker?.();
         } else {
-          try {
-            await takeTodo();
-          } catch {
-            // 이유는 도구 응답 줄에 — 다음 주기에 다시.
+          for (let i = 0; i < todos.identities.length && !stopReason; i += 1) {
+            const identity = todos.identities[(turn + i) % todos.identities.length]!;
+            try {
+              if (await takeTodo(identity)) {
+                turn = (turn + i + 1) % todos.identities.length;
+                break;
+              }
+            } catch {
+              // 이유는 도구 응답 줄에 — 다음 신원·다음 주기에 다시.
+            }
           }
         }
       }
@@ -413,7 +450,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   for (const job of queue.splice(0)) {
     if (job.kind !== "todo" || !job.claimed) continue;
     job.lease?.stop();
-    await closeTodo(todos!.tools, deps.log, job.claimed, "release");
+    await closeTodo(toolsAs(todos!.tools, job.identity), deps.log, job.claimed, "release");
   }
   deps.signal.removeEventListener("abort", onUserStop);
   await Promise.all([...live.values()].map((session) => session.close()));
@@ -447,15 +484,59 @@ function serverLimits(value: unknown): ServerLimits {
  * link 를 연다 — 이 CLI 의 기능(features)을 알린다. ★옛 서버는 open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다 → 그때만
  * features 없이 한 번 더 연다(옛 서버는 멈춤 지시를 보내지 않는다).
  */
-async function openLink(deps: ServeDeps): Promise<Record<string, unknown>> {
-  const base = { hostName: deps.hostName, cliVersion: deps.cliVersion, agents: deps.agents };
-  try {
-    return await deps.http.call("open", { ...base, features: [...PC_FEATURES] });
-  } catch (error) {
-    if (!(error instanceof AgentCallError) || error.status !== 400 || error.code !== "INVALID") throw error;
-    deps.log.write({ event: "open_without_features", features: [...PC_FEATURES] });
-    return await deps.http.call("open", base);
+async function openLink(deps: ServeDeps, agents: ReadonlyArray<Record<string, unknown>>): Promise<Record<string, unknown>> {
+  const base = { hostName: deps.hostName, cliVersion: deps.cliVersion };
+  const named = agents.some((a) => a.name !== undefined);
+  // 옛 서버는 open 본문이 닫혀 있다 — 모르는 칸(agents[].name · features)은 400 INVALID. 새 칸부터 하나씩 덜어 다시 연다.
+  const attempts: Array<{ body: Record<string, unknown>; dropped?: string }> = [
+    { body: { ...base, agents, features: [...PC_FEATURES] } },
+    ...(named ? [{ body: { ...base, agents: agents.map(({ name: _name, ...rest }) => rest), features: [...PC_FEATURES] }, dropped: "agents.name" }] : []),
+    { body: { ...base, agents: agents.map(({ name: _name, ...rest }) => rest) }, dropped: "features" },
+  ];
+  for (let i = 0; ; i += 1) {
+    const attempt = attempts[i]!;
+    if (attempt.dropped) deps.log.write({ event: "open_without_features", features: [attempt.dropped] });
+    try {
+      return await deps.http.call("open", attempt.body);
+    } catch (error) {
+      const old = error instanceof AgentCallError && error.status === 400 && error.code === "INVALID";
+      if (!old || i === attempts.length - 1) throw error;
+    }
   }
+}
+
+/** 폴더 이름(agent.local)을 붙일 한 종류 — 준비된 서버 기본 Agent, 없으면 처음 준비된 것(순수 함수). */
+export function folderKind(agents: ReadonlyArray<{ id: AgentId; ready: boolean }>): AgentId | undefined {
+  return agents.find((a) => a.ready && a.id === DEFAULT_AGENT)?.id ?? agents.find((a) => a.ready)?.id;
+}
+
+/** open 의 agents[] — 폴더 이름은 {@link folderKind} 한 종류에만(계약 5-1). 순수 함수. */
+export function openAgentsBody(agents: ReadonlyArray<{ id: AgentId; ready: boolean; auth?: string }>,
+  folderName: string | undefined): Array<Record<string, unknown>> {
+  const kind = folderName ? folderKind(agents) : undefined;
+  return agents.map((a) => ({ id: a.id, ready: a.ready, ...(a.auth ? { auth: a.auth } : {}), ...(a.id === kind ? { name: folderName } : {}) }));
+}
+
+/**
+ * open 응답 agents[] → 할 일을 받을 신원(agentUuid·name 이 있고 이 PC 에 어댑터가 있는 종류) · 신원을 못 받은 종류의 이유(순수 함수).
+ * 옛 서버는 이 칸이 없다 → 신원 0.
+ */
+export function identitiesIn(value: unknown, adapters: ReadonlyMap<AgentId, unknown>): {
+  identities: ServeIdentity[];
+  refused: Array<{ agent: AgentId; error: string }>;
+} {
+  const identities: ServeIdentity[] = [];
+  const refused: Array<{ agent: AgentId; error: string }> = [];
+  for (const raw of Array.isArray(value) ? value : []) {
+    const a = (raw ?? {}) as Record<string, unknown>;
+    if (!isAgentId(a.id) || !adapters.has(a.id)) continue;
+    if (typeof a.agentUuid === "string" && typeof a.name === "string") {
+      identities.push({ agent: a.id, agentUuid: a.agentUuid, name: a.name });
+    } else if (typeof a.error === "string") {
+      refused.push({ agent: a.id, error: a.error });
+    }
+  }
+  return { identities, refused };
 }
 
 /** poll 의 멈출 turn — 옛 서버는 이 칸이 없다. */

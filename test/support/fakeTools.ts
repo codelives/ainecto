@@ -1,4 +1,4 @@
-import type { AgentToolCallOptions, AgentTools } from "../../src/core/agent/tools";
+import type { AgentIdentity, AgentToolCallOptions, AgentTools } from "../../src/core/agent/tools";
 import { AgentToolError } from "../../src/core/agent/tools";
 
 /** 가짜 카드 — 서버 카드 상세의 칸 중 serve 가 읽는 것. */
@@ -18,6 +18,8 @@ export interface FakeCard {
 
 interface FakeTodo {
   todoId: string;
+  /** 그 할 일의 신원(list_agent_todos 의 agent 로 거른다). */
+  agentUuid: string;
   kind: string;
   cardUuid: string;
   commentId?: number;
@@ -29,7 +31,7 @@ interface FakeTodo {
  * 가짜 서버 MCP 도구 레이어(메모리) — serve 가 부르는 도구만 서버 계약 모양으로 답한다. 부른 순서는 {@link calls}.
  */
 export class FakeTools implements AgentTools {
-  readonly calls: Array<{ tool: string; args: Record<string, unknown>; as?: string }> = [];
+  readonly calls: Array<{ tool: string; args: Record<string, unknown>; as?: AgentIdentity }> = [];
   readonly cards = new Map<string, FakeCard>();
   readonly todos: FakeTodo[] = [];
   readonly comments = new Map<string, Array<Record<string, unknown>>>();
@@ -49,8 +51,8 @@ export class FakeTools implements AgentTools {
     return full;
   }
 
-  addTodo(todoId: string, kind: string, cardUuid: string, commentId?: number): void {
-    this.todos.push({ todoId, kind, cardUuid, state: "OPEN", ...(commentId !== undefined ? { commentId } : {}) });
+  addTodo(todoId: string, kind: string, cardUuid: string, commentId?: number, agentUuid = "u-claude-code"): void {
+    this.todos.push({ todoId, kind, cardUuid, agentUuid, state: "OPEN", ...(commentId !== undefined ? { commentId } : {}) });
   }
 
   tools(): string[] {
@@ -74,7 +76,7 @@ export class FakeTools implements AgentTools {
     }
     switch (tool) {
       case "list_agent_todos":
-        return { items: this.todos.filter((t) => t.state === "OPEN").map((t) => ({ todoId: t.todoId, kind: t.kind, state: "OPEN",
+        return { items: this.todos.filter((t) => t.state === "OPEN" && t.agentUuid === args.agent).map((t) => ({ todoId: t.todoId, kind: t.kind, state: "OPEN",
           target: { type: "KANBAN_CARD", uuid: t.cardUuid, title: "카드", ...(t.commentId !== undefined ? { commentId: t.commentId } : {}) } })),
         hasMore: false };
       case "update_agent_todos":
