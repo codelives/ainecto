@@ -18,7 +18,7 @@ import { AgentRunLog } from "../../core/agent/runs";
 import { checkAgents, openAgents } from "../../core/agent/readiness";
 import { runAgentServe } from "../../core/agent/serve";
 import { AgentSessionMap } from "../../core/agent/sessions";
-import { CLI_VERSION } from "../../core/version";
+import { CLI_BUILD, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
 import type { CliIO } from "./ainectoCli";
 
 export const AGENT_HELP_LINES: readonly string[] = [
@@ -75,7 +75,7 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
     codexAdapter({ ...shared, appServerArgs: (agentName) => codexAppServerArgs(bridge(agentName), writeTools), clientVersion: CLI_VERSION }),
   ];
   const checks = await checkAgents(all, log);
-  log.write({ event: "serve_start", pid: process.pid, version: CLI_VERSION, endpoint: input.endpoint, host,
+  log.write({ event: "serve_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: input.endpoint, host,
     agents: checks.map(({ id, installed, ready, auth, version }) =>
       ({ id, installed, ready, ...(auth ? { auth } : {}), ...(version ? { version } : {}) })) });
   const agents = openAgents(checks);
@@ -111,7 +111,8 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
       adapters,
       agents,
       hostName: host,
-      cliVersion: CLI_VERSION,
+      cliVersion: CLI_VERSION_LABEL,
+      ...(CLI_BUILD ? { cliBuild: CLI_BUILD } : {}),
       print: (line) => input.io.stderr.write(`${line}\n`),
       signal: controller.signal,
       todos: { tools, agentName: input.agentName, runs: new AgentRunLog(paths.runs, log) },

@@ -30,7 +30,10 @@ export interface ServeDeps {
   /** open 에 알릴 Agent(설치된 것 · ready = 로그인 확인 · auth = 과금 주체). */
   agents: ReadonlyArray<{ id: AgentId; ready: boolean; auth?: string }>;
   hostName: string;
+  /** open 에 알리는 판({@code CLI_VERSION_LABEL} — 로컬 빌드면 «-dev+<빌드>»). */
   cliVersion: string;
+  /** open 에 알리는 빌드 식별(커밋 짧은 SHA) — 없으면 싣지 않는다. */
+  cliBuild?: string;
   print(line: string): void;
   /** Ctrl+C 등 — 끊으면 link 를 닫고 끝낸다. */
   signal: AbortSignal;
@@ -502,8 +505,10 @@ async function openLink(deps: ServeDeps, agents: ReadonlyArray<Record<string, un
   const older = features.filter((f) => f !== "todos");
   // 옛 서버는 open 본문이 닫혀 있다 — 모르는 칸(features 의 todos · agents[].name · features)은 400 INVALID. 새 칸부터 하나씩 덜어 다시 연다.
   // todos 를 모르는 서버는 할 일 신원은 주더라도 자동 실행 대상을 가리지 않는다 — 그때도 할 일은 받는다(그 서버가 예전처럼 맡긴다).
+  // cliBuild(KAN-1113 #1890 D)를 모르는 서버는 그 칸만 빼고 다시 연다 — 아래 단계는 모두 cliBuild 없이.
   const attempts: Array<{ body: Record<string, unknown>; dropped?: string }> = [
-    { body: { ...base, agents, features } },
+    ...(deps.cliBuild ? [{ body: { ...base, cliBuild: deps.cliBuild, agents, features } }] : []),
+    { body: { ...base, agents, features }, ...(deps.cliBuild ? { dropped: "cliBuild" } : {}) },
     ...(older.length < features.length ? [{ body: { ...base, agents, features: older }, dropped: "features.todos" }] : []),
     ...(named ? [{ body: { ...base, agents: unnamed, features: older }, dropped: "agents.name" }] : []),
     { body: { ...base, agents: unnamed }, dropped: "features" },

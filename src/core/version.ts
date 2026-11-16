@@ -11,6 +11,24 @@ const UNBUNDLED_VERSION = "dev";
 export const CLI_VERSION: string =
   typeof __AINECTO_CLI_VERSION__ === "string" ? __AINECTO_CLI_VERSION__ : UNBUNDLED_VERSION;
 
+declare const __AINECTO_CLI_BUILD__: string | undefined;
+declare const __AINECTO_CLI_RELEASE__: boolean | undefined;
+
+/** 빌드 식별(커밋 짧은 SHA, 커밋 안 된 변경이면 «-dirty») — tsup 이 박는다. 번들 밖·git 없는 빌드는 undefined. */
+export const CLI_BUILD: string | undefined =
+  typeof __AINECTO_CLI_BUILD__ === "string" && __AINECTO_CLI_BUILD__ !== "" ? __AINECTO_CLI_BUILD__ : undefined;
+
+/**
+ * 서버(PC 연결 open)·로그에 알리는 판 — 게시 빌드는 판 그대로, 로컬 빌드는 {@code <판>-dev+<빌드>}(KAN-1113 #1890 D: 같은 판 번호의
+ * 로컬 빌드와 게시판을 가른다). ★npx 판 고정({@link bridgePackageSpec})에는 쓰지 않는다 — 그쪽은 npm 에 있는 판이어야 한다. 순수 함수.
+ */
+export function cliVersionLabel(version: string, build: string | undefined, release: boolean): string {
+  return release || build === undefined ? version : `${version}-dev+${build}`;
+}
+
+export const CLI_VERSION_LABEL: string = cliVersionLabel(CLI_VERSION, CLI_BUILD,
+  typeof __AINECTO_CLI_RELEASE__ === "boolean" && __AINECTO_CLI_RELEASE__);
+
 /**
  * npm 주 이름. ★이 이름을 박는 곳은 여기 하나다 — init·setup 이 쓰는 {@code npx -y <이름>@<판>},
  * MCP {@code clientInfo}, User-Agent, init 기록의 {@code generatedBy} 가 모두 이것을 쓴다.

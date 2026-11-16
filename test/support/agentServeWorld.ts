@@ -41,6 +41,8 @@ export class FakeServer implements AgentHttp {
   rejectNames = false;
   /** features 의 todos 를 모르는 서버(400 INVALID — KAN-1113 Edwin #1890 이전 서버). */
   rejectTodos = false;
+  /** open 의 cliBuild 를 모르는 서버(KAN-1113 #1890 D 전). */
+  rejectBuild = false;
 
   /** @param oldServer 옛 서버 — open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다. */
   constructor(private readonly oldServer = false, private readonly pollHoldSeconds = 20) {}
@@ -64,6 +66,7 @@ export class FakeServer implements AgentHttp {
     this.calls.push({ op, body });
     if (op === "open") {
       if (this.openError) throw this.openError;
+      if (this.rejectBuild && body.cliBuild !== undefined) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       if (this.oldServer && body.features !== undefined) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       const sent = (Array.isArray(body.agents) ? body.agents : []) as Array<Record<string, unknown>>;
       if (this.rejectNames && sent.some((a) => a.name !== undefined)) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
@@ -130,6 +133,10 @@ export interface WorldOptions {
   rejectNames?: boolean;
   /** features 의 todos 를 모르는 서버. */
   rejectTodos?: boolean;
+  /** open 에 실을 빌드 식별(없으면 싣지 않는다). */
+  cliBuild?: string;
+  /** cliBuild 를 모르는 서버. */
+  rejectBuild?: boolean;
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -148,6 +155,7 @@ export function startServe(options: WorldOptions = {}): World {
   server.openError = options.openError;
   server.rejectNames = options.rejectNames ?? false;
   server.rejectTodos = options.rejectTodos ?? false;
+  server.rejectBuild = options.rejectBuild ?? false;
   const stop = new AbortController();
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
   const shared = { spawnImpl: fakeSpawn, cwd: dir,
@@ -171,6 +179,7 @@ export function startServe(options: WorldOptions = {}): World {
     agents: installed.map((id) => ({ id, ready: true })),
     hostName: "test-host",
     cliVersion: "0.0.0",
+    ...(options.cliBuild ? { cliBuild: options.cliBuild } : {}),
     print: (line) => printed.push(line),
     signal: stop.signal,
     turnTimeoutMs: options.turnTimeoutMs,

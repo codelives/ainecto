@@ -159,6 +159,41 @@ function alreadyPublished(name, version) {
   }
 }
 
+/**
+ * 이 게시의 빌드 식별 — 커밋 짧은 SHA. ★커밋 안 된 변경이 있으면 게시하지 않는다(무엇이 나갔는지 커밋으로 말할 수 없다).
+ * 매니페스트의 {@code ainectoBuild} 로 함께 올라가, 같은 판 번호를 다른 빌드로 다시 올리려 하면 아래에서 막는다.
+ */
+function releaseBuild() {
+  const git = (...args) => execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
+  if (!dryRun && git("status", "--porcelain", "--untracked-files=no") !== "") {
+    console.error("커밋 안 된 변경이 있습니다 — 커밋한 뒤 게시하세요(게시한 빌드를 커밋으로 가리키기 위해).");
+    process.exit(1);
+  }
+  return git("rev-parse", "--short", "HEAD");
+}
+const BUILD = releaseBuild();
+
+/**
+ * ★게시마다 판을 올린다(KAN-1113 #1890 D) — 주 이름에 이 판이 이미 있으면 그 빌드가 지금 커밋과 같을 때만(중간에 끊긴 게시를 이어서)
+ * 진행한다. 다른 빌드(또는 빌드 표시가 없는 옛 게시)면 «판을 올리세요»로 멈춘다 — 같은 판 번호에 다른 코드가 섞이지 않게.
+ */
+function requireNewVersionOrSameBuild() {
+  if (dryRun || !alreadyPublished(PRIMARY_NAME, parsed.version)) return;
+  let published = "";
+  try {
+    published = execFileSync("npm", ["view", `${PRIMARY_NAME}@${parsed.version}`, "ainectoBuild", "--prefer-online"],
+      { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch {
+    published = "";
+  }
+  if (published !== BUILD) {
+    console.error(`${PRIMARY_NAME}@${parsed.version} 은 이미 ${published ? `빌드 ${published}` : "다른 빌드"}로 게시돼 있습니다 — ` +
+      `package.json 의 version 을 올린 뒤 게시하세요(지금 빌드 ${BUILD}).`);
+    process.exit(1);
+  }
+  console.log(`  ${PRIMARY_NAME}@${parsed.version} 은 같은 빌드(${BUILD})로 일부 게시됨 — 남은 이름만 이어서 올립니다`);
+}
+
 function publish(name, note = "") {
   const label = `${name}@${parsed.version}${note ? `  ${note}` : ""}`;
   if (!dryRun && alreadyPublished(name, parsed.version)) {
@@ -186,7 +221,8 @@ function writeManifest(overrides) {
 function buildOnce() {
   const startedAt = Date.now();
   console.log("\n▶ prepack (typecheck · test · build) — 한 번만 돈다");
-  execFileSync("npm", ["run", "prepack"], { cwd: ROOT, stdio: "inherit" });
+  // 게시 빌드 표시 — 이 빌드의 CLI 는 판을 그대로 알린다(로컬 빌드는 «-dev+<빌드>», tsup.config.ts).
+  execFileSync("npm", ["run", "prepack"], { cwd: ROOT, stdio: "inherit", env: { ...process.env, AINECTO_RELEASE_BUILD: "1" } });
   const binFiles = [...new Set(Object.values(parsed.bin))];
   for (const file of binFiles) {
     const builtAt = statSync(join(ROOT, file)).mtimeMs;
@@ -215,13 +251,12 @@ const endedBySigint = (error) => error?.signal === "SIGINT" || error?.status ===
 let failure;
 try {
   preflight();
+  requireNewVersionOrSameBuild();
   buildOnce();
 
   for (const [index, release] of RELEASES.entries()) {
-    // 첫 이름은 원본 매니페스트 그대로 싼다. 나머지는 이름과 bin 만 바꿔 쓴다(복구는 finally).
-    if (index > 0) {
-      writeManifest({ name: release.name, bin: release.bin });
-    }
+    // 이름과 bin 을 바꿔 쓰고(첫 이름은 원본 그대로) 빌드 표시(ainectoBuild)를 싣는다 — 복구는 finally.
+    writeManifest({ name: release.name, bin: release.bin, ainectoBuild: BUILD });
     publish(release.name, index === 0 ? "" : `(bin ${Object.keys(release.bin).join("·")} — 같은 코드)`);
   }
 } catch (error) {

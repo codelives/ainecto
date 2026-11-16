@@ -178,4 +178,26 @@ describe("ainecto agent serve", () => {
     expect(reply.status).toBe("DONE");
     expect(logRecords(old).some((r) => r.event === "open_without_features")).toBe(true);
   });
+
+  it("open 에 빌드 식별(cliBuild)을 싣는다 · 그 칸을 모르는 서버면 그 칸만 빼고 다시 연다 (KAN-1113 #1890 D)", async () => {
+    const w = startServe({ cliBuild: "abc1234" });
+    await until(() => w.server.calls.find((c) => c.op === "poll"));
+    await finish(w);
+    expect(w.server.calls[0]).toMatchObject({ op: "open", body: { cliVersion: "0.0.0", cliBuild: "abc1234", features: ["stop"] } });
+
+    const before = startServe({ cliBuild: "abc1234", rejectBuild: true });
+    await until(() => before.server.calls.find((c) => c.op === "poll"));
+    await finish(before);
+    const opens = before.server.calls.filter((c) => c.op === "open");
+    expect(opens).toHaveLength(2);
+    expect(opens[1]?.body.cliBuild).toBeUndefined();
+    expect(opens[1]?.body.features).toEqual(["stop"]);
+    expect(logRecords(before).some((r) => r.event === "open_without_features"
+      && JSON.stringify(r.features) === JSON.stringify(["cliBuild"]))).toBe(true);
+
+    const none = startServe();
+    await until(() => none.server.calls.find((c) => c.op === "poll"));
+    await finish(none);
+    expect(none.server.calls[0]?.body.cliBuild).toBeUndefined();
+  });
 });
