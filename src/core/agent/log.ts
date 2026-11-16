@@ -40,7 +40,7 @@ export type AgentLogRecord =
   /** 에이전트 할 일 한 건 처리(todoRun.ts) — 시작 1줄 + 끝 1줄(같은 todoId). 끝 줄은 실패해도 반드시(실패한 도구·코드). */
   | { event: "todo_run"; todoId: string; kind: string; cardUuid: string }
   | { event: "todo_run_result"; todoId: string; kind: string; cardUuid: string; outcome: string; warning?: string; tool?: string; code?: string;
-      workId?: string; conversationUuid?: string; ms: number }
+      workId?: string; conversationUuid?: string; runDropped?: boolean; ms: number }
   /** runs.json 읽기 — 없음(missing)·깨짐(unreadable → 비움)도 이 한 줄. */
   | { event: "runs_load"; entries: number; reason?: string }
   /** 가져간 할 일의 임대 — 연장 실패·놓기 등(도구 호출 줄과 별개로, serve 가 그 결과로 무엇을 했나). */
