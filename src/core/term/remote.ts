@@ -17,12 +17,17 @@ import { CALL_TIMEOUT_MS, FRAME_MIN_INTERVAL_MS, FRAME_SCROLLBACK_LINES, retryWa
  * <pre>
  * 입력     poll(서버가 C1 동안 붙잡음) → input 명령의 바이트 그대로 → 데몬 send(paste 아님 — Esc·Ctrl·방향키 시퀀스 그대로)
  * 화면     데몬 watch 의 «바뀜» → C9 간격 이상으로 read(스크롤백 C10 + 화면 줄) → 평문 hash 가 바뀐 때만 frame. 한 번에 하나, 밀린 것은 최신 하나로
- * 끝       poll CLOSED·404 → 그대로 끝(0, close 안 보냄 · 다시 open 안 함) · 세션 끝·멈춤 신호 → close 보내고 끝
- * 다시     네트워크·5xx·기한 초과 → 같은 remoteId 로 C12 부터 두 배씩 C13 까지(흔들림 0~C12) · 그 밖 4xx → 사유와 함께 1
+ * 끝       poll CLOSED(웹 끊기·다른 PC) → 그대로 끝(0, close 안 보냄) · 세션 끝·멈춤 신호 → close 보내고 끝 · 401/403·그 밖 4xx → 사유와 함께 1
+ * 다시     네트워크·5xx·기한 초과 → 같은 remoteId 로 C12 부터 두 배씩 C13 까지(흔들림 0~C12)
+ * 다시 열기 poll 404 REMOTE_NOT_FOUND(api 재시작으로 원격이 사라짐) → 같은 세션으로 open 을 다시 해 새 remoteId·토큰으로 잇는다.
+ *          화면은 새 원격에 첫 장부터. 연속 다시 열기는 C12 부터 두 배씩 C13 까지 기다린다(사용자 승인 11-16 «자동해줘»).
  * </pre>
  */
 
 export type RemoteOp = "open" | "poll" | "frame" | "close";
+
+/** 서버가 이 원격을 모른다(서버 RemoteTerminalService.requireCurrent) — 다시 열기의 유일한 계기. */
+const REMOTE_NOT_FOUND = "REMOTE_NOT_FOUND";
 export type RemoteHttp = PcHttp<RemoteOp>;
 
 /**
@@ -35,6 +40,8 @@ export type RemoteLogRecord =
   | { event: "remote_call"; callId: string; op: string; bytes: number }
   | { event: "remote_call_response"; callId: string; op: string; ok: boolean; status?: number; code?: string; error?: string; ms: number;
       state?: string; reason?: string; commands?: number; version?: number }
+  /** 서버가 원격을 잊어(api 재시작) 같은 세션으로 다시 열었다. */
+  | { event: "remote_reopened"; reason: string; previousRemoteId: string; remoteId: string }
   /** 서버 frame 상한에 맞추려고 위 줄을 덜어 낸 수가 바뀌었다. */
   | { event: "remote_frame_trimmed"; dropped: number }
   /** 데몬 요청(send·read) 실패 — 삼키지 않는다. */
@@ -93,6 +100,14 @@ export interface RemoteResult {
   reason: string;
 }
 
+/** 지금 이어진 원격 — api 가 재시작돼 다시 열면 바뀐다(세대). */
+interface Link {
+  remoteId: string;
+  generation: number;
+  pollHoldSeconds: number;
+  frameMaxBytes: number;
+}
+
 interface RemoteEnd extends RemoteResult {
   /** 서버에 close 를 보낼지 — 서버가 이미 닫았으면(CLOSED·404) 보내지 않는다. */
   close: boolean;
@@ -141,7 +156,7 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
   });
   client.onClose(() => end({ exitCode: 1, reason: "Lost the connection to the term daemon.", close: true }));
 
-  let remoteId: string | undefined;
+  let opened = false;
   try {
     // watch 가 먼저 — 없는 세션이면 데몬이 TERM_NO_SESSION 으로 답하고, 서버는 부르지 않는다.
     await client.request({ op: "watch", name });
@@ -153,15 +168,21 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
     if (ending) {
       return { exitCode: ending.exitCode, reason: ending.reason };
     }
-    const opened = await deps.http.call("open", { session: name, hostName: deps.hostName, cliVersion: deps.cliVersion, cols, rows });
-    const limits = serverLimits(opened.limits);
-    if (typeof opened.remoteId !== "string" || typeof opened.remoteToken !== "string" || !limits) {
-      throw new TermError("TERM_REMOTE_BAD_RESPONSE", "AiNecto answered open without remoteId, remoteToken or limits.");
-    }
-    const id = opened.remoteId;
-    remoteId = id;
-    deps.http.useSessionToken(opened.remoteToken);
-    deps.log.write({ event: "remote_opened", remoteId: id, cols, rows, ...limits });
+    /** open 한 번 — 처음과 다시 열기가 같은 길. 새 토큰을 싣는다. */
+    const openLink = async (generation: number, signal?: AbortSignal): Promise<Link> => {
+      const opened = await deps.http.call("open", { session: name, hostName: deps.hostName, cliVersion: deps.cliVersion, cols, rows },
+        signal ? { signal } : undefined);
+      const limits = serverLimits(opened.limits);
+      if (typeof opened.remoteId !== "string" || typeof opened.remoteToken !== "string" || !limits) {
+        throw new TermError("TERM_REMOTE_BAD_RESPONSE", "AiNecto answered open without remoteId, remoteToken or limits.");
+      }
+      deps.http.useSessionToken(opened.remoteToken);
+      return { remoteId: opened.remoteId, generation, ...limits };
+    };
+    let current = await openLink(1);
+    opened = true;
+    deps.log.write({ event: "remote_opened", remoteId: current.remoteId, cols, rows,
+      pollHoldSeconds: current.pollHoldSeconds, frameMaxBytes: current.frameMaxBytes });
     deps.print(`Sharing ${name} (${cols}x${rows}) on AiNecto from ${deps.hostName}. Open the remote terminal in AiNecto to watch and type. Press Ctrl+C to stop.`);
 
     /** 다시 하지 않을 서버 거절 — 404 는 서버가 이미 이 연결을 모른다(정상 끝), 그 밖은 사유와 함께 1. */
@@ -174,6 +195,41 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
         : error instanceof Error ? error.message : String(error);
       return { exitCode: 1, reason: `AiNecto refused the remote terminal (${what}).`, close: true };
     };
+    /** 서버가 이 원격을 모른다(api 재시작 — 메모리 중계라 원격이 사라진다) → 같은 세션으로 다시 연다. */
+    const forgotten = (error: unknown): boolean =>
+      error instanceof PcCallError && error.status === 404 && error.code === REMOTE_NOT_FOUND;
+    /** 지금 원격을 서버가 잊었다 — close 를 보낼 곳이 없다. 다시 열면 풀린다. */
+    let gone = false;
+    /**
+     * 다시 열기 — 연속 시도마다 C12 부터 두 배씩 C13 까지 기다린다(첫 시도는 바로). ★open 이 성공해도 그 원격의 poll 이 한 번 성공하기
+     * 전까지는 횟수를 이어 센다 — 열자마자 또 404 가 나는 고리(다른 PC 와 서로 밀어내기 등)도 간격이 벌어진다. 4xx 거절이면 끝.
+     */
+    let reopens = 0;
+    const reopen = async (): Promise<void> => {
+      const previous = current;
+      while (!ending) {
+        if (reopens > 0) {
+          await sleep(retryWait(reopens - 1, Math.random()), stopper.signal);
+          if (ending) return;
+        }
+        reopens += 1;
+        try {
+          current = await openLink(previous.generation + 1, stopper.signal);
+        } catch (error) {
+          if (ending) return;
+          if (error instanceof PcCallError && error.retryable) continue;
+          end(refused(error));
+          return;
+        }
+        gone = false;
+        deps.log.write({ event: "remote_reopened", reason: REMOTE_NOT_FOUND, previousRemoteId: previous.remoteId, remoteId: current.remoteId });
+        deps.print("AiNecto lost this remote terminal (it may have restarted); opened it again.");
+        // 새 원격에는 화면이 없다 — 첫 장부터 다시(화면 루프가 세대를 보고 hash 를 비운다).
+        dirty = true;
+        nudge();
+        return;
+      }
+    };
 
     const decoder = new StringDecoder("utf8");
     const pollLoop = async (): Promise<void> => {
@@ -181,9 +237,16 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
       while (!ending) {
         let answer: Record<string, unknown>;
         try {
-          answer = await deps.http.call("poll", { remoteId: id }, { holdMs: limits.pollHoldSeconds * 1000, signal: stopper.signal });
+          answer = await deps.http.call("poll", { remoteId: current.remoteId },
+            { holdMs: current.pollHoldSeconds * 1000, signal: stopper.signal });
         } catch (error) {
           if (ending) return;
+          if (forgotten(error)) {
+            gone = true;
+            attempt = 0;
+            await reopen();
+            continue;
+          }
           if (!(error instanceof PcCallError) || !error.retryable) {
             end(refused(error));
             return;
@@ -193,6 +256,7 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
           continue;
         }
         attempt = 0;
+        reopens = 0;
         if (answer.state === "CLOSED") {
           end({ exitCode: 0, reason: `AiNecto closed this remote terminal (${typeof answer.reason === "string" ? answer.reason : "CLOSED"}).`, close: false });
           return;
@@ -211,18 +275,28 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
       }
     };
 
+    /**
+     * 화면 루프. ★원격의 생사는 poll 한 곳이 정한다 — frame 이 404 REMOTE_NOT_FOUND 를 받으면 그 세대에서는 멈추고, poll 이 다시 열어
+     * 세대가 바뀌기를 기다린다(poll 이 CLOSED·거절로 끝내면 그대로 끝).
+     */
     const frameLoop = async (): Promise<void> => {
-      const budget = frameBudget(limits.frameMaxBytes, { remoteId: id, cols, rows });
       let sentHash: string | undefined;
+      let sentGeneration = 0;
+      let parkedGeneration = 0;
       let lastRead = 0;
       let dropped = 0;
       let attempt = 0;
       while (!ending) {
-        if (!dirty) {
+        const target = current;
+        if (!dirty || parkedGeneration === target.generation) {
           await new Promise<void>((resolve) => {
             wakeFrame = resolve;
           });
           continue;
+        }
+        if (sentGeneration !== target.generation) {
+          sentGeneration = target.generation;
+          sentHash = undefined;
         }
         const gap = lastRead + FRAME_MIN_INTERVAL_MS - Date.now();
         if (gap > 0) {
@@ -238,18 +312,23 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
           daemonFailed("read", error);
           return;
         }
-        const frame = screenFrame(lines, budget);
+        const frame = screenFrame(lines, frameBudget(target.frameMaxBytes, { remoteId: target.remoteId, cols, rows }));
         if (frame.dropped !== dropped) {
           dropped = frame.dropped;
           deps.log.write({ event: "remote_frame_trimmed", dropped });
         }
         if (frame.hash === sentHash) continue;
         try {
-          await deps.http.call("frame", { remoteId: id, cols, rows, d: frame.d }, { signal: stopper.signal });
+          await deps.http.call("frame", { remoteId: target.remoteId, cols, rows, d: frame.d }, { signal: stopper.signal });
           sentHash = frame.hash;
           attempt = 0;
         } catch (error) {
           if (ending) return;
+          if (forgotten(error)) {
+            parkedGeneration = target.generation;
+            dirty = true;
+            continue;
+          }
           if (!(error instanceof PcCallError) || !error.retryable) {
             end(refused(error));
             return;
@@ -263,9 +342,9 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
 
     await Promise.all([pollLoop(), frameLoop()]);
     const outcome = ending ?? { exitCode: 1, reason: "The remote terminal stopped.", close: true };
-    if (outcome.close) {
+    if (outcome.close && !gone) {
       try {
-        await deps.http.call("close", { remoteId: id });
+        await deps.http.call("close", { remoteId: current.remoteId });
       } catch (error) {
         // 응답 줄은 공용 입구가 남겼다 — 사람에게도 알린다(웹은 PC 연결 끊김으로 곧 보인다).
         deps.print(`Could not tell AiNecto that sharing stopped: ${error instanceof Error ? error.message : String(error)}`);
@@ -274,7 +353,7 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
     return { exitCode: outcome.exitCode, reason: outcome.reason };
   } finally {
     // open 을 못 마쳤는데 끝나는 길(던짐)이면 남은 루프가 없다 — 멈춤만 알린다.
-    if (!remoteId) stopper.abort();
+    if (!opened) stopper.abort();
     deps.signal.removeEventListener("abort", onUserStop);
     client.close();
   }

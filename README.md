@@ -226,7 +226,8 @@ ainecto term remote api                           # show it in AiNecto on the we
   own after a reboot. A session that exits by itself is forgotten; `kill` and `kill-server` forget theirs.
 - `remote` uses your AiNecto sign-in: open Terminal in AiNecto on the web to see the session as plain text
   (no colors yet) and type into it. It runs until you press Ctrl+C, close it on the web, or the session
-  ends. One remote terminal per account; its log is `~/.ainecto/term/remote.log`.
+  ends. If AiNecto restarts, it opens the remote terminal again on its own. One remote terminal per
+  account; its log is `~/.ainecto/term/remote.log`.
 - Files are in `~/.ainecto/term/` (folder only you can read): the control socket, `sessions.json` (what
   `restore` starts) and `daemon.log` (one line per request and one per answer; kept to 10 MB plus one older
   file, `daemon.log.1`). Typed text, screens and environment values are not logged.

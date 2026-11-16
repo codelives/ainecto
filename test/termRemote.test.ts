@@ -36,23 +36,42 @@ describe("term remote — 순수 함수", () => {
   });
 });
 
-/** 서버 PC 계약 4개의 대역(프로세스 안 실제 HTTP). poll 은 붙잡았다가 입력·닫힘이 오면 깨어난다. */
+/**
+ * 서버 PC 계약 4개의 대역(프로세스 안 실제 HTTP). poll 은 붙잡았다가 입력·닫힘이 오면 깨어난다.
+ * open 마다 새 remoteId·토큰 — 지금 것과 다른(또는 재시작으로 잊은) remoteId·토큰이면 404 REMOTE_NOT_FOUND(서버 requireCurrent 와 같다).
+ */
 class FakeServer {
   server!: Server;
   endpoint = "";
   readonly calls: Array<{ op: string; token?: string; body: Record<string, unknown> }> = [];
-  readonly frames: string[] = [];
-  readonly remoteId = randomUUID();
-  readonly remoteToken = `tok-${randomUUID()}`;
+  readonly frameLog: Array<{ remoteId: string; text: string }> = [];
+  remoteId = "";
+  remoteToken = "";
+  /** 재시작하면 잊는다. */
+  private known = false;
   private inputs: string[] = [];
   private closedReason: string | undefined;
   /** 다음 poll 에 줄 오류. */
   pollError: { status: number; code: string } | undefined;
   frameError: { status: number; code: string } | undefined;
+  /** poll 마다 원격을 잊는다 — 열자마자 또 404 가 나는 고리. */
+  forgetOnPoll = false;
   /** 이 수만큼 poll 에 답하지 않는다(기한 초과 시험). */
   hangPolls = 0;
-  private held: Array<() => void> = [];
+  private held: Array<{ wake: () => void; res: ServerResponse }> = [];
   private hanging: ServerResponse[] = [];
+
+  get frames(): string[] {
+    return this.frameLog.map((frame) => frame.text);
+  }
+
+  /** api 재시작 — 메모리의 원격을 잊고, 붙잡힌 poll 의 연결은 끊긴다. */
+  restart(): void {
+    this.known = false;
+    const held = this.held;
+    this.held = [];
+    for (const { res } of held) res.destroy();
+  }
 
   async start(): Promise<void> {
     this.server = createServer((req, res) => {
@@ -87,7 +106,7 @@ class FakeServer {
   private wake(): void {
     const held = this.held;
     this.held = [];
-    for (const answer of held) answer();
+    for (const { wake } of held) wake();
   }
 
   private handle(req: IncomingMessage, res: ServerResponse, raw: string): void {
@@ -99,8 +118,16 @@ class FakeServer {
       res.writeHead(status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(out));
     };
+    if (op === "poll" && this.forgetOnPoll) this.known = false;
+    if (op !== "open" && (!this.known || body.remoteId !== this.remoteId || token !== this.remoteToken)) {
+      reply(404, { code: "REMOTE_NOT_FOUND", detail: "No such open remote terminal." });
+      return;
+    }
     switch (op) {
       case "open":
+        this.remoteId = randomUUID();
+        this.remoteToken = `tok-${randomUUID()}`;
+        this.known = true;
         reply(201, { remoteId: this.remoteId, remoteToken: this.remoteToken,
           limits: { pollHoldSeconds: 1, frameMaxBytes: 1024 * 1024, bodyMaxBytes: 64 * 1024 } });
         return;
@@ -125,14 +152,14 @@ class FakeServer {
           return;
         }
         const timer = setTimeout(() => {
-          this.held = this.held.filter((h) => h !== wakeUp);
+          this.held = this.held.filter((h) => h.wake !== wakeUp);
           answer();
         }, 1_000);
         const wakeUp = () => {
           clearTimeout(timer);
           answer();
         };
-        this.held.push(wakeUp);
+        this.held.push({ wake: wakeUp, res });
         return;
       }
       case "frame":
@@ -140,8 +167,8 @@ class FakeServer {
           reply(this.frameError.status, { code: this.frameError.code, detail: "refused" });
           return;
         }
-        this.frames.push(Buffer.from(String(body.d), "base64").toString("utf8"));
-        reply(200, { version: this.frames.length });
+        this.frameLog.push({ remoteId: String(body.remoteId), text: Buffer.from(String(body.d), "base64").toString("utf8") });
+        reply(200, { version: this.frameLog.length });
         return;
       case "close":
         reply(200, {});
@@ -247,14 +274,55 @@ describe("ainecto term remote — 실 데몬 + 서버 대역", () => {
     expectCallPairs();
   }, LONG);
 
-  it("poll 404 REMOTE_NOT_FOUND → 끝(0) · 다시 open 하지 않는다", async () => {
+  it("api 재시작(poll 404 REMOTE_NOT_FOUND) → 같은 세션으로 다시 open · 새 원격에 첫 장부터 · 입력·화면이 새 원격으로", async () => {
     await ok("term", "new", "t", "--", "cat");
-    fake.pollError = { status: 404, code: "REMOTE_NOT_FOUND" };
-    const result = await start("t").done;
+    const run = start("t");
+    await until(() => fake.frames.length > 0, "first frame");
+    const first = fake.remoteId;
+    fake.restart();
+    await until(() => fake.ops().filter((op) => op === "open").length === 2, "reopened");
+    const second = fake.remoteId;
+    expect(second).not.toBe(first);
+    // 화면이 바뀌지 않았어도 새 원격에 첫 장을 올린다(hash 초기화).
+    await until(() => fake.frameLog.some((frame) => frame.remoteId === second), "first frame on the new remote");
+    fake.input("hi\r");
+    await until(() => fake.frameLog.some((frame) => frame.remoteId === second && frame.text.split("\r\n").includes("hi")), "hi on the new remote");
+    run.stop.abort();
+    const result = await run.done;
     expect(result.exitCode).toBe(0);
-    expect(result.reason).toContain("REMOTE_NOT_FOUND");
+    const opens = fake.calls.filter((call) => call.op === "open");
+    expect(opens.map((call) => call.body.session)).toEqual(["t", "t"]);
+    expect(opens.every((call) => call.token === undefined)).toBe(true);
+    const close = fake.calls.at(-1);
+    expect(close).toMatchObject({ op: "close", token: fake.remoteToken, body: { remoteId: second } });
+    expect(remoteLog().filter((r) => r.event === "remote_reopened"))
+      .toEqual([expect.objectContaining({ reason: "REMOTE_NOT_FOUND", previousRemoteId: first, remoteId: second })]);
+    expectCallPairs();
+  }, LONG);
+
+  it("열자마자 또 404 인 고리 — 다시 열기는 C12 부터 두 배씩 벌어진다(폭주 없음)", async () => {
+    await ok("term", "new", "t", "--", "cat");
+    fake.forgetOnPoll = true;
+    const run = start("t");
+    await until(() => fake.ops().filter((op) => op === "open").length >= 2, "reopening");
+    const started = Date.now();
+    await sleep(RETRY_MIN_MS * 4);
+    // 기다림 없이 돌면 수백 번이다. 간격 0.5~1초 → 1~1.5초 → … 이므로 2초 동안 많아야 몇 번.
+    const opens = fake.ops().filter((op) => op === "open").length;
+    expect(opens).toBeLessThanOrEqual(5);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(RETRY_MIN_MS * 4);
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+    expectCallPairs();
+  }, LONG);
+
+  it("poll 401(로그인 거절) → 끝(1) · 다시 open 하지 않는다", async () => {
+    await ok("term", "new", "t", "--", "cat");
+    fake.pollError = { status: 401, code: "UNAUTHORIZED" };
+    const result = await start("t").done;
+    expect(result.exitCode).toBe(1);
+    expect(result.reason).toContain("401");
     expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
-    expect(fake.ops()).not.toContain("close");
     expectCallPairs();
   }, LONG);
 
