@@ -23,8 +23,8 @@ export interface CodexDeps {
   log: DaemonLog<AgentLogRecord>;
   /** 서버 tools/list 에서 readOnlyHint 가 아닌 도구 이름. */
   writeTools: ReadonlySet<string>;
-  /** 대화용 app-server 인자({@code codexAppServerArgs}). */
-  appServerArgs: string[];
+  /** 대화용 app-server 인자({@code codexAppServerArgs}) — 브리지를 붙일 이름 붙은 에이전트(없으면 이름 없는 연결)로 만든다. */
+  appServerArgs(agentName: string | undefined): string[];
   /** initialize 의 clientInfo.version. */
   clientVersion: string;
 }
@@ -53,7 +53,8 @@ export function codexAdapter(deps: CodexDeps): AgentAdapter {
         await server.child.stop();
       }
     },
-    open: ({ conversationUuid, resumeRef, textMaxCharacters }) => new CodexSession(conversationUuid, resumeRef, textMaxCharacters, deps),
+    open: ({ conversationUuid, resumeRef, textMaxCharacters, agentName }) =>
+      new CodexSession(conversationUuid, resumeRef, textMaxCharacters, agentName, deps),
   };
 }
 
@@ -191,10 +192,11 @@ class CodexSession implements AgentSession {
     readonly conversationUuid: string,
     resumeRef: string | undefined,
     private readonly textMaxCharacters: number,
+    readonly agentName: string | undefined,
     private readonly deps: CodexDeps,
   ) {
     this.resumed = resumeRef !== undefined;
-    const server = startAppServer(deps, deps.appServerArgs, {
+    const server = startAppServer(deps, deps.appServerArgs(agentName), {
       notification: (method, params) => this.onNotification(method, params),
       exit: (exit) => this.onExit(exit),
     });

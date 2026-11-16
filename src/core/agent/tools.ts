@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DaemonLog } from "../term/daemonLog";
 import { isToolError, McpRpcError } from "../mcp/rpcClient";
 import { toolErrorText, unwrapMcpToolPayload } from "../mcp/toolPayload";
+import type { AgentId } from "./agents";
 import type { AgentLogRecord } from "./log";
 
 /** 서버 MCP 도구 이름의 앞머리 — 서버 핸들러 이름(`mcp__ainecto__<도구>`) 그대로. */
@@ -21,9 +22,14 @@ export class AgentToolError extends Error {
   }
 }
 
+export interface AgentToolCallOptions {
+  /** 이 호출을 그 Agent 를 대신해 부른다 — {@code X-AiNecto-Agent} 헤더(그 Agent 의 clientInfo 이름). 없으면 serve 자신(헤더 없음). */
+  as?: AgentId;
+}
+
 export interface AgentTools {
   /** 도구 하나를 부른다 — {@code tool} 은 앞머리 없는 이름(list_agent_todos 등). 결과는 도구가 돌려준 JSON 객체. */
-  call(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  call(tool: string, args: Record<string, unknown>, options?: AgentToolCallOptions): Promise<Record<string, unknown>>;
   /** 서버 도구 목록(tools/list). */
   list(): Promise<unknown[]>;
 }
@@ -39,11 +45,27 @@ export interface AgentToolClient {
  * 호출마다 {@code agent_call} 1줄 + {@code agent_call_response} 1줄(같은 callId, {@code op: "tool"}) — 응답 줄은 finally 에서 반드시.
  * 실패 줄에는 도메인 오류 코드·사유를 남긴다. 인자·결과 본문은 남기지 않는다(바이트 수만).
  */
-export function createAgentTools(input: { client: AgentToolClient; log: DaemonLog<AgentLogRecord> }): AgentTools {
-  async function logged<T>(tool: string, bytes: number, run: () => Promise<T>): Promise<T> {
+export function createAgentTools(input: {
+  client: AgentToolClient;
+  /** {@link AgentToolCallOptions.as} 의 클라이언트 — 그 Agent 종류 헤더를 싣는다. */
+  clientAs?: (agent: AgentId) => AgentToolClient;
+  log: DaemonLog<AgentLogRecord>;
+}): AgentTools {
+  const asClients = new Map<AgentId, AgentToolClient>();
+  const clientFor = (agent: AgentId | undefined): AgentToolClient => {
+    if (!agent || !input.clientAs) return input.client;
+    let found = asClients.get(agent);
+    if (!found) {
+      found = input.clientAs(agent);
+      asClients.set(agent, found);
+    }
+    return found;
+  };
+
+  async function logged<T>(tool: string, bytes: number, run: () => Promise<T>, agent?: AgentId): Promise<T> {
     const callId = randomUUID();
     const started = Date.now();
-    input.log.write({ event: "agent_call", callId, op: "tool", tool, bytes });
+    input.log.write({ event: "agent_call", callId, op: "tool", tool, ...(agent ? { agent } : {}), bytes });
     let outcome: { ok: boolean; code?: string; error?: string } = { ok: false, error: "no response" };
     try {
       const value = await run();
@@ -59,14 +81,14 @@ export function createAgentTools(input: { client: AgentToolClient; log: DaemonLo
   }
 
   return {
-    call(tool, args) {
+    call(tool, args, options = {}) {
       return logged(tool, Buffer.byteLength(JSON.stringify(args), "utf8"), async () => {
-        const raw = await input.client.toolsCall(TOOL_PREFIX + tool, args);
+        const raw = await clientFor(options.as).toolsCall(TOOL_PREFIX + tool, args);
         if (isToolError(raw)) throw new AgentToolError(toolErrorText(raw), tool, codeInText(toolErrorText(raw)));
         const payload = unwrapMcpToolPayload(raw);
         if (!isRecord(payload)) throw new AgentToolError(`${tool} did not return an object.`, tool, "MCP_PROTOCOL_ERROR");
         return payload;
-      });
+      }, options.as);
     },
     list() {
       return logged("tools/list", 0, () => input.client.toolsList());

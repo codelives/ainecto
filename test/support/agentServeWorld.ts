@@ -9,6 +9,7 @@ import { codexAdapter } from "../../src/core/agent/codex";
 import { AgentCallError, type AgentHttp, type AgentOp } from "../../src/core/agent/http";
 import type { AgentLogRecord } from "../../src/core/agent/log";
 import { runAgentServe, type ServeResult } from "../../src/core/agent/serve";
+import { AgentRunLog } from "../../src/core/agent/runs";
 import { AgentSessionMap } from "../../src/core/agent/sessions";
 import type { AgentTools } from "../../src/core/agent/tools";
 import { DaemonLog } from "../../src/core/term/daemonLog";
@@ -81,6 +82,8 @@ export interface World {
   sessionsPath: string;
   /** serve 가 사람에게 쓴 줄(시작 줄 등). */
   printed: string[];
+  /** 이 PC 가 돌던 카드(runs.json) — 할 일을 받을 때만 쓴다. */
+  runsPath: string;
 }
 
 export interface WorldOptions {
@@ -97,6 +100,8 @@ export interface WorldOptions {
   pollHoldSeconds?: number;
   /** 에이전트 할 일도 받는다(가짜 MCP 도구 레이어 · 이 serve 의 에이전트 이름). */
   todos?: { tools: AgentTools; agentName?: string };
+  /** runs.json 에 미리 둘 글(그대로 쓴다 — 깨진 파일 시험). */
+  runsFile?: string;
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -107,6 +112,8 @@ export function startServe(options: WorldOptions = {}): World {
   const codexArgsLog = join(dir, "codex-args.jsonl");
   const logPath = join(dir, "agent.log");
   const sessionsPath = join(dir, "sessions.json");
+  const runsPath = join(dir, "runs.json");
+  if (options.runsFile !== undefined) writeFileSync(runsPath, options.runsFile);
   if (options.sessionsFile) writeFileSync(sessionsPath, JSON.stringify(options.sessionsFile));
   const server = new FakeServer(options.oldServer, options.pollHoldSeconds);
   const stop = new AbortController();
@@ -115,8 +122,10 @@ export function startServe(options: WorldOptions = {}): World {
     env: { ...process.env, ANTHROPIC_API_KEY: "", FAKE_CLAUDE_ARGS_LOG: argsLog, FAKE_CODEX_ARGS_LOG: codexArgsLog, ...options.env },
     log, writeTools: WRITE_TOOLS };
   const all: AgentAdapter[] = [
-    claudeCodeAdapter({ ...shared, args: ({ resumeSessionId }) => (resumeSessionId ? ["--resume", resumeSessionId] : []) }),
-    codexAdapter({ ...shared, appServerArgs: ["app-server"], clientVersion: "0.0.0" }),
+    // 가짜 Agent 가 받은 인자 = 브리지 이름(할 일 차례만) + 재개 값 — 시험이 «누구로 붙었나»를 본다.
+    claudeCodeAdapter({ ...shared, args: ({ resumeSessionId, agentName }) =>
+      [...(agentName ? ["--agent", agentName] : []), ...(resumeSessionId ? ["--resume", resumeSessionId] : [])] }),
+    codexAdapter({ ...shared, appServerArgs: (agentName) => ["app-server", ...(agentName ? ["--agent", agentName] : [])], clientVersion: "0.0.0" }),
   ];
   const installed = options.installed ?? ["claude-code"];
   const adapters = new Map(all.filter((a) => installed.includes(a.id)).map((a) => [a.id, a] as const));
@@ -133,9 +142,9 @@ export function startServe(options: WorldOptions = {}): World {
     print: (line) => printed.push(line),
     signal: stop.signal,
     turnTimeoutMs: options.turnTimeoutMs,
-    todos: options.todos,
+    todos: options.todos ? { ...options.todos, runs: new AgentRunLog(runsPath, log) } : undefined,
   }));
-  return { server, stop, done, argsLog, codexArgsLog, logPath, sessionsPath, printed };
+  return { server, stop, done, argsLog, codexArgsLog, logPath, sessionsPath, printed, runsPath };
 }
 
 export async function until<T>(read: () => T | undefined, ms = 10_000): Promise<T> {

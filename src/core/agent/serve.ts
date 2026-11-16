@@ -6,7 +6,9 @@ import type { AgentLogRecord } from "./log";
 import { agentPromptText, type AgentTurnContext } from "./prompt";
 import { clip, replyForOutcome, stoppedReply, type AgentReply } from "./reply";
 import type { AgentSessionMap } from "./sessions";
-import { claimTodo, closeTodo, keepLease, runTodo, TODO_KINDS, todosIn, type ClaimedTodo, type LeaseKeeper, type TodoOutcome } from "./todoRun";
+import type { AgentRunLog } from "./runs";
+import { claimTodo, closeTodo, keepLease, resumeTodo, runTodo, TODO_KINDS, todosIn, type AgentTodo, type ClaimedTodo, type LeaseKeeper,
+  type TodoOutcome } from "./todoRun";
 import type { AgentTools } from "./tools";
 
 export interface AgentOffer {
@@ -37,7 +39,7 @@ export interface ServeDeps {
    * 에이전트 할 일(자동 실행된 칸반 카드 — KAN-1113)도 받는다. {@code agentName} = 이 serve 의 이름 붙은 에이전트(폴더의
    * {@code .ainecto/agent.local}) — 없으면 할 일은 받지 않는다(서버는 이름 없는 연결의 «내 몫»을 사람 몫으로 본다).
    */
-  todos?: { tools: AgentTools; agentName?: string };
+  todos?: { tools: AgentTools; agentName?: string; runs?: AgentRunLog };
 }
 
 export interface ServeResult {
@@ -57,7 +59,8 @@ interface ServerLimits {
 /** 작업 줄 한 칸 — Chat 요청 또는 가져간 할 일. 둘 다 같은 실행기({@code runTurn})로 돈다. */
 type Job =
   | { kind: "chat"; offer: AgentOffer }
-  | { kind: "todo"; claimed: ClaimedTodo; lease: LeaseKeeper };
+  /** 가져간 서버 할 일(임대 있음) 또는 다시 켜서 잇는 카드(RESUME — 임대 없음). */
+  | { kind: "todo"; todo: AgentTodo; claimed?: ClaimedTodo; lease?: LeaseKeeper };
 
 /** Agent 한 차례 — 멈춤 표의 열쇠는 Chat 이면 turnUuid, 할 일이면 {@link todoKey}. */
 interface TurnJob {
@@ -68,6 +71,8 @@ interface TurnJob {
   agent: string;
   text: string;
   context?: AgentTurnContext;
+  /** ★누구로 부르나 — 할 일 차례는 이 serve 의 이름 붙은 에이전트, Chat 차례는 없음(이름 없는 연결 — 지금과 같다). */
+  agentName?: string;
 }
 
 const todoKey = (todoId: string) => `todo:${todoId}`;
@@ -96,9 +101,10 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   deps.print(`Connected to AiNecto as ${deps.hostName}. Requests to «My agent» in AiNecto Chat now run in ${names} on this machine. Press Ctrl+C to stop.`);
   // 할 일은 로그인된 Agent 하나로 돈다 — 서버 기본 Agent 가 준비됐으면 그것.
   const todoAgent = deps.agents.find((a) => a.ready && a.id === DEFAULT_AGENT)?.id ?? deps.agents.find((a) => a.ready)?.id;
-  const todos = deps.todos?.agentName && todoAgent ? { tools: deps.todos.tools, agentName: deps.todos.agentName } : undefined;
+  const todos = deps.todos?.agentName && todoAgent
+    ? { tools: deps.todos.tools, agentName: deps.todos.agentName, runs: deps.todos.runs, agent: todoAgent } : undefined;
   if (todos) {
-    deps.print(`Auto-run cards handed to your agent «${todos.agentName}» also run here (in ${deps.adapters.get(todoAgent!)?.displayName ?? todoAgent}).`);
+    deps.print(`Auto-run cards handed to your agent «${todos.agentName}» also run here (in ${deps.adapters.get(todos.agent)?.displayName ?? todos.agent}).`);
   } else if (deps.todos) {
     deps.print(deps.todos.agentName
       ? "Auto-run cards are not taken here: no agent on this machine is signed in."
@@ -116,8 +122,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   const stopping = new Set<string>();
   /** 지금 Agent 에 들어간 차례(없으면 undefined) — 멈춤 지시가 이것을 멈춘다. */
   let current: { key: string; session: AgentSession } | undefined;
-  /** ★로컬 잠금 — 지금 가져가 돌고 있거나 줄에 선 할 일(카드마다 하나 · serve 에 한 번에 하나). */
-  let todoInFlight: ClaimedTodo | undefined;
+  /** ★로컬 잠금 — 지금 돌고 있거나 줄에 선 할 일의 카드(카드마다 하나 · serve 에 한 번에 하나). */
+  let todoInFlight: string | undefined;
   let wakeTodos: (() => void) | undefined;
 
   const requestStop = (key: string) => {
@@ -182,16 +188,19 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     }
   })();
 
-  /** 그 Agent 의 이 대화 세션 — 다른 대화의 세션이거나 끝났으면 내리고 새로(재개 값이 있으면 재개). */
-  const sessionFor = async (adapter: AgentAdapter, conversationUuid: string): Promise<AgentSession> => {
+  /**
+   * 그 Agent 의 이 대화 세션 — 다른 대화·다른 연결 이름의 세션이거나 끝났으면 내리고 새로(재개 값이 있으면 재개 — 이름이 바뀌어도
+   * 같은 대화의 맥락은 잇는다).
+   */
+  const sessionFor = async (adapter: AgentAdapter, conversationUuid: string, agentName: string | undefined): Promise<AgentSession> => {
     const existing = live.get(adapter.id);
-    if (existing && existing.conversationUuid === conversationUuid && existing.alive) return existing;
+    if (existing && existing.conversationUuid === conversationUuid && existing.agentName === agentName && existing.alive) return existing;
     if (existing) {
       live.delete(adapter.id);
       await existing.close();
     }
     const session = adapter.open({ conversationUuid, resumeRef: deps.sessions.get(conversationUuid, adapter.id),
-      textMaxCharacters: limits.textMaxCharacters });
+      textMaxCharacters: limits.textMaxCharacters, ...(agentName ? { agentName } : {}) });
     live.set(adapter.id, session);
     return session;
   };
@@ -205,7 +214,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     let failure: string | undefined;
     try {
       try {
-        session = adapter ? await sessionFor(adapter, offer.conversationUuid) : undefined;
+        session = adapter ? await sessionFor(adapter, offer.conversationUuid, offer.agentName) : undefined;
       } finally {
         deps.log.write({ event: "agent_request", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: offer.agent,
           conversationUuid: offer.conversationUuid, pid: session?.pid ?? -1, textLength: offer.text.length });
@@ -295,29 +304,32 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     }
   };
 
-  /** 가져간 할 일 한 건 — 같은 실행기(runTurn). 끝나면 잠금을 풀고 할 일 줄을 깨운다. */
+  /** 할 일 한 건 — 같은 실행기(runTurn, 이 serve 의 이름으로). 끝나면 잠금을 풀고 할 일 줄을 깨운다. */
   const runTodoJob = async (job: Extract<Job, { kind: "todo" }>) => {
+    const t = todos!;
     const { claimed } = job;
     let outcome: TodoOutcome | undefined;
     try {
       outcome = await runTodo({
-        tools: todos!.tools,
+        tools: t.tools,
+        agent: t.agent,
+        ...(t.runs ? { runs: t.runs } : {}),
         log: deps.log,
         textMaxCharacters: limits.textMaxCharacters,
         signal: stopController.signal,
         runAgent: ({ todoId, conversationUuid, text }) =>
-          runTurn({ key: todoKey(todoId), todoId, conversationUuid, agent: todoAgent!, text }),
-      }, claimed.todo);
+          runTurn({ key: todoKey(todoId), todoId, conversationUuid, agent: t.agent, text, agentName: t.agentName }),
+      }, job.todo);
     } catch {
-      // 이유는 todo_run_result 줄에 — 임대는 그대로 두어 끝나면 다시 가져간다.
+      // 이유는 todo_run_result 줄에 — 임대(또는 runs.json 줄)는 그대로 두어 다시 가져간다.
     } finally {
-      job.lease.stop();
+      job.lease?.stop();
     }
-    if (stopReason || outcome === "stopped") {
-      await closeTodo(todos!.tools, deps.log, claimed, "release");
-    } else if (outcome !== undefined && claimed.todo.kind !== "CARD_ASSIGNED") {
+    if (claimed && (stopReason || outcome === "stopped")) {
+      await closeTodo(t.tools, deps.log, claimed, "release");
+    } else if (claimed && outcome !== undefined && claimed.todo.kind === "DECISION_ANSWERED") {
       // 카드 배정 할 일은 수락이 닫았다 — 답을 받은 할 일은 다 돌았으니 닫는다.
-      await closeTodo(todos!.tools, deps.log, claimed, "complete", TODO_NOTES[outcome]);
+      await closeTodo(t.tools, deps.log, claimed, "complete", TODO_NOTES[outcome]);
     }
     todoInFlight = undefined;
     wakeTodos?.();
@@ -352,9 +364,9 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         if (stopReason) return;
         const claimed = await claimTodo(todos!.tools, deps.log, todo);
         if (!claimed) continue;
-        todoInFlight = claimed;
+        todoInFlight = todo.cardUuid;
         const lease = keepLease(todos!.tools, deps.log, claimed, () => requestStop(todoKey(todo.todoId)));
-        queue.push({ kind: "todo", claimed, lease });
+        queue.push({ kind: "todo", todo, claimed, lease });
         wakeWorker?.();
         return;
       }
@@ -365,12 +377,26 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   /** 할 일 줄 — ★주기는 Chat poll 과 같은 값(서버가 준 pollHoldSeconds). 한 건이 끝나면 바로 다음 것을 본다. */
   const todoLoop = (async () => {
     if (!todos) return;
+    // 이 PC 가 돌다 끊긴 카드(runs.json) 먼저 — 잇는지는 runTodo 가 서버의 지금 카드로 판정한다.
+    let resumes: AgentTodo[] = [];
+    try {
+      resumes = todos.runs ? (await todos.runs.load()).map(resumeTodo) : [];
+    } catch {
+      // 비운 파일을 못 썼다 — 이어 가기만 못 할 뿐(이유는 runs_load 줄).
+    }
     while (!stopReason) {
       if (!todoInFlight) {
-        try {
-          await takeTodo();
-        } catch {
-          // 이유는 도구 응답 줄에 — 다음 주기에 다시.
+        const resume = resumes.shift();
+        if (resume) {
+          todoInFlight = resume.cardUuid;
+          queue.push({ kind: "todo", todo: resume });
+          wakeWorker?.();
+        } else {
+          try {
+            await takeTodo();
+          } catch {
+            // 이유는 도구 응답 줄에 — 다음 주기에 다시.
+          }
         }
       }
       if (stopReason) return;
@@ -385,8 +411,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   await Promise.allSettled([pollLoop, worker, todoLoop]);
   // 돌지 못하고 줄에 남은 할 일 — 놓아서 다음에 켜면 바로 가져가게.
   for (const job of queue.splice(0)) {
-    if (job.kind !== "todo") continue;
-    job.lease.stop();
+    if (job.kind !== "todo" || !job.claimed) continue;
+    job.lease?.stop();
     await closeTodo(todos!.tools, deps.log, job.claimed, "release");
   }
   deps.signal.removeEventListener("abort", onUserStop);
@@ -402,7 +428,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
 }
 
 function jobKey(job: Job): string {
-  return job.kind === "chat" ? job.offer.turnUuid : todoKey(job.claimed.todo.todoId);
+  return job.kind === "chat" ? job.offer.turnUuid : todoKey(job.todo.todoId);
 }
 
 function serverLimits(value: unknown): ServerLimits {

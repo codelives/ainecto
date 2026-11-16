@@ -1,4 +1,4 @@
-import type { AgentTools } from "../../src/core/agent/tools";
+import type { AgentToolCallOptions, AgentTools } from "../../src/core/agent/tools";
 import { AgentToolError } from "../../src/core/agent/tools";
 
 /** 가짜 카드 — 서버 카드 상세의 칸 중 serve 가 읽는 것. */
@@ -29,7 +29,7 @@ interface FakeTodo {
  * 가짜 서버 MCP 도구 레이어(메모리) — serve 가 부르는 도구만 서버 계약 모양으로 답한다. 부른 순서는 {@link calls}.
  */
 export class FakeTools implements AgentTools {
-  readonly calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+  readonly calls: Array<{ tool: string; args: Record<string, unknown>; as?: string }> = [];
   readonly cards = new Map<string, FakeCard>();
   readonly todos: FakeTodo[] = [];
   readonly comments = new Map<string, Array<Record<string, unknown>>>();
@@ -65,8 +65,8 @@ export class FakeTools implements AgentTools {
     return [];
   }
 
-  async call(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    this.calls.push({ tool, args });
+  async call(tool: string, args: Record<string, unknown>, options: AgentToolCallOptions = {}): Promise<Record<string, unknown>> {
+    this.calls.push({ tool, args, ...(options.as ? { as: options.as } : {}) });
     const failure = this.failOnce.get(tool);
     if (failure) {
       this.failOnce.delete(tool);
@@ -97,6 +97,8 @@ export class FakeTools implements AgentTools {
         return { comments: this.comments.get(String(args.cardUuid)) ?? [], count: 0 };
       case "create_comments":
         return { created: [{ id: 900 + this.calls.length }] };
+      case "report_work_progress":
+        return { workId: args.workId, checkId: `chk-${this.calls.length}` };
       default:
         throw new AgentToolError(`unknown tool ${tool}`, tool, "NOT_FOUND");
     }

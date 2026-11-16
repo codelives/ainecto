@@ -18,6 +18,12 @@ import type { WriteFacts } from "./documents";
 export const AGENT_IDS = ["claude-code", "codex"] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
 
+/**
+ * 그 Agent 가 MCP {@code initialize} 에 싣는 {@code clientInfo.name} — 서버 {@code AgentTypeResolver} 표와 같은 글(선 위의 계약).
+ * serve 가 그 Agent 를 대신해 부르는 도구(실행 대화 글)에 {@code X-AiNecto-Agent} 헤더로 싣는다(실제로 도는 Agent 종류를 서버가 안다).
+ */
+export const AGENT_MCP_CLIENT_NAMES: Readonly<Record<AgentId, string>> = { "claude-code": "claude-code", codex: "codex-mcp-client" };
+
 /** 서버가 Agent 를 밝히지 않은 요청(옛 서버·옛 웹)은 이것 — 서버 {@code AgentKind.LEGACY_DEFAULT} 와 같다. */
 export const DEFAULT_AGENT: AgentId = "claude-code";
 
@@ -68,8 +74,11 @@ export interface AgentAdapter {
   readonly displayName: string;
   detect(): Promise<AgentDetection>;
   authStatus(): Promise<AgentAuthStatus>;
-  /** 프로세스를 띄운다(동기). 재개할 세션이 있으면 {@code resumeRef}. 준비가 실패하면 첫 {@code send} 가 «exited» 로 답한다. */
-  open(input: { conversationUuid: string; resumeRef?: string; textMaxCharacters: number }): AgentSession;
+  /**
+   * 프로세스를 띄운다(동기). 재개할 세션이 있으면 {@code resumeRef}. 준비가 실패하면 첫 {@code send} 가 «exited» 로 답한다.
+   * {@code agentName} = 이 세션의 AiNecto 브리지를 그 이름 붙은 에이전트로 붙인다(할 일 차례만 — Chat 차례는 이름 없는 연결).
+   */
+  open(input: { conversationUuid: string; resumeRef?: string; textMaxCharacters: number; agentName?: string }): AgentSession;
 }
 
 export interface AgentSession {
@@ -78,6 +87,8 @@ export interface AgentSession {
   readonly resumed: boolean;
   readonly pid: number;
   readonly alive: boolean;
+  /** 이 세션의 브리지가 붙은 이름 붙은 에이전트(없으면 이름 없는 연결). */
+  readonly agentName: string | undefined;
   /** 저장해 두면 재개되는 값(Claude session_id · Codex threadId). 아직 모르면 undefined. */
   readonly sessionRef: string | undefined;
   /** 한 차례 — 기한 안에 끝나지 않으면 «timeout»(세션은 부른 쪽이 멈추고 내린다). */

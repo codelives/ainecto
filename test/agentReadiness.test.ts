@@ -17,7 +17,7 @@ function world(env: Record<string, string>, spawnImpl: AgentSpawn = fakeSpawn) {
   const shared = { spawnImpl, cwd: dir, env: { ...process.env, ANTHROPIC_API_KEY: "", ...env }, log, writeTools: new Set<string>() };
   const adapters = [
     claudeCodeAdapter({ ...shared, args: () => [] }),
-    codexAdapter({ ...shared, appServerArgs: ["app-server"], clientVersion: "0.0.0" }),
+    codexAdapter({ ...shared, appServerArgs: () => ["app-server"], clientVersion: "0.0.0" }),
   ];
   const records = () => readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
   return { adapters, log, logPath, records };

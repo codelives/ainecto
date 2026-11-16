@@ -12,7 +12,7 @@ export type AgentLogRecord =
       agents: Array<{ id: string; installed: boolean; ready: boolean; auth?: string; version?: string }> }
   | { event: "serve_stop"; pid: number; reason: string }
   /** {@code op: "tool"} = 서버 MCP 도구(tools.ts) — {@code tool} 은 앞머리 없는 도구 이름. */
-  | { event: "agent_call"; callId: string; op: string; tool?: string; turnUuid?: string; bytes: number }
+  | { event: "agent_call"; callId: string; op: string; tool?: string; agent?: string; turnUuid?: string; bytes: number }
   | { event: "agent_call_response"; callId: string; op: string; tool?: string; ok: boolean; status?: number; code?: string; error?: string; ms: number; offers?: number }
   | { event: "agent_probe"; callId: string; agent: string; probe: "detect" | "auth" }
   | { event: "agent_probe_response"; callId: string; agent: string; probe: "detect" | "auth"; ok: boolean; installed?: boolean;
@@ -41,6 +41,8 @@ export type AgentLogRecord =
   | { event: "todo_run"; todoId: string; kind: string; cardUuid: string }
   | { event: "todo_run_result"; todoId: string; kind: string; cardUuid: string; outcome: string; tool?: string; code?: string;
       workId?: string; conversationUuid?: string; ms: number }
+  /** runs.json 읽기 — 없음(missing)·깨짐(unreadable → 비움)도 이 한 줄. */
+  | { event: "runs_load"; entries: number; reason?: string }
   /** 가져간 할 일의 임대 — 연장 실패·놓기 등(도구 호출 줄과 별개로, serve 가 그 결과로 무엇을 했나). */
   | { event: "todo_lease"; todoId: string; action: string; ok: boolean; error?: string; next?: string };
 

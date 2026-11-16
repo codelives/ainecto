@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { finish, logRecords, spawned, startServe, until } from "./support/agentServeWorld";
 import { FakeTools } from "./support/fakeTools";
 
@@ -8,25 +9,29 @@ const CARD_B = "d".repeat(32);
 const named = (tools: FakeTools, name: string) => tools.calls.filter((c) => c.tool === name);
 
 describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN-1113)", () => {
-  it("★배정된 카드: claim → accept → start → 실행 대화 시작 글 → Chat 과 같은 실행기 한 차례 → 답 글 → 결과 댓글 → 검토 요청", async () => {
+  it("★배정된 카드: claim → accept → start → 실행 대화 시작 글 → Chat 과 같은 실행기 한 차례(이름 붙은 브리지) → 답 글 → 결과 검토 요청 댓글 → CHECKPOINT", async () => {
     const tools = new FakeTools();
     tools.addCard({ uuid: CARD, key: "KAN-7", title: "로그인 고치기", description: "로그인 버튼이 안 눌린다" });
     tools.addTodo("todo-1", "CARD_ASSIGNED", CARD);
     const w = startServe({ todos: { tools, agentName: "pc-agent" } });
-    await until(() => named(tools, "kanban_card_action").find((c) => c.args.action === "request_review"));
+    await until(() => logRecords(w).find((r) => r.event === "todo_run_result"));
     await finish(w);
 
     expect(tools.tools()).toEqual([
       "list_agent_todos", "update_agent_todos", "kanban_list_cards", "kanban_card_action", "kanban_card_action",
-      "send_auto_run_message", "send_auto_run_message", "kanban_list_cards", "create_comments", "kanban_card_action",
+      "send_auto_run_message", "send_auto_run_message", "kanban_list_cards", "create_comments", "report_work_progress",
       ...tools.tools().slice(10),
     ]);
     expect(tools.calls[0]?.args).toEqual({ state: ["OPEN"], kinds: ["CARD_ASSIGNED", "DECISION_ANSWERED"], agent: "me" });
     expect(tools.calls[1]?.args).toEqual({ items: [{ todoId: "todo-1", action: "claim" }] });
-    expect(named(tools, "kanban_card_action").map((c) => c.args.action)).toEqual(["accept", "start", "request_review"]);
+    // ★request_review 는 부르지 않는다 — 승인은 주인이 웹에서(서버가 검토 요청을 대신 한다).
+    expect(named(tools, "kanban_card_action").map((c) => c.args.action)).toEqual(["accept", "start"]);
     expect(named(tools, "start_work")).toHaveLength(0);   // start 결과의 card.work.workId 를 쓴다
     const [opening, answer] = named(tools, "send_auto_run_message");
     expect(opening?.args).toEqual({ cardUuid: CARD, workId: "work-1", body: "«로그인 고치기» 작업을 시작했어요." });
+    // 실행 대화 글은 실제로 도는 Agent 종류로(X-AiNecto-Agent) — 나머지 serve 호출은 serve 자신.
+    expect(named(tools, "send_auto_run_message").map((c) => c.as)).toEqual(["claude-code", "claude-code"]);
+    expect(tools.calls.filter((c) => c.tool !== "send_auto_run_message").every((c) => c.as === undefined)).toBe(true);
     // 가짜 claude 는 받은 글을 «got <글>» 로 돌려준다 — 지시문에 카드·workId·판단 요청 순서(주인 userId)가 들어갔다.
     const body = String(answer?.args.body);
     expect(body).toMatch(/^got \[AiNecto auto-run\] /);
@@ -35,12 +40,16 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(body).toContain("Description:\n로그인 버튼이 안 눌린다");
     expect(body).toContain("- [ ] 끝나면 검토 요청");
     expect(body).toContain(`2) kanban_card_action {cardUuid: "${CARD}", action: "block", reason: <one line>, responderIds: ["user-owner"]}`);
-    expect(named(tools, "create_comments")[0]?.args).toEqual({ cardUuid: CARD, workId: "work-1", items: [{ body, resultReview: true }] });
-    expect(named(tools, "kanban_card_action")[2]?.args).toEqual({ cardUuid: CARD, action: "request_review", workId: "work-1" });
+    expect(named(tools, "create_comments")[0]?.args).toEqual({ cardUuid: CARD, workId: "work-1",
+      items: [{ kind: "COMMENT", body, resultReview: true }] });
+    expect(named(tools, "report_work_progress")[0]?.args).toEqual({ workId: "work-1", status: "CHECKPOINT" });
     // 카드 배정 할 일은 accept 가 닫았다 — complete 를 보내지 않는다.
     expect(named(tools, "update_agent_todos").map((c) => (c.args.items as Array<{ action: string }>)[0]?.action)).toEqual(["claim"]);
-    expect(spawned(w)).toHaveLength(1);
+    expect(spawned(w)).toEqual([["--agent", "pc-agent"]]);   // 할 일 차례 = 이 serve 의 이름 붙은 브리지
+    // 다 돌았다 — runs.json 에 남지 않는다(다시 켜도 잇지 않는다).
+    expect(JSON.parse(readFileSync(w.runsPath, "utf8"))).toEqual({ version: 1, runs: [] });
     const records = logRecords(w);
+    expect(records.find((r) => r.event === "runs_load")).toEqual({ event: "runs_load", entries: 0, reason: "missing", ts: expect.anything() });
     expect(records.find((r) => r.event === "agent_request" && r.todoId === "todo-1")).toMatchObject({ conversationUuid: `conv-${CARD}` });
     expect(records.filter((r) => r.event === "todo_run").map((r) => r.todoId)).toEqual(["todo-1"]);
     expect(records.find((r) => r.event === "todo_run_result")).toMatchObject({ todoId: "todo-1", outcome: "review_requested",
@@ -78,7 +87,8 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(second).toMatch(/#2 in sess-\d+$/);   // 같은 Claude 프로세스·세션의 두 번째 차례
     expect(spawned(w)).toHaveLength(1);
     expect(named(tools, "list_comments")[0]?.args).toEqual({ cardUuid: CARD, workId: "work-1" });
-    expect(named(tools, "kanban_card_action").map((c) => c.args.action)).toEqual(["accept", "start", "request_review"]);
+    expect(named(tools, "kanban_card_action").map((c) => c.args.action)).toEqual(["accept", "start"]);
+    expect(named(tools, "create_comments")).toHaveLength(1);
     expect(tools.todo("todo-2")?.note).toBe("Worked the card and asked for review.");
   });
 
@@ -138,6 +148,71 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(result).toMatchObject({ todoId: "todo-1", outcome: "error: kanban_card_action failed", tool: "kanban_card_action", code: "CARD_CHANGED" });
     expect(String(reply.reply)).toMatch(/^got hello #1/);
     expect(tools.todo("todo-1")?.state).toBe("CLAIMED");
+  });
+
+  it("★--agent 이름은 할 일 차례에만 — Chat 차례는 이름 없는 연결 그대로 · 같은 대화라도 이름이 바뀌면 세션을 새로(같은 세션 값으로 재개)", async () => {
+    const tools = new FakeTools();
+    tools.addCard({ uuid: CARD, title: "카드" });
+    tools.addTodo("todo-1", "CARD_ASSIGNED", CARD);
+    const w = startServe({ todos: { tools, agentName: "pc-agent" } });
+    await until(() => logRecords(w).find((r) => r.event === "todo_run_result"));
+    w.server.offer("t1", `conv-${CARD}`, "same conversation from Chat");
+    const reply = await until(() => w.server.replies()[0]);
+    w.server.offer("t2", "conv-other", "other");
+    await until(() => w.server.replies()[1]);
+    await finish(w);
+    const first = /in (sess-\d+)$/.exec(String(named(tools, "send_auto_run_message")[1]?.args.body))?.[1];
+    expect(first).toBeDefined();
+    expect(spawned(w)).toEqual([["--agent", "pc-agent"], ["--resume", first], []]);
+    expect(String(reply.reply)).toBe(`got same conversation from Chat #1 in ${first}`);
+  });
+
+  it("★수락 뒤 끊기면 runs.json(카드·workId·시작 시각)이 남고, 다시 켜면 서버에서 카드를 다시 읽어 아직 내 작업일 때만 같은 workId 로 잇는다", async () => {
+    const tools = new FakeTools();
+    const card = tools.addCard({ uuid: CARD, title: "긴 일", description: "@hang" });
+    tools.addTodo("todo-1", "CARD_ASSIGNED", CARD);
+    const first = startServe({ todos: { tools, agentName: "pc-agent" } });
+    await until(() => logRecords(first).find((r) => r.event === "agent_request"));
+    await finish(first);   // PC 끔 — 할 일은 수락이 이미 닫았다
+    const saved = JSON.parse(readFileSync(first.runsPath, "utf8")) as { runs: Array<Record<string, unknown>> };
+    expect(saved.runs).toEqual([{ cardUuid: CARD, workId: "work-1", startedAt: expect.any(String) }]);
+    expect(logRecords(first).find((r) => r.event === "todo_run_result")).toMatchObject({ outcome: "stopped" });
+    expect(tools.todos.filter((t) => t.state === "OPEN")).toHaveLength(0);
+
+    // 다른 카드 하나는 그새 사람이 막아 두었다 — 잇지 않고 지운다.
+    tools.addCard({ uuid: CARD_B, title: "막힌 카드", status: "IN_PROGRESS", assignmentState: "ACCEPTED", workId: "work-b", blocked: true });
+    card.description = "이어서";
+    const before = tools.calls.length;
+    const second = startServe({ todos: { tools, agentName: "pc-agent" },
+      runsFile: JSON.stringify({ version: 1, runs: [...saved.runs, { cardUuid: CARD_B, workId: "work-b", startedAt: "2026-11-16T00:00:00Z" }] }) });
+    await until(() => logRecords(second).filter((r) => r.event === "todo_run_result").length >= 2 ? true : undefined);
+    await finish(second);
+
+    const records = logRecords(second);
+    expect(records.find((r) => r.event === "runs_load")).toMatchObject({ entries: 2 });
+    expect(records.filter((r) => r.event === "todo_run_result").map((r) => [r.todoId, r.outcome])).toEqual([
+      [`resume:${CARD}`, "review_requested"], [`resume:${CARD_B}`, "not_runnable"]]);
+    const later = tools.calls.slice(before);
+    expect(later.filter((c) => c.tool === "kanban_card_action")).toHaveLength(0);   // 이미 수락·시작된 카드 — 같은 workId
+    const prompt = String(later.find((c) => c.tool === "send_auto_run_message" && String(c.args.body).startsWith("got "))?.args.body);
+    expect(prompt).toMatch(/^got \[AiNecto auto-run — resume\] /);
+    expect(prompt).toContain("workId work-1");
+    expect(later.find((c) => c.tool === "send_auto_run_message")?.args.body).toBe("이 PC 가 다시 켜져 «긴 일» 작업을 이어 가요.");
+    expect(JSON.parse(readFileSync(second.runsPath, "utf8"))).toEqual({ version: 1, runs: [] });
+  });
+
+  it("runs.json 이 깨졌으면 조용히 비우고 로그 한 줄 · 할 일은 그대로 받는다", async () => {
+    const tools = new FakeTools();
+    tools.addCard({ uuid: CARD, title: "카드" });
+    tools.addTodo("todo-1", "CARD_ASSIGNED", CARD);
+    const w = startServe({ todos: { tools, agentName: "pc-agent" }, runsFile: "{not json" });
+    await until(() => logRecords(w).find((r) => r.event === "todo_run_result"));
+    await finish(w);
+    const load = logRecords(w).filter((r) => r.event === "runs_load");
+    expect(load).toHaveLength(1);
+    expect(load[0]).toMatchObject({ entries: 0, reason: expect.stringMatching(/^unreadable: /) });
+    expect(JSON.parse(readFileSync(w.runsPath, "utf8"))).toEqual({ version: 1, runs: [] });
+    expect(logRecords(w).find((r) => r.event === "todo_run_result")).toMatchObject({ outcome: "review_requested" });
   });
 
   it("이 폴더에 에이전트 이름이 없으면 할 일은 받지 않고 시작 줄에 이유를 한 줄", async () => {

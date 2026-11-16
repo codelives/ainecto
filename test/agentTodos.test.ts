@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ainectoBridge } from "../src/core/agent/agents";
+import { AGENT_MCP_CLIENT_NAMES, ainectoBridge } from "../src/core/agent/agents";
 import type { AgentLogRecord } from "../src/core/agent/log";
 import { answerComments, renewDelayMs, todosIn } from "../src/core/agent/todoRun";
 import { AgentToolError, createAgentTools } from "../src/core/agent/tools";
@@ -47,6 +47,27 @@ describe("serve 의 서버 MCP 도구 입구(tools.ts)", () => {
 
     const isError = toolsWith(async () => ({ isError: true, content: [{ type: "text", text: "nope" }] }));
     expect(await isError.tools.call("start_work", {}).catch((e: unknown) => e)).toMatchObject({ tool: "start_work", message: "nope" });
+  });
+
+  it("★as = 그 Agent 를 대신해 부른다 — 그 Agent 종류의 클라이언트(헤더)로 · 요청 줄에 agent", async () => {
+    const used: string[] = [];
+    const path = join(mkdtempSync(join(tmpdir(), "agent-tools-")), "agent.log");
+    const log = new DaemonLog<AgentLogRecord>(path, `${path}.1`);
+    const client = (label: string) => ({ toolsCall: async () => { used.push(label); return { content: [{ type: "text", text: "{}" }] }; },
+      toolsList: async () => [] });
+    const made: string[] = [];
+    const tools = createAgentTools({ client: client("serve"), clientAs: (agent) => { made.push(agent); return client(agent); }, log });
+    await tools.call("send_auto_run_message", {}, { as: "codex" });
+    await tools.call("send_auto_run_message", {}, { as: "codex" });
+    await tools.call("list_agent_todos", {});
+    expect(used).toEqual(["codex", "codex", "serve"]);
+    expect(made).toEqual(["codex"]);   // Agent 마다 하나
+    const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines.filter((l) => l.event === "agent_call").map((l) => l.agent)).toEqual(["codex", "codex", undefined]);
+  });
+
+  it("Agent 종류 헤더 값 = 서버 AgentTypeResolver 표의 이름", () => {
+    expect(AGENT_MCP_CLIENT_NAMES).toEqual({ "claude-code": "claude-code", codex: "codex-mcp-client" });
   });
 
   it("도구 목록도 같은 입구", async () => {

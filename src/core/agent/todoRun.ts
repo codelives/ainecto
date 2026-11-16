@@ -1,4 +1,5 @@
 import type { DaemonLog } from "../term/daemonLog";
+import type { AgentId } from "./agents";
 import type { AgentLogRecord } from "./log";
 import { clip, type AgentReply } from "./reply";
 import { AgentToolError, type AgentTools } from "./tools";
@@ -8,24 +9,35 @@ import { AgentToolError, type AgentTools } from "./tools";
  *
  * <pre>
  * 가져가기    list_agent_todos(이름 붙은 연결 · agent me) → update_agent_todos claim(임대) — 임대는 서버가 준 claimExpiresAt 의 절반마다 renew
- * 카드 배정   (CARD_ASSIGNED) 수락 대기면 accept(할 일이 닫힌다) → 할 일 칸이면 start → workId(카드 work 또는 start_work)
+ * 카드 배정   (CARD_ASSIGNED) 수락 대기면 accept(할 일이 닫힌다 → runs.json 에 적는다) → 할 일 칸이면 start → workId(카드 work 또는 start_work)
+ * 다시 켬     (RESUME) runs.json 에 남은 카드 — ★서버에서 다시 읽어 아직 내 작업(수락됨·진행 중·안 막힘·같은 workId)일 때만 잇는다
  * 답을 받음   (DECISION_ANSWERED) 같은 카드·같은 workId·같은 실행 대화 — 답 댓글을 지시문에 넣는다. 다 돌면 complete
  * 실행       실행 대화에 시작 글(send_auto_run_message — 카드 uuid 로 서버가 같은 대화를 준다) → Chat 과 같은 실행기로 한 차례
- *            → Agent 답 글을 실행 대화에 → 카드를 다시 읽어 막혔으면(판단 요청) 기다리고, 진행 중이면 결과 댓글 + request_review
+ *            → Agent 답 글을 실행 대화에 → 카드를 다시 읽어 막혔으면(판단 요청) 기다리고, 진행 중이면 결과 넘기기({@link handOverResult})
  * 판단 요청   Agent 가 한다(지시문): QUESTION 댓글 → block(주인) → report_work_progress BLOCKED → 멈춤
- * 승인       사람만 — 여기서 approve 하지 않는다
+ * 승인       사람만 — 주인이 웹에서 한다(서버가 검토자·요청자에 따라 request_review 를 대신). 여기서 request_review·approve 하지 않는다
  * </pre>
  * 서버 호출은 전부 {@link AgentTools}(요청 1줄 + 응답 1줄). 한 건의 처리도 {@code todo_run} + {@code todo_run_result} 두 줄(같은 todoId).
  */
 export const TODO_KINDS = ["CARD_ASSIGNED", "DECISION_ANSWERED"] as const;
 export type TodoKind = (typeof TODO_KINDS)[number];
+/** 한 건의 종류 — 서버 할 일 둘 + 이 PC 가 다시 켜서 잇는 카드(RESUME — 서버 할 일이 아니다, runs.json). */
+export type RunKind = TodoKind | "RESUME";
 
 export interface AgentTodo {
+  /** 서버 할 일 id — RESUME 은 {@link resumeTodo} 가 지은 로컬 id. */
   todoId: string;
-  kind: TodoKind;
+  kind: RunKind;
   cardUuid: string;
   /** 할 일이 가리키는 댓글(답 댓글) — 없으면 undefined. */
   commentId?: number;
+  /** RESUME: runs.json 에 적힌 workId — 카드의 지금 작업과 다르면 잇지 않는다. */
+  workId?: string;
+}
+
+/** runs.json 한 줄 → 다시 켜서 잇는 한 건. */
+export function resumeTodo(entry: { cardUuid: string; workId?: string }): AgentTodo {
+  return { todoId: `resume:${entry.cardUuid}`, kind: "RESUME", cardUuid: entry.cardUuid, ...(entry.workId ? { workId: entry.workId } : {}) };
 }
 
 /** list_agent_todos 한 장 → 받는 할 일(카드를 가리키는 두 종류만) · 다음 장 커서. */
@@ -134,13 +146,18 @@ export function answerComments(listed: Record<string, unknown>, commentId: numbe
 /**
  * Agent 에 넣는 지시문(순수 함수) — 카드 내용 · workId · 판단 요청 순서 · 이어 가기면 답 댓글. Agent 의 답(reply)은 실행 대화에 그대로 남는다.
  */
-export function todoPromptText(input: { kind: TodoKind; card: CardFacts; workId: string; answers: AnswerComment[] }): string {
+const PROMPT_HEADS: Readonly<Record<RunKind, string>> = {
+  CARD_ASSIGNED: "[AiNecto auto-run] The person handed you this kanban card with auto-run. Do the work with the AiNecto tools.",
+  DECISION_ANSWERED: "[AiNecto auto-run — continue] The person answered on this card (or asked for changes). Continue the same work.",
+  RESUME: "[AiNecto auto-run — resume] This machine stopped while you were working this card. Continue the same work: "
+    + "first check what is already done with report_work_progress (CHECKPOINT).",
+};
+
+export function todoPromptText(input: { kind: RunKind; card: CardFacts; workId: string; answers: AnswerComment[] }): string {
   const { card, workId } = input;
   const owner = card.ownerUserId ?? "the card's assignee";
   const lines: string[] = [
-    input.kind === "CARD_ASSIGNED"
-      ? "[AiNecto auto-run] The person handed you this kanban card with auto-run. Do the work with the AiNecto tools."
-      : "[AiNecto auto-run — continue] The person answered on this card (or asked for changes). Continue the same work.",
+    PROMPT_HEADS[input.kind],
     "",
     `Card «${card.title}» (${card.key ? `${card.key}, ` : ""}cardUuid ${card.uuid}${card.boardUuid ? `, boardUuid ${card.boardUuid}` : ""}) · status ${card.status}${card.blocked ? " · blocked" : ""}`,
     `AI work: workId ${workId} — send this workId with every AiNecto call for this card and report each step with report_work_progress (read each response before going on).`,
@@ -164,14 +181,14 @@ export function todoPromptText(input: { kind: TodoKind; card: CardFacts; workId:
     `3) report_work_progress {workId: "${workId}", stepId: <the step>, status: "BLOCKED"}`,
     "Then answer with what you asked. You will be called again on this card when they answer.",
     "",
-    "Do not request review, approve, or finish the card yourself — this PC posts your answer and asks the person to review.",
+    "Do not request review, approve, or finish the card yourself — this PC posts your answer as the result and asks the person to review it.",
     "Your answer (reply) is shown to the person in this card's auto-run conversation: say what you did, or what you asked.");
   return lines.join("\n");
 }
 
 /** 한 건을 처리한 끝. */
 export type TodoOutcome =
-  /** 결과 댓글 + 검토 요청까지 했다. */
+  /** 결과 댓글(결과 검토 요청)까지 했다. */
   | "review_requested"
   /** Agent 가 판단을 요청하고 멈췄다(카드 막힘) — 답이 오면 DECISION_ANSWERED 로 다시 온다. */
   | "decision_requested"
@@ -182,8 +199,17 @@ export type TodoOutcome =
   /** serve 가 멈추는 중 — 중간에 그만뒀다(임대가 끝나면 다시 가져간다). */
   | "stopped";
 
+/** runs.json 의 쓰기 두 가지(runs.ts) — 없으면 적지 않는다. */
+export interface RunTracker {
+  started(cardUuid: string, workId?: string): Promise<void>;
+  finished(cardUuid: string): Promise<void>;
+}
+
 export interface TodoRunDeps {
   tools: AgentTools;
+  /** 이 차례를 도는 Agent — 실행 대화 글을 그 Agent 종류로 남긴다. */
+  agent: AgentId;
+  runs?: RunTracker;
   log: DaemonLog<AgentLogRecord>;
   textMaxCharacters: number;
   /** serve 가 멈추는 중이면 aborted. */
@@ -201,18 +227,22 @@ export async function runTodo(deps: TodoRunDeps, todo: AgentTodo): Promise<TodoO
   let conversationUuid: string | undefined;
   let failure: AgentToolError | Error | undefined;
   try {
+    const ends = async (value: TodoOutcome): Promise<TodoOutcome> => {
+      outcome = value;
+      if (value !== "stopped") await deps.runs?.finished(todo.cardUuid);
+      return value;
+    };
     let card = await readCard(deps.tools, todo.cardUuid);
-    if (todo.kind === "CARD_ASSIGNED") {
-      if (card.assignmentState === "PENDING") card = await act(deps.tools, card.uuid, "accept");
-      if (card.status === "TODO") card = await act(deps.tools, card.uuid, "start");
+    if (todo.kind === "RESUME" && !resumable(card, todo.workId)) return await ends("not_runnable");
+    if (todo.kind === "CARD_ASSIGNED" && card.assignmentState === "PENDING") {
+      card = await act(deps.tools, card.uuid, "accept");
+      await deps.runs?.started(card.uuid);   // ★할 일이 닫혔다 — 이제부터 끊기면 runs.json 이 잇는다
     }
-    if (card.status !== "IN_PROGRESS") {
-      outcome = "not_runnable";
-      return outcome;
-    }
+    if (todo.kind !== "DECISION_ANSWERED" && card.status === "TODO") card = await act(deps.tools, card.uuid, "start");
+    if (card.status !== "IN_PROGRESS") return await ends("not_runnable");
     workId = card.workId ?? await startWork(deps.tools, card.uuid);
-    conversationUuid = await postToRun(deps, card.uuid, workId, todo.kind === "CARD_ASSIGNED"
-      ? `«${card.title}» 작업을 시작했어요.` : `답을 받아 «${card.title}» 작업을 이어 가요.`);
+    if (todo.kind !== "DECISION_ANSWERED") await deps.runs?.started(card.uuid, workId);
+    conversationUuid = await postToRun(deps, card.uuid, workId, OPENINGS[todo.kind](card.title));
     const answers = todo.kind === "DECISION_ANSWERED"
       ? answerComments(await deps.tools.call("list_comments", { cardUuid: card.uuid, workId }), todo.commentId) : [];
     if (deps.signal.aborted) {
@@ -226,22 +256,12 @@ export async function runTodo(deps: TodoRunDeps, todo: AgentTodo): Promise<TodoO
       return outcome;
     }
     await postToRun(deps, card.uuid, workId, reply.reply);
-    if (reply.status !== "DONE") {
-      outcome = "agent_failed";
-      return outcome;
-    }
+    if (reply.status !== "DONE") return await ends("agent_failed");
     const after = await readCard(deps.tools, card.uuid, workId);
-    if (after.blocked) {
-      outcome = "decision_requested";
-      return outcome;
-    }
-    if (after.status !== "IN_PROGRESS") {
-      outcome = "not_runnable";
-      return outcome;
-    }
-    await requestResultReview(deps, after, workId, reply.reply);
-    outcome = "review_requested";
-    return outcome;
+    if (after.blocked) return await ends("decision_requested");
+    if (after.status !== "IN_PROGRESS") return await ends("not_runnable");
+    await handOverResult(deps, after, workId, reply.reply);
+    return await ends("review_requested");
   } catch (error) {
     failure = error instanceof Error ? error : new Error(String(error));
     throw error;
@@ -253,14 +273,29 @@ export async function runTodo(deps: TodoRunDeps, todo: AgentTodo): Promise<TodoO
   }
 }
 
+/** 실행 대화 시작 글 — 종류마다. */
+const OPENINGS: Readonly<Record<RunKind, (title: string) => string>> = {
+  CARD_ASSIGNED: (title) => `«${title}» 작업을 시작했어요.`,
+  DECISION_ANSWERED: (title) => `답을 받아 «${title}» 작업을 이어 가요.`,
+  RESUME: (title) => `이 PC 가 다시 켜져 «${title}» 작업을 이어 가요.`,
+};
+
+/** 다시 켜서 이을 카드인가 — ★서버의 지금 카드로만 판정(수락됨 · 할 일/진행 중 · 안 막힘 · 적어 둔 작업과 같은 작업). */
+function resumable(card: CardFacts, workId: string | undefined): boolean {
+  if (card.assignmentState !== "ACCEPTED" || card.blocked) return false;
+  if (card.status !== "TODO" && card.status !== "IN_PROGRESS") return false;
+  return !workId || !card.workId || card.workId === workId;
+}
+
 /**
- * ★결과를 사람에게 넘기는 한 곳 — 결과 댓글(Agent 답, {@code resultReview} = «결과 검토 요청» — 주인에게 알림, 주인의 답글은
- * DECISION_ANSWERED 로 다시 온다) + 검토 요청. 승인은 사람만 한다.
+ * ★결과를 사람에게 넘기는 한 곳(끝 단계) — 결과 댓글({@code resultReview} = «결과 검토 요청» — 주인에게 알림, 주인의 답글·수정 의견은
+ * DECISION_ANSWERED 로 다시 온다) → report_work_progress CHECKPOINT(결과를 알리기 전 확인 — 이 보고에 글 칸은 없다).
+ * ★request_review·approve 는 부르지 않는다 — 승인은 주인이 웹에서 하고, 그때 서버가 검토자·요청자에 따라 검토 요청을 대신 한다.
  */
-async function requestResultReview(deps: TodoRunDeps, card: CardFacts, workId: string, result: string): Promise<void> {
+async function handOverResult(deps: TodoRunDeps, card: CardFacts, workId: string, result: string): Promise<void> {
   await deps.tools.call("create_comments", { cardUuid: card.uuid, workId,
-    items: [{ body: clip(result, deps.textMaxCharacters), resultReview: true }] });
-  await deps.tools.call("kanban_card_action", { cardUuid: card.uuid, action: "request_review", workId });
+    items: [{ kind: "COMMENT", body: clip(result, deps.textMaxCharacters), resultReview: true }] });
+  await deps.tools.call("report_work_progress", { workId, status: "CHECKPOINT" });
 }
 
 async function readCard(tools: AgentTools, cardUuid: string, workId?: string): Promise<CardFacts> {
@@ -283,7 +318,8 @@ async function startWork(tools: AgentTools, cardUuid: string): Promise<string> {
 
 /** 실행 대화에 글 — 서버가 카드로 그 사람의 실행 대화를 찾아 준다. 대화 uuid 를 돌려준다. */
 async function postToRun(deps: TodoRunDeps, cardUuid: string, workId: string, body: string): Promise<string> {
-  const res = await deps.tools.call("send_auto_run_message", { cardUuid, workId, body: clip(body, deps.textMaxCharacters) });
+  const res = await deps.tools.call("send_auto_run_message", { cardUuid, workId, body: clip(body, deps.textMaxCharacters) },
+    { as: deps.agent });
   if (typeof res.conversationUuid !== "string") {
     throw new AgentToolError("send_auto_run_message returned no conversationUuid.", "send_auto_run_message", "MCP_PROTOCOL_ERROR");
   }
