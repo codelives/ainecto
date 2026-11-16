@@ -1,4 +1,5 @@
 import type { DaemonLog } from "../term/daemonLog";
+import { sleep } from "../async/sleep";
 import { DEFAULT_AGENT, isAgentId, type AgentAdapter, type AgentId, type AgentSession, type TurnOutcome } from "./agents";
 import { AgentCallError, type AgentHttp } from "./http";
 import { AGENT_TURN_TIMEOUT_MS, nextRetryDelay } from "./limits";
@@ -577,21 +578,5 @@ function offersIn(res: Record<string, unknown>): AgentOffer[] {
         context: offer.context && typeof offer.context === "object" ? (offer.context as AgentTurnContext) : undefined,
       }]
       : [];
-  });
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done, { once: true });
-    function done() {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    }
   });
 }
