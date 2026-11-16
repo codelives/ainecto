@@ -77,6 +77,8 @@ export interface CardFacts {
   status: string;
   assignmentState?: string;
   blocked: boolean;
+  /** 보관된 카드 — 다시 켜서 잇지 않는다. */
+  archived: boolean;
   description?: string;
   criteria: Array<{ text: string; done: boolean }>;
   /** 담당자(자동 실행을 건 사람) — 판단 요청의 응답 대상. */
@@ -100,6 +102,7 @@ export function cardFactsOf(detail: unknown): CardFacts {
     status: card.status,
     ...(typeof card.assignmentState === "string" ? { assignmentState: card.assignmentState } : {}),
     blocked: card.blocked === true,
+    archived: card.archived === true,
     ...(typeof d.description === "string" && d.description.trim() ? { description: d.description } : {}),
     criteria: (Array.isArray(d.criteria) ? d.criteria : []).flatMap((c) => {
       const v = record(c);
@@ -227,6 +230,8 @@ export async function runTodo(deps: TodoRunDeps, todo: AgentTodo): Promise<TodoO
   let failure: AgentToolError | Error | undefined;
   /** 끝까지 갔지만 남길 것(예: Agent 가 이미 finish_work 해서 CHECKPOINT 거절) — todo_run_result 에. */
   let warning: string | undefined;
+  /** 서버 거절로 runs.json 줄을 지웠다 — todo_run_result 에. */
+  let runDropped = false;
   try {
     const ends = async (value: TodoOutcome): Promise<TodoOutcome> => {
       outcome = value;
@@ -265,10 +270,21 @@ export async function runTodo(deps: TodoRunDeps, todo: AgentTodo): Promise<TodoO
     return await ends("review_requested");
   } catch (error) {
     failure = error instanceof Error ? error : new Error(String(error));
+    // ★서버가 거절해 끝난 실행(다시 해도 같은 거절 — 보관·담당 바뀜·실행 대화 없음 등)은 runs.json 에서 지운다. 남기면 serve 를 켤 때마다
+    // 같은 오류로 다시 잇는다(2026-11-17 dev KAN-381·382). 네트워크·5xx(retryable)는 남겨 다음에 잇는다. 답을 받은 할 일은 적지 않으니 손대지 않는다.
+    if (todo.kind !== "DECISION_ANSWERED" && error instanceof AgentToolError && !error.retryable) {
+      try {
+        await deps.runs?.finished(todo.cardUuid);
+        runDropped = true;
+      } catch (saveError) {
+        warning = `runs.json not updated: ${saveError instanceof Error ? saveError.message : String(saveError)}`;
+      }
+    }
     throw error;
   } finally {
     deps.log.write({ event: "todo_run_result", todoId: todo.todoId, kind: todo.kind, cardUuid: todo.cardUuid,
       outcome: outcome ?? `error: ${failure?.message ?? "unknown"}`, ...(warning ? { warning } : {}),
+      ...(runDropped ? { runDropped } : {}),
       ...(failure instanceof AgentToolError ? { tool: failure.tool, ...(failure.code ? { code: failure.code } : {}) } : {}),
       ...(workId ? { workId } : {}), ...(conversationUuid ? { conversationUuid } : {}), ms: Date.now() - started });
   }
@@ -283,7 +299,7 @@ const OPENINGS: Readonly<Record<RunKind, (title: string) => string>> = {
 
 /** 다시 켜서 이을 카드인가 — ★서버의 지금 카드로만 판정(수락됨 · 할 일/진행 중 · 안 막힘 · 적어 둔 작업과 같은 작업). */
 function resumable(card: CardFacts, workId: string | undefined): boolean {
-  if (card.assignmentState !== "ACCEPTED" || card.blocked) return false;
+  if (card.archived || card.assignmentState !== "ACCEPTED" || card.blocked) return false;
   if (card.status !== "TODO" && card.status !== "IN_PROGRESS") return false;
   return !workId || !card.workId || card.workId === workId;
 }
