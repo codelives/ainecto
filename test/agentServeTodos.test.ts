@@ -315,14 +315,34 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(w.server.calls.map((c) => c.op)).toEqual(["open"]);
   });
 
-  it("agents[].name 을 모르는 서버는 이름만 빼고 다시 연다(features 는 그대로)", async () => {
+  it("agents[].name 을 모르는 서버는 이름을 빼고 다시 연다(그런 서버는 todos 도 모른다 — stop 은 그대로)", async () => {
     const tools = new FakeTools();
     const w = startServe({ todos: { tools, agentName: "tester" }, rejectNames: true });
     await until(() => named(tools, "list_agent_todos")[0]);
     await finish(w);
     const opens = w.server.calls.filter((c) => c.op === "open").map((c) => c.body);
     expect(opens.map((b) => [b.agents, b.features])).toEqual([
-      [[{ id: "claude-code", ready: true, name: "tester" }], ["stop"]], [[{ id: "claude-code", ready: true }], ["stop"]]]);
+      [[{ id: "claude-code", ready: true, name: "tester" }], ["stop", "todos"]],
+      [[{ id: "claude-code", ready: true, name: "tester" }], ["stop"]],
+      [[{ id: "claude-code", ready: true }], ["stop"]]]);
     expect(w.printed).toContain("Auto-run cards handed to Claude Code (claude-code) run here.");
+  });
+
+  it("★할 일을 받는 serve 는 open 에 todos 를 알린다(서버가 자동 실행 «켜짐»으로 보는 표시 — Edwin #1890) · 모르는 서버면 todos 만 빼고 다시 연다", async () => {
+    const tools = new FakeTools();
+    const w = startServe({ todos: { tools, agentName: "tester" } });
+    await until(() => named(tools, "list_agent_todos")[0]);
+    await finish(w);
+    expect(w.server.calls.filter((c) => c.op === "open").map((c) => c.body.features)).toEqual([["stop", "todos"]]);
+
+    const oldTools = new FakeTools();
+    const old = startServe({ todos: { tools: oldTools, agentName: "tester" }, rejectTodos: true });
+    await until(() => named(oldTools, "list_agent_todos")[0]);
+    await finish(old);
+    const opens = old.server.calls.filter((c) => c.op === "open").map((c) => c.body);
+    expect(opens.map((b) => [b.agents, b.features])).toEqual([
+      [[{ id: "claude-code", ready: true, name: "tester" }], ["stop", "todos"]],
+      [[{ id: "claude-code", ready: true, name: "tester" }], ["stop"]]]);
+    expect(logRecords(old).filter((r) => r.event === "open_without_features").map((r) => r.features)).toEqual([["features.todos"]]);
   });
 });

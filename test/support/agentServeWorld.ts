@@ -39,6 +39,8 @@ export class FakeServer implements AgentHttp {
   openError: AgentCallError | undefined;
   /** agents[].name 을 모르는 서버(400 INVALID). */
   rejectNames = false;
+  /** features 의 todos 를 모르는 서버(400 INVALID — KAN-1113 Edwin #1890 이전 서버). */
+  rejectTodos = false;
 
   /** @param oldServer 옛 서버 — open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다. */
   constructor(private readonly oldServer = false, private readonly pollHoldSeconds = 20) {}
@@ -65,6 +67,9 @@ export class FakeServer implements AgentHttp {
       if (this.oldServer && body.features !== undefined) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       const sent = (Array.isArray(body.agents) ? body.agents : []) as Array<Record<string, unknown>>;
       if (this.rejectNames && sent.some((a) => a.name !== undefined)) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
+      if (this.rejectTodos && Array.isArray(body.features) && body.features.includes("todos")) {
+        throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
+      }
       const agents = this.openAgents === "auto"
         ? sent.map((a) => a.ready ? { id: a.id, ready: true, agentUuid: `u-${String(a.id)}`, name: a.name ?? a.id, error: null }
           : { id: a.id, ready: false, agentUuid: null, name: null, error: null })
@@ -123,6 +128,8 @@ export interface WorldOptions {
   openError?: AgentCallError;
   /** agents[].name 을 모르는 서버. */
   rejectNames?: boolean;
+  /** features 의 todos 를 모르는 서버. */
+  rejectTodos?: boolean;
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -140,6 +147,7 @@ export function startServe(options: WorldOptions = {}): World {
   server.openAgents = options.openAgents === null ? undefined : options.openAgents ?? (options.todos ? "auto" : undefined);
   server.openError = options.openError;
   server.rejectNames = options.rejectNames ?? false;
+  server.rejectTodos = options.rejectTodos ?? false;
   const stop = new AbortController();
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
   const shared = { spawnImpl: fakeSpawn, cwd: dir,

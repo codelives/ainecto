@@ -48,8 +48,18 @@ export interface ServeResult {
   reason: string;
 }
 
-/** open 에 알리는 이 CLI 의 기능 — 서버 {@code PcFeature} 의 id 와 같은 글(선 위의 계약). stop = poll 의 {@code stops} 를 읽고 STOPPED 로 답한다. */
-export const PC_FEATURES = ["stop"] as const;
+/**
+ * open 에 알리는 이 CLI 의 기능 — 서버 {@code PcFeature} 의 id 와 같은 글(선 위의 계약). stop = poll 의 {@code stops} 를 읽고 STOPPED 로 답한다.
+ * todos = 에이전트 할 일(자동 실행 카드)을 가져간다 — 할 일을 받는 serve 만 싣는다({@link pcFeatures}). ★서버는 이것을 알린 연결만 자동 실행의
+ * «켜짐»으로 본다(옛 CLI 는 Chat 만 되고 할 일을 안 가져간다 — KAN-1113 Edwin #1890).
+ */
+export const PC_FEATURES = ["stop", "todos"] as const;
+type PcFeature = (typeof PC_FEATURES)[number];
+
+/** 이 serve 가 open 에 알릴 기능 — 할 일을 받지 않으면 todos 를 싣지 않는다(순수 함수). */
+export function pcFeatures(takesTodos: boolean): PcFeature[] {
+  return PC_FEATURES.filter((f) => f !== "todos" || takesTodos);
+}
 
 interface ServerLimits {
   pollHoldSeconds: number;
@@ -487,11 +497,16 @@ function serverLimits(value: unknown): ServerLimits {
 async function openLink(deps: ServeDeps, agents: ReadonlyArray<Record<string, unknown>>): Promise<Record<string, unknown>> {
   const base = { hostName: deps.hostName, cliVersion: deps.cliVersion };
   const named = agents.some((a) => a.name !== undefined);
-  // 옛 서버는 open 본문이 닫혀 있다 — 모르는 칸(agents[].name · features)은 400 INVALID. 새 칸부터 하나씩 덜어 다시 연다.
+  const unnamed = agents.map(({ name: _name, ...rest }) => rest);
+  const features = pcFeatures(deps.todos !== undefined);
+  const older = features.filter((f) => f !== "todos");
+  // 옛 서버는 open 본문이 닫혀 있다 — 모르는 칸(features 의 todos · agents[].name · features)은 400 INVALID. 새 칸부터 하나씩 덜어 다시 연다.
+  // todos 를 모르는 서버는 할 일 신원은 주더라도 자동 실행 대상을 가리지 않는다 — 그때도 할 일은 받는다(그 서버가 예전처럼 맡긴다).
   const attempts: Array<{ body: Record<string, unknown>; dropped?: string }> = [
-    { body: { ...base, agents, features: [...PC_FEATURES] } },
-    ...(named ? [{ body: { ...base, agents: agents.map(({ name: _name, ...rest }) => rest), features: [...PC_FEATURES] }, dropped: "agents.name" }] : []),
-    { body: { ...base, agents: agents.map(({ name: _name, ...rest }) => rest) }, dropped: "features" },
+    { body: { ...base, agents, features } },
+    ...(older.length < features.length ? [{ body: { ...base, agents, features: older }, dropped: "features.todos" }] : []),
+    ...(named ? [{ body: { ...base, agents: unnamed, features: older }, dropped: "agents.name" }] : []),
+    { body: { ...base, agents: unnamed }, dropped: "features" },
   ];
   for (let i = 0; ; i += 1) {
     const attempt = attempts[i]!;
