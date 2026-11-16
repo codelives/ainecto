@@ -112,7 +112,8 @@ export function createPcHttp<Op extends string, R extends { event: string }, O e
         if (!response.ok) {
           const code = typeof parsed?.code === "string" ? parsed.code : undefined;
           outcome = { ok: false, status: response.status, code };
-          throw fail(typeof parsed?.detail === "string" ? parsed.detail : `HTTP ${response.status}`, op, response.status, code);
+          // 서버 오류 본문은 {code, message}(api ApiExceptionHandler 한 곳) — 설명은 message 칸.
+          throw fail(typeof parsed?.message === "string" ? parsed.message : `HTTP ${response.status}`, op, response.status, code);
         }
         outcome = { ok: true, status: response.status, body: parsed ?? {} };
         return parsed ?? {};

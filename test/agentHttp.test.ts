@@ -72,11 +72,11 @@ describe("agentCall — PC ↔ 서버 한 입구", () => {
   });
 
   it("4xx — 서버 code 를 싣고 다시 하지 않는다 · 응답 줄에 status·code", async () => {
-    handler = () => ({ status: 404, body: { code: "LINK_NOT_FOUND", detail: "No such agent link." } });
+    handler = () => ({ status: 404, body: { code: "LINK_NOT_FOUND", message: "No such agent link." } });
     const w = world();
     const error = await w.http.call("reply", { linkId: "l" }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(AgentCallError);
-    expect(error).toMatchObject({ status: 404, code: "LINK_NOT_FOUND", retryable: false });
+    expect(error).toMatchObject({ status: 404, code: "LINK_NOT_FOUND", retryable: false, message: "No such agent link." });
     expect(w.records()[1]).toMatchObject({ event: "agent_call_response", ok: false, status: 404, code: "LINK_NOT_FOUND" });
   });
 

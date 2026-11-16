@@ -120,7 +120,7 @@ class FakeServer {
     };
     if (op === "poll" && this.forgetOnPoll) this.known = false;
     if (op !== "open" && (!this.known || body.remoteId !== this.remoteId || token !== this.remoteToken)) {
-      reply(404, { code: "REMOTE_NOT_FOUND", detail: "No such open remote terminal." });
+      reply(404, { code: "REMOTE_NOT_FOUND", message: "No such open remote terminal." });
       return;
     }
     switch (op) {
@@ -139,7 +139,7 @@ class FakeServer {
         }
         const answer = () => {
           if (this.pollError) {
-            reply(this.pollError.status, { code: this.pollError.code, detail: "refused" });
+            reply(this.pollError.status, { code: this.pollError.code, message: "refused" });
           } else if (this.closedReason) {
             reply(200, { state: "CLOSED", reason: this.closedReason });
           } else {
@@ -164,7 +164,7 @@ class FakeServer {
       }
       case "frame":
         if (this.frameError) {
-          reply(this.frameError.status, { code: this.frameError.code, detail: "refused" });
+          reply(this.frameError.status, { code: this.frameError.code, message: "refused" });
           return;
         }
         this.frameLog.push({ remoteId: String(body.remoteId), text: Buffer.from(String(body.d), "base64").toString("utf8") });
