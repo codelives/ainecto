@@ -2,7 +2,7 @@
 // stdin 한 줄마다 init(처음 한 번) · 도구 호출 · result 를 낸다. 글로 동작을 고른다:
 //   "write-doc"  → create_documents 결과(📄) + list_documents 결과(📄, 읽기) 뒤 reply
 //   "bad-schema" → structured_output 에 모르는 칸
-//   "hang"       → 답하지 않는다(기한 시험)
+//   "hang"       → 답하지 않는다(기한 시험) — 줄 «@hang» 이 든 글(할 일 지시문)도 같다
 //   "write-then-hang" → 문서 하나를 만든 뒤 답하지 않는다(중단 시험 — 그때까지 한 일이 남는가)
 //   "crash"      → code 3 으로 끝난다
 //   "write-card" → 만들기(created)·고치기·칸반 카드 결과(쓰기 셋) + 읽기 하나 뒤 reply
@@ -53,7 +53,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       apiKeySource: process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : "none" });
   }
   if (text === "crash") process.exit(3);
-  if (text === "hang") {
+  if (text === "hang" || text.includes("\n@hang\n")) {
     hanging = true;
     return;
   }

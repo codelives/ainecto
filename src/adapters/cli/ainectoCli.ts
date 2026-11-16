@@ -160,7 +160,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     if (isAgentCommand(domain, action)) {
-      return await executeAgentServe({ endpoint: resolved.endpoint, env: resolved.env, auth: connect().auth, io });
+      return await executeAgentServe({ endpoint: resolved.endpoint, env: resolved.env, auth: connect().auth, io, agentName });
     }
 
     if (domain === "auth") {

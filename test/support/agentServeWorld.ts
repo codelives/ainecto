@@ -10,6 +10,7 @@ import { AgentCallError, type AgentHttp, type AgentOp } from "../../src/core/age
 import type { AgentLogRecord } from "../../src/core/agent/log";
 import { runAgentServe, type ServeResult } from "../../src/core/agent/serve";
 import { AgentSessionMap } from "../../src/core/agent/sessions";
+import type { AgentTools } from "../../src/core/agent/tools";
 import { DaemonLog } from "../../src/core/term/daemonLog";
 
 const FAKES: Record<string, string> = {
@@ -32,7 +33,7 @@ export class FakeServer implements AgentHttp {
   private waiting: (() => void) | undefined;
 
   /** @param oldServer 옛 서버 — open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다. */
-  constructor(private readonly oldServer = false) {}
+  constructor(private readonly oldServer = false, private readonly pollHoldSeconds = 20) {}
 
   offer(turnUuid: string, conversationUuid: string, text: string, context?: Record<string, unknown>, agent?: string): void {
     this.push({ state: "OPEN", offers: [{ turnUuid, conversationUuid, text, context, ...(agent ? { agent } : {}) }] });
@@ -53,7 +54,7 @@ export class FakeServer implements AgentHttp {
     this.calls.push({ op, body });
     if (op === "open") {
       if (this.oldServer && body.features !== undefined) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
-      return { linkId: "11111111-1111-4111-8111-111111111111", linkToken: "tok", limits: { pollHoldSeconds: 20, textMaxCharacters: 10_000, documentsMax: 50 } };
+      return { linkId: "11111111-1111-4111-8111-111111111111", linkToken: "tok", limits: { pollHoldSeconds: this.pollHoldSeconds, textMaxCharacters: 10_000, documentsMax: 50 } };
     }
     if (op !== "poll") return {};
     for (;;) {
@@ -78,6 +79,8 @@ export interface World {
   codexArgsLog: string;
   logPath: string;
   sessionsPath: string;
+  /** serve 가 사람에게 쓴 줄(시작 줄 등). */
+  printed: string[];
 }
 
 export interface WorldOptions {
@@ -90,6 +93,10 @@ export interface WorldOptions {
   env?: Record<string, string>;
   /** 옛 서버(open 의 features 를 모른다). */
   oldServer?: boolean;
+  /** open 이 주는 poll 붙잡는 시간(초) — 할 일 줄의 주기도 이것. 기본 20. */
+  pollHoldSeconds?: number;
+  /** 에이전트 할 일도 받는다(가짜 MCP 도구 레이어 · 이 serve 의 에이전트 이름). */
+  todos?: { tools: AgentTools; agentName?: string };
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -101,7 +108,7 @@ export function startServe(options: WorldOptions = {}): World {
   const logPath = join(dir, "agent.log");
   const sessionsPath = join(dir, "sessions.json");
   if (options.sessionsFile) writeFileSync(sessionsPath, JSON.stringify(options.sessionsFile));
-  const server = new FakeServer(options.oldServer);
+  const server = new FakeServer(options.oldServer, options.pollHoldSeconds);
   const stop = new AbortController();
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
   const shared = { spawnImpl: fakeSpawn, cwd: dir,
@@ -114,6 +121,7 @@ export function startServe(options: WorldOptions = {}): World {
   const installed = options.installed ?? ["claude-code"];
   const adapters = new Map(all.filter((a) => installed.includes(a.id)).map((a) => [a.id, a] as const));
   const sessions = new AgentSessionMap(sessionsPath);
+  const printed: string[] = [];
   const done = sessions.load().then(() => runAgentServe({
     http: server,
     log,
@@ -122,11 +130,12 @@ export function startServe(options: WorldOptions = {}): World {
     agents: installed.map((id) => ({ id, ready: true })),
     hostName: "test-host",
     cliVersion: "0.0.0",
-    print: () => {},
+    print: (line) => printed.push(line),
     signal: stop.signal,
     turnTimeoutMs: options.turnTimeoutMs,
+    todos: options.todos,
   }));
-  return { server, stop, done, argsLog, codexArgsLog, logPath, sessionsPath };
+  return { server, stop, done, argsLog, codexArgsLog, logPath, sessionsPath, printed };
 }
 
 export async function until<T>(read: () => T | undefined, ms = 10_000): Promise<T> {

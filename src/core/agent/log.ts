@@ -4,15 +4,16 @@ import type { AgentPaths } from "./paths";
 /**
  * `agent.log` 레코드(설계 K6). ★서버 호출은 {@code agent_call} 요청 1줄 + {@code agent_call_response} 응답 1줄(같은 callId),
  * Agent 한 차례는 {@code agent_request} + {@code agent_response}(같은 turnUuid), Codex JSON-RPC 는 {@code agent_rpc} + {@code agent_rpc_response}
- * (같은 pid·id), 준비 확인은 {@code agent_probe} + {@code agent_probe_response}(같은 callId). 실패해도 응답 줄은 반드시 — 이유 포함.
+ * (같은 pid·id), 서버 MCP 도구는 {@code agent_call}·{@code agent_call_response} 의 {@code op: "tool"}, 준비 확인은 {@code agent_probe} + {@code agent_probe_response}(같은 callId). 실패해도 응답 줄은 반드시 — 이유 포함.
  * ★남기지 않는 것: 요청 글·답 글·토큰·계정 식별값(이메일 등)(길이·수만).
  */
 export type AgentLogRecord =
   | { event: "serve_start"; pid: number; version: string; endpoint: string; host: string;
       agents: Array<{ id: string; installed: boolean; ready: boolean; auth?: string; version?: string }> }
   | { event: "serve_stop"; pid: number; reason: string }
-  | { event: "agent_call"; callId: string; op: string; turnUuid?: string; bytes: number }
-  | { event: "agent_call_response"; callId: string; op: string; ok: boolean; status?: number; code?: string; error?: string; ms: number; offers?: number }
+  /** {@code op: "tool"} = 서버 MCP 도구(tools.ts) — {@code tool} 은 앞머리 없는 도구 이름. */
+  | { event: "agent_call"; callId: string; op: string; tool?: string; turnUuid?: string; bytes: number }
+  | { event: "agent_call_response"; callId: string; op: string; tool?: string; ok: boolean; status?: number; code?: string; error?: string; ms: number; offers?: number }
   | { event: "agent_probe"; callId: string; agent: string; probe: "detect" | "auth" }
   | { event: "agent_probe_response"; callId: string; agent: string; probe: "detect" | "auth"; ok: boolean; installed?: boolean;
       version?: string; ready?: boolean; mode?: string; method?: string; plan?: string; detail?: string; ms: number }
@@ -31,10 +32,17 @@ export type AgentLogRecord =
   | { event: "agent_mcp_servers_off"; pid: number; agent: string; names: string[] }
   /** Claude: 이 프로세스가 실제로 무엇으로 도는지(init 의 출처 이름 — 구독이면 none). 키 값은 남기지 않는다. */
   | { event: "agent_auth_source"; pid: number; agent: string; apiKeySource: string }
-  | { event: "agent_request"; turnUuid: string; agent: string; conversationUuid: string; pid: number; textLength: number }
-  | { event: "agent_response"; turnUuid: string; agent: string; ms: number; outcome: string; status: string; errorCode?: string; subtype?: string;
+  /** Agent 한 차례 — Chat 요청은 {@code turnUuid}, 에이전트 할 일(자동 실행)은 {@code todoId}. */
+  | { event: "agent_request"; turnUuid?: string; todoId?: string; agent: string; conversationUuid: string; pid: number; textLength: number }
+  | { event: "agent_response"; turnUuid?: string; todoId?: string; agent: string; ms: number; outcome: string; status: string; errorCode?: string; subtype?: string;
       sessionId?: string; documents: number; createdDocuments: number; cards: number; numTurns?: number; costUsd?: number }
-  | { event: "bad_line"; pid: number; agent: string; length: number };
+  | { event: "bad_line"; pid: number; agent: string; length: number }
+  /** 에이전트 할 일 한 건 처리(todoRun.ts) — 시작 1줄 + 끝 1줄(같은 todoId). 끝 줄은 실패해도 반드시(실패한 도구·코드). */
+  | { event: "todo_run"; todoId: string; kind: string; cardUuid: string }
+  | { event: "todo_run_result"; todoId: string; kind: string; cardUuid: string; outcome: string; tool?: string; code?: string;
+      workId?: string; conversationUuid?: string; ms: number }
+  /** 가져간 할 일의 임대 — 연장 실패·놓기 등(도구 호출 줄과 별개로, serve 가 그 결과로 무엇을 했나). */
+  | { event: "todo_lease"; todoId: string; action: string; ok: boolean; error?: string; next?: string };
 
 export function openAgentLog(paths: AgentPaths): DaemonLog<AgentLogRecord> {
   const log = new DaemonLog<AgentLogRecord>(paths.log, paths.previousLog);

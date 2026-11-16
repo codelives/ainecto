@@ -106,8 +106,9 @@ export interface AinectoBridge {
   args: string[];
 }
 
-export function ainectoBridge(nodePath: string, cliScript: string, endpoint: string): AinectoBridge {
-  return { command: nodePath, args: [cliScript, "--endpoint", endpoint, "mcp"] };
+/** @param agentName serve 의 이름 붙은 에이전트 — 있으면 브리지 {@code --agent} 로(Agent 의 도구 호출도 serve 와 같은 이름의 연결). */
+export function ainectoBridge(nodePath: string, cliScript: string, endpoint: string, agentName?: string): AinectoBridge {
+  return { command: nodePath, args: [cliScript, "--endpoint", endpoint, "mcp", ...(agentName ? ["--agent", agentName] : [])] };
 }
 
 /** Agent 에 넘기는 환경 — 브리지가 CLI 로그인만 쓰게 {@code AINECTO_TOKEN} 을 뺀다. */
