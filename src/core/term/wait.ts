@@ -1,6 +1,7 @@
 import { openTermClient } from "./client";
-import { TermError } from "./errors";
+import { noSession, TermError } from "./errors";
 import type { TermPaths } from "./paths";
+import { readLines } from "./protocol";
 import type { ReadRange } from "./screen";
 
 export interface WaitResult {
@@ -26,7 +27,7 @@ export async function waitForMatch(
 ): Promise<WaitResult> {
   const client = await openTermClient(paths, { start: false });
   if (!client) {
-    throw new TermError("TERM_NO_SESSION", `No session named "${name}" (no term sessions are running).`);
+    throw noSession(name);
   }
   let dirty = false;
   let ended: string | undefined;
@@ -64,7 +65,7 @@ export async function waitForMatch(
         }
         throw error;
       }
-      const lines = linesOf(data);
+      const lines = readLines(data);
       for (const line of lines) {
         const found = pattern.exec(line);
         if (found) {
@@ -90,11 +91,4 @@ export async function waitForMatch(
     }
     client.close();
   }
-}
-
-function linesOf(data: unknown): string[] {
-  if (data && typeof data === "object" && "lines" in data && Array.isArray(data.lines)) {
-    return data.lines.filter((line): line is string => typeof line === "string");
-  }
-  throw new TermError("TERM_BAD_RESPONSE", "The term daemon answered read without lines.");
 }

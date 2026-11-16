@@ -10,3 +10,8 @@ export class TermError extends Error {
     super(message);
   }
 }
+
+/** 데몬이 없을 때(또는 그 세션이 목록에 없을 때)의 «그런 세션 없음». */
+export function noSession(name: string): TermError {
+  return new TermError("TERM_NO_SESSION", `No session named "${name}" (no term sessions are running).`);
+}

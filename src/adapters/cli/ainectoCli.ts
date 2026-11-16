@@ -15,7 +15,7 @@ import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands
 import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
-import { executeTermCommand, TERM_HELP_LINES } from "./termCommand";
+import { executeTermCommand, executeTermRemote, TERM_HELP_LINES } from "./termCommand";
 import { AGENT_HELP_LINES, executeAgentServe, isAgentCommand } from "./agentCommand";
 import { systemCommandRunner } from "../../core/setup/commandRunner";
 import { homedir } from "node:os";
@@ -42,7 +42,8 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       return 0;
     }
     // ★term 은 이 기기 안의 터미널 다중화다 — 서버·로그인·에이전트 이름을 쓰지 않는다(KAN-738 1단계).
-    if (parsed.positionals[0] === "term") {
+    //   term remote 만 예외(서버에 잇는다) — 아래에서 endpoint·로그인을 받아 간다.
+    if (parsed.positionals[0] === "term" && parsed.positionals[1] !== "remote") {
       return await executeTermCommand({ argv: parsed.positionals.slice(1), json: parsed.json, io });
     }
 
@@ -157,6 +158,10 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         json: parsed.json,
         io,
       });
+    }
+
+    if (domain === "term") {
+      return await executeTermRemote({ argv: rest, json: parsed.json, io, endpoint: resolved.endpoint, auth: connect().auth });
     }
 
     if (isAgentCommand(domain, action)) {

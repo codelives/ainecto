@@ -1,17 +1,21 @@
 import { closeSync, writeSync } from "node:fs";
+import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { openTermClient, termRequest } from "../../core/term/client";
 import { runDaemon, type DaemonReadiness } from "../../core/term/daemon";
 import { DETACH_HINT, DetachKeyScanner } from "../../core/term/detachKey";
 import { FULL_TERMINAL_RESET } from "../../core/term/screen";
-import { TermError } from "../../core/term/errors";
+import { noSession, TermError } from "../../core/term/errors";
 import { KEY_NAMES } from "../../core/term/keys";
 import { termPaths, type TermPaths } from "../../core/term/paths";
-import type { TermRequestBody } from "../../core/term/protocol";
+import { listedSessions, type TermRequestBody } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { renderSuccess } from "../../core/output/render";
 import { renderTable } from "../../core/output/table";
-import { CLI_VERSION } from "../../core/version";
+import { CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
+import type { TokenProvider } from "../../core/auth/oauth";
+import { ensurePrivateDir } from "../../core/fs/privateFiles";
+import { createRemoteHttp, openRemoteLog, runRemote, type RemoteResult } from "../../core/term/remote";
 import type { CliIO } from "./ainectoCli";
 
 /** 도움말 — 전역 도움말이 이 줄들을 싣는다. */
@@ -25,6 +29,7 @@ export const TERM_HELP_LINES: readonly string[] = [
   `  ainecto term attach <name>                                watch and type in your terminal; detach with ${DETACH_HINT}`,
   "  ainecto term kill <name> · ainecto term kill-server",
   "  ainecto term restore [--json]                             start again the sessions that were running when the daemon or the machine stopped",
+  "  ainecto term remote <name>                                show the session in AiNecto on the web (plain text) and type there (signed in; Ctrl+C to stop; log: ~/.ainecto/term/remote.log)",
 ];
 
 interface TermCommandInput {
@@ -90,8 +95,49 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
     case "daemon":
       return await daemonCommand(paths, rest);
     default:
-      throw usage(`term new|ls|send|key|read|wait|attach|kill|kill-server|restore — see ainecto --help`);
+      throw usage(`term new|ls|send|key|read|wait|attach|kill|kill-server|restore|remote — see ainecto --help`);
   }
+}
+
+/**
+ * `ainecto term remote <name>` — 이 기기의 세션 하나를 AiNecto 웹에 잇는다(KAN-738). term 에서 유일하게 서버·로그인을 쓴다 —
+ * 그래서 runAinectoCli 가 endpoint 를 풀고 CLI 로그인(OAuth)을 넘긴 뒤 여기로 온다. 끝 사유는 한 줄로 낸다.
+ */
+export async function executeTermRemote(input: TermCommandInput & { endpoint: string; auth: TokenProvider }): Promise<number> {
+  const name = singleName(parseArgs(input.argv, {}).positionals, "term remote <name>");
+  const paths = termPaths();
+  await ensurePrivateDir(paths.dir);
+  const log = openRemoteLog(paths);
+  const host = hostname();
+  log.write({ event: "remote_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: input.endpoint, host, session: name });
+  const controller = new AbortController();
+  const onSignal = (): void => controller.abort();
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  let result: RemoteResult;
+  try {
+    result = await runRemote({
+      paths,
+      session: name,
+      http: createRemoteHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),
+      log,
+      hostName: host,
+      cliVersion: CLI_VERSION_LABEL,
+      signal: controller.signal,
+      print: (line) => input.io.stderr.write(`${line}\n`),
+    });
+  } catch (error) {
+    log.write({ event: "remote_stop", pid: process.pid, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
+    throw error;
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+  log.write({ event: "remote_stop", pid: process.pid, reason: result.reason, exitCode: result.exitCode });
+  if (result.exitCode !== 0) {
+    throw new TermError("TERM_REMOTE_FAILED", result.reason);
+  }
+  return print(input, result, result.reason);
 }
 
 async function newSession(paths: TermPaths, argv: string[], input: TermCommandInput): Promise<number> {
@@ -114,7 +160,7 @@ async function listSessions(paths: TermPaths, argv: string[], input: TermCommand
   parseArgs(argv, {});
   const result = await termRequest(paths, { op: "ls" }, { start: false });
   const data = result.daemon ? result.data : { sessions: [] };
-  const sessions = sessionsField(data);
+  const sessions = listedSessions(data);
   const human = sessions.length === 0
     ? "No term sessions."
     : renderTable(sessions.map((session) => ({
@@ -274,10 +320,6 @@ function print(input: TermCommandInput, data: unknown, human: string): number {
   return 0;
 }
 
-function noSession(name: string): TermError {
-  return new TermError("TERM_NO_SESSION", `No session named "${name}" (no term sessions are running).`);
-}
-
 function usage(text: string): TermError {
   return new TermError("TERM_USAGE", `Usage: ainecto ${text}`);
 }
@@ -350,31 +392,6 @@ function singleName(positionals: string[], usageText: string): string {
 
 function countFlag(value: string | number | boolean | undefined): number | undefined {
   return typeof value === "number" ? value : undefined;
-}
-
-interface ListedSession {
-  name: string;
-  pid: number;
-  clients: number;
-  cols: number;
-  rows: number;
-  cwd: string;
-  command: string[] | null;
-}
-
-function sessionsField(data: unknown): ListedSession[] {
-  if (data && typeof data === "object" && "sessions" in data && Array.isArray(data.sessions)) {
-    return data.sessions.filter(isListedSession);
-  }
-  return [];
-}
-
-function isListedSession(value: unknown): value is ListedSession {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const session = value as Record<string, unknown>;
-  return typeof session.name === "string" && typeof session.pid === "number" && typeof session.cwd === "string";
 }
 
 function linesField(data: unknown): string[] {

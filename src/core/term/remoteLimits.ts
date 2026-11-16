@@ -12,9 +12,11 @@ export const FRAME_MIN_INTERVAL_MS = 150;
 /** C10 — 화면 한 장에 싣는 지난 줄 수. */
 export const FRAME_SCROLLBACK_LINES = 200;
 
-/** C11 — 세션 크기(다른 곳에서 붙은 터미널이 바꿨을 수 있다)를 확인하는 간격. */
-export const SIZE_CHECK_INTERVAL_MS = 2_000;
-
 /** C12·C13 — 네트워크·5xx·기한 초과 뒤 다시 시도할 때 기다리는 시간(두 배씩, 흔들림 0~C12). */
 export const RETRY_MIN_MS = 500;
 export const RETRY_MAX_MS = 10_000;
+
+/** 다시 하기 대기 — {@code attempt} 번째(0부터) 실패 뒤. C12 에서 두 배씩 C13 까지 + 흔들림 0~C12({@code random} ∈ [0,1)). 순수 함수. */
+export function retryWait(attempt: number, random: number): number {
+  return Math.min(RETRY_MIN_MS * 2 ** attempt, RETRY_MAX_MS) + Math.floor(random * RETRY_MIN_MS);
+}

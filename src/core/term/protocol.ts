@@ -163,6 +163,42 @@ export function parseDaemonMessage(line: string): TermResponse | TermEvent {
   return { id, ok: false, error: { code: stringField(error, "code"), message: stringField(error, "message") } };
 }
 
+/** `ls` 응답의 세션 한 줄(SessionInfo 의 선 위 모양). */
+export interface ListedSession {
+  name: string;
+  pid: number;
+  clients: number;
+  cols: number;
+  rows: number;
+  cwd: string;
+  command: string[] | null;
+}
+
+/** `ls` 응답 → 세션 목록 — 모양이 맞지 않는 줄은 뺀다. */
+export function listedSessions(data: unknown): ListedSession[] {
+  if (data && typeof data === "object" && "sessions" in data && Array.isArray(data.sessions)) {
+    return data.sessions.filter(isListedSession);
+  }
+  return [];
+}
+
+function isListedSession(value: unknown): value is ListedSession {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const session = value as Record<string, unknown>;
+  return typeof session.name === "string" && typeof session.pid === "number" && typeof session.cwd === "string"
+    && typeof session.cols === "number" && typeof session.rows === "number";
+}
+
+/** `read` 응답 → 화면 줄. 줄이 없으면 데몬이 계약을 어긴 것이다. */
+export function readLines(data: unknown): string[] {
+  if (data && typeof data === "object" && "lines" in data && Array.isArray(data.lines)) {
+    return data.lines.filter((line): line is string => typeof line === "string");
+  }
+  throw new TermError("TERM_BAD_RESPONSE", "The term daemon answered read without lines.");
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TermProtocolError("Expected a JSON object.");
