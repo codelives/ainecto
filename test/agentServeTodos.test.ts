@@ -217,6 +217,21 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(logRecords(w).find((r) => r.event === "todo_run_result")).toMatchObject({ outcome: "review_requested" });
   });
 
+  it("★Agent 가 차례 안에서 finish_work 를 불러 작업이 끝났어도 결과 넘기기는 끝난다 — CHECKPOINT 거절(WORK_NOT_IN_PROGRESS)은 경고로 남긴다 · 지시문은 finish_work 를 막는다", async () => {
+    // dev 실측 11-16 카드 bfa5cc81: Claude Code 가 finish_work → 작업 DONE(카드는 IN_PROGRESS) → 결과 댓글 뒤 CHECKPOINT 가 거절돼 «error» 로 끝났다.
+    const tools = new FakeTools();
+    tools.addCard({ uuid: CARD, title: "일찍 끝낸 작업", finishWorkDuringTurn: true });
+    tools.addTodo("todo-1", "CARD_ASSIGNED", CARD);
+    const w = startServe({ todos: { tools } });
+    const result = await until(() => logRecords(w).find((r) => r.event === "todo_run_result"));
+    await finish(w);
+    expect(result).toMatchObject({ outcome: "review_requested", warning: "report_work_progress: WORK_NOT_IN_PROGRESS" });
+    expect(named(tools, "create_comments")).toHaveLength(1);
+    expect(JSON.parse(readFileSync(w.runsPath, "utf8"))).toEqual({ version: 1, runs: [] });
+    const prompt = String(named(tools, "send_auto_run_message")[1]?.args.body);
+    expect(prompt).toContain("Do not call finish_work");
+  });
+
   it("★폴더 이름이 없어도 받는다 — 서버가 준 종류 신원(이름 = 종류 id)으로", async () => {
     const tools = new FakeTools();
     tools.addCard({ uuid: CARD, title: "카드" });

@@ -181,6 +181,7 @@ export function todoPromptText(input: { kind: RunKind; card: CardFacts; workId: 
     "Then answer with what you asked. You will be called again on this card when they answer.",
     "",
     "Do not request review, approve, or finish the card yourself — this PC posts your answer as the result and asks the person to review it.",
+    "Do not call finish_work: the AI work stays open until the person approves the result (finishing it early blocks the hand-over).",
     "Your answer (reply) is shown to the person in this card's auto-run conversation: say what you did, or what you asked.");
   return lines.join("\n");
 }
@@ -224,6 +225,8 @@ export async function runTodo(deps: TodoRunDeps, todo: AgentTodo): Promise<TodoO
   let workId: string | undefined;
   let conversationUuid: string | undefined;
   let failure: AgentToolError | Error | undefined;
+  /** 끝까지 갔지만 남길 것(예: Agent 가 이미 finish_work 해서 CHECKPOINT 거절) — todo_run_result 에. */
+  let warning: string | undefined;
   try {
     const ends = async (value: TodoOutcome): Promise<TodoOutcome> => {
       outcome = value;
@@ -258,14 +261,14 @@ export async function runTodo(deps: TodoRunDeps, todo: AgentTodo): Promise<TodoO
     const after = await readCard(deps.tools, card.uuid, workId);
     if (after.blocked) return await ends("decision_requested");
     if (after.status !== "IN_PROGRESS") return await ends("not_runnable");
-    await handOverResult(deps, after, workId, reply.reply);
+    warning = await handOverResult(deps, after, workId, reply.reply);
     return await ends("review_requested");
   } catch (error) {
     failure = error instanceof Error ? error : new Error(String(error));
     throw error;
   } finally {
     deps.log.write({ event: "todo_run_result", todoId: todo.todoId, kind: todo.kind, cardUuid: todo.cardUuid,
-      outcome: outcome ?? `error: ${failure?.message ?? "unknown"}`,
+      outcome: outcome ?? `error: ${failure?.message ?? "unknown"}`, ...(warning ? { warning } : {}),
       ...(failure instanceof AgentToolError ? { tool: failure.tool, ...(failure.code ? { code: failure.code } : {}) } : {}),
       ...(workId ? { workId } : {}), ...(conversationUuid ? { conversationUuid } : {}), ms: Date.now() - started });
   }
@@ -288,12 +291,20 @@ function resumable(card: CardFacts, workId: string | undefined): boolean {
 /**
  * ★결과를 사람에게 넘기는 한 곳(끝 단계) — 결과 댓글({@code resultReview} = «결과 검토 요청» — 주인에게 알림, 주인의 답글·수정 의견은
  * DECISION_ANSWERED 로 다시 온다) → report_work_progress CHECKPOINT(결과를 알리기 전 확인 — 이 보고에 글 칸은 없다).
+ * 작업이 이미 끝나 있으면(WORK_NOT_IN_PROGRESS — Agent 가 finish_work) 넘기기는 끝난 것으로 보고 경고를 돌려준다.
  * ★request_review·approve 는 부르지 않는다 — 승인은 주인이 웹에서 하고, 그때 서버가 검토자·요청자에 따라 검토 요청을 대신 한다.
  */
-async function handOverResult(deps: TodoRunDeps, card: CardFacts, workId: string, result: string): Promise<void> {
+async function handOverResult(deps: TodoRunDeps, card: CardFacts, workId: string, result: string): Promise<string | undefined> {
   await deps.tools.call("create_comments", { cardUuid: card.uuid, workId,
     items: [{ kind: "COMMENT", body: clip(result, deps.textMaxCharacters), resultReview: true }] });
-  await deps.tools.call("report_work_progress", { workId, status: "CHECKPOINT" });
+  try {
+    await deps.tools.call("report_work_progress", { workId, status: "CHECKPOINT" });
+    return undefined;
+  } catch (error) {
+    // Agent 가 지시를 어기고 차례 안에서 finish_work 를 했다 — 결과 댓글(검토 요청)은 이미 남았다. 넘기기는 끝, 이유는 경고로(삼키지 않는다).
+    if (error instanceof AgentToolError && error.code === "WORK_NOT_IN_PROGRESS") return `report_work_progress: ${error.code}`;
+    throw error;
+  }
 }
 
 async function readCard(tools: AgentTools, cardUuid: string, workId?: string): Promise<CardFacts> {

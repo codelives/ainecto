@@ -14,6 +14,10 @@ export interface FakeCard {
   workId?: string;
   /** Agent 답이 실행 대화에 오면(차례 끝) 카드의 막힘을 이 값으로 — Agent 가 차례 안에서 block·unblock 을 한 것처럼. */
   blockedAfterTurn?: boolean;
+  /** Agent 가 차례 안에서 finish_work 를 부른 것처럼 — 차례가 끝나면 작업이 DONE(카드는 진행 중 그대로). */
+  finishWorkDuringTurn?: boolean;
+  /** 작업이 끝났나(finish_work) — 끝났으면 report_work_progress 는 WORK_NOT_IN_PROGRESS. */
+  workDone?: boolean;
 }
 
 interface FakeTodo {
@@ -93,14 +97,18 @@ export class FakeTools implements AgentTools {
       case "send_auto_run_message": {
         const card = this.card(String(args.cardUuid));
         if (card.blockedAfterTurn !== undefined && String(args.body).startsWith("got ")) card.blocked = card.blockedAfterTurn;
+        if (card.finishWorkDuringTurn && String(args.body).startsWith("got ")) card.workDone = true;
         return { conversationUuid: `conv-${card.uuid}`, messageUuid: `m-${this.calls.length}`, cardUuid: card.uuid, at: "2026-11-16T00:00:00Z" };
       }
       case "list_comments":
         return { comments: this.comments.get(String(args.cardUuid)) ?? [], count: 0 };
       case "create_comments":
         return { created: [{ id: 900 + this.calls.length }] };
-      case "report_work_progress":
+      case "report_work_progress": {
+        const done = [...this.cards.values()].some((c) => c.workId === args.workId && c.workDone);
+        if (done) throw new AgentToolError("WORK_NOT_IN_PROGRESS: This work is not in progress", tool, "WORK_NOT_IN_PROGRESS");
         return { workId: args.workId, checkId: `chk-${this.calls.length}` };
+      }
       default:
         throw new AgentToolError(`unknown tool ${tool}`, tool, "NOT_FOUND");
     }
