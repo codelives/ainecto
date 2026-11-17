@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { onStopSignals } from "../../core/async/stopSignals";
 import type { TokenProvider } from "../../core/auth/oauth";
 import { ensurePrivateDir } from "../../core/fs/privateFiles";
 import { McpRpcClient } from "../../core/mcp/rpcClient";
@@ -105,10 +106,8 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
   await sessions.load();
   const controller = new AbortController();
   const onSignal = () => controller.abort();
-  // ★SIGHUP 도 — `term kill`·데몬이 끝날 때 오는 신호다. 잡지 않으면 서버에 close 없이 죽는다(실측 11-17).
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
-  process.once("SIGHUP", onSignal);
+  // ★SIGHUP 도(term kill·데몬 끝) · 두 번 와도(npx 아래 Ctrl+C) 처리기가 남는다 — onStopSignals 한 곳.
+  const offSignals = onStopSignals(onSignal);
   try {
     const result = await runAgentServe({
       http: createAgentHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),
@@ -129,8 +128,6 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
     log.write({ event: "serve_stop", pid: process.pid, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
     throw error;
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-    process.off("SIGHUP", onSignal);
+    offSignals();
   }
 }

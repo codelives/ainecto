@@ -1,5 +1,6 @@
 import { closeSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
+import { onStopSignals } from "../../core/async/stopSignals";
 import { resolve } from "node:path";
 import { openTermClient, termRequest } from "../../core/term/client";
 import { runDaemon, type DaemonReadiness } from "../../core/term/daemon";
@@ -123,8 +124,8 @@ export async function executeTermRemote(input: TermCommandInput & {
   log.write({ event: "remote_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: input.endpoint, host, session: name });
   const controller = new AbortController();
   const onSignal = (): void => controller.abort();
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  // 두 번 와도(npx 아래 Ctrl+C) 처리기가 남는다 · SIGHUP 도 — onStopSignals 한 곳.
+  const offSignals = onStopSignals(onSignal);
   let result: RemoteResult;
   try {
     result = await runRemote({
@@ -141,8 +142,7 @@ export async function executeTermRemote(input: TermCommandInput & {
     log.write({ event: "remote_stop", pid: process.pid, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
     throw error;
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    offSignals();
   }
   log.write({ event: "remote_stop", pid: process.pid, reason: result.reason, exitCode: result.exitCode });
   if (result.exitCode !== 0) {
