@@ -14,11 +14,6 @@ import { bridgePackageSpec, CLI_VERSION } from "../version";
 /** ① PC Agent 세션의 기본 이름. */
 export const AGENT_SESSION_NAME = "ainecto-agent";
 
-/** ② 원격 터미널 — 사용자 세션 하나를 웹에 잇는 다리 세션의 이름. */
-export function remoteSessionName(target: string): string {
-  return `ainecto-remote-${target}`;
-}
-
 /** 메뉴를 띄울 때 받은 전역 플래그 — 관리 세션에 그대로 넘긴다. */
 export interface LaunchFlags {
   env?: string;
@@ -36,8 +31,13 @@ export function agentServeArgs(flags: LaunchFlags): string[] {
   return ["agent", "serve", ...flagArgs(flags)];
 }
 
-export function termRemoteArgs(target: string, flags: LaunchFlags): string[] {
-  return ["term", "remote", target, ...flagArgs(flags)];
+/**
+ * ② «이 PC 를 웹에 연결» — 다리 세션의 이름과 명령을 만드는 ★한 곳.
+ * 지금 판의 `term remote` 는 세션 인자를 요구해서 세션마다 다리 하나다. 다음 판은 PC 당 다리 하나(`term remote`, 인자 없음 —
+ * 그 PC 의 세션 전부를 웹에 올린다)로 바뀐다 — 그때 이 함수(와 {@link managedKind} 의 판정)만 바꾼다.
+ */
+export function bridgeLaunch(target: string, flags: LaunchFlags): { session: string; args: string[] } {
+  return { session: `ainecto-remote-${target}`, args: ["term", "remote", target, ...flagArgs(flags)] };
 }
 
 /**

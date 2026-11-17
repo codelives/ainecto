@@ -3,15 +3,14 @@ import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
 import {
   AGENT_SESSION_NAME,
   agentServeArgs,
+  bridgeLaunch,
   defaultSessionName,
   managedSessions,
   menuLines,
   npxCliCommand,
   parseChoices,
-  remoteSessionName,
   runningLines,
   splitCommand,
-  termRemoteArgs,
 } from "../src/core/launcher/launcher";
 
 describe("인자 없는 ainecto — 순수 함수", () => {
@@ -32,7 +31,8 @@ describe("인자 없는 ainecto — 순수 함수", () => {
   it("받은 --env·--endpoint 는 그대로 넘긴다", () => {
     expect(agentServeArgs({})).toEqual(["agent", "serve"]);
     expect(agentServeArgs({ env: "dev" })).toEqual(["agent", "serve", "--env", "dev"]);
-    expect(termRemoteArgs("work", { endpoint: "https://x.test/mcp" })).toEqual(["term", "remote", "work", "--endpoint", "https://x.test/mcp"]);
+    expect(bridgeLaunch("work", { endpoint: "https://x.test/mcp" }))
+      .toEqual({ session: "ainecto-remote-work", args: ["term", "remote", "work", "--endpoint", "https://x.test/mcp"] });
   });
 
   it("도는 것은 이름이 아니라 «명령»으로 찾는다 — 실행 파일 앞부분(npx·대역)과 무관", () => {
@@ -51,7 +51,7 @@ describe("인자 없는 ainecto — 순수 함수", () => {
   });
 
   it("메뉴 — 도는 것에 «running» · term 을 못 쓰는 기기는 1~3 을 «not available»", () => {
-    const running = menuLines([{ kind: "agent", session: AGENT_SESSION_NAME }, { kind: "remote", session: remoteSessionName("work"), target: "work" }], undefined);
+    const running = menuLines([{ kind: "agent", session: AGENT_SESSION_NAME }, { kind: "remote", session: bridgeLaunch("work", {}).session, target: "work" }], undefined);
     expect(running.join("\n")).toBe([
       "What should run in the background?",
       "  1) Connect your PC agent to AiNecto Chat (ainecto agent serve)   [running: ainecto-agent]",

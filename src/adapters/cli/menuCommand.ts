@@ -2,16 +2,15 @@ import { createInterface } from "node:readline";
 import {
   AGENT_SESSION_NAME,
   agentServeArgs,
+  bridgeLaunch,
   defaultSessionName,
   managedSessions,
   MENU_ITEMS,
   menuLines,
   needsTerm,
   parseChoices,
-  remoteSessionName,
   runningLines,
   splitCommand,
-  termRemoteArgs,
   type LaunchFlags,
   type ManagedSession,
   type MenuItem,
@@ -105,27 +104,41 @@ export async function runMenu(input: MenuInput): Promise<number> {
     out(`Started your PC agent in session ${AGENT_SESSION_NAME}. Log: ${input.agentLog} · watch it: ainecto term attach ${AGENT_SESSION_NAME}`);
   };
 
-  const startRemote = async (): Promise<void> => {
+  /** ② 앞 단계 — 세션 만들기(`term new` 와 같다: 이름·명령을 묻는다). 만든 세션 이름, 못 만들었으면 undefined. */
+  const createSession = async (): Promise<string | undefined> => {
     const fallback = defaultSessionName(input.cwd);
     const name = (await ask(`Session name [${fallback}]: `))?.trim() || fallback;
     const command = splitCommand((await ask("Command to run in it [your login shell]: ")) ?? "");
-    const sessions = await listed();
-    if (sessions.some((session) => session.name === name)) {
+    if ((await listed()).some((session) => session.name === name)) {
       out(`A session named ${name} already exists. Pick another name, or share it yourself: ainecto term remote ${name}`);
+      return undefined;
+    }
+    await newSession(name, command);
+    out(`Started session ${name}. Here: ainecto term attach ${name}`);
+    return name;
+  };
+
+  /**
+   * ② 뒤 단계 — 이 PC 를 웹에 연결(다리 켜기). 이미 있으면 «실행 중». 다리의 이름·명령은 {@link bridgeLaunch} 한 곳이 정한다
+   * (지금 판은 세션마다 다리, 다음 판은 PC 당 하나 — 그때도 이 함수의 «이미 있나» 판정은 managedSessions 가 한다).
+   */
+  const connectToWeb = async (target: string): Promise<void> => {
+    const running = managedSessions(await listed()).find((entry) => entry.kind === "remote" && entry.target === target);
+    if (running) {
+      out(`${target} is already shared on AiNecto (session ${running.session}).`);
       return;
     }
     await prepare();
-    await newSession(name, command);
-    const bridge = remoteSessionName(name);
-    try {
-      await newSession(bridge, input.managedCommand(termRemoteArgs(name, flags)));
-    } catch (error) {
-      // 다리를 못 띄웠으면 방금 띄운 세션도 거둔다 — 웹에 잇지 못한 세션을 남기지 않는다.
-      await request({ op: "kill", name }, false);
-      throw error;
+    const bridge = bridgeLaunch(target, flags);
+    await newSession(bridge.session, input.managedCommand(bridge.args));
+    out(`Shared ${target} on AiNecto (session ${bridge.session}). Open the remote terminal in AiNecto to use it. Log: ${input.paths.remoteLog}`);
+  };
+
+  const startRemote = async (): Promise<void> => {
+    const name = await createSession();
+    if (name !== undefined) {
+      await connectToWeb(name);
     }
-    out(`Started ${name} and shared it on AiNecto (session ${bridge}). Open the remote terminal in AiNecto to use it. `
-      + `Log: ${input.paths.remoteLog} · here: ainecto term attach ${name}`);
   };
 
   /** 끄기 = Ctrl+C — serve·remote 는 SIGINT 에 서버에 끝을 알리고 스스로 끝난다(term kill 의 SIGHUP 은 그 처리를 건너뛴다). */

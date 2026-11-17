@@ -63,7 +63,8 @@ describe("인자 없는 ainecto — 메뉴로 백그라운드 실행", () => {
     await menu.waitFor("Command to run");
     menu.type("sleep 600");
     await menu.waitFor("Choose", 2);
-    expect(menu.output()).toContain("Started work and shared it on AiNecto (session ainecto-remote-work).");
+    expect(menu.output()).toContain("Started session work.");
+    expect(menu.output()).toContain("Shared work on AiNecto (session ainecto-remote-work).");
 
     const listed = await sessions();
     expect(listed.find((s) => s.name === "work")?.command).toEqual(["sleep", "600"]);
