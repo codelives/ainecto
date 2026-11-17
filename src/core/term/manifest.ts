@@ -12,6 +12,8 @@ export interface ManifestEntry {
   /** 없으면 로그인 셸. */
   command: string[] | null;
   createdAt: string;
+  /** 보이는 이름(term label) — 없으면 칸 없음. 옛 데몬은 이 칸을 모르고 그냥 읽는다. */
+  label?: string;
 }
 
 interface ManifestFile {
@@ -51,5 +53,6 @@ function isEntry(value: unknown): value is ManifestEntry {
   return typeof entry.name === "string"
     && typeof entry.cwd === "string"
     && typeof entry.createdAt === "string"
+    && (entry.label === undefined || typeof entry.label === "string")
     && (entry.command === null || (Array.isArray(entry.command) && entry.command.every((item) => typeof item === "string")));
 }

@@ -24,7 +24,11 @@ export type TermRequestBody =
    * 붙지 않은 쪽(원격 웹 패널 — `term remote`)이 세션 크기를 정한다. ★attach 흐름의 `resize`(id 없는 줄)와 이름을 나눈다 — 옛 데몬은
    * id 붙은 `resize` 를 흐름 줄로 읽어 답하지 않는다(10초 뒤 연결이 끊김). 모르는 op 면 옛 데몬이 연결을 바로 끊어 빨리 안다.
    */
-  | { op: "set-size"; name: string; cols: number; rows: number };
+  | { op: "set-size"; name: string; cols: number; rows: number }
+  /** 보이는 이름 — 데몬 이름(세션 열쇠·AINECTO_TERM_SESSION)은 그대로(KAN-738 결재 «가»). 매니페스트에 남아 restore 가 되살린다. */
+  | { op: "label"; name: string; label: string }
+  /** 이 연결에 세션 목록 변화(생김·끝·label)를 {@code sessions} 이벤트로 알린다 — 원격 다리가 목록을 올릴 때를 안다. */
+  | { op: "watch-sessions" };
 
 export type TermRequest = TermRequestBody & { id: string };
 
@@ -50,6 +54,8 @@ export type TermEvent =
   | { event: "out"; d: string }
   /** watch — 화면이 바뀌었다(다음 read 전까지 한 번만 온다). */
   | { event: "changed" }
+  /** watch-sessions — 세션 목록이 바뀌었다(생김·끝·label). 무엇이 바뀌었는지는 ls 로 본다. */
+  | { event: "sessions" }
   /** 세션이 끝났다. reset = 사용자 터미널에 남은 모드를 되돌리는 글자(base64). */
   | { event: "exit"; exitCode: number; signal: number; reset: string };
 
@@ -120,7 +126,15 @@ export function parseClientMessage(line: string): TermClientMessage {
     case "ls":
     case "kill-server":
     case "detach":
+    case "watch-sessions":
       return { id, op };
+    case "label": {
+      const label = stringField(record, "label");
+      if (label.length === 0) {
+        throw new TermProtocolError(`"label" must not be empty.`);
+      }
+      return { id, op, name: stringField(record, "name"), label };
+    }
     case "send":
       return { id, op, name: stringField(record, "name"), text: stringField(record, "text"), paste: record.paste === true };
     case "key":
@@ -150,6 +164,8 @@ export function parseDaemonMessage(line: string): TermResponse | TermEvent {
         return { event: record.event, d: stringField(record, "d") };
       case "changed":
         return { event: "changed" };
+      case "sessions":
+        return { event: "sessions" };
       case "exit":
         return {
           event: "exit",
@@ -178,6 +194,10 @@ export interface ListedSession {
   rows: number;
   cwd: string;
   command: string[] | null;
+  /** 보이는 이름 — 없으면 칸 없음. */
+  label?: string;
+  /** 마지막 출력 시각(ISO) — 아직 출력이 없거나 옛 데몬이면 칸 없음. */
+  lastOutputAt?: string;
 }
 
 /** `ls` 응답 → 세션 목록 — 모양이 맞지 않는 줄은 뺀다. */

@@ -176,12 +176,13 @@ async function listSessions(paths: TermPaths, argv: string[], input: TermCommand
     ? "No term sessions."
     : renderTable(sessions.map((session) => ({
       name: session.name,
+      label: session.label ?? "",
       pid: session.pid,
       clients: session.clients,
       size: `${session.cols}x${session.rows}`,
       cwd: session.cwd,
       command: session.command ? session.command.join(" ") : "(login shell)",
-    })), { columns: ["name", "pid", "clients", "size", "cwd", "command"] }) ?? "";
+    })), { columns: ["name", "label", "pid", "clients", "size", "cwd", "command"] }) ?? "";
   return print(input, data, human);
 }
 

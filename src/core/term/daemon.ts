@@ -107,6 +107,8 @@ interface Handled {
 class TermDaemon {
   private readonly sessions = new Map<string, TermSession>();
   private readonly connections = new Set<Connection>();
+  /** watch-sessions 를 건 연결 — 세션 목록 변화(생김·끝·label)를 알린다. */
+  private readonly listWatchers = new Set<Connection>();
   private readonly server: Server;
   private nextConnection = 1;
   /** 띄우는 중인 이름 — new·restore 가 같은 이름을 겹쳐 띄우지 않게(리뷰 #81 T1). */
@@ -195,6 +197,7 @@ class TermDaemon {
     this.connections.add(connection);
     socket.on("close", () => {
       this.connections.delete(connection);
+      this.listWatchers.delete(connection);
       for (const session of this.sessions.values()) {
         session.forget(connection);
       }
@@ -271,14 +274,16 @@ class TermDaemon {
         await this.session(request.name).key(request.key);
         return { data: { name: request.name, key: request.key } };
       case "read": {
-        const lines = await this.session(request.name).read({ scrollback: request.scrollback, lines: request.lines }, connection);
-        return { data: { name: request.name, lines } };
+        const session = this.session(request.name);
+        const lines = await session.read({ scrollback: request.scrollback, lines: request.lines }, connection);
+        return { data: { name: request.name, lines, modes: await session.modes() } };
       }
       case "kill": {
         const session = this.session(request.name);
         this.sessions.delete(request.name);
         session.kill();
         this.updateManifest((entries) => entries.filter((item) => item.name !== request.name));
+        this.notifySessions();
         return { data: { name: request.name, killed: true } };
       }
       case "kill-server": {
@@ -314,6 +319,16 @@ class TermDaemon {
       case "watch":
         this.session(request.name).watch(connection);
         return { data: { name: request.name } };
+      case "watch-sessions":
+        this.listWatchers.add(connection);
+        return { data: { watching: "sessions" } };
+      case "label": {
+        const session = this.session(request.name);
+        session.label = request.label;
+        this.updateManifest((entries) => entries.map((item) => item.name === request.name ? { ...item, label: request.label } : item));
+        this.notifySessions();
+        return { data: { name: request.name, label: request.label } };
+      }
       case "set-size": {
         const session = this.session(request.name);
         session.resizeTo(request.cols, request.rows);
@@ -347,6 +362,7 @@ class TermDaemon {
         (ended, exitCode, signal) => this.sessionEnded(ended, exitCode, signal),
       );
       this.sessions.set(entry.name, session);
+      this.notifySessions();
       this.log.write({ event: "session_start", name: entry.name, pid: session.info().pid, cwd: entry.cwd, shell: entry.command === null });
       return session;
     } finally {
@@ -368,6 +384,7 @@ class TermDaemon {
       }
     }
     this.log.write({ event: "session_exit", name: session.name, pid: session.info().pid, exitCode, signal, kept });
+    if (current) this.notifySessions();
     this.stopIfIdle();
   }
 
@@ -388,6 +405,13 @@ class TermDaemon {
       }
     }
     return { restored, running, failed };
+  }
+
+  /** 세션 목록이 바뀌었다 — watch-sessions 를 건 연결에 알린다(무엇이 바뀌었는지는 ls 로). */
+  private notifySessions(): void {
+    for (const connection of this.listWatchers) {
+      connection.send({ event: "sessions" });
+    }
   }
 
   /** 매니페스트는 데몬 하나만 쓴다 — 쓰기를 한 줄로 세운다. */
@@ -480,6 +504,8 @@ function requestMeta(request: TermRequest): { name?: string; textLength?: number
     case "watch":
     case "set-size":
       return { name: request.name };
+    case "label":
+      return { name: request.name, textLength: request.label.length };
     default:
       return {};
   }

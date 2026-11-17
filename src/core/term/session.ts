@@ -26,6 +26,8 @@ export interface SessionSpec {
   cols?: number;
   rows?: number;
   createdAt: string;
+  /** 보이는 이름 — 데몬 이름은 그대로. */
+  label?: string;
 }
 
 /** 세션의 출력·이벤트를 받는 쪽(연결 하나). */
@@ -42,6 +44,15 @@ export interface SessionInfo {
   cols: number;
   rows: number;
   clients: number;
+  label?: string;
+  lastOutputAt?: string;
+}
+
+/** 화면의 터미널 모드 — 원격 웹이 «직접 키»로 바꿀지 본다. */
+export interface ScreenModes {
+  altScreen: boolean;
+  appCursor: boolean;
+  bracketedPaste: boolean;
 }
 
 interface AttachState {
@@ -75,6 +86,10 @@ export class TermSession {
   /** 헤드리스 화면에 넣은 쓰기마다 «이 덩어리의 질의에 헤드리스가 답하나» — 맨 앞이 지금 그리는 덩어리다. */
   private readonly headlessAnswers: boolean[] = [];
   private exited = false;
+  /** 보이는 이름 — label op 가 바꾼다. */
+  label: string | undefined;
+  /** 마지막 출력 시각(ISO) — 원격 웹 목록의 «마지막 활동». */
+  private lastOutputAt: string | undefined;
 
   private constructor(
     readonly spec: SessionSpec,
@@ -97,6 +112,7 @@ export class TermSession {
     const serializer = new serializeAddon.SerializeAddon();
     screen.loadAddon(serializer);
     const session = new TermSession(spec, pty, screen, serializer);
+    session.label = spec.label;
     screen.onData((answer) => session.answerQuery(answer));
     pty.onData((data) => session.handleOutput(data));
     pty.onExit(({ exitCode, signal }) => {
@@ -120,6 +136,18 @@ export class TermSession {
       cols: this.pty.cols,
       rows: this.pty.rows,
       clients: this.attached.size,
+      ...(this.label !== undefined ? { label: this.label } : {}),
+      ...(this.lastOutputAt !== undefined ? { lastOutputAt: this.lastOutputAt } : {}),
+    };
+  }
+
+  /** 지금까지 받은 출력을 모두 그린 뒤의 모드. */
+  async modes(): Promise<ScreenModes> {
+    await this.settled();
+    return {
+      altScreen: this.screen.buffer.active.type === "alternate",
+      appCursor: this.screen.modes.applicationCursorKeysMode,
+      bracketedPaste: this.screen.modes.bracketedPasteMode,
     };
   }
 
@@ -240,6 +268,7 @@ export class TermSession {
   }
 
   private handleOutput(data: string): void {
+    this.lastOutputAt = new Date().toISOString();
     this.boundary.push(data, false);
     this.writeScreen(data, this.sizeOwner === undefined, () => this.notifyWatchers());
     for (const [sink, state] of this.attached) {
