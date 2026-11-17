@@ -17,11 +17,29 @@ import {
   runningPcs,
 } from "../src/core/pc/pcSession";
 import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../src/core/term/remote";
-import { lastServeStop } from "../src/core/agent/log";
+import { agentMissing, lastServeStop } from "../src/core/agent/log";
+import { AGENT_MISSING_LINE } from "../src/core/agent/serve";
 
 const pcCommand = (spec: string) => ["npx", "-y", "--package", spec, "ainecto", "pc", "run", "--env", "dev"];
 
 describe("이 PC 연결 — 순수 함수", () => {
+  it("Agent 없이 다리만 — 다리 연결 줄도 «연결됨» · Agent 없음 줄이 있으면 그것까지 알린다", () => {
+    expect(pcOutcome([`${REMOTE_STATE_PREFIX}on — 2 session(s) from mac are listed`])).toEqual({ kind: "connected" });
+    expect(pcOutcome([AGENT_MISSING_LINE, `${REMOTE_STATE_PREFIX}on — 0 session(s)`])).toEqual({ kind: "connected", agentMissing: true });
+    expect(pcOutcome([AGENT_MISSING_LINE])).toBeUndefined();
+  });
+
+  it("status — 지금 도는 pc 에 Agent 가 없으면 그 한 줄 · agent.log 의 «마지막» serve 기록으로 본다", () => {
+    const line = (event: string, reason?: string) => JSON.stringify({ ts: "2026-11-17T00:00:00Z", event, ...(reason ? { reason } : {}) });
+    expect(agentMissing([line("serve_start"), line("serve_stop", "no_agents")].join("\n"))).toBe(true);
+    expect(agentMissing([line("serve_stop", "no_agents"), line("serve_start")].join("\n"))).toBe(false);
+    expect(agentMissing("")).toBe(false);
+    const sessions = [{ name: "ainecto-pc", cwd: "/h", command: pcCommand("@ainecto/mcp@1.0.0") }];
+    expect(pcStatusView({ sessions, approval: undefined, agentLog: "l", termProblem: undefined, agentMissing: true }).agent)
+      .toBe(AGENT_MISSING_LINE);
+    expect(pcStatusView({ sessions, approval: undefined, agentLog: "l", termProblem: undefined, agentMissing: false }).agent).toBeUndefined();
+  });
+
   it("원격이 웹에서 꺼졌나 — pc 화면의 «마지막» 원격 상태 줄로(다시 켜진 뒤면 아니다)", () => {
     expect(remoteOffByWeb([`${REMOTE_STATE_PREFIX}on — 2 session(s)`, `${REMOTE_OFF_BY_WEB_LINE} Run it again.`])).toBe(true);
     expect(remoteOffByWeb([`${REMOTE_OFF_BY_WEB_LINE} Run it again.`, `${REMOTE_STATE_PREFIX}on.`])).toBe(false);

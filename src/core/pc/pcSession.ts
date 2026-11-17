@@ -1,5 +1,6 @@
 import { AGENT_CALL_TIMEOUT_MS, AGENT_STOP_WAIT_MS } from "../agent/limits";
-import { SERVE_CONNECTED_PREFIX, SERVE_RECONNECTED_LINE } from "../agent/serve";
+import { AGENT_MISSING_LINE, SERVE_CONNECTED_PREFIX, SERVE_RECONNECTED_LINE } from "../agent/serve";
+import { NO_AGENTS_REASON } from "../agent/log";
 import { ERROR_LINE_PREFIX } from "../output/render";
 import type { ListedSession } from "../term/protocol";
 import { CALL_TIMEOUT_MS } from "../term/remoteLimits";
@@ -102,6 +103,7 @@ const STOP_NOTES: Readonly<Record<string, string>> = {
   replaced: "another PC took over your AiNecto agent — run `ainecto` here to take it back",
   auth: "AiNecto refused the sign-in — run `ainecto auth login`, then `ainecto`",
   signal: "stopped on this PC",
+  [NO_AGENTS_REASON]: AGENT_MISSING_LINE,
 };
 
 /** `ainecto status` 의 «이 PC 연결» 칸(순수 함수) — 연결·동의·원격 터미널 허용·이 PC 의 터미널 세션(연결 세션은 뺀다). */
@@ -113,6 +115,8 @@ export function pcStatusView(input: {
   termProblem: string | undefined;
   /** agent.log 의 마지막 serve_stop — 연결이 없을 때 «왜 끊겼나». */
   lastStop?: { at: string; reason: string };
+  /** 지금 도는 pc 에 Agent 가 없다(다리만) — agent.log 의 마지막 serve 기록. */
+  agentMissing?: boolean;
 }): Record<string, unknown> {
   if (input.termProblem !== undefined) {
     return { connected: false, unsupported: input.termProblem };
@@ -122,6 +126,7 @@ export function pcStatusView(input: {
   return {
     connected: running.length > 0,
     ...(running[0] ? { session: running[0].session, folder: running[0].cwd, version: pcVersionLabel(running[0]), log: input.agentLog } : {}),
+    ...(running[0] && input.agentMissing ? { agent: AGENT_MISSING_LINE } : {}),
     ...(!running[0] && input.lastStop ? { lastStop: { ...input.lastStop, ...(STOP_NOTES[input.lastStop.reason] ? { note: STOP_NOTES[input.lastStop.reason] } : {}) } } : {}),
     approved: input.approval !== undefined,
     ...(input.approval ? { remoteTerminal: input.approval.remoteTerminal ? "allowed" : "blocked" } : {}),
@@ -144,7 +149,7 @@ function escapeRegExp(text: string): string {
 
 /** pc 세션 화면에서 «연결됨»(또는 다시 붙음)·«실패로 끝남» 줄을 찾는 식. */
 export const PC_OUTCOME_PATTERN = new RegExp(
-  `^(${escapeRegExp(SERVE_CONNECTED_PREFIX)}|${escapeRegExp(SERVE_RECONNECTED_LINE)}|${escapeRegExp(ERROR_LINE_PREFIX)})`,
+  `^(${escapeRegExp(SERVE_CONNECTED_PREFIX)}|${escapeRegExp(SERVE_RECONNECTED_LINE)}|${escapeRegExp(REMOTE_STATE_PREFIX)}|${escapeRegExp(ERROR_LINE_PREFIX)})`,
 );
 
 /** pc 화면의 마지막 원격 상태 줄이 «웹에서 꺼짐»인가(순수 함수) — 그러면 start 가 «Already» 대신 다시 띄워 원격을 켠다. */
@@ -154,11 +159,13 @@ export function remoteOffByWeb(lines: readonly string[]): boolean {
 }
 
 /** 화면 줄 → 결과(순수 함수). 연결 줄이 있으면 connected, 오류 줄만 있으면 failed(그 줄), 둘 다 없으면 undefined. */
-export function pcOutcome(lines: readonly string[]): { kind: "connected" } | { kind: "failed"; line: string } | undefined {
+export function pcOutcome(lines: readonly string[]): { kind: "connected"; agentMissing?: true } | { kind: "failed"; line: string } | undefined {
   let failed: string | undefined;
+  // Agent 없이 다리만 — 다리의 원격 상태 줄(열린 뒤에만 찍힌다)도 «연결됨»이다. Agent 없음 줄이 있으면 그것까지 알린다.
+  const agentMissing = lines.some((line) => line.startsWith(AGENT_MISSING_LINE));
   for (const line of lines) {
-    if (line.startsWith(SERVE_CONNECTED_PREFIX) || line.startsWith(SERVE_RECONNECTED_LINE)) {
-      return { kind: "connected" };
+    if (line.startsWith(SERVE_CONNECTED_PREFIX) || line.startsWith(SERVE_RECONNECTED_LINE) || line.startsWith(REMOTE_STATE_PREFIX)) {
+      return agentMissing ? { kind: "connected", agentMissing: true } : { kind: "connected" };
     }
     if (line.startsWith(ERROR_LINE_PREFIX)) {
       failed ??= line;

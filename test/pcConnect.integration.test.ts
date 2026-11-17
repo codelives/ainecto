@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { accountKey } from "../src/core/pc/pcSettings";
-import { SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
-import { REMOTE_OFF_BY_WEB_LINE } from "../src/core/term/remote";
+import { AGENT_MISSING_LINE, SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
+import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../src/core/term/remote";
 import { systemCommandRunner } from "../src/core/setup/commandRunner";
 import type { MachineStatus } from "../src/core/setup/machineStatus";
 import { termPaths } from "../src/core/term/paths";
@@ -22,6 +22,11 @@ const STUBBORN = `process.on('SIGINT', () => undefined); ${CONNECTED} setInterva
 /** 연결됐고, 원격은 웹에서 꺼진 pc — 다리가 화면에 남기는 줄 그대로. */
 const OFF_BY_WEB = "if (process.argv.includes('--version')) process.exit(0);"
   + `process.on('SIGINT', () => process.exit(0)); ${CONNECTED} console.log(${JSON.stringify(`${REMOTE_OFF_BY_WEB_LINE} Run it again.`)});`
+  + " setInterval(() => undefined, 1000);";
+/** Claude Code·Codex 가 없는 PC — Agent 없음 한 줄 뒤 다리만 연결(원격 허용). */
+const REMOTE_ONLY = "if (process.argv.includes('--version')) process.exit(0);"
+  + `process.on('SIGINT', () => process.exit(0)); console.error(${JSON.stringify(AGENT_MISSING_LINE)});`
+  + ` console.error(${JSON.stringify(`${REMOTE_STATE_PREFIX}on — 1 session(s) from test-host are listed in AiNecto on the web.`)});`
   + " setInterval(() => undefined, 1000);";
 /** 연결 줄을 찍지 않고 기다리기만 — 막 띄운(npx·준비 확인 중) pc 와 같다. */
 const SILENT = "setInterval(() => undefined, 1000);";
@@ -211,6 +216,16 @@ describe("이 PC 연결 — 실 데몬", () => {
     const after = await pcSessions();
     expect(after.length).toBe(1);
     expect(after[0]?.pid).not.toBe(before);
+  }, LONG);
+
+  it("Agent(Claude Code·Codex) 없이 원격만 허용 — 다리 연결 줄로 «연결됨» · 무엇이 붙었는지 그대로 말한다", async () => {
+    const start = harness({ script: REMOTE_ONLY });
+    const done = executePcStart(start.deps);
+    await start.answer("Connect this PC?", "y");
+    await start.answer("Also allow terminals", "y");
+    expect(await done).toBe(0);
+    expect(start.out()).toContain("Connected this PC to AiNecto (session ainecto-pc): terminals from the web only");
+    expect(start.out()).toContain("install Claude Code or Codex, then `ainecto` again");
   }, LONG);
 
   it("ainecto 재실행 — 원격이 웹에서 꺼진 pc 는(같은 판이어도) «Already» 대신 다시 띄워 원격을 켠다", async () => {

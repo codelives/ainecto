@@ -13,15 +13,15 @@ import { codexAppServerArgs } from "../../core/agent/codexArgs";
 import { writeToolNames } from "../../core/agent/documents";
 import { createAgentHttp } from "../../core/agent/http";
 import { createAgentTools } from "../../core/agent/tools";
-import { openAgentLog } from "../../core/agent/log";
+import { NO_AGENTS_REASON, openAgentLog } from "../../core/agent/log";
 import { agentPaths } from "../../core/agent/paths";
 import { AgentRunLog } from "../../core/agent/runs";
 import { checkAgents, openAgents } from "../../core/agent/readiness";
-import { runAgentServe } from "../../core/agent/serve";
+import { AGENT_MISSING_LINE, runAgentServe } from "../../core/agent/serve";
 import { AgentSessionMap } from "../../core/agent/sessions";
 import { CLI_BUILD, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
 import type { CliIO } from "./ainectoCli";
-import { runPcParts, runPcRemote } from "./pcRemote";
+import { pcPlan, pcRemoteSetup, runPcParts, runPcRemote } from "./pcRemote";
 import { readAccount } from "../../core/setup/accountSummary";
 
 export const AGENT_HELP_LINES: readonly string[] = [
@@ -87,31 +87,39 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
     agents: checks.map(({ id, installed, ready, auth, version }) =>
       ({ id, installed, ready, ...(auth ? { auth } : {}), ...(version ? { version } : {}) })) });
   const agents = openAgents(checks);
-  if (agents.length === 0) {
-    throw new Error("Neither Claude Code (`claude`) nor Codex (`codex`) is on PATH. Install one and sign in, then run `ainecto start` again.");
+  // ★Agent 가 없어도 원격이 허용이면 다리만 돈다(KAN-738 next.10) — 둘 다 없을 때만 시작하지 않는다(pcPlan).
+  const remote = await pcRemoteSetup({ endpoint: input.endpoint, auth: input.auth, account: () => readAccount(client()), io: input.io });
+  const plan = pcPlan({ agents: agents.length, remoteEnabled: remote.remoteEnabled });
+  if (plan === "nothing") {
+    throw new Error("Neither Claude Code (`claude`) nor Codex (`codex`) is on PATH, and terminals from the web are off on this PC. "
+      + "Install one and sign in, or allow terminals from the web with `ainecto remote on`, then run `ainecto` again.");
   }
-  for (const check of checks) {
-    const name = all.find((adapter) => adapter.id === check.id)?.displayName ?? check.id;
-    if (!check.installed) continue;
-    if (check.ready) {
-      input.io.stderr.write(check.auth === "apiKey"
-        ? `${name}: runs on your own API key (billed to your ${BILLED_TO[check.id]} API account; AiNecto credits are not used).\n`
-        : `${name}: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).\n`);
-    } else {
-      input.io.stderr.write(`${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
-        + `Requests to ${name} will be refused until you sign in and reconnect this PC (\`ainecto stop\`, then \`ainecto start\`).\n`);
-    }
-  }
-  const adapters = new Map<AgentId, AgentAdapter>(all.filter((adapter) => agents.some((a) => a.id === adapter.id))
-    .map((adapter) => [adapter.id, adapter]));
-
-  const sessions = new AgentSessionMap(paths.sessions);
-  await sessions.load();
   const controller = new AbortController();
   const onSignal = () => controller.abort();
   // ★SIGHUP 도(term kill·데몬 끝) · 두 번 와도(npx 아래 Ctrl+C) 처리기가 남는다 — onStopSignals 한 곳.
   const offSignals = onStopSignals(onSignal);
   try {
+    if (plan === "remote-only") {
+      log.write({ event: "serve_stop", pid: process.pid, reason: NO_AGENTS_REASON });
+      input.io.stderr.write(`${AGENT_MISSING_LINE}\n`);
+      return await runPcParts(Promise.resolve(0), (stop) => runPcRemote(remote, stop), controller.signal);
+    }
+    for (const check of checks) {
+      const name = all.find((adapter) => adapter.id === check.id)?.displayName ?? check.id;
+      if (!check.installed) continue;
+      if (check.ready) {
+        input.io.stderr.write(check.auth === "apiKey"
+          ? `${name}: runs on your own API key (billed to your ${BILLED_TO[check.id]} API account; AiNecto credits are not used).\n`
+          : `${name}: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).\n`);
+      } else {
+        input.io.stderr.write(`${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
+          + `Requests to ${name} will be refused until you sign in and reconnect this PC (\`ainecto stop\`, then \`ainecto start\`).\n`);
+      }
+    }
+    const adapters = new Map<AgentId, AgentAdapter>(all.filter((adapter) => agents.some((a) => a.id === adapter.id))
+      .map((adapter) => [adapter.id, adapter]));
+    const sessions = new AgentSessionMap(paths.sessions);
+    await sessions.load();
     // ★pc 프로세스 = Agent + 원격 다리(KAN-738 next.10) — Agent 가 끝나도 원격은 계속, Agent 가 시작부터 던지면 다리도 멈춘다(runPcParts).
     const agent = runAgentServe({
       http: createAgentHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),
@@ -132,9 +140,7 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
       log.write({ event: "serve_stop", pid: process.pid, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
       throw error;
     });
-    return await runPcParts(agent, (stop) => runPcRemote({
-      endpoint: input.endpoint, auth: input.auth, account: () => readAccount(client()), io: input.io, signal: stop,
-    }), controller.signal);
+    return await runPcParts(agent, (stop) => runPcRemote(remote, stop), controller.signal);
   } finally {
     offSignals();
   }

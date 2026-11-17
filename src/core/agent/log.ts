@@ -54,20 +54,37 @@ export function openAgentLog(paths: AgentPaths): DaemonLog<AgentLogRecord> {
   return log;
 }
 
-/** agent.log 글 → 마지막 serve_stop(언제·사유) — `ainecto status` 가 «왜 끊겼나»를 보인다. 없으면 undefined. 순수 함수. */
-export function lastServeStop(text: string): { at: string; reason: string } | undefined {
+/** serve_stop 사유 — Claude Code·Codex 가 둘 다 없어 Agent 부분을 시작하지 않았다. */
+export const NO_AGENTS_REASON = "no_agents";
+
+/** agent.log 글을 끝에서부터 — 받아들인 첫 레코드. 쓰다 만 줄(회전·동시 쓰기)은 건너뛴다. 순수 함수. */
+function lastRecord<T>(text: string, accept: (record: { event?: unknown; ts?: unknown; reason?: unknown }) => T | undefined): T | undefined {
   const lines = text.split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index]?.trim();
     if (!line?.startsWith("{")) continue;
+    let record: { event?: unknown; ts?: unknown; reason?: unknown };
     try {
-      const record = JSON.parse(line) as { event?: unknown; ts?: unknown; reason?: unknown };
-      if (record.event === "serve_stop" && typeof record.reason === "string") {
-        return { at: typeof record.ts === "string" ? record.ts : "", reason: record.reason };
-      }
+      record = JSON.parse(line) as { event?: unknown; ts?: unknown; reason?: unknown };
     } catch {
-      // 쓰다 만 줄(회전·동시 쓰기) — 건너뛰고 앞줄을 본다.
+      continue;
     }
+    const accepted = accept(record);
+    if (accepted !== undefined) return accepted;
   }
   return undefined;
+}
+
+/** agent.log 글 → 마지막 serve_stop(언제·사유) — `ainecto status` 가 «왜 끊겼나»를 보인다. 없으면 undefined. 순수 함수. */
+export function lastServeStop(text: string): { at: string; reason: string } | undefined {
+  return lastRecord(text, (record) => record.event === "serve_stop" && typeof record.reason === "string"
+    ? { at: typeof record.ts === "string" ? record.ts : "", reason: record.reason }
+    : undefined);
+}
+
+/** 이번 pc 실행에 Agent 가 없나 — 마지막 serve 기록(serve_start·serve_stop)이 «no_agents» 로 멈춘 것인가. 순수 함수. */
+export function agentMissing(text: string): boolean {
+  return lastRecord(text, (record) => record.event === "serve_start" || record.event === "serve_stop"
+    ? record.event === "serve_stop" && record.reason === NO_AGENTS_REASON
+    : undefined) ?? false;
 }

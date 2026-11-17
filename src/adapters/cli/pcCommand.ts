@@ -192,6 +192,13 @@ async function reportOutcome(deps: PcDeps, startedAt: string): Promise<number> {
   if (outcome?.kind === "failed") {
     throw new CliCommandError("PC_START_FAILED", `The PC connection could not start — ${outcome.line} Log: ${deps.agentLog}`);
   }
+  // 무엇이 붙었는지 그대로 — 화면 전체로 본다(Agent 없음 줄은 다리 연결 줄보다 앞에 찍힌다).
+  const screen = pcOutcome(await screenLines(deps, PC_SESSION_NAME));
+  if (screen?.kind === "connected" && screen.agentMissing) {
+    return print(deps, { ...base, connected: true, already: false, agent: false, remote: true },
+      `Connected this PC to AiNecto (session ${PC_SESSION_NAME}): terminals from the web only — no PC agent `
+        + `(install Claude Code or Codex, then \`ainecto\` again). It keeps running after you close this window. Log: ${deps.agentLog}`);
+  }
   return print(deps, { ...base, connected: true, already: false },
     `Connected this PC to AiNecto (session ${PC_SESSION_NAME}). It keeps running after you close this window. Log: ${deps.agentLog}`);
 }

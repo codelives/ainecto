@@ -228,7 +228,8 @@ ainecto term restore                              # after a reboot: start again 
   on the web — see a session as plain text (no colors yet), type into it, and start, rename or end
   sessions there. Allow it once with `ainecto remote on` (`ainecto remote off` blocks it). «Disconnect»
   on the web turns it off until you run `ainecto` again. If AiNecto restarts, it reconnects on its own.
-  Its log is `~/.ainecto/term/remote.log`.
+  Without Claude Code or Codex on this PC, `ainecto` still connects the terminals (when allowed); your PC
+  agent starts once you install one and run `ainecto` again. Its log is `~/.ainecto/term/remote.log`.
 - Files are in `~/.ainecto/term/` (folder only you can read): the control socket, `sessions.json` (what
   `restore` starts) and `daemon.log` (one line per request and one per answer; kept to 10 MB plus one older
   file, `daemon.log.1`). Typed text, screens and environment values are not logged.

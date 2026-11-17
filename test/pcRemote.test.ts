@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { runPcParts, runPcRemote } from "../src/adapters/cli/pcRemote";
+import { pcPlan, pcRemoteSetup, runPcParts, runPcRemote } from "../src/adapters/cli/pcRemote";
 import { accountKey } from "../src/core/pc/pcSettings";
 import type { RemoteResult } from "../src/core/term/remote";
 import { termPaths } from "../src/core/term/paths";
@@ -9,6 +9,13 @@ import { FakeRemoteServer } from "./support/fakeRemoteServer";
 import { LONG, ok, rig, until, useTermRig } from "./termRig";
 
 describe("pc 프로세스 = Agent + 원격 다리(runPcParts)", () => {
+  it("무엇을 돌리나 — Agent 가 없어도 원격이 허용이면 다리만 · 둘 다 없으면 시작하지 않는다", () => {
+    expect(pcPlan({ agents: 1, remoteEnabled: true })).toBe("agent-and-remote");
+    expect(pcPlan({ agents: 2, remoteEnabled: false })).toBe("agent-and-remote");
+    expect(pcPlan({ agents: 0, remoteEnabled: true })).toBe("remote-only");
+    expect(pcPlan({ agents: 0, remoteEnabled: false })).toBe("nothing");
+  });
+
   it("Agent 가 끝나도(다른 PC 가 Agent 를 가져감) 원격은 계속 — 둘 다 끝나야 끝난다 · 코드는 Agent 가 0 이 아니면 그것", async () => {
     let finishRemote: (result: RemoteResult) => void = () => undefined;
     const remote = new Promise<RemoteResult>((resolve) => {
@@ -79,7 +86,7 @@ describe("pc run 의 원격 다리 — pc.json(pcId·계정별 원격 허용) �
   function run(settingsPath: string, account: () => Promise<{ userId?: string }>) {
     const stop = new AbortController();
     const err: string[] = [];
-    const done = runPcRemote({
+    const done = pcRemoteSetup({
       endpoint: fake.endpoint,
       auth: { getAccessToken: async () => "t", refreshAfterUnauthorized: async () => "t" },
       account,
@@ -88,13 +95,12 @@ describe("pc run 의 원격 다리 — pc.json(pcId·계정별 원격 허용) �
         stdout: { write: () => true } as unknown as NodeJS.WriteStream,
         stderr: { write: (text: string) => { err.push(text); return true; } } as unknown as NodeJS.WriteStream,
       },
-      signal: stop.signal,
       settingsPath,
       paths: termPaths(rig.home),
       home: rig.home,
       hostName: "test-host",
       env: Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string")),
-    });
+    }).then((setup) => runPcRemote(setup, stop.signal));
     return { done, stop, err };
   }
 

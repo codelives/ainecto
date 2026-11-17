@@ -108,6 +108,11 @@ const TODO_NOTES: Readonly<Record<TodoOutcome, string>> = {
 
 /** 연결됨 표시 — serve 가 open 성공 뒤 찍는 줄의 앞머리. ★`ainecto start` 가 pc 세션 화면에서 이것을 기다린다(한 곳). */
 export const SERVE_CONNECTED_PREFIX = "Connected to AiNecto as ";
+/**
+ * Agent 없음 — 이 PC 에 Claude Code·Codex 가 둘 다 없어 Agent 부분을 시작하지 않았다(원격이 허용이면 다리만 돈다). ★한 곳 —
+ * pc 화면·`ainecto status`·start 의 출력이 이 문장을 쓴다.
+ */
+export const AGENT_MISSING_LINE = "Agent: no Claude Code or Codex on this PC — install one, then `ainecto` again.";
 /** 다시 붙음 표시 — 서버가 link 를 잊어 다시 열었을 때. `ainecto stop` 은 이것도 «준비됨»으로 본다. */
 export const SERVE_RECONNECTED_LINE = "AiNecto lost this connection (it may have restarted); connected again.";
 
