@@ -46,7 +46,18 @@ export type AgentLogRecord =
   /** runs.json 읽기 — 없음(missing)·깨짐(unreadable → 비움)도 이 한 줄. */
   | { event: "runs_load"; entries: number; reason?: string }
   /** 가져간 할 일의 임대 — 연장 실패·놓기 등(도구 호출 줄과 별개로, serve 가 그 결과로 무엇을 했나). */
-  | { event: "todo_lease"; todoId: string; action: string; ok: boolean; error?: string; next?: string };
+  | { event: "todo_lease"; todoId: string; action: string; ok: boolean; error?: string; next?: string }
+  /**
+   * 자동 업그레이드(KAN-738 next.10) — pc run 이 도우미를 띄움(launch) · 도우미의 시작·끝·실패(어느 단계·사유·되돌림)·거절(증명 없음·
+   * workflow 다름·audit 실패). 도우미가 부르는 바깥 명령·registry 는 upgrade_call 1줄 + upgrade_call_response 1줄(같은 callId).
+   */
+  | { event: "upgrade_launch"; from: string; to: string; pid?: number; error?: string }
+  | { event: "upgrade_start"; from: string; to: string }
+  | { event: "upgrade_call"; callId: string; step: string; command: string }
+  | { event: "upgrade_call_response"; callId: string; step: string; ok: boolean; exitCode?: number | null; ms: number; detail?: string }
+  | { event: "upgrade_done"; from: string; to: string; ms: number }
+  | { event: "upgrade_failed"; from: string; to: string; step: string; reason: string; rolledBack?: boolean }
+  | { event: "upgrade_refused"; from: string; to: string; reason: string; detail?: string };
 
 export function openAgentLog(paths: AgentPaths): DaemonLog<AgentLogRecord> {
   const log = new DaemonLog<AgentLogRecord>(paths.log, paths.previousLog);
@@ -58,14 +69,16 @@ export function openAgentLog(paths: AgentPaths): DaemonLog<AgentLogRecord> {
 export const NO_AGENTS_REASON = "no_agents";
 
 /** agent.log 글을 끝에서부터 — 받아들인 첫 레코드. 쓰다 만 줄(회전·동시 쓰기)은 건너뛴다. 순수 함수. */
-function lastRecord<T>(text: string, accept: (record: { event?: unknown; ts?: unknown; reason?: unknown }) => T | undefined): T | undefined {
+type LoggedRecord = { event?: unknown; ts?: unknown; reason?: unknown; from?: unknown; to?: unknown };
+
+function lastRecord<T>(text: string, accept: (record: LoggedRecord) => T | undefined): T | undefined {
   const lines = text.split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index]?.trim();
     if (!line?.startsWith("{")) continue;
-    let record: { event?: unknown; ts?: unknown; reason?: unknown };
+    let record: LoggedRecord;
     try {
-      record = JSON.parse(line) as { event?: unknown; ts?: unknown; reason?: unknown };
+      record = JSON.parse(line) as LoggedRecord;
     } catch {
       continue;
     }
@@ -80,6 +93,30 @@ export function lastServeStop(text: string): { at: string; reason: string } | un
   return lastRecord(text, (record) => record.event === "serve_stop" && typeof record.reason === "string"
     ? { at: typeof record.ts === "string" ? record.ts : "", reason: record.reason }
     : undefined);
+}
+
+/** 자동 업그레이드 결과 — agent.log 의 갈아타기 끝 이벤트 → `ainecto status` 의 한 줄. */
+export const UPGRADE_RESULTS = { upgrade_done: "upgraded", upgrade_failed: "failed", upgrade_refused: "refused" } as const;
+
+export interface LastUpgrade {
+  at: string;
+  result: (typeof UPGRADE_RESULTS)[keyof typeof UPGRADE_RESULTS];
+  from: string;
+  to: string;
+  reason?: string;
+}
+
+/** agent.log 글 → 마지막 갈아타기(끝·실패·거절). 없으면 undefined. 순수 함수. */
+export function lastUpgrade(text: string): LastUpgrade | undefined {
+  return lastRecord(text, (record) => {
+    const event = record.event;
+    if (event !== "upgrade_done" && event !== "upgrade_failed" && event !== "upgrade_refused") return undefined;
+    const text = (value: unknown) => (typeof value === "string" ? value : "");
+    return {
+      at: text(record.ts), result: UPGRADE_RESULTS[event], from: text(record.from), to: text(record.to),
+      ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+    };
+  });
 }
 
 /** 이번 pc 실행에 Agent 가 없나 — 마지막 serve 기록(serve_start·serve_stop)이 «no_agents» 로 멈춘 것인가. 순수 함수. */

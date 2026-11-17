@@ -17,7 +17,13 @@ import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { executeTermCommand, stringEnv, TERM_HELP_LINES } from "./termCommand";
 import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "./pcCommand";
-import { npxCliCommand, pcReadyDeadlineMs, pcStopDeadlineMs } from "../../core/pc/pcSession";
+import { npxCliCommand, pcReadyDeadlineMs, pcStopDeadlineMs, skipUpgradeOf } from "../../core/pc/pcSession";
+import { executePcSwap } from "./pcSwap";
+import { swapArgsOf } from "./pcAutoUpgrade";
+import { openAgentLog } from "../../core/agent/log";
+import { ensurePrivateDir } from "../../core/fs/privateFiles";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { pcSettingsPath } from "../../core/pc/pcSettings";
 import { pcStatus } from "./pcStatus";
 import { readAccount } from "../../core/setup/accountSummary";
@@ -28,7 +34,7 @@ import { agentPaths } from "../../core/agent/paths";
 import { collectStatus, type CollectInput, type MachineStatus } from "../../core/setup/machineStatus";
 import { AGENT_HELP_LINES, executeAgentServe, isPcRunCommand } from "./agentCommand";
 import { systemCommandRunner } from "../../core/setup/commandRunner";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
 import { LEGACY_ROLE_NOTICE, legacyRoleInput } from "../../core/harness/legacyRole";
 
@@ -226,7 +232,36 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
 
     if (isPcRunCommand(domain, action)) {
-      return await executeAgentServe({ endpoint: resolved.endpoint, env: resolved.env, auth: connect().auth, io, agentName });
+      const skipUpgrade = skipUpgradeOf(parsed.positionals.slice(2));
+      return await executeAgentServe({ endpoint: resolved.endpoint, env: resolved.env, auth: connect().auth, io, agentName,
+        launchFlags: { env: parsed.env, endpoint: parsed.endpoint }, ...(skipUpgrade ? { skipUpgrade } : {}) });
+    }
+    if (domain === "pc" && action === "swap") {
+      // 내부 명령 — pc run 이 자동 업그레이드 때 세션 밖에 띄운다(사람이 칠 일은 없다).
+      const versions = swapArgsOf(parsed.positionals.slice(2));
+      if (!versions) throw new CliCommandError("USAGE", "Usage: ainecto pc swap --from <version> --to <version>");
+      const swapPaths = agentPaths();
+      await ensurePrivateDir(swapPaths.dir);
+      return await executePcSwap({
+        ...versions,
+        packageName: PACKAGE_NAME,
+        pc: (version, skip) => ({
+          ...pcDeps(),
+          flags: { env: parsed.env, endpoint: parsed.endpoint, ...(skip ? { skipUpgrade: skip } : {}) },
+          cliVersion: version,
+          managedCommand: (args) => npxCliCommand(args, version),
+        }),
+        runner: (cwd) => systemCommandRunner({ cwd }),
+        fetchJson: async (url) => {
+          const response = await fetch(url, { signal: AbortSignal.timeout(pcReadyDeadlineMs()) });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return await response.json();
+        },
+        makeTempDir: () => mkdtemp(join(tmpdir(), "ainecto-upgrade-")),
+        removeDir: (path) => rm(path, { recursive: true, force: true }),
+        home: homedir(),
+        log: openAgentLog(swapPaths),
+      });
     }
     if (domain === "agent" && action === "serve") {
       // ★두 방식 금지 — 앞에서 따로 돌리면 pc 연결과 서버 링크를 서로 뺏는다.

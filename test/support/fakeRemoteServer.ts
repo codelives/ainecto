@@ -24,6 +24,8 @@ export class FakeRemoteServer {
   private commands: Array<Record<string, unknown>> = [];
   private closedReason: string | undefined;
   pollError: { status: number; code: string } | undefined;
+  /** npm 꼬리표(계약 1절) — 있으면 OPEN poll 응답에 cli 칸으로. */
+  cli: Record<string, string> | undefined;
   hangPolls = 0;
   private held: Array<{ wake: () => void; res: ServerResponse }> = [];
   private hanging: ServerResponse[] = [];
@@ -118,7 +120,7 @@ export class FakeRemoteServer {
         const answer = () => {
           if (this.pollError) reply(this.pollError.status, { code: this.pollError.code, message: "refused" });
           else if (this.closedReason) reply(200, { state: "CLOSED", reason: this.closedReason });
-          else reply(200, { state: "OPEN", remote: this.remote, watching: this.watching, commands: this.commands.splice(0) });
+          else reply(200, { state: "OPEN", remote: this.remote, watching: this.watching, commands: this.commands.splice(0), ...(this.cli ? { cli: this.cli } : {}) });
         };
         if (this.pollError || this.closedReason || this.commands.length > 0) {
           answer();

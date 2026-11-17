@@ -26,8 +26,10 @@ export function cliVersionLabel(version: string, build: string | undefined, rele
   return release || build === undefined ? version : `${version}-dev+${build}`;
 }
 
-export const CLI_VERSION_LABEL: string = cliVersionLabel(CLI_VERSION, CLI_BUILD,
-  typeof __AINECTO_CLI_RELEASE__ === "boolean" && __AINECTO_CLI_RELEASE__);
+/** 게시 빌드인가(scripts/publish.mjs 가 박는다) — 로컬 빌드·번들 밖은 거짓. ★자동 업그레이드는 게시판만 한다(로컬 빌드는 절대 안 갈아탄다). */
+export const CLI_RELEASE: boolean = typeof __AINECTO_CLI_RELEASE__ === "boolean" && __AINECTO_CLI_RELEASE__;
+
+export const CLI_VERSION_LABEL: string = cliVersionLabel(CLI_VERSION, CLI_BUILD, CLI_RELEASE);
 
 /**
  * npm 주 이름. ★이 이름을 박는 곳은 여기 하나다 — init·setup 이 쓰는 {@code npx -y <이름>@<판>},

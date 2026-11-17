@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
-import { createRemoteHttp, openRemoteLog, remoteCommands, remoteStateOf, runRemoteBridge, watchingOf, type RemoteResult } from "../src/core/term/remote";
+import { createRemoteHttp, openRemoteLog, remoteCommands, remoteStateOf, runRemoteBridge, watchingOf, type BridgeDeps, type RemoteResult } from "../src/core/term/remote";
 import { screenFrame } from "../src/core/term/remoteFrame";
 import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
 import { wireSessions } from "../src/core/term/remoteSessions";
@@ -78,7 +78,7 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
 
   const PC_ID = "6f2c1d3e-0000-4000-8000-000000000001";
 
-  function start(options: { remoteEnabled?: boolean; exclude?: string[] } = {}): { done: Promise<RemoteResult>; stop: AbortController; printed: string[] } {
+  function start(options: { remoteEnabled?: boolean; exclude?: string[]; onAnswer?: BridgeDeps["onAnswer"] } = {}): { done: Promise<RemoteResult>; stop: AbortController; printed: string[] } {
     const paths = termPaths(rig.home);
     const log = openRemoteLog(paths);
     const printed: string[] = [];
@@ -100,6 +100,7 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
       home: rig.home,
       signal: stop.signal,
       print: (line) => printed.push(line),
+      ...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
     });
     return { done, stop, printed };
   }
@@ -207,6 +208,21 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     expect(remoteLog().filter((r) => r.event === "remote_session_ended")).toEqual([
       expect.objectContaining({ session: "gone-already", op: "watch", code: "TERM_NO_SESSION" }),
     ]);
+  }, LONG);
+
+  it("poll 응답의 cli 칸(npm 꼬리표)과 보는 세션 수를 pc run 에 넘긴다 · 칸이 없으면 undefined(옛 서버)", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const answers: Array<Parameters<NonNullable<BridgeDeps["onAnswer"]>>[0]> = [];
+    const run = start({ onAnswer: (a) => answers.push(a) });
+    await until(() => answers.length > 0, "first answer");
+    fake.watch();
+    await until(() => answers.some((a) => a.tags === undefined && a.watching === 0), "no cli field");
+    fake.cli = { next: "0.14.0-next.11", latest: "0.13.1" };
+    fake.watch("a");
+    await until(() => answers.some((a) => a.tags?.next === "0.14.0-next.11" && a.watching === 1), "tags + watching 1");
+    expect(answers.find((a) => a.watching === 1 && a.tags)?.tags).toEqual({ next: "0.14.0-next.11", latest: "0.13.1" });
+    run.stop.abort();
+    await run.done;
   }, LONG);
 
   it("키 이름 → 데몬 key(Ctrl-D 로 cat 이 끝남 → 목록에서 빠짐) · 크기 → set-size 와 frame 크기 · 화면 모드 표지", async () => {

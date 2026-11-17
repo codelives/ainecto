@@ -107,6 +107,10 @@ describe("이 PC 연결 — 순수 함수", () => {
       .toEqual({ at: "t", reason: "replaced", note: "another PC took over your AiNecto agent — run `ainecto` here to take it back" });
     expect(pcStatusView({ sessions, approval: undefined, agentLog: "l", termProblem: undefined, lastStop: { at: "t", reason: "replaced" } }).lastStop)
       .toBeUndefined();
+    // 마지막 자동 업그레이드 — 연결 여부와 상관없이 한 줄.
+    const upgrade = { at: "t", result: "refused", from: "0.14.0-next.10", to: "0.14.0-next.11", reason: "workflow-differs" } as const;
+    expect(pcStatusView({ sessions, approval: undefined, agentLog: "l", termProblem: undefined, lastUpgrade: upgrade }).lastUpgrade).toEqual(upgrade);
+    expect(pcStatusView({ sessions: [], approval: undefined, agentLog: "l", termProblem: undefined, lastUpgrade: upgrade }).lastUpgrade).toEqual(upgrade);
     expect(lastServeStop([
       JSON.stringify({ ts: "a", event: "serve_stop", pid: 1, reason: "signal" }),
       JSON.stringify({ ts: "b", event: "serve_stop", pid: 2, reason: "replaced" }),

@@ -45,6 +45,11 @@ export interface ServeDeps {
    * open 에 싣는다. 없으면 신원 이름 = 종류 id(서버가 정한다).
    */
   todos?: { tools: AgentTools; agentName?: string; runs?: AgentRunLog };
+  /**
+   * Agent 가 바쁜가를 물을 함수를 받는다(시작할 때 한 번) — 돌고 있는 차례·줄에 선 요청·할 일 잠금 중 하나라도 있으면 바쁘다.
+   * pc 연결의 자동 업그레이드가 «한가할 때만» 갈아타려고 쓴다(KAN-738 next.10).
+   */
+  onBusyProbe?: (busy: () => boolean) => void;
 }
 
 export interface ServeResult {
@@ -172,6 +177,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   /** ★로컬 잠금 — 지금 돌고 있거나 줄에 선 할 일의 카드(카드마다 하나 · serve 에 한 번에 하나). */
   let todoInFlight: string | undefined;
   let wakeTodos: (() => void) | undefined;
+
+  deps.onBusyProbe?.(() => current !== undefined || queue.length > 0 || todoInFlight !== undefined);
 
   const requestStop = (key: string) => {
     if (stopping.has(key)) return;

@@ -7,6 +7,7 @@ import type { AccountSummary } from "../../core/setup/accountSummary";
 import { termPaths, type TermPaths } from "../../core/term/paths";
 import { createRemoteHttp, openRemoteLog, runRemoteBridge, type RemoteLogRecord, type RemoteResult } from "../../core/term/remote";
 import type { DaemonLog } from "../../core/term/daemonLog";
+import type { CliTags } from "../../core/pc/pcUpgrade";
 import { CLI_VERSION_LABEL } from "../../core/version";
 import type { CliIO } from "./ainectoCli";
 import { stringEnv } from "./termCommand";
@@ -111,7 +112,8 @@ export async function pcRemoteSetup(input: {
 }
 
 /** 다리를 돌린다 — 자기 pc 세션은 목록에서 뺀다. 다리가 던지면 한 줄 남기고 1 로 끝낸다(Agent 는 계속). */
-export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal): Promise<RemoteResult> {
+export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
+  onAnswer?: (answer: { tags: CliTags | undefined; watching: number }) => void): Promise<RemoteResult> {
   const { log } = setup;
   log.write({ event: "remote_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: setup.endpoint, host: setup.hostName,
     pcId: setup.pcId, remote: setup.remoteEnabled ? "on" : "off" });
@@ -130,6 +132,7 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal): Pr
       home: setup.home,
       signal,
       print: (line) => setup.io.stderr.write(`${line}\n`),
+      ...(onAnswer ? { onAnswer } : {}),
     });
   } catch (error) {
     const reason = `error: ${error instanceof Error ? error.message : String(error)}`;

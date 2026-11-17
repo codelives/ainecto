@@ -11,6 +11,7 @@ import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
 import { sessionsKey, wireSessions, type WireSession } from "./remoteSessions";
 import { RemoteViewer, type ViewerLink } from "./remoteViewer";
 import { shellLineCommand } from "./session";
+import { cliTagsOf, type CliTags } from "../pc/pcUpgrade";
 
 /**
  * 원격 터미널 다리 — 이 PC 의 term 세션 «전부»를 AiNecto 웹에 잇는다(KAN-738 next.10, 계획 multi-session-plan.md 11절).
@@ -119,6 +120,11 @@ export interface BridgeDeps {
   /** 끊으면 close 를 보내고 끝낸다. */
   signal: AbortSignal;
   print(line: string): void;
+  /**
+   * 서버 poll 응답(OPEN)마다 — 서버가 내려 준 npm 꼬리표(cli 칸, 모르면 undefined)와 웹이 지금 보는 세션 수.
+   * pc 연결의 자동 업그레이드가 «목표·한가»를 여기서 본다(KAN-738 next.10). 다리는 이 칸을 해석하지 않고 넘기기만 한다.
+   */
+  onAnswer?: (answer: { tags: CliTags | undefined; watching: number }) => void;
 }
 
 export interface RemoteResult {
@@ -311,6 +317,7 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
       const state = remoteStateOf(answer.remote);
       if (state) applyRemote(state);
       await setWatching(watchingOf(answer));
+      deps.onAnswer?.({ tags: cliTagsOf(answer.cli), watching: watchingOf(answer).length });
       await commands.run(remoteCommands(answer), { linkId: () => link.linkId, syncList, stopSignal: stopper.signal });
       await syncList();
     }

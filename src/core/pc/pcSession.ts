@@ -1,6 +1,6 @@
 import { AGENT_CALL_TIMEOUT_MS, AGENT_STOP_WAIT_MS } from "../agent/limits";
 import { AGENT_MISSING_LINE, SERVE_CONNECTED_PREFIX, SERVE_RECONNECTED_LINE } from "../agent/serve";
-import { NO_AGENTS_REASON } from "../agent/log";
+import { NO_AGENTS_REASON, type LastUpgrade } from "../agent/log";
 import { ERROR_LINE_PREFIX } from "../output/render";
 import type { ListedSession } from "../term/protocol";
 import { CALL_TIMEOUT_MS } from "../term/remoteLimits";
@@ -17,6 +17,8 @@ export const PC_SESSION_NAME = "ainecto-pc";
 export interface LaunchFlags {
   env?: string;
   endpoint?: string;
+  /** 자동 업그레이드가 실패·거절해 옛 판으로 되돌릴 때 — 그 목표를 이 프로세스에서 다시 시도하지 않는다(pc.json 칸이 아니라 인자로). */
+  skipUpgrade?: string;
 }
 
 export function pcRunArgs(flags: LaunchFlags): string[] {
@@ -24,7 +26,18 @@ export function pcRunArgs(flags: LaunchFlags): string[] {
     "pc", "run",
     ...(flags.env ? ["--env", flags.env] : []),
     ...(flags.endpoint ? ["--endpoint", flags.endpoint] : []),
+    ...(flags.skipUpgrade ? [SKIP_UPGRADE_FLAG, flags.skipUpgrade] : []),
   ];
+}
+
+/** pc run 인자 — 이 목표 판은 건너뛴다(자동 업그레이드 되돌림). */
+export const SKIP_UPGRADE_FLAG = "--skip-upgrade";
+
+/** pc run 의 나머지 인자 → 건너뛸 목표 판(순수 함수). */
+export function skipUpgradeOf(argv: readonly string[]): string | undefined {
+  const index = argv.indexOf(SKIP_UPGRADE_FLAG);
+  const value = index >= 0 ? argv[index + 1] : undefined;
+  return value !== undefined && !value.startsWith("--") ? value : undefined;
 }
 
 /**
@@ -117,6 +130,8 @@ export function pcStatusView(input: {
   lastStop?: { at: string; reason: string };
   /** 지금 도는 pc 에 Agent 가 없다(다리만) — agent.log 의 마지막 serve 기록. */
   agentMissing?: boolean;
+  /** agent.log 의 마지막 자동 업그레이드(끝·실패·거절) — 연결 여부와 상관없이 보인다. */
+  lastUpgrade?: LastUpgrade;
 }): Record<string, unknown> {
   if (input.termProblem !== undefined) {
     return { connected: false, unsupported: input.termProblem };
@@ -128,6 +143,7 @@ export function pcStatusView(input: {
     ...(running[0] ? { session: running[0].session, folder: running[0].cwd, version: pcVersionLabel(running[0]), log: input.agentLog } : {}),
     ...(running[0] && input.agentMissing ? { agent: AGENT_MISSING_LINE } : {}),
     ...(!running[0] && input.lastStop ? { lastStop: { ...input.lastStop, ...(STOP_NOTES[input.lastStop.reason] ? { note: STOP_NOTES[input.lastStop.reason] } : {}) } } : {}),
+    ...(input.lastUpgrade ? { lastUpgrade: input.lastUpgrade } : {}),
     approved: input.approval !== undefined,
     ...(input.approval ? { remoteTerminal: input.approval.remoteTerminal ? "allowed" : "blocked" } : {}),
     terminalSessions: input.sessions.filter((session) => !pcNames.has(session.name)).map((session) => session.name),

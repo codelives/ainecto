@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { agentMissing, lastServeStop } from "../../core/agent/log";
+import { agentMissing, lastServeStop, lastUpgrade } from "../../core/agent/log";
 import { isNodeError } from "../../core/fs/privateFiles";
 import { agentPaths } from "../../core/agent/paths";
 import { pcStatusView } from "../../core/pc/pcSession";
@@ -25,6 +25,7 @@ export async function pcStatus(status: MachineStatus, endpoint: string): Promise
     throw error;
   });
   const lastStop = lastServeStop(logText);
+  const upgrade = lastUpgrade(logText);
   return pcStatusView({
     sessions,
     approval: userId ? settings.accounts[accountKey(endpoint, userId)] : undefined,
@@ -32,5 +33,6 @@ export async function pcStatus(status: MachineStatus, endpoint: string): Promise
     termProblem,
     ...(lastStop ? { lastStop } : {}),
     agentMissing: agentMissing(logText),
+    ...(upgrade ? { lastUpgrade: upgrade } : {}),
   });
 }

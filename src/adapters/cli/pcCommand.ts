@@ -112,6 +112,7 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
     note(`This connects this PC to AiNecto as ${status.account?.displayName ?? "your account"} (${deps.endpoint}).`);
     note("  · Your AiNecto agent will run work on this PC (Claude Code / Codex).");
     note("  · From AiNecto on the web, you can open terminals on this PC and run commands in them.");
+    note("  · It keeps itself up to date — new AiNecto releases built and signed on AiNecto's GitHub are installed when this PC is idle.");
     if (!yes(await promptLine(deps.io, "Connect this PC? [y/N]: "), false)) {
       note("Not connected. Nothing was started.");
       return 0;
@@ -144,6 +145,17 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
 
 /** pc 세션을 띄우고 «연결됨»을 기다린다 — start·갈아끼우기·원격 설정 반영이 같은 길. */
 async function launchPc(deps: PcDeps): Promise<number> {
+  return reportOutcome(deps, await startPcSession(deps));
+}
+
+/** 띄운 pc 세션의 결과 — 연결됨(다리만이면 agentMissing) · 기한 안에 아직(connecting). 끝남·오류 줄이면 PC_START_FAILED 로 던진다. */
+export type PcStartOutcome = { kind: "connected"; agentMissing: boolean } | { kind: "connecting" };
+
+/**
+ * pc 세션을 띄우고 «연결됨»을 기다린다(★틀린 «Connected» 를 찍지 않으려고) — start·갈아끼우기·원격 설정 반영·자동 업그레이드가 같은 길.
+ * 연결됨 → connected · 기한(pcReadyDeadlineMs) 안에 없음 → connecting(실패가 아니다) · 오류 줄로 끝남·세션이 끝남 → 사유와 함께 던진다.
+ */
+export async function startPcSession(deps: PcDeps): Promise<PcStartOutcome> {
   const startedAt = new Date().toISOString();
   await termRequest(deps.paths, {
     op: "new",
@@ -152,7 +164,28 @@ async function launchPc(deps: PcDeps): Promise<number> {
     command: deps.managedCommand(pcRunArgs(deps.flags)),
     env: deps.sessionEnv,
   }, { start: true });
-  return await reportOutcome(deps, startedAt);
+  let line: string;
+  try {
+    line = (await waitForMatch(deps.paths, PC_SESSION_NAME, PC_OUTCOME_PATTERN, { scrollback: true }, deps.readyDeadlineMs)).line;
+  } catch (error) {
+    if (error instanceof TermError && error.code === "TERM_WAIT_TIMEOUT") {
+      return { kind: "connecting" };
+    }
+    // 끝남 — 기다리는 동안(SESSION_ENDED) 또는 기다리기 전에 이미(NO_SESSION: 바로 끝나 데몬 표에서 빠졌다).
+    if (error instanceof TermError && (error.code === "TERM_SESSION_ENDED" || error.code === "TERM_NO_SESSION")) {
+      const last = await lastLogLineSince(deps.agentLog, startedAt);
+      throw new CliCommandError("PC_START_FAILED", `The PC connection stopped right after it started (${error.message})`
+        + `${last ? ` Last log line: ${last}` : ""} Log: ${deps.agentLog}`);
+    }
+    throw error;
+  }
+  const outcome = pcOutcome([line]);
+  if (outcome?.kind === "failed") {
+    throw new CliCommandError("PC_START_FAILED", `The PC connection could not start — ${outcome.line} Log: ${deps.agentLog}`);
+  }
+  // 무엇이 붙었는지 그대로 — 화면 전체로 본다(Agent 없음 줄은 다리 연결 줄보다 앞에 찍힌다).
+  const screen = pcOutcome(await screenLines(deps, PC_SESSION_NAME));
+  return { kind: "connected", agentMissing: screen?.kind === "connected" && screen.agentMissing === true };
 }
 
 /** pc 세션 화면(스크롤백 포함) — 없으면 빈 목록. */
@@ -170,31 +203,14 @@ async function screenLines(deps: PcDeps, session: string): Promise<string[]> {
  * 띄운 pc 세션이 서버에 «연결됨»을 찍을 때까지 기다린다(★틀린 «Connected» 를 찍지 않으려고). 연결됨 → Connected ·
  * 오류 줄로 끝남·세션이 끝남 → 그 사유 + 종료 1 · 기한(pcReadyDeadlineMs) 안에 둘 다 없음 → «아직 연결 중» + 종료 0(실패가 아니다).
  */
-async function reportOutcome(deps: PcDeps, startedAt: string): Promise<number> {
+/** 띄운 결과를 사람에게 — 무엇이 붙었는지 그대로. */
+function reportOutcome(deps: PcDeps, outcome: PcStartOutcome): number {
   const base = { session: PC_SESSION_NAME, folder: deps.cwd, log: deps.agentLog };
-  let line: string;
-  try {
-    line = (await waitForMatch(deps.paths, PC_SESSION_NAME, PC_OUTCOME_PATTERN, { scrollback: true }, deps.readyDeadlineMs)).line;
-  } catch (error) {
-    if (error instanceof TermError && error.code === "TERM_WAIT_TIMEOUT") {
-      return print(deps, { ...base, connected: false, connecting: true },
-        `Still connecting this PC (session ${PC_SESSION_NAME}) — \`ainecto status\` shows when it is up. Log: ${deps.agentLog}`);
-    }
-    // 끝남 — 기다리는 동안(SESSION_ENDED) 또는 기다리기 전에 이미(NO_SESSION: 바로 끝나 데몬 표에서 빠졌다).
-    if (error instanceof TermError && (error.code === "TERM_SESSION_ENDED" || error.code === "TERM_NO_SESSION")) {
-      const last = await lastLogLineSince(deps.agentLog, startedAt);
-      throw new CliCommandError("PC_START_FAILED", `The PC connection stopped right after it started (${error.message})`
-        + `${last ? ` Last log line: ${last}` : ""} Log: ${deps.agentLog}`);
-    }
-    throw error;
+  if (outcome.kind === "connecting") {
+    return print(deps, { ...base, connected: false, connecting: true },
+      `Still connecting this PC (session ${PC_SESSION_NAME}) — \`ainecto status\` shows when it is up. Log: ${deps.agentLog}`);
   }
-  const outcome = pcOutcome([line]);
-  if (outcome?.kind === "failed") {
-    throw new CliCommandError("PC_START_FAILED", `The PC connection could not start — ${outcome.line} Log: ${deps.agentLog}`);
-  }
-  // 무엇이 붙었는지 그대로 — 화면 전체로 본다(Agent 없음 줄은 다리 연결 줄보다 앞에 찍힌다).
-  const screen = pcOutcome(await screenLines(deps, PC_SESSION_NAME));
-  if (screen?.kind === "connected" && screen.agentMissing) {
+  if (outcome.agentMissing) {
     return print(deps, { ...base, connected: true, already: false, agent: false, remote: true },
       `Connected this PC to AiNecto (session ${PC_SESSION_NAME}): terminals from the web only — no PC agent `
         + `(install Claude Code or Codex, then \`ainecto\` again). It keeps running after you close this window. Log: ${deps.agentLog}`);
@@ -280,7 +296,7 @@ export async function executeRemoteSetting(deps: PcDeps, argv: string[]): Promis
  * 끄기 — 세션을 watch 하고 Ctrl+C 를 보낸 뒤 끝(exit 이벤트)을 기다린다. pc 프로세스는 SIGINT 에 서버에 close 를 보내고 코드 0 으로
  * 끝난다(매니페스트에서도 빠져 restore 가 되살리지 않는다). {@link PcDeps.stopDeadlineMs} 를 넘으면 term kill.
  */
-async function stopPc(deps: PcDeps, pc: RunningPc): Promise<string> {
+export async function stopPc(deps: PcDeps, pc: RunningPc): Promise<string> {
   const client = await openTermClient(deps.paths, { start: false });
   if (!client) {
     return `Session ${pc.session} is already gone.`;
@@ -346,7 +362,7 @@ async function prepare(deps: PcDeps): Promise<void> {
   }
 }
 
-async function listed(deps: PcDeps): Promise<ListedSession[]> {
+export async function listed(deps: PcDeps): Promise<ListedSession[]> {
   const result = await termRequest(deps.paths, { op: "ls" }, { start: false });
   return listedSessions(result.daemon ? result.data : undefined);
 }

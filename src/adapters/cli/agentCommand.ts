@@ -19,7 +19,9 @@ import { AgentRunLog } from "../../core/agent/runs";
 import { checkAgents, openAgents } from "../../core/agent/readiness";
 import { AGENT_MISSING_LINE, runAgentServe } from "../../core/agent/serve";
 import { AgentSessionMap } from "../../core/agent/sessions";
-import { CLI_BUILD, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
+import { CLI_BUILD, CLI_RELEASE, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
+import type { LaunchFlags } from "../../core/pc/pcSession";
+import { launchSwapHelper, upgradeWatch } from "./pcAutoUpgrade";
 import type { CliIO } from "./ainectoCli";
 import { pcPlan, pcRemoteSetup, runPcParts, runPcRemote } from "./pcRemote";
 import { readAccount } from "../../core/setup/accountSummary";
@@ -48,7 +50,17 @@ const BILLED_TO: Readonly<Record<AgentId, string>> = { "claude-code": "Anthropic
  * @param agentName 이 폴더의 에이전트 이름({@code .ainecto/agent.local}, 선택) — 있으면 할 일을 돌리는 한 종류의 신원 이름으로 open 에 싣는다.
  *                  없어도 할 일은 받는다(신원 이름 = 종류 id — 서버가 정한다).
  */
-export async function executeAgentServe(input: { endpoint: string; env: AinectoEnv; auth: TokenProvider; io: CliIO; agentName?: string }): Promise<number> {
+export async function executeAgentServe(input: {
+  endpoint: string;
+  env: AinectoEnv;
+  auth: TokenProvider;
+  io: CliIO;
+  agentName?: string;
+  /** 이 pc 를 띄운 전역 플래그 — 자동 업그레이드 도우미가 새 pc 를 같은 서버로 띄운다. */
+  launchFlags: LaunchFlags;
+  /** 자동 업그레이드에서 되돌려 띄웠으면 그 목표(이 프로세스에서 다시 시도하지 않는다). */
+  skipUpgrade?: string;
+}): Promise<number> {
   const paths = agentPaths();
   await ensurePrivateDir(paths.dir);
   await ensurePrivateDir(paths.work);
@@ -94,6 +106,15 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
     throw new Error("Neither Claude Code (`claude`) nor Codex (`codex`) is on PATH, and terminals from the web are off on this PC. "
       + "Install one and sign in, or allow terminals from the web with `ainecto remote on`, then run `ainecto` again.");
   }
+  // ★자동 업그레이드(KAN-738 next.10) — 다리의 서버 응답마다 목표·한가를 보고, 한가할 때 도우미를 띄운다. 로컬 빌드는 절대 안 함.
+  let agentBusy: () => boolean = () => false;
+  const upgrades = upgradeWatch({
+    current: CLI_VERSION,
+    release: CLI_RELEASE,
+    skip: input.skipUpgrade,
+    agentBusy: () => agentBusy(),
+    launch: (target) => launchSwapHelper({ from: CLI_VERSION, to: target, flags: input.launchFlags, log }),
+  });
   const controller = new AbortController();
   const onSignal = () => controller.abort();
   // ★SIGHUP 도(term kill·데몬 끝) · 두 번 와도(npx 아래 Ctrl+C) 처리기가 남는다 — onStopSignals 한 곳.
@@ -102,7 +123,7 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
     if (plan === "remote-only") {
       log.write({ event: "serve_stop", pid: process.pid, reason: NO_AGENTS_REASON });
       input.io.stderr.write(`${AGENT_MISSING_LINE}\n`);
-      return await runPcParts(Promise.resolve(0), (stop) => runPcRemote(remote, stop), controller.signal);
+      return await runPcParts(Promise.resolve(0), (stop) => runPcRemote(remote, stop, upgrades), controller.signal);
     }
     for (const check of checks) {
       const name = all.find((adapter) => adapter.id === check.id)?.displayName ?? check.id;
@@ -133,6 +154,9 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
       print: (line) => input.io.stderr.write(`${line}\n`),
       signal: controller.signal,
       todos: { tools, agentName: input.agentName, runs: new AgentRunLog(paths.runs, log) },
+      onBusyProbe: (busy) => {
+        agentBusy = busy;
+      },
     }).then((result) => {
       log.write({ event: "serve_stop", pid: process.pid, reason: result.reason });
       return result.exitCode;
@@ -140,7 +164,7 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
       log.write({ event: "serve_stop", pid: process.pid, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
       throw error;
     });
-    return await runPcParts(agent, (stop) => runPcRemote(remote, stop), controller.signal);
+    return await runPcParts(agent, (stop) => runPcRemote(remote, stop, upgrades), controller.signal);
   } finally {
     offSignals();
   }

@@ -104,6 +104,7 @@ describe("이 PC 연결 — 실 데몬", () => {
     await first.answer("Also allow terminals from the web? [y/N]", "");
     expect(await done).toBe(0);
     expect(first.err()).toContain("This connects this PC to AiNecto as Ryan (https://example.test/mcp).");
+    expect(first.err()).toContain("  · It keeps itself up to date — new AiNecto releases built and signed on AiNecto's GitHub are installed when this PC is idle.");
     expect(first.out()).toContain("Connected this PC to AiNecto (session ainecto-pc).");
 
     const saved = await settings();
