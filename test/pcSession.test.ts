@@ -13,13 +13,21 @@ import {
   pcStatusView,
   pcStopDeadlineMs,
   pcVersionLabel,
+  remoteOffByWeb,
   runningPcs,
 } from "../src/core/pc/pcSession";
+import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../src/core/term/remote";
 import { lastServeStop } from "../src/core/agent/log";
 
 const pcCommand = (spec: string) => ["npx", "-y", "--package", spec, "ainecto", "pc", "run", "--env", "dev"];
 
 describe("이 PC 연결 — 순수 함수", () => {
+  it("원격이 웹에서 꺼졌나 — pc 화면의 «마지막» 원격 상태 줄로(다시 켜진 뒤면 아니다)", () => {
+    expect(remoteOffByWeb([`${REMOTE_STATE_PREFIX}on — 2 session(s)`, `${REMOTE_OFF_BY_WEB_LINE} Run it again.`])).toBe(true);
+    expect(remoteOffByWeb([`${REMOTE_OFF_BY_WEB_LINE} Run it again.`, `${REMOTE_STATE_PREFIX}on.`])).toBe(false);
+    expect(remoteOffByWeb(["Connected to AiNecto as h."])).toBe(false);
+  });
+
   it("세션 명령 — 이 판으로 고정한 npx --package 의 ainecto 실행 파일(주 이름의 기본 실행 파일은 MCP 브리지다) · 플래그 그대로", () => {
     expect(npxCliCommand(pcRunArgs({ env: "dev" }), "0.14.0")).toEqual(pcCommand("@ainecto/mcp@0.14.0"));
     expect(npxCliCommand(pcRunArgs({ endpoint: "https://x.test/mcp" }), "dev"))

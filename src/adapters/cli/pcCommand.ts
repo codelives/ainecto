@@ -11,6 +11,7 @@ import {
   PC_OUTCOME_PATTERN,
   PC_SESSION_NAME,
   pcAction,
+  remoteOffByWeb,
   pcOutcome,
   pcRunArgs,
   pcVersionLabel,
@@ -122,8 +123,14 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
 
   const action = pcAction(runningPcs(await listed(deps)), deps.cliVersion);
   if (action.kind === "already") {
-    return print(deps, { connected: true, already: true, ...pcView(deps, action.pc) },
-      `Already connected (session ${action.pc.session}, folder ${action.pc.cwd}, version ${pcVersionLabel(action.pc)}). Log: ${deps.agentLog}`);
+    // ★웹 «원격 터미널 끊기» 뒤 원격은 그 pc 프로세스가 사는 동안 꺼진 채다 — 같은 판이어도 다시 띄워야 원격이 켜진다(R3).
+    if (!remoteOffByWeb(await screenLines(deps, action.pc.session))) {
+      return print(deps, { connected: true, already: true, ...pcView(deps, action.pc) },
+        `Already connected (session ${action.pc.session}, folder ${action.pc.cwd}, version ${pcVersionLabel(action.pc)}). Log: ${deps.agentLog}`);
+    }
+    note("The remote terminal was turned off from the web — reconnecting this PC to turn it back on…");
+    await stopPc(deps, action.pc);
+    return await launchPc(deps);
   }
   await prepare(deps);
   if (action.kind === "replace") {
@@ -132,6 +139,11 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
       await stopPc(deps, pc);
     }
   }
+  return await launchPc(deps);
+}
+
+/** pc 세션을 띄우고 «연결됨»을 기다린다 — start·갈아끼우기·원격 설정 반영이 같은 길. */
+async function launchPc(deps: PcDeps): Promise<number> {
   const startedAt = new Date().toISOString();
   await termRequest(deps.paths, {
     op: "new",
@@ -141,6 +153,17 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
     env: deps.sessionEnv,
   }, { start: true });
   return await reportOutcome(deps, startedAt);
+}
+
+/** pc 세션 화면(스크롤백 포함) — 없으면 빈 목록. */
+async function screenLines(deps: PcDeps, session: string): Promise<string[]> {
+  try {
+    const result = await termRequest(deps.paths, { op: "read", name: session, scrollback: true }, { start: false });
+    return result.daemon ? readLines(result.data) : [];
+  } catch (error) {
+    if (error instanceof TermError && error.code === "TERM_NO_SESSION") return [];
+    throw error;
+  }
 }
 
 /**
@@ -230,9 +253,20 @@ export async function executeRemoteSetting(deps: PcDeps, argv: string[]): Promis
     throw new CliCommandError("PC_NOT_APPROVED", "This PC is not connected yet — run `ainecto` in a terminal once to approve.");
   }
   await savePcSettings(deps.settingsPath, next);
-  return print(deps, { remoteTerminal: value === "on" }, value === "on"
+  const said = value === "on"
     ? "Terminals from AiNecto on the web are allowed on this PC."
-    : "Terminals from AiNecto on the web are blocked on this PC.");
+    : "Terminals from AiNecto on the web are blocked on this PC.";
+  // ★떠 있는 pc 는 다시 띄운다 — 다리는 시작할 때 pc.json 을 읽으므로, 그래야 바로 반영된다(웹 PC 줄도 그때 바뀐다).
+  const running = deps.termProblem === undefined ? runningPcs(await listed(deps)) : [];
+  if (running.length === 0) {
+    return print(deps, { remoteTerminal: value === "on" }, said);
+  }
+  if (!deps.json) deps.io.stdout.write(`${said}\n`);
+  deps.io.stderr.write("Reconnecting this PC so it takes effect…\n");
+  for (const pc of running) {
+    await stopPc(deps, pc);
+  }
+  return await launchPc(deps);
 }
 
 /**

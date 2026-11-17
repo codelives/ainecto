@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { accountKey } from "../src/core/pc/pcSettings";
 import { SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
+import { REMOTE_OFF_BY_WEB_LINE } from "../src/core/term/remote";
 import { systemCommandRunner } from "../src/core/setup/commandRunner";
 import type { MachineStatus } from "../src/core/setup/machineStatus";
 import { termPaths } from "../src/core/term/paths";
@@ -18,6 +19,10 @@ const CONNECTED = `console.log(${JSON.stringify(`${SERVE_CONNECTED_PREFIX}test-h
 const GRACEFUL = "if (process.argv.includes('--version')) process.exit(0);"
   + `process.on('SIGINT', () => process.exit(0)); ${CONNECTED} setInterval(() => undefined, 1000);`;
 const STUBBORN = `process.on('SIGINT', () => undefined); ${CONNECTED} setInterval(() => undefined, 1000);`;
+/** 연결됐고, 원격은 웹에서 꺼진 pc — 다리가 화면에 남기는 줄 그대로. */
+const OFF_BY_WEB = "if (process.argv.includes('--version')) process.exit(0);"
+  + `process.on('SIGINT', () => process.exit(0)); ${CONNECTED} console.log(${JSON.stringify(`${REMOTE_OFF_BY_WEB_LINE} Run it again.`)});`
+  + " setInterval(() => undefined, 1000);";
 /** 연결 줄을 찍지 않고 기다리기만 — 막 띄운(npx·준비 확인 중) pc 와 같다. */
 const SILENT = "setInterval(() => undefined, 1000);";
 const ENDPOINT = "https://example.test/mcp";
@@ -188,6 +193,41 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect((await settings()).accounts[KEY]?.remoteTerminal).toBe(false);
     await expect(executeRemoteSetting(harness().deps, ["maybe"])).rejects.toThrow("Usage: ainecto remote on|off");
     await expect(executePcStart(harness({ termProblem: "not on win32" }).deps)).rejects.toThrow("Connecting this PC needs ainecto term: not on win32");
+  }, LONG);
+
+  it("remote on|off — 떠 있는 pc 는 다시 띄워 바로 반영한다(다리가 새 설정으로 다시 연다)", async () => {
+    const start = harness();
+    const done = executePcStart(start.deps);
+    await start.answer("Connect this PC?", "y");
+    await start.answer("Also allow terminals", "n");
+    await done;
+    const before = (await pcSessions())[0]?.pid;
+    const on = harness();
+    expect(await executeRemoteSetting(on.deps, ["on"])).toBe(0);
+    expect((await settings()).accounts[KEY]?.remoteTerminal).toBe(true);
+    expect(on.out()).toContain("Terminals from AiNecto on the web are allowed on this PC.");
+    expect(on.err()).toContain("Reconnecting this PC so it takes effect");
+    expect(on.out()).toContain("Connected this PC to AiNecto (session ainecto-pc).");
+    const after = await pcSessions();
+    expect(after.length).toBe(1);
+    expect(after[0]?.pid).not.toBe(before);
+  }, LONG);
+
+  it("ainecto 재실행 — 원격이 웹에서 꺼진 pc 는(같은 판이어도) «Already» 대신 다시 띄워 원격을 켠다", async () => {
+    const first = harness({ script: OFF_BY_WEB });
+    const done = executePcStart(first.deps);
+    await first.answer("Connect this PC?", "y");
+    await first.answer("Also allow terminals", "y");
+    await done;
+    const before = (await pcSessions())[0]?.pid;
+    await ok("term", "wait", "ainecto-pc", "--match", "turned off from the web", "--timeout", "10");
+
+    const again = harness();
+    expect(await executePcStart(again.deps)).toBe(0);
+    expect(again.err()).toContain("The remote terminal was turned off from the web — reconnecting this PC to turn it back on");
+    expect(again.out()).toContain("Connected this PC to AiNecto (session ainecto-pc).");
+    expect(again.out()).not.toContain("Already connected");
+    expect((await pcSessions())[0]?.pid).not.toBe(before);
   }, LONG);
 
   it("start 는 «연결됨» 줄을 기다린다 — 오류 줄로 끝남·말없이 끝남은 사유와 함께 실패 · 기한 안에 없으면 «Still connecting»(실패 아님)", async () => {

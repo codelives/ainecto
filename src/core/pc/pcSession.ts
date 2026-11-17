@@ -3,6 +3,7 @@ import { SERVE_CONNECTED_PREFIX, SERVE_RECONNECTED_LINE } from "../agent/serve";
 import { ERROR_LINE_PREFIX } from "../output/render";
 import type { ListedSession } from "../term/protocol";
 import { CALL_TIMEOUT_MS } from "../term/remoteLimits";
+import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../term/remote";
 import { bridgePackageSpec, CLI_VERSION, PACKAGE_NAME } from "../version";
 
 /**
@@ -145,6 +146,12 @@ function escapeRegExp(text: string): string {
 export const PC_OUTCOME_PATTERN = new RegExp(
   `^(${escapeRegExp(SERVE_CONNECTED_PREFIX)}|${escapeRegExp(SERVE_RECONNECTED_LINE)}|${escapeRegExp(ERROR_LINE_PREFIX)})`,
 );
+
+/** pc 화면의 마지막 원격 상태 줄이 «웹에서 꺼짐»인가(순수 함수) — 그러면 start 가 «Already» 대신 다시 띄워 원격을 켠다. */
+export function remoteOffByWeb(lines: readonly string[]): boolean {
+  const last = [...lines].reverse().find((line) => line.startsWith(REMOTE_STATE_PREFIX));
+  return last !== undefined && last.startsWith(REMOTE_OFF_BY_WEB_LINE);
+}
 
 /** 화면 줄 → 결과(순수 함수). 연결 줄이 있으면 connected, 오류 줄만 있으면 failed(그 줄), 둘 다 없으면 undefined. */
 export function pcOutcome(lines: readonly string[]): { kind: "connected" } | { kind: "failed"; line: string } | undefined {

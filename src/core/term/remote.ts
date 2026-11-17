@@ -31,6 +31,11 @@ export type RemoteOp = "open" | "sessions" | "poll" | "frame" | "answer" | "clos
 export type RemoteHttp = PcHttp<RemoteOp>;
 export type RemoteState = "on" | "off-by-pc" | "off-by-web";
 
+/** 다리가 pc 세션 화면에 남기는 원격 상태 줄의 머리 — `ainecto`(start)가 «웹에서 꺼짐»을 이 줄로 알아본다. */
+export const REMOTE_STATE_PREFIX = "Remote terminal: ";
+/** 웹 «원격 터미널 끊기» 뒤의 줄 — 이 프로세스가 사는 동안 꺼진 채라, start 가 보면 pc 를 다시 띄워 켠다. */
+export const REMOTE_OFF_BY_WEB_LINE = `${REMOTE_STATE_PREFIX}turned off from the web.`;
+
 /** 서버가 이 링크를 모른다(api 재시작) — 다시 열기의 유일한 계기. */
 const REMOTE_NOT_FOUND = "REMOTE_NOT_FOUND";
 
@@ -155,8 +160,8 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
     deps.log.write({ event: "remote_opened", linkId: link.linkId, sessions: deps.remoteEnabled ? first.length : 0, remote,
       pollHoldSeconds: link.pollHoldSeconds, frameMaxBytes: link.frameMaxBytes });
     deps.print(deps.remoteEnabled
-      ? `Remote terminal: on — ${first.length} session(s) from ${deps.hostName} are listed in AiNecto on the web.`
-      : "Remote terminal: off on this PC (`ainecto remote on` allows it).");
+      ? `${REMOTE_STATE_PREFIX}on — ${first.length} session(s) from ${deps.hostName} are listed in AiNecto on the web.`
+      : `${REMOTE_STATE_PREFIX}off on this PC (\`ainecto remote on\` allows it).`);
 
     /** 목록 올리기 — 한 줄로 세운다(겹쳐 올리지 않게). 원격이 꺼졌으면 올리지 않는다. */
     let syncing: Promise<void> = Promise.resolve();
@@ -243,13 +248,13 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
       if (remote === "on") {
         uploaded = undefined;
         void syncList();
-        deps.print("Remote terminal: on.");
+        deps.print(`${REMOTE_STATE_PREFIX}on.`);
       } else {
         for (const viewer of viewers.values()) viewer.stop();
         viewers.clear();
         deps.print(remote === "off-by-web"
-          ? "Remote terminal: turned off from the web. Run `ainecto` (or `ainecto remote on`) on this PC to turn it back on."
-          : "Remote terminal: off on this PC (`ainecto remote on` allows it).");
+          ? `${REMOTE_OFF_BY_WEB_LINE} Run \`ainecto\` (or \`ainecto remote on\`) on this PC to turn it back on.`
+          : `${REMOTE_STATE_PREFIX}off on this PC (\`ainecto remote on\` allows it).`);
       }
     };
 

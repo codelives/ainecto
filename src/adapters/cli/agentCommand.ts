@@ -21,6 +21,8 @@ import { runAgentServe } from "../../core/agent/serve";
 import { AgentSessionMap } from "../../core/agent/sessions";
 import { CLI_BUILD, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
 import type { CliIO } from "./ainectoCli";
+import { runPcParts, runPcRemote } from "./pcRemote";
+import { readAccount } from "../../core/setup/accountSummary";
 
 export const AGENT_HELP_LINES: readonly string[] = [
   "  ainecto                       in a terminal, with no arguments: check sign-in, ask once, then connect this PC in the background (same as ainecto start)",
@@ -35,7 +37,8 @@ export function isPcRunCommand(domain: string | undefined, action: string | unde
 }
 
 /**
- * `ainecto pc run`(«이 PC 연결» 세션이 돌린다 — 옛 `ainecto agent serve`) — 이 기기의 Claude Code·Codex 를 «내 Agent»로 띄워 둔다(KAN-1075). 로그인은 CLI 로그인(OAuth) 하나.
+ * `ainecto pc run`(«이 PC 연결» 세션이 돌린다 — 옛 `ainecto agent serve`) — 이 기기의 Claude Code·Codex 를 «내 Agent»로 띄워 두고(KAN-1075),
+ * 같은 프로세스에서 원격 터미널 다리(이 PC 의 term 세션 전부를 웹에 — KAN-738 next.10)를 함께 돌린다. 로그인은 CLI 로그인(OAuth) 하나.
  * 설치·로그인은 시작할 때 한 번 본다(모델 호출 0) — 나중에 로그인했으면 serve 를 다시 띄운다.
  */
 /** serve 시작 안내 — Agent 마다 과금 주체. */
@@ -109,7 +112,8 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
   // ★SIGHUP 도(term kill·데몬 끝) · 두 번 와도(npx 아래 Ctrl+C) 처리기가 남는다 — onStopSignals 한 곳.
   const offSignals = onStopSignals(onSignal);
   try {
-    const result = await runAgentServe({
+    // ★pc 프로세스 = Agent + 원격 다리(KAN-738 next.10) — Agent 가 끝나도 원격은 계속, Agent 가 시작부터 던지면 다리도 멈춘다(runPcParts).
+    const agent = runAgentServe({
       http: createAgentHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),
       log,
       sessions,
@@ -121,12 +125,16 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
       print: (line) => input.io.stderr.write(`${line}\n`),
       signal: controller.signal,
       todos: { tools, agentName: input.agentName, runs: new AgentRunLog(paths.runs, log) },
+    }).then((result) => {
+      log.write({ event: "serve_stop", pid: process.pid, reason: result.reason });
+      return result.exitCode;
+    }, (error: unknown) => {
+      log.write({ event: "serve_stop", pid: process.pid, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
+      throw error;
     });
-    log.write({ event: "serve_stop", pid: process.pid, reason: result.reason });
-    return result.exitCode;
-  } catch (error) {
-    log.write({ event: "serve_stop", pid: process.pid, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
-    throw error;
+    return await runPcParts(agent, (stop) => runPcRemote({
+      endpoint: input.endpoint, auth: input.auth, account: () => readAccount(client()), io: input.io, signal: stop,
+    }), controller.signal);
   } finally {
     offSignals();
   }
