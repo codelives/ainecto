@@ -23,6 +23,8 @@
  * ⛔unpublish 는 하지 않는다 — 옛 설정의 설치가 즉시 깨진다.
  *
  * 사용:
+ *   ★게시는 GitHub Actions `.github/workflows/publish.yml` 에서 한다(사용자 결재 2026-11-17) — npm «신뢰 게시자»(OIDC)라
+ *     비밀 토큰이 없고 출처 증명(provenance)이 붙는다. 실행 = Run workflow(가지·꼬리표) → environment «npm-publish» 승인.
  *   npm run release -- --otp=123456   # 실제 퍼블리시 (2FA 코드 필요)
  *   npm run release -- --dry-run      # 무엇이 나갈지만 확인
  *   npm run release -- --tag=next --otp=123456   # 시험판 — 꼬리표 next 로(세 이름 모두). latest 는 그대로.
@@ -98,6 +100,13 @@ const RELEASES = [
 ];
 
 /**
+ * GitHub Actions 의 npm «신뢰 게시자»(OIDC) — workflow 에 `id-token: write` 가 있을 때만 GitHub 가 이 변수를 준다.
+ * 이때는 npm 토큰이 없어 `npm whoami` 가 안 되고, 인증은 `npm publish` 가 OIDC 로 받는다. 권한(이 저장소·이 workflow 만)은
+ * npmjs.com 의 패키지별 신뢰 게시자 설정이 정한다.
+ */
+const trustedPublishing = process.env.GITHUB_ACTIONS === "true" && Boolean(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+
+/**
  * 올리기 «전에» 막힐 것을 먼저 막는다.
  *
  * ★scoped 패키지는 인증이 없거나 스코프 권한이 없으면 npm 이 404 로 답한다 —
@@ -106,6 +115,11 @@ const RELEASES = [
  * 원인을 찾는 데 시간이 든다. 여기서 먼저, 사람 말로 끊는다.
  */
 function preflight() {
+  if (trustedPublishing) {
+    // 로그인·스코프 확인은 npmjs.com 신뢰 게시자 설정이 대신한다 — 어긋나면 첫 이름의 publish 가 그 사유로 실패한다.
+    console.log("  신뢰 게시자(GitHub Actions OIDC) — npm 로그인 확인 건너뜀 · 출처 증명(--provenance)을 붙인다");
+    return;
+  }
   let who;
   try {
     who = execFileSync("npm", ["whoami"], { cwd: ROOT, encoding: "utf8" }).trim();
@@ -202,10 +216,12 @@ function publish(name, note = "") {
   }
   // ★--ignore-scripts: prepack 은 위에서 «한 번» 돌았고 dist 가 방금 만들어진 것임을 확인했다.
   const args = ["publish", "--access", "public", "--ignore-scripts"];
+  // ★신뢰 게시자면 출처 증명을 «명시»한다 — 붙일 수 없을 때 조용히 빼고 올리지 않고 실패하게.
+  if (trustedPublishing) args.push("--provenance");
   if (tag) args.push("--tag", tag);
   if (dryRun) args.push("--dry-run");
   if (otpArg) args.push(otpArg);
-  console.log(`\n▶ ${label}  (npm publish --access public --ignore-scripts${tag ? ` --tag ${tag}` : ""}${otpArg ? " --otp=******" : ""}${dryRun ? " --dry-run" : ""})`);
+  console.log(`\n▶ ${label}  (npm ${args.join(" ").replace(/--otp=\S+/, "--otp=******")})`);
   execFileSync("npm", args, { cwd: ROOT, stdio: "inherit" });
 }
 
