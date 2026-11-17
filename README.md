@@ -280,7 +280,7 @@ the npm package `@ainecto/mcp` (the bridge `setup --local` and `init --mcp --loc
 publication requires the npm version it references to carry that `mcpName`, so publish npm first.
 Registration is done by a person:
 
-1. `npm run release -- --otp=<code>` (below) so that `@ainecto/mcp@<version>` is on npm.
+1. Publish npm with the GitHub Actions workflow (below, «Releasing») so that `@ainecto/mcp@<version>` is on npm.
 2. Domain login for `ainecto.com` (HTTP: `https://ainecto.com/.well-known/mcp-registry-auth` must
    serve the public key; the private key is in the macOS keychain):
    `mcp-publisher login http --domain ainecto.com --private-key "$(security find-generic-password -s codelive-mcp-registry -a ainecto.com -w)"`.
@@ -348,11 +348,18 @@ temp file, and stored upload file unless `--keep` is supplied.
 
 ### Releasing
 
-`npm run release -- --otp=<code>` runs typecheck, test and build once, then publishes that build under
-three names: `@ainecto/mcp` (primary), `ainecto`, and `@ainecto/cli` (only the `ainecto` command).
-`--dry-run` shows what would go out. An already-published name is skipped, so a retry after an expired
-code is safe. The npm account needs write access to the `@ainecto` org (the script checks). Do not
-unpublish any name.
+Releases go out through GitHub Actions (`.github/workflows/publish.yml`): Actions → **publish** → Run
+workflow → pick the branch (the commit to publish) and the npm tag (`next` for versions with a `-`,
+`latest` otherwise), then an approver of the `npm-publish` environment approves the run. It uses npm
+trusted publishing (OIDC — no npm token is stored) and attaches provenance. From a terminal:
+`gh workflow run publish.yml --repo codelives/ainecto --ref <branch> -f tag=next`.
+
+The workflow runs `scripts/publish.mjs`: typecheck, test and build once, then that build under three
+names — `@ainecto/mcp` (primary), `ainecto`, and `@ainecto/cli` (only the `ainecto` command). An
+already-published name is skipped, so a re-run is safe. Do not unpublish any name.
+
+Fallback only (when Actions cannot run): `npm run release -- --otp=<code>` publishes the same way from
+your machine (`--dry-run` shows what would go out; the npm account needs write access to `@ainecto`).
 
 ## Known Limitations
 

@@ -76,9 +76,10 @@ the name, so it needs the `io.github.codelives/*` GitHub login below).
 `mcp-publisher` keeps one login at a time, so the domain login comes first and the GitHub login last.
 
 ```bash
-# 1. npm 0.9.0 under all names (typecheck·test·build once; re-run with a new code if the OTP expires)
-npm run release -- --otp=<code>
-npm view @ainecto/mcp@0.9.0 mcpName          # must print com.ainecto/mcp
+# 1. npm under all names — GitHub Actions: Actions → publish → Run workflow (branch · tag), approve npm-publish
+#    (trusted publishing/OIDC + provenance; README «Releasing»). From a terminal:
+gh workflow run publish.yml --repo codelives/ainecto --ref <branch> -f tag=latest
+npm view @ainecto/mcp@<version> mcpName      # must print com.ainecto/mcp
 
 # 2. Domain login (public record must already be served)
 curl -s https://ainecto.com/.well-known/mcp-registry-auth   # v=MCPv1; k=ed25519; p=…
