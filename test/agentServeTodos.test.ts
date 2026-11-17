@@ -289,7 +289,7 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(named(tools, "list_agent_todos").map((c) => c.args.agent).every((a) => a === "u-claude-code")).toBe(true);
     expect(tools.todo("todo-codex")?.state).toBe("OPEN");
     expect(w.printed).toContain("Codex: AiNecto refused its agent identity (AGENT_LIMIT), so auto-run cards for Codex are not taken here. "
-      + "Archive an agent you no longer use in AiNecto, then start `ainecto agent serve` again.");
+      + "Archive an agent you no longer use in AiNecto, then run `ainecto start` again.");
     expect(w.printed).toContain("Auto-run cards handed to Claude Code (claude-code) run here.");
   });
 
@@ -311,7 +311,7 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     const result = await w.done;
     expect(result).toEqual({ exitCode: 1, reason: "agent_name_invalid" });
     expect(w.printed).toEqual(["AiNecto did not accept the agent name «Bad Name» in this folder's .ainecto/agent.local (name must be lowercase). "
-      + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto agent serve` again."]);
+      + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto start` again."]);
     expect(w.server.calls.map((c) => c.op)).toEqual(["open"]);
   });
 

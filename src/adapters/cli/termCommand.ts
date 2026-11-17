@@ -103,8 +103,14 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
  * `ainecto term remote <name>` — 이 기기의 세션 하나를 AiNecto 웹에 잇는다(KAN-738). term 에서 유일하게 서버·로그인을 쓴다 —
  * 그래서 runAinectoCli 가 endpoint 를 풀고 CLI 로그인(OAuth)을 넘긴 뒤 여기로 온다. 끝 사유는 한 줄로 낸다.
  */
-export async function executeTermRemote(input: TermCommandInput & { endpoint: string; auth: TokenProvider }): Promise<number> {
+export async function executeTermRemote(input: TermCommandInput & {
+  endpoint: string;
+  auth: TokenProvider;
+  /** 이 PC 에서 원격 터미널이 꺼져 있으면(`ainecto remote off`) 던진다. */
+  assertAllowed: () => Promise<void>;
+}): Promise<number> {
   const name = singleName(parseArgs(input.argv, {}).positionals, "term remote <name>");
+  await input.assertAllowed();
   const paths = termPaths();
   await ensurePrivateDir(paths.dir);
   const log = openRemoteLog(paths);

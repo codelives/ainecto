@@ -7,6 +7,8 @@ import { accountView } from "./setupCommand";
 export interface StatusCommandOptions {
   argv: string[];
   collect: CollectInput;
+  /** status 만 — «이 PC 연결» 칸(pcStatus). */
+  pc?: (status: MachineStatus) => Promise<Record<string, unknown>>;
   json: boolean;
   io: { stdout: NodeJS.WriteStream; stderr: NodeJS.WriteStream };
 }
@@ -17,7 +19,8 @@ export interface StatusCommandOptions {
 export async function executeStatusCommand(options: StatusCommandOptions): Promise<number> {
   assertNoArgs("status", options.argv);
   const status = await collectStatus(options.collect);
-  options.io.stdout.write(renderSuccess(statusView(status), { json: options.json }));
+  const pc = options.pc ? { pc: await options.pc(status) } : {};
+  options.io.stdout.write(renderSuccess({ ...statusView(status), ...pc }, { json: options.json }));
   return 0;
 }
 

@@ -22,15 +22,19 @@ import { CLI_BUILD, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
 import type { CliIO } from "./ainectoCli";
 
 export const AGENT_HELP_LINES: readonly string[] = [
-  "  ainecto agent serve [--env prod|dev]   answer «My agent» requests from AiNecto Chat with Claude Code or Codex on this machine, and run the auto-run cards handed to them (name one: ainecto init --agent NAME) (Ctrl+C to stop; log: ~/.ainecto/agent/agent.log)",
+  "  ainecto                       in a terminal, with no arguments: check sign-in, ask once, then connect this PC in the background (same as ainecto start)",
+  "  ainecto start [--env prod|dev]   connect this PC in the background — keeps running after you close the window (log: ~/.ainecto/agent/agent.log)",
+  "  ainecto stop [--forget]          disconnect this PC now (--forget also removes your approval on this PC)",
+  "  ainecto remote on|off            allow or block terminals from AiNecto on the web on this PC",
 ];
 
-export function isAgentCommand(domain: string | undefined, action: string | undefined): boolean {
-  return domain === "agent" && action === "serve";
+/** 내부 명령 `ainecto pc run` — «이 PC 연결» 세션(ainecto-pc)이 돌린다. 사람은 `ainecto start` 를 친다. */
+export function isPcRunCommand(domain: string | undefined, action: string | undefined): boolean {
+  return domain === "pc" && action === "run";
 }
 
 /**
- * `ainecto agent serve` — 이 기기의 Claude Code·Codex 를 «내 Agent»로 띄워 둔다(KAN-1075). 로그인은 CLI 로그인(OAuth) 하나.
+ * `ainecto pc run`(«이 PC 연결» 세션이 돌린다 — 옛 `ainecto agent serve`) — 이 기기의 Claude Code·Codex 를 «내 Agent»로 띄워 둔다(KAN-1075). 로그인은 CLI 로그인(OAuth) 하나.
  * 설치·로그인은 시작할 때 한 번 본다(모델 호출 0) — 나중에 로그인했으면 serve 를 다시 띄운다.
  */
 /** serve 시작 안내 — Agent 마다 과금 주체. */
@@ -80,7 +84,7 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
       ({ id, installed, ready, ...(auth ? { auth } : {}), ...(version ? { version } : {}) })) });
   const agents = openAgents(checks);
   if (agents.length === 0) {
-    throw new Error("Neither Claude Code (`claude`) nor Codex (`codex`) is on PATH. Install one and sign in, then run `ainecto agent serve` again.");
+    throw new Error("Neither Claude Code (`claude`) nor Codex (`codex`) is on PATH. Install one and sign in, then run `ainecto start` again.");
   }
   for (const check of checks) {
     const name = all.find((adapter) => adapter.id === check.id)?.displayName ?? check.id;
@@ -91,7 +95,7 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
         : `${name}: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).\n`);
     } else {
       input.io.stderr.write(`${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
-        + `Requests to ${name} will be refused until you sign in and run \`ainecto agent serve\` again.\n`);
+        + `Requests to ${name} will be refused until you sign in and reconnect this PC (\`ainecto stop\`, then \`ainecto start\`).\n`);
     }
   }
   const adapters = new Map<AgentId, AgentAdapter>(all.filter((adapter) => agents.some((a) => a.id === adapter.id))
@@ -101,8 +105,10 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
   await sessions.load();
   const controller = new AbortController();
   const onSignal = () => controller.abort();
+  // ★SIGHUP 도 — `term kill`·데몬이 끝날 때 오는 신호다. 잡지 않으면 서버에 close 없이 죽는다(실측 11-17).
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
+  process.once("SIGHUP", onSignal);
   try {
     const result = await runAgentServe({
       http: createAgentHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),
@@ -125,5 +131,6 @@ export async function executeAgentServe(input: { endpoint: string; env: AinectoE
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    process.off("SIGHUP", onSignal);
   }
 }

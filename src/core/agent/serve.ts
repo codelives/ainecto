@@ -120,7 +120,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   } catch (error) {
     if (error instanceof AgentCallError && error.status === 400 && error.code === "AGENT_NAME_INVALID") {
       deps.print(`AiNecto did not accept the agent name «${folderName ?? ""}» in this folder's .ainecto/agent.local (${error.message}). `
-        + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto agent serve` again.");
+        + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto start` again.");
       return { exitCode: 1, reason: "agent_name_invalid" };
     }
     throw error;
@@ -135,7 +135,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   const { identities, refused } = identitiesIn(opened.agents, deps.adapters);
   for (const r of refused) {
     deps.print(`${displayName(r.agent)}: AiNecto refused its agent identity (${r.error}), so auto-run cards for ${displayName(r.agent)} are not taken here.`
-      + (r.error === "AGENT_LIMIT" ? " Archive an agent you no longer use in AiNecto, then start `ainecto agent serve` again." : ""));
+      + (r.error === "AGENT_LIMIT" ? " Archive an agent you no longer use in AiNecto, then run `ainecto start` again." : ""));
   }
   const todos = deps.todos && identities.length > 0 ? { tools: deps.todos.tools, runs: deps.todos.runs, identities } : undefined;
   if (todos) {
@@ -184,7 +184,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   /** 서버가 더는 이 link 를 모른다 · 로그인이 막혔다 — 다시 하지 않는다. */
   const stopOnFatal = (error: AgentCallError) => {
     if (error.code === "LINK_NOT_FOUND") {
-      stop("link_not_found", 1, "This connection ended (the server restarted, or the link was closed). Run `ainecto agent serve` again.");
+      stop("link_not_found", 1, "This connection ended (the server restarted, or the link was closed). Run `ainecto start` again.");
     } else if (error.status === 401 || error.status === 403) {
       stop("auth", 1, `AiNecto refused the CLI sign-in (${error.code ?? error.status}). Run \`ainecto auth login\` and start again.`);
     }

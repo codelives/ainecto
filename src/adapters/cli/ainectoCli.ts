@@ -16,16 +16,19 @@ import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { executeTermCommand, executeTermRemote, stringEnv, TERM_HELP_LINES } from "./termCommand";
-import { runMenu } from "./menuCommand";
-import { npxCliCommand } from "../../core/launcher/launcher";
+import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "./pcCommand";
+import { npxCliCommand, pcStopDeadlineMs } from "../../core/pc/pcSession";
+import { pcSettingsPath } from "../../core/pc/pcSettings";
+import { assertRemoteAllowed, pcStatus } from "./pcStatus";
+import { readAccount } from "../../core/setup/accountSummary";
+import { CliCommandError } from "./errors";
 import { termPaths } from "../../core/term/paths";
 import { termRuntimeProblem } from "../../core/term/daemonLock";
 import { agentPaths } from "../../core/agent/paths";
-import { doctorChecks } from "../../core/setup/doctorChecks";
-import { collectStatus, type CollectInput } from "../../core/setup/machineStatus";
-import { AGENT_HELP_LINES, executeAgentServe, isAgentCommand } from "./agentCommand";
+import { collectStatus, type CollectInput, type MachineStatus } from "../../core/setup/machineStatus";
+import { AGENT_HELP_LINES, executeAgentServe, isPcRunCommand } from "./agentCommand";
 import { systemCommandRunner } from "../../core/setup/commandRunner";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { CLI_VERSION, PACKAGE_NAME } from "../../core/version";
 import { LEGACY_ROLE_NOTICE, legacyRoleInput } from "../../core/harness/legacyRole";
 
@@ -44,11 +47,10 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       io.stdout.write(renderSuccess({ version: CLI_VERSION }, { json: parsed.json }));
       return 0;
     }
-    // ★인자 없음 + 사람이 보는 터미널(stdin·stdout 모두 TTY)일 때만 메뉴다. AI 에이전트·스크립트(파이프)·--json·--help 는
-    //   지금처럼 도움말 — 에이전트가 읽는 출력은 바뀌지 않는다(KAN-738 메뉴).
-    const menu = parsed.positionals.length === 0 && !parsed.help && !parsed.json
-      && io.stdin.isTTY === true && io.stdout.isTTY === true;
-    if (parsed.help || (parsed.positionals.length === 0 && !menu)) {
+    // ★사람이 보는 터미널(stdin·stdout 모두 TTY)인가 — 인자 없는 `ainecto` 는 여기서만 «이 PC 연결»(start)이다.
+    //   AI 에이전트·스크립트(파이프)·--json·--help 는 지금처럼 도움말 — 에이전트가 구경하려고 친 `ainecto` 가 백그라운드를 띄우지 않는다.
+    const interactive = !parsed.json && io.stdin.isTTY === true && io.stdout.isTTY === true;
+    if (parsed.help || (parsed.positionals.length === 0 && !interactive)) {
       io.stdout.write(helpText());
       return 0;
     }
@@ -165,22 +167,40 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       };
     };
 
-    if (domain === undefined) {
-      return await runMenu({
-        io,
-        paths: termPaths(),
-        cwd: process.cwd(),
-        sessionEnv: stringEnv(),
-        header: `AiNecto CLI ${CLI_VERSION} · ${resolved.endpoint}`,
-        flags: { env: parsed.env, endpoint: parsed.endpoint },
-        managedCommand: (args) => npxCliCommand(args),
-        runner: systemCommandRunner({ cwd: process.cwd() }),
-        termProblem: termRuntimeProblem(),
-        agentLog: agentPaths().log,
-        checkMachine: async () => doctorChecks(await collectStatus(collectInput())),
-        setup: () => runSetup([]),
-        init: () => runInit([]),
-      });
+    /** «이 PC 연결» 입구들(start·stop·remote)이 같이 쓰는 것. */
+    const pcDeps = (): PcDeps => ({
+      io,
+      json: parsed.json,
+      interactive,
+      paths: termPaths(),
+      settingsPath: pcSettingsPath(),
+      hostName: hostname(),
+      endpoint: resolved.endpoint,
+      cwd: process.cwd(),
+      sessionEnv: stringEnv(),
+      flags: { env: parsed.env, endpoint: parsed.endpoint },
+      cliVersion: CLI_VERSION,
+      managedCommand: (args) => npxCliCommand(args),
+      runner: systemCommandRunner({ cwd: process.cwd() }),
+      termProblem: termRuntimeProblem(),
+      agentLog: agentPaths().log,
+      stopDeadlineMs: pcStopDeadlineMs(),
+      machine: () => collectStatus(collectInput()),
+      account: () => readAccount(connect().client),
+      setup: () => runSetup([]),
+    });
+
+    if (domain === undefined || domain === "start") {
+      if (rest.length > 0 || (domain === "start" && action !== undefined)) {
+        throw new CliCommandError("USAGE", "Usage: ainecto start [--env prod|dev] [--endpoint URL]");
+      }
+      return await executePcStart(pcDeps());
+    }
+    if (domain === "stop") {
+      return await executePcStop(pcDeps(), parsed.positionals.slice(1));
+    }
+    if (domain === "remote") {
+      return await executeRemoteSetting(pcDeps(), parsed.positionals.slice(1));
     }
 
     if (domain === "init") {
@@ -194,15 +214,30 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
 
     if (domain === "status" || domain === "doctor") {
       const run = domain === "status" ? executeStatusCommand : executeDoctorCommand;
-      return await run({ argv: parsed.positionals.slice(1), collect: collectInput(), json: parsed.json, io });
+      return await run({
+        argv: parsed.positionals.slice(1),
+        collect: collectInput(),
+        // status 만 — 이 PC 연결·동의·터미널 세션(doctor 의 판정은 바꾸지 않는다).
+        ...(domain === "status" ? { pc: (status: MachineStatus) => pcStatus(status, resolved.endpoint) } : {}),
+        json: parsed.json,
+        io,
+      });
     }
 
     if (domain === "term") {
-      return await executeTermRemote({ argv: rest, json: parsed.json, io, endpoint: resolved.endpoint, auth: connect().auth });
+      return await executeTermRemote({
+        argv: rest, json: parsed.json, io, endpoint: resolved.endpoint, auth: connect().auth,
+        // ★`ainecto remote off` 면 시작하지 않는다 — next.9 한 판 동안 남는 세션별 다리(다음 판에 pc 연결 안으로 들어간다).
+        assertAllowed: () => assertRemoteAllowed(resolved.endpoint, () => readAccount(connect().client)),
+      });
     }
 
-    if (isAgentCommand(domain, action)) {
+    if (isPcRunCommand(domain, action)) {
       return await executeAgentServe({ endpoint: resolved.endpoint, env: resolved.env, auth: connect().auth, io, agentName });
+    }
+    if (domain === "agent" && action === "serve") {
+      // ★두 방식 금지 — 앞에서 따로 돌리면 pc 연결과 서버 링크를 서로 뺏는다.
+      throw new CliCommandError("MOVED", "`ainecto agent serve` is now `ainecto start` (or just `ainecto` in a terminal): it keeps your PC agent running in the background. Stop it with `ainecto stop`.");
     }
 
     if (domain === "auth") {
@@ -460,7 +495,6 @@ function helpText(): string {
     NEXT_STEP,
     "",
     "Usage:",
-    "  ainecto                     with no arguments in a terminal: pick what to run in the background (your PC agent, a remote terminal)",
     "  ainecto auth login|status|logout [--env prod|dev] [--json]   (one sign-in per machine)",
     "  ainecto tools list [--env prod|dev] [--endpoint URL] [--json]",
     "  ainecto tools call <mcpName> [-f payload.json|@-] [inline-json] [--json]",
@@ -485,7 +519,7 @@ function helpText(): string {
     "  ainecto init --agent NAME                             name the agent working in this folder: writes .ainecto/agent.local (do not commit it) and puts the name in .mcp.json, .cursor/mcp.json and .codex/config.toml",
     "  ainecto init --undo",
     "",
-    "Your PC agent (requests from AiNecto Chat, answered by Claude Code on this machine):",
+    "This PC (requests from AiNecto Chat and auto-run cards, answered by Claude Code or Codex on this machine):",
     ...AGENT_HELP_LINES,
     "",
     "Terminal sessions on this machine (no tmux or cmux needed; macOS and Linux):",
