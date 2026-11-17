@@ -197,7 +197,8 @@ The server tools behind them (`list_notifications`, `list_agent_todos`, `update_
 `ainecto term` keeps terminal sessions running after you close the terminal window — no tmux or cmux
 needed. A background process, started on demand, owns each session and keeps its screen, so agents and
 scripts can type into a session and read its screen, and you can attach from any terminal app. It runs on
-this machine only; it does not use your AiNecto sign-in, except `term remote`.
+this machine only; it does not use your AiNecto sign-in. To use these sessions from AiNecto on the web, see
+the last point below.
 
 ```bash
 ainecto term new api --cwd ~/code/api -- claude   # start a session (without a command: your login shell)
@@ -210,7 +211,6 @@ ainecto term attach api                           # detach with Ctrl-\ then d
 ainecto term kill api
 ainecto term kill-server                          # every session and the background process
 ainecto term restore                              # after a reboot: start again what was running
-ainecto term remote api                           # show it in AiNecto on the web and type there (Ctrl+C to stop)
 ```
 
 - Keys for `key`: `enter`, `tab`, `shift-tab`, `escape`, `backspace`, `delete`, `space`, `up`, `down`,
@@ -219,15 +219,16 @@ ainecto term remote api                           # show it in AiNecto on the we
 - `send --paste` sends the text as a bracketed paste when the app asked for one. To send text that starts
   with `-`, put it after `--`.
 - In `attach`, press `Ctrl-\` twice to send one `Ctrl-\` to the app.
-- Inside a session, `AINECTO_TERM_SESSION` holds its name. A name does not change; to rename, kill the
-  session and start it again.
+- Inside a session, `AINECTO_TERM_SESSION` holds its name. A name does not change; renaming on the web
+  changes only the name you see (`term ls` shows it as the label).
 - `restore` starts again each session that was running (name, folder, command) with the environment of the
   shell you run it from. It does not bring back what the programs had in memory, and nothing restarts on its
   own after a reboot. A session that exits by itself is forgotten; `kill` and `kill-server` forget theirs.
-- `remote` uses your AiNecto sign-in: open Terminal in AiNecto on the web to see the session as plain text
-  (no colors yet) and type into it. It runs until you press Ctrl+C, close it on the web, or the session
-  ends. If AiNecto restarts, it opens the remote terminal again on its own. One remote terminal per
-  account; its log is `~/.ainecto/term/remote.log`.
+- From AiNecto on the web: `ainecto` (the PC connection) lists every term session of this PC in Terminal
+  on the web — see a session as plain text (no colors yet), type into it, and start, rename or end
+  sessions there. Allow it once with `ainecto remote on` (`ainecto remote off` blocks it). «Disconnect»
+  on the web turns it off until you run `ainecto` again. If AiNecto restarts, it reconnects on its own.
+  Its log is `~/.ainecto/term/remote.log`.
 - Files are in `~/.ainecto/term/` (folder only you can read): the control socket, `sessions.json` (what
   `restore` starts) and `daemon.log` (one line per request and one per answer; kept to 10 MB plus one older
   file, `daemon.log.1`). Typed text, screens and environment values are not logged.
