@@ -62,6 +62,8 @@ export type RemoteLogRecord =
   | { event: "remote_frame_trimmed"; session: string; dropped: number }
   /** 데몬 요청 실패 — 삼키지 않는다. */
   | { event: "remote_daemon_error"; op: string; session?: string; code: string; message: string }
+  /** 보던 세션이 데몬에서 이미 끝났다(웹에서 끝낸 직후의 읽기 등) — 오류가 아니다. */
+  | { event: "remote_session_ended"; op: string; session: string; code: string }
   | { event: "remote_stop"; pid: number; reason: string; exitCode?: number };
 
 export function openRemoteLog(paths: TermPaths): DaemonLog<RemoteLogRecord> {

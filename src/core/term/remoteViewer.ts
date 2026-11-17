@@ -173,12 +173,20 @@ export class RemoteViewer {
     }
   }
 
-  /** 데몬 요청 실패 — 한 줄 남기고 멈춘다(세션이 없어졌으면 다리가 목록을 다시 올린다). */
+  /**
+   * 데몬 요청 실패 — 한 줄 남기고 멈춘다(세션이 없어졌으면 다리가 목록을 다시 올린다).
+   * 세션이 이미 끝났으면(웹에서 끝낸 직후 읽기가 끝남과 겹침) 오류가 아니라 «끝남» 한 줄.
+   */
   private daemonFailed(op: string, error: unknown): void {
     const code = error instanceof TermError ? error.code : "UNKNOWN";
-    const message = error instanceof Error ? error.message : String(error);
-    this.deps.log.write({ event: "remote_daemon_error", op, session: this.deps.session, code, message });
+    const session = this.deps.session;
     this.stop();
+    if (code === "TERM_NO_SESSION") {
+      this.deps.log.write({ event: "remote_session_ended", op, session, code });
+      this.deps.onGone(`session ${session} ended`);
+      return;
+    }
+    this.deps.log.write({ event: "remote_daemon_error", op, session, code, message: error instanceof Error ? error.message : String(error) });
     this.deps.onGone(`${op} failed (${code})`);
   }
 

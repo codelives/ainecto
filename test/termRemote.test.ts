@@ -5,6 +5,7 @@ import { createRemoteHttp, openRemoteLog, remoteCommands, remoteStateOf, runRemo
 import { screenFrame } from "../src/core/term/remoteFrame";
 import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
 import { wireSessions } from "../src/core/term/remoteSessions";
+import { RemoteViewer } from "../src/core/term/remoteViewer";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
 import { cli, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
@@ -185,6 +186,27 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     expect((await sessions()).map((s) => s.name)).toEqual(["a"]);
     run.stop.abort();
     await run.done;
+  }, LONG);
+
+  it("끝난 세션 — 데몬이 그 세션을 모르면(웹에서 끝낸 직후의 읽기) 오류 줄이 아니라 «끝남» 한 줄 · 다리는 목록을 다시 본다", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const paths = termPaths(rig.home);
+    const log = openRemoteLog(paths);
+    let gone: string | undefined;
+    const viewer = new RemoteViewer({
+      paths, session: "gone-already", log, size: { cols: 80, rows: 24 },
+      http: createRemoteHttp({ endpoint: fake.endpoint, tokenProvider: { getAccessToken: async () => "t", refreshAfterUnauthorized: async () => "t" }, log }),
+      link: () => ({ linkId: "l", generation: 1, frameMaxBytes: 65536 }),
+      onGone: (reason) => { gone = reason; },
+      onRefused: () => undefined,
+      onUnknownSession: () => undefined,
+    });
+    await viewer.run();
+    expect(gone).toContain("gone-already");
+    expect(remoteLog().filter((r) => r.event === "remote_daemon_error")).toEqual([]);
+    expect(remoteLog().filter((r) => r.event === "remote_session_ended")).toEqual([
+      expect.objectContaining({ session: "gone-already", op: "watch", code: "TERM_NO_SESSION" }),
+    ]);
   }, LONG);
 
   it("키 이름 → 데몬 key(Ctrl-D 로 cat 이 끝남 → 목록에서 빠짐) · 크기 → set-size 와 frame 크기 · 화면 모드 표지", async () => {
