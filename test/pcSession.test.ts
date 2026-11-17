@@ -6,6 +6,9 @@ import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
 import {
   npxCliCommand,
   pcAction,
+  pcOutcome,
+  PC_OUTCOME_PATTERN,
+  pcReadyDeadlineMs,
   pcRunArgs,
   pcStatusView,
   pcStopDeadlineMs,
@@ -45,6 +48,17 @@ describe("이 PC 연결 — 순수 함수", () => {
     expect(pcAction([at()], "0.14.0").kind).toBe("replace");
     expect(pcAction([at("@ainecto/mcp@0.14.0"), at("@ainecto/mcp@0.14.0")], "0.14.0").kind).toBe("replace");
     expect(pcAction([at("@ainecto/mcp")], "dev").kind).toBe("already");
+  });
+
+  it("연결 기다림 = 기존 기한의 합(Agent 준비 확인 + open + 401 갱신 뒤 한 번 더 — B1×3) · 화면 줄 → 연결됨/실패/모름", () => {
+    expect(pcReadyDeadlineMs()).toBe(10_000 * 3);
+    expect(pcOutcome(["npx: installing", "Connected to AiNecto as mac. Requests to «My agent» …"])).toEqual({ kind: "connected" });
+    expect(pcOutcome(["AiNecto lost this connection (it may have restarted); connected again."])).toEqual({ kind: "connected" });
+    expect(pcOutcome(["Error: Unknown command \"pc\"."])).toEqual({ kind: "failed", line: "Error: Unknown command \"pc\"." });
+    expect(pcOutcome(["Claude Code: runs on your subscription login"])).toBeUndefined();
+    expect(PC_OUTCOME_PATTERN.test("Connected to AiNecto as mac.")).toBe(true);
+    expect(PC_OUTCOME_PATTERN.test("Error: x")).toBe(true);
+    expect(PC_OUTCOME_PATTERN.test("  Connected to AiNecto as mac.")).toBe(false);
   });
 
   it("끄기 기다림 = 기존 기한의 합(Agent 멈추기 B6×4 + 서버 close 호출 B1·원격 C10 중 큰 것) — 새 숫자 0", () => {

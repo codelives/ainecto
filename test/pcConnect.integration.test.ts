@@ -3,19 +3,23 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { accountKey } from "../src/core/pc/pcSettings";
+import { SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
 import { systemCommandRunner } from "../src/core/setup/commandRunner";
 import type { MachineStatus } from "../src/core/setup/machineStatus";
 import { termPaths } from "../src/core/term/paths";
-import { LONG, ok, rig, screen, sessions, until, useTermRig } from "./termRig";
+import { LONG, ok, rig, sessions, until, useTermRig } from "./termRig";
 
 /**
  * «이 PC 연결»(`ainecto`·start·stop·remote) — 실 데몬·실 PTY. pc 세션 명령만 대역: `pc run` 처럼 Ctrl+C 를 받으면 코드 0 으로 끝나는
  * 프로세스(서버·로그인·npx 없이). 판 확인(--version)은 바로 0. 계정·점검은 고정값(로그인 상태 = 입력).
  * 입구는 이 시험 프로세스 안에서 돈다 — 데몬은 리그의 진짜 CLI 가 먼저 띄운다(여기서 띄우면 vitest 를 띄운다).
  */
+const CONNECTED = `console.log(${JSON.stringify(`${SERVE_CONNECTED_PREFIX}test-host.`)});`;
 const GRACEFUL = "if (process.argv.includes('--version')) process.exit(0);"
-  + "process.on('SIGINT', () => process.exit(0)); console.log('pc-ready'); setInterval(() => undefined, 1000);";
-const STUBBORN = "process.on('SIGINT', () => undefined); console.log('pc-ready'); setInterval(() => undefined, 1000);";
+  + `process.on('SIGINT', () => process.exit(0)); ${CONNECTED} setInterval(() => undefined, 1000);`;
+const STUBBORN = `process.on('SIGINT', () => undefined); ${CONNECTED} setInterval(() => undefined, 1000);`;
+/** 연결 줄을 찍지 않고 기다리기만 — 막 띄운(npx·준비 확인 중) pc 와 같다. */
+const SILENT = "setInterval(() => undefined, 1000);";
 const ENDPOINT = "https://example.test/mcp";
 const KEY = accountKey(ENDPOINT, "u1");
 
@@ -53,6 +57,7 @@ function harness(overrides: Partial<PcDeps> & { version?: string; script?: strin
     termProblem: undefined,
     agentLog: join(rig.home, ".ainecto/agent/agent.log"),
     stopDeadlineMs: 10_000,
+    readyDeadlineMs: 10_000,
     machine: async () => signedIn,
     account: async () => ({ userId: "u1", displayName: "Ryan" }),
     setup: async () => 0,
@@ -73,8 +78,6 @@ function harness(overrides: Partial<PcDeps> & { version?: string; script?: strin
 const settings = async () => JSON.parse(await readFile(join(rig.home, ".ainecto", "pc.json"), "utf8")) as {
   pcId: string; hostName: string; accounts: Record<string, { consentedAt: string; remoteTerminal: boolean }>;
 };
-/** 대역이 SIGINT 처리기를 건 뒤 — 그 전에 Ctrl+C 가 닿으면 신호로 죽는다(운영의 «start 직후 stop» 과 같은 틈). */
-const pcReady = () => until(async () => (await screen("ainecto-pc")).some((line) => line.includes("pc-ready")), "pc stand-in ready");
 const pcSessions = async () => (await sessions()).filter((s) => s.command?.includes("pc"));
 const manifestNames = async () => (JSON.parse(await readFile(join(rig.home, ".ainecto/term/sessions.json"), "utf8")) as { sessions: { name: string }[] })
   .sessions.map((s) => s.name);
@@ -118,7 +121,6 @@ describe("이 PC 연결 — 실 데몬", () => {
     await old.answer("Connect this PC?", "y");
     await old.answer("Also allow terminals", "y");
     await first;
-    await pcReady();
     const next = harness({ version: "9.9.10" });
     expect(await executePcStart(next.deps)).toBe(0);
     expect(next.err()).toContain("Replacing the PC connection 9.9.9 (session ainecto-pc) with 9.9.10");
@@ -133,7 +135,6 @@ describe("이 PC 연결 — 실 데몬", () => {
     await start.answer("Connect this PC?", "y");
     await start.answer("Also allow terminals", "n");
     await done;
-    await pcReady();
     const stop = harness();
     expect(await executePcStop(stop.deps, [])).toBe(0);
     expect(stop.out()).toContain("Disconnected this PC (session ainecto-pc).");
@@ -154,7 +155,6 @@ describe("이 PC 연결 — 실 데몬", () => {
     await start.answer("Connect this PC?", "y");
     await start.answer("Also allow terminals", "n");
     await done;
-    await pcReady();
     const stop = harness({ stopDeadlineMs: 500 });
     expect(await executePcStop(stop.deps, [])).toBe(0);
     expect(stop.out()).toContain("Session ainecto-pc did not stop within 0.5 s after Ctrl+C — ended it.");
@@ -188,5 +188,32 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect((await settings()).accounts[KEY]?.remoteTerminal).toBe(false);
     await expect(executeRemoteSetting(harness().deps, ["maybe"])).rejects.toThrow("Usage: ainecto remote on|off");
     await expect(executePcStart(harness({ termProblem: "not on win32" }).deps)).rejects.toThrow("Connecting this PC needs ainecto term: not on win32");
+  }, LONG);
+
+  it("start 는 «연결됨» 줄을 기다린다 — 오류 줄로 끝남·말없이 끝남은 사유와 함께 실패 · 기한 안에 없으면 «Still connecting»(실패 아님)", async () => {
+    const approve = harness();
+    const first = executePcStart(approve.deps);
+    await approve.answer("Connect this PC?", "y");
+    await approve.answer("Also allow terminals", "n");
+    await first;
+    await executePcStop(harness().deps, []);
+
+    const noRunner = async () => ({ exitCode: 0, stdout: "", stderr: "", missing: false });
+    await expect(executePcStart(harness({ runner: noRunner, script: "console.error('Error: Unknown command pc.'); setTimeout(() => process.exit(1), 300);" }).deps))
+      .rejects.toThrow("The PC connection could not start — Error: Unknown command pc.");
+    await until(async () => (await sessions()).every((s) => s.name !== "ainecto-pc"), "failed pc gone");
+    await expect(executePcStart(harness({ runner: noRunner, script: "process.exit(3);" }).deps))
+      .rejects.toThrow("The PC connection stopped right after it started");
+
+    const slow = harness({ runner: noRunner, script: SILENT, readyDeadlineMs: 300 });
+    expect(await executePcStart(slow.deps)).toBe(0);
+    expect(slow.out()).toContain("Still connecting this PC (session ainecto-pc) — `ainecto status` shows when it is up.");
+
+    // 아직 연결 줄을 찍지 않은 pc 는 Ctrl+C 대신 바로 kill — 매니페스트에서도 빠진다(재부팅 뒤 되살아나지 않는다).
+    const stop = harness();
+    expect(await executePcStop(stop.deps, [])).toBe(0);
+    expect(stop.out()).toContain("Session ainecto-pc was still starting — ended it.");
+    expect((await sessions()).map((s) => s.name)).toEqual(["warm"]);
+    await until(async () => (await manifestNames()).join() === "warm", "manifest without ainecto-pc");
   }, LONG);
 });

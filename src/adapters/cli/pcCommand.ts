@@ -7,7 +7,17 @@ import {
   withoutEndpoint,
   withRemoteTerminal,
 } from "../../core/pc/pcSettings";
-import { PC_SESSION_NAME, pcAction, pcRunArgs, pcVersionLabel, runningPcs, type LaunchFlags, type RunningPc } from "../../core/pc/pcSession";
+import {
+  PC_OUTCOME_PATTERN,
+  PC_SESSION_NAME,
+  pcAction,
+  pcOutcome,
+  pcRunArgs,
+  pcVersionLabel,
+  runningPcs,
+  type LaunchFlags,
+  type RunningPc,
+} from "../../core/pc/pcSession";
 import type { AccountSummary } from "../../core/setup/accountSummary";
 import { lastLine, type CommandRunner } from "../../core/setup/commandRunner";
 import { doctorChecks } from "../../core/setup/doctorChecks";
@@ -15,7 +25,10 @@ import type { MachineStatus } from "../../core/setup/machineStatus";
 import { openTermClient, termRequest } from "../../core/term/client";
 import { TermError } from "../../core/term/errors";
 import type { TermPaths } from "../../core/term/paths";
-import { listedSessions, type ListedSession } from "../../core/term/protocol";
+import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
+import { waitForMatch } from "../../core/term/wait";
+import { isNodeError } from "../../core/fs/privateFiles";
+import { readFile } from "node:fs/promises";
 import type { CliIO } from "./ainectoCli";
 import { promptLine } from "./destructiveConfirmation";
 import { CliCommandError } from "./errors";
@@ -47,6 +60,8 @@ export interface PcDeps {
   termProblem: string | undefined;
   agentLog: string;
   stopDeadlineMs: number;
+  /** start 가 «연결됨»을 기다리는 시간(pcReadyDeadlineMs). */
+  readyDeadlineMs: number;
   /** status·doctor 와 같은 수집. */
   machine: () => Promise<MachineStatus>;
   /** 로그인한 계정(identity_get_self). */
@@ -117,6 +132,7 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
       await stopPc(deps, pc);
     }
   }
+  const startedAt = new Date().toISOString();
   await termRequest(deps.paths, {
     op: "new",
     name: PC_SESSION_NAME,
@@ -124,8 +140,57 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
     command: deps.managedCommand(pcRunArgs(deps.flags)),
     env: deps.sessionEnv,
   }, { start: true });
-  return print(deps, { connected: true, already: false, session: PC_SESSION_NAME, folder: deps.cwd, log: deps.agentLog },
+  return await reportOutcome(deps, startedAt);
+}
+
+/**
+ * 띄운 pc 세션이 서버에 «연결됨»을 찍을 때까지 기다린다(★틀린 «Connected» 를 찍지 않으려고). 연결됨 → Connected ·
+ * 오류 줄로 끝남·세션이 끝남 → 그 사유 + 종료 1 · 기한(pcReadyDeadlineMs) 안에 둘 다 없음 → «아직 연결 중» + 종료 0(실패가 아니다).
+ */
+async function reportOutcome(deps: PcDeps, startedAt: string): Promise<number> {
+  const base = { session: PC_SESSION_NAME, folder: deps.cwd, log: deps.agentLog };
+  let line: string;
+  try {
+    line = (await waitForMatch(deps.paths, PC_SESSION_NAME, PC_OUTCOME_PATTERN, { scrollback: true }, deps.readyDeadlineMs)).line;
+  } catch (error) {
+    if (error instanceof TermError && error.code === "TERM_WAIT_TIMEOUT") {
+      return print(deps, { ...base, connected: false, connecting: true },
+        `Still connecting this PC (session ${PC_SESSION_NAME}) — \`ainecto status\` shows when it is up. Log: ${deps.agentLog}`);
+    }
+    // 끝남 — 기다리는 동안(SESSION_ENDED) 또는 기다리기 전에 이미(NO_SESSION: 바로 끝나 데몬 표에서 빠졌다).
+    if (error instanceof TermError && (error.code === "TERM_SESSION_ENDED" || error.code === "TERM_NO_SESSION")) {
+      const last = await lastLogLineSince(deps.agentLog, startedAt);
+      throw new CliCommandError("PC_START_FAILED", `The PC connection stopped right after it started (${error.message})`
+        + `${last ? ` Last log line: ${last}` : ""} Log: ${deps.agentLog}`);
+    }
+    throw error;
+  }
+  const outcome = pcOutcome([line]);
+  if (outcome?.kind === "failed") {
+    throw new CliCommandError("PC_START_FAILED", `The PC connection could not start — ${outcome.line} Log: ${deps.agentLog}`);
+  }
+  return print(deps, { ...base, connected: true, already: false },
     `Connected this PC to AiNecto (session ${PC_SESSION_NAME}). It keeps running after you close this window. Log: ${deps.agentLog}`);
+}
+
+/** agent.log 의 마지막 줄 — 이번 시작 뒤에 쓴 것만(옛 실행의 줄로 사유를 꾸미지 않는다). */
+async function lastLogLineSince(path: string, since: string): Promise<string | undefined> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return undefined;
+    throw error;
+  }
+  const last = lastLine(text);
+  if (!last) return undefined;
+  try {
+    const ts = (JSON.parse(last) as { ts?: unknown }).ts;
+    return typeof ts === "string" && ts >= since ? last : undefined;
+  } catch {
+    // JSON 이 아닌 줄(쓰다 만 줄) — 사유로 쓰지 않는다.
+    return undefined;
+  }
 }
 
 /** `ainecto stop [--forget]` — pc 세션에 Ctrl+C(서버에 끝을 알린다) · 기한 넘으면 kill · --forget 은 이 서버 주소의 동의도 지운다. */
@@ -181,6 +246,21 @@ async function stopPc(deps: PcDeps, pc: RunningPc): Promise<string> {
   }
   let timer: NodeJS.Timeout | undefined;
   try {
+    // ★아직 연결 줄을 찍지 않았으면(막 띄움 — npx·준비 확인 중) Ctrl+C 처리기가 없을 수 있다: 신호로 죽으면 매니페스트에 남아
+    //   재부팅 뒤 restore 가 되살린다. 그래서 바로 kill(명시 kill 은 매니페스트에서 빠진다).
+    let ready: boolean;
+    try {
+      ready = pcOutcome(readLines(await client.request({ op: "read", name: pc.session, scrollback: true })))?.kind === "connected";
+    } catch (error) {
+      if (error instanceof TermError && error.code === "TERM_NO_SESSION") {
+        return `Session ${pc.session} is already gone.`;
+      }
+      throw error;
+    }
+    if (!ready) {
+      await client.request({ op: "kill", name: pc.session });
+      return `Session ${pc.session} was still starting — ended it.`;
+    }
     const ended = new Promise<"ended">((resolve) => {
       client.onEvent((event) => {
         if (event.event === "exit") {

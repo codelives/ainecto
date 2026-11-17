@@ -25,12 +25,15 @@ export function renderSuccess(data: unknown, options: { json?: boolean; warnings
   return `${warnings}${renderHuman(data)}\n`;
 }
 
+/** 사람용 오류 줄의 앞머리 — `ainecto start` 가 pc 세션 화면에서 «실패로 끝남»을 알아본다(한 곳). */
+export const ERROR_LINE_PREFIX = "Error: ";
+
 export function renderError(error: unknown, options: { json?: boolean } = {}): string {
   const shape = toErrorShape(error);
   if (options.json) {
     return `${JSON.stringify(shape, null, 2)}\n`;
   }
-  return `Error: ${shape.error.message}\n`;
+  return `${ERROR_LINE_PREFIX}${shape.error.message}\n`;
 }
 
 export function toErrorShape(error: unknown): CliErrorShape {

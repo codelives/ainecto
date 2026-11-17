@@ -1,4 +1,6 @@
 import { AGENT_CALL_TIMEOUT_MS, AGENT_STOP_WAIT_MS } from "../agent/limits";
+import { SERVE_CONNECTED_PREFIX, SERVE_RECONNECTED_LINE } from "../agent/serve";
+import { ERROR_LINE_PREFIX } from "../output/render";
 import type { ListedSession } from "../term/protocol";
 import { CALL_TIMEOUT_MS } from "../term/remoteLimits";
 import { bridgePackageSpec, CLI_VERSION, PACKAGE_NAME } from "../version";
@@ -124,4 +126,36 @@ export function pcStatusView(input: {
     ...(input.approval ? { remoteTerminal: input.approval.remoteTerminal ? "allowed" : "blocked" } : {}),
     terminalSessions: input.sessions.filter((session) => !pcNames.has(session.name)).map((session) => session.name),
   };
+}
+
+/**
+ * `ainecto start` 가 «연결됨»을 기다리는 시간 — ★새 값이 아니라 pc 프로세스가 연결 전에 하는 일의 기존 기한 합:
+ *   Agent 준비 확인(claude·codex, AGENT_CALL_TIMEOUT_MS) + open 호출(같은 기한) + 401 뒤 로그인 갱신하고 한 번 더(같은 기한).
+ * 넘어도 실패로 보지 않는다 — 문구만 «아직 연결 중»으로 바꾼다(틀린 말을 찍지 않으려는 기다림).
+ */
+export function pcReadyDeadlineMs(): number {
+  return AGENT_CALL_TIMEOUT_MS * 3;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** pc 세션 화면에서 «연결됨»(또는 다시 붙음)·«실패로 끝남» 줄을 찾는 식. */
+export const PC_OUTCOME_PATTERN = new RegExp(
+  `^(${escapeRegExp(SERVE_CONNECTED_PREFIX)}|${escapeRegExp(SERVE_RECONNECTED_LINE)}|${escapeRegExp(ERROR_LINE_PREFIX)})`,
+);
+
+/** 화면 줄 → 결과(순수 함수). 연결 줄이 있으면 connected, 오류 줄만 있으면 failed(그 줄), 둘 다 없으면 undefined. */
+export function pcOutcome(lines: readonly string[]): { kind: "connected" } | { kind: "failed"; line: string } | undefined {
+  let failed: string | undefined;
+  for (const line of lines) {
+    if (line.startsWith(SERVE_CONNECTED_PREFIX) || line.startsWith(SERVE_RECONNECTED_LINE)) {
+      return { kind: "connected" };
+    }
+    if (line.startsWith(ERROR_LINE_PREFIX)) {
+      failed ??= line;
+    }
+  }
+  return failed === undefined ? undefined : { kind: "failed", line: failed };
 }

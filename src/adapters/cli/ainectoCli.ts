@@ -17,7 +17,7 @@ import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { executeTermCommand, executeTermRemote, stringEnv, TERM_HELP_LINES } from "./termCommand";
 import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "./pcCommand";
-import { npxCliCommand, pcStopDeadlineMs } from "../../core/pc/pcSession";
+import { npxCliCommand, pcReadyDeadlineMs, pcStopDeadlineMs } from "../../core/pc/pcSession";
 import { pcSettingsPath } from "../../core/pc/pcSettings";
 import { assertRemoteAllowed, pcStatus } from "./pcStatus";
 import { readAccount } from "../../core/setup/accountSummary";
@@ -185,6 +185,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       termProblem: termRuntimeProblem(),
       agentLog: agentPaths().log,
       stopDeadlineMs: pcStopDeadlineMs(),
+      readyDeadlineMs: pcReadyDeadlineMs(),
       machine: () => collectStatus(collectInput()),
       account: () => readAccount(connect().client),
       setup: () => runSetup([]),
