@@ -21,7 +21,7 @@ export type TermRequestBody =
   | { op: "detach" }
   | { op: "watch"; name: string }
   /**
-   * 붙지 않은 쪽(원격 웹 패널 — `term remote`)이 세션 크기를 정한다. ★attach 흐름의 `resize`(id 없는 줄)와 이름을 나눈다 — 옛 데몬은
+   * 붙지 않은 쪽(원격 웹 패널 — 원격 다리)이 세션 크기를 정한다. ★attach 흐름의 `resize`(id 없는 줄)와 이름을 나눈다 — 옛 데몬은
    * id 붙은 `resize` 를 흐름 줄로 읽어 답하지 않는다(10초 뒤 연결이 끊김). 모르는 op 면 옛 데몬이 연결을 바로 끊어 빨리 안다.
    */
   | { op: "set-size"; name: string; cols: number; rows: number }
@@ -224,6 +224,19 @@ export function appliedSize(data: unknown): { cols: number; rows: number } | und
     return { cols: data.cols, rows: data.rows };
   }
   return undefined;
+}
+
+/** `read` 응답의 화면 모드 — 옛 데몬이면 칸이 없어 undefined. */
+export function readModes(data: unknown): { altScreen: boolean; appCursor: boolean; bracketedPaste: boolean } | undefined {
+  if (!data || typeof data !== "object" || !("modes" in data)) return undefined;
+  const modes = data.modes;
+  if (!modes || typeof modes !== "object") return undefined;
+  const altScreen = "altScreen" in modes ? modes.altScreen : undefined;
+  const appCursor = "appCursor" in modes ? modes.appCursor : undefined;
+  const bracketedPaste = "bracketedPaste" in modes ? modes.bracketedPaste : undefined;
+  return typeof altScreen === "boolean" && typeof appCursor === "boolean" && typeof bracketedPaste === "boolean"
+    ? { altScreen, appCursor, bracketedPaste }
+    : undefined;
 }
 
 /** `read` 응답 → 화면 줄. 줄이 없으면 데몬이 계약을 어긴 것이다. */

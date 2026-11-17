@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 /**
- * `term remote` 화면 한 장 — 순수 함수(출처 = 사용자 web-cmux agent 의 textFrame: 줄 목록 → 평문 화면).
+ * 원격 다리 화면 한 장 — 순수 함수(출처 = 사용자 web-cmux agent 의 textFrame: 줄 목록 → 평문 화면).
  * 1차는 색·커서 없는 평문이다. 데몬 `read` 의 줄을 {@code \r\n} 으로 잇고, UTF-8 → base64 로 싣는다.
  */
 export interface ScreenFrame {
@@ -33,8 +33,8 @@ export function screenFrame(lines: readonly string[], maxD: number): ScreenFrame
   };
 }
 
-/** frame 본문 상한(서버 {@code frameMaxBytes}) 에서 {@code d} 밖 JSON 칸을 뺀 {@code d} 의 자리. */
-export function frameBudget(frameMaxBytes: number, body: { remoteId: string; cols: number; rows: number }): number {
+/** frame 본문 상한(서버 {@code frameMaxBytes}) 에서 {@code d} 밖 JSON 칸(linkId·session·크기·modes)을 뺀 {@code d} 의 자리. */
+export function frameBudget(frameMaxBytes: number, body: Record<string, unknown>): number {
   return frameMaxBytes - Buffer.byteLength(JSON.stringify({ ...body, d: "" }), "utf8");
 }
 

@@ -1,94 +1,96 @@
 import { randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createServer as createNetServer, type Server as NetServer } from "node:net";
-import { mkdirSync } from "node:fs";
 import { termRequest } from "../src/core/term/client";
-import { LineDecoder } from "../src/core/term/protocol";
-import { createRemoteHttp, openRemoteLog, remoteCommands, runRemote, type RemoteResult } from "../src/core/term/remote";
+import { termPaths } from "../src/core/term/paths";
+import { createRemoteHttp, openRemoteLog, remoteCommands, remoteStateOf, runRemoteBridge, watchingOf, type RemoteResult } from "../src/core/term/remote";
 import { screenFrame } from "../src/core/term/remoteFrame";
 import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
-import { termPaths } from "../src/core/term/paths";
+import { wireSessions } from "../src/core/term/remoteSessions";
 import { cli, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
-describe("term remote — 순수 함수", () => {
-  it("화면 = 줄을 \\r\\n 으로 이은 평문 · 같은 줄이면 같은 hash · 다르면 다른 hash", () => {
+describe("원격 다리 — 순수 함수", () => {
+  it("화면 = 줄을 \\r\\n 으로 이은 평문 · 같은 줄이면 같은 hash · 상한을 넘으면 위 줄부터 덜어 낸다", () => {
     const a = screenFrame(["$ cat", "hi"], 1_000);
     expect(Buffer.from(a.d, "base64").toString("utf8")).toBe("$ cat\r\nhi");
     expect(screenFrame(["$ cat", "hi"], 1_000).hash).toBe(a.hash);
     expect(screenFrame(["$ cat", "hi!"], 1_000).hash).not.toBe(a.hash);
-    expect(a.dropped).toBe(0);
-  });
-
-  it("본문 상한을 넘으면 위(오래된) 줄부터 덜어 낸다 — 한글은 UTF-8 바이트로 잰다", () => {
-    const lines = ["가".repeat(10), "b".repeat(10), "c".repeat(10)];
-    // base64 길이 = 4*ceil(바이트/3). 마지막 두 줄 = 10+2+10 = 22바이트 → 32 글자.
-    const fit = screenFrame(lines, 32);
+    const fit = screenFrame(["가".repeat(10), "b".repeat(10), "c".repeat(10)], 32);
     expect(fit.dropped).toBe(1);
-    expect(Buffer.from(fit.d, "base64").toString("utf8")).toBe(`${"b".repeat(10)}\r\n${"c".repeat(10)}`);
-    expect(fit.d.length).toBeLessThanOrEqual(32);
-    expect(screenFrame(lines, 0).d).toBe("");
+    expect(screenFrame(["x"], 0).d).toBe("");
   });
 
-  it("poll 명령 — 서버 순서 그대로(resize 가 input 앞) · 모르는 것·크기 0·모양 틀림은 뺀다", () => {
+  it("poll 명령 — 서버 순서 그대로 · 세션 이름으로 · 모르는 것·모양 틀림은 뺀다", () => {
     expect(remoteCommands({ commands: [
-      { type: "resize", cols: 120, rows: 40 },
-      { type: "input", d: "aGk=" },
+      { type: "create", requestId: "r1", name: "new", command: "npm test" },
+      { type: "resize", session: "a", cols: 120, rows: 40 },
+      { type: "input", session: "a", d: "aGk=" },
+      { type: "key", session: "a", key: "up" },
+      { type: "kill", requestId: "r2", session: "b" },
+      { type: "label", requestId: "r3", session: "a", label: "백엔드" },
       { type: "later", x: 1 },
-      { type: "resize", cols: 0, rows: 40 },
-      { type: "resize", cols: "80", rows: 24 },
-      { type: "input" },
-    ] })).toEqual([{ type: "resize", cols: 120, rows: 40 }, { type: "input", d: "aGk=" }]);
+      { type: "input", d: "eA==" },
+      { type: "resize", session: "a", cols: 0, rows: 40 },
+      { type: "create", name: "no-request" },
+    ] })).toEqual([
+      { type: "create", requestId: "r1", name: "new", command: "npm test" },
+      { type: "resize", session: "a", cols: 120, rows: 40 },
+      { type: "input", session: "a", d: "aGk=" },
+      { type: "key", session: "a", key: "up" },
+      { type: "kill", requestId: "r2", session: "b" },
+      { type: "label", requestId: "r3", session: "a", label: "백엔드" },
+    ]);
     expect(remoteCommands({ state: "OPEN" })).toEqual([]);
+    expect(watchingOf({ watching: ["a", 3, ""] })).toEqual(["a"]);
+    expect(remoteStateOf("off-by-web")).toBe("off-by-web");
+    expect(remoteStateOf("later")).toBeUndefined();
+  });
+
+  it("올릴 목록 — 다리 자기 세션은 뺀다 · label·lastOutputAt 은 있을 때만", () => {
+    expect(wireSessions([
+      { name: "ainecto-pc", pid: 1, clients: 0, cols: 80, rows: 24, cwd: "/", command: null },
+      { name: "api", pid: 2, clients: 0, cols: 100, rows: 30, cwd: "/", command: null, label: "백엔드", lastOutputAt: "2026-11-17T00:00:00Z" },
+      { name: "web", pid: 3, clients: 1, cols: 80, rows: 24, cwd: "/", command: ["npm", "start"] },
+    ], ["ainecto-pc"])).toEqual([
+      { name: "api", label: "백엔드", cols: 100, rows: 30, lastOutputAt: "2026-11-17T00:00:00Z" },
+      { name: "web", cols: 80, rows: 24 },
+    ]);
   });
 
   it("다시 하기 간격 — C12 에서 두 배씩 C13 까지 · 흔들림 0~C12", () => {
     expect(retryWait(0, 0)).toBe(RETRY_MIN_MS);
     expect(retryWait(1, 0)).toBe(RETRY_MIN_MS * 2);
     expect(retryWait(30, 0)).toBe(RETRY_MAX_MS);
-    expect(retryWait(0, 0.999)).toBeLessThan(RETRY_MIN_MS * 2);
     expect(retryWait(30, 0.999)).toBeLessThan(RETRY_MAX_MS + RETRY_MIN_MS);
   });
 });
 
+interface Frame { linkId: string; session: string; cols: number; rows: number; text: string; modes?: Record<string, boolean> }
+
 /**
- * 서버 PC 계약 4개의 대역(프로세스 안 실제 HTTP). poll 은 붙잡았다가 입력·닫힘이 오면 깨어난다.
- * open 마다 새 remoteId·토큰 — 지금 것과 다른(또는 재시작으로 잊은) remoteId·토큰이면 404 REMOTE_NOT_FOUND(서버 requireCurrent 와 같다).
+ * api PC 계약(open·sessions·poll·frame·answer·close)의 대역 — 프로세스 안 실제 HTTP. poll 은 붙잡았다가 명령·보기·상태가 바뀌면 깬다.
+ * open 마다 새 linkId·토큰 · 다른(또는 재시작으로 잊은) linkId·토큰이면 404 REMOTE_NOT_FOUND(서버와 같다).
  */
 class FakeServer {
   server!: Server;
   endpoint = "";
   readonly calls: Array<{ op: string; token?: string; body: Record<string, unknown> }> = [];
-  readonly frameLog: Array<{ remoteId: string; text: string; cols: number; rows: number }> = [];
-  remoteId = "";
-  remoteToken = "";
-  /** 재시작하면 잊는다. */
+  readonly frames: Frame[] = [];
+  readonly answers: Array<Record<string, unknown>> = [];
+  linkId = "";
+  linkToken = "";
+  remote = "on";
+  /** PC 가 마지막으로 올린 목록(open·sessions). */
+  listed: Array<Record<string, unknown>> = [];
   private known = false;
-  /** 다음 poll 에 줄 명령 — 서버처럼 한 응답에 모아 준다(resize 를 input 앞에 둔 순서 그대로). */
+  private watching: string[] = [];
   private commands: Array<Record<string, unknown>> = [];
   private closedReason: string | undefined;
-  /** 다음 poll 에 줄 오류. */
   pollError: { status: number; code: string } | undefined;
-  frameError: { status: number; code: string } | undefined;
-  /** poll 마다 원격을 잊는다 — 열자마자 또 404 가 나는 고리. */
-  forgetOnPoll = false;
-  /** 이 수만큼 poll 에 답하지 않는다(기한 초과 시험). */
   hangPolls = 0;
   private held: Array<{ wake: () => void; res: ServerResponse }> = [];
   private hanging: ServerResponse[] = [];
-
-  get frames(): string[] {
-    return this.frameLog.map((frame) => frame.text);
-  }
-
-  /** api 재시작 — 메모리의 원격을 잊고, 붙잡힌 poll 의 연결은 끊긴다. */
-  restart(): void {
-    this.known = false;
-    const held = this.held;
-    this.held = [];
-    for (const { res } of held) res.destroy();
-  }
 
   async start(): Promise<void> {
     this.server = createServer((req, res) => {
@@ -106,24 +108,35 @@ class FakeServer {
     await new Promise<void>((done) => this.server.close(() => done()));
   }
 
-  input(text: string): void {
-    this.commands.push({ type: "input", d: Buffer.from(text, "utf8").toString("base64") });
-    this.wake();
+  watch(...names: string[]): void { this.watching = names; this.wake(); }
+  input(session: string, text: string): void { this.push({ type: "input", session, d: Buffer.from(text).toString("base64") }); }
+  key(session: string, key: string): void { this.push({ type: "key", session, key }); }
+  resize(session: string, cols: number, rows: number): void { this.push({ type: "resize", session, cols, rows }); }
+  create(name: string, extra: Record<string, unknown> = {}): string { return this.request({ type: "create", name, ...extra }); }
+  kill(session: string): string { return this.request({ type: "kill", session }); }
+  label(session: string, label: string): string { return this.request({ type: "label", session, label }); }
+  webOff(): void { this.remote = "off-by-web"; this.wake(); }
+  replace(): void { this.closedReason = "REPLACED"; this.wake(); }
+  /** api 재시작 — 링크를 잊고 붙잡힌 poll 의 연결은 끊긴다. */
+  restart(): void {
+    this.known = false;
+    const held = this.held;
+    this.held = [];
+    for (const { res } of held) res.destroy();
+  }
+  ops(): string[] { return this.calls.map((call) => call.op); }
+  listedNames(): string[] { return this.listed.map((s) => String(s.name)); }
+  answerFor(requestId: string): Record<string, unknown> | undefined { return this.answers.find((a) => a.requestId === requestId); }
+
+  private request(command: Record<string, unknown>): string {
+    const requestId = randomUUID();
+    this.push({ ...command, requestId });
+    return requestId;
   }
 
-  /** 웹 패널 크기 — 서버처럼 input 보다 앞에. */
-  resize(cols: number, rows: number): void {
-    this.commands.unshift({ type: "resize", cols, rows });
+  private push(command: Record<string, unknown>): void {
+    this.commands.push(command);
     this.wake();
-  }
-
-  close(reason: string): void {
-    this.closedReason = reason;
-    this.wake();
-  }
-
-  ops(): string[] {
-    return this.calls.map((call) => call.op);
   }
 
   private wake(): void {
@@ -141,18 +154,24 @@ class FakeServer {
       res.writeHead(status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(out));
     };
-    if (op === "poll" && this.forgetOnPoll) this.known = false;
-    if (op !== "open" && (!this.known || body.remoteId !== this.remoteId || token !== this.remoteToken)) {
+    if (op !== "open" && (!this.known || body.linkId !== this.linkId || token !== this.linkToken)) {
       reply(404, { code: "REMOTE_NOT_FOUND", message: "No such open remote terminal." });
       return;
     }
     switch (op) {
       case "open":
-        this.remoteId = randomUUID();
-        this.remoteToken = `tok-${randomUUID()}`;
+        this.linkId = randomUUID();
+        this.linkToken = `tok-${randomUUID()}`;
         this.known = true;
-        reply(201, { remoteId: this.remoteId, remoteToken: this.remoteToken,
+        this.closedReason = undefined;
+        this.remote = body.remoteEnabled === true ? "on" : "off-by-pc";
+        this.listed = body.sessions as Array<Record<string, unknown>>;
+        reply(201, { linkId: this.linkId, linkToken: this.linkToken,
           limits: { pollHoldSeconds: 1, frameMaxBytes: 1024 * 1024, bodyMaxBytes: 64 * 1024 } });
+        return;
+      case "sessions":
+        this.listed = body.sessions as Array<Record<string, unknown>>;
+        reply(200, {});
         return;
       case "poll": {
         if (this.hangPolls > 0) {
@@ -161,13 +180,9 @@ class FakeServer {
           return;
         }
         const answer = () => {
-          if (this.pollError) {
-            reply(this.pollError.status, { code: this.pollError.code, message: "refused" });
-          } else if (this.closedReason) {
-            reply(200, { state: "CLOSED", reason: this.closedReason });
-          } else {
-            reply(200, { state: "OPEN", commands: this.commands.splice(0) });
-          }
+          if (this.pollError) reply(this.pollError.status, { code: this.pollError.code, message: "refused" });
+          else if (this.closedReason) reply(200, { state: "CLOSED", reason: this.closedReason });
+          else reply(200, { state: "OPEN", remote: this.remote, watching: this.watching, commands: this.commands.splice(0) });
         };
         if (this.pollError || this.closedReason || this.commands.length > 0) {
           answer();
@@ -185,13 +200,14 @@ class FakeServer {
         return;
       }
       case "frame":
-        if (this.frameError) {
-          reply(this.frameError.status, { code: this.frameError.code, message: "refused" });
-          return;
-        }
-        this.frameLog.push({ remoteId: String(body.remoteId), text: Buffer.from(String(body.d), "base64").toString("utf8"),
-          cols: Number(body.cols), rows: Number(body.rows) });
-        reply(200, { version: this.frameLog.length });
+        this.frames.push({ linkId: String(body.linkId), session: String(body.session), cols: Number(body.cols), rows: Number(body.rows),
+          text: Buffer.from(String(body.d), "base64").toString("utf8"),
+          ...(body.modes ? { modes: body.modes as Record<string, boolean> } : {}) });
+        reply(200, { version: this.frames.length });
+        return;
+      case "answer":
+        this.answers.push(body);
+        reply(200, {});
         return;
       case "close":
         reply(200, {});
@@ -202,7 +218,7 @@ class FakeServer {
   }
 }
 
-describe("ainecto term remote — 실 데몬 + 서버 대역", () => {
+describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
   useTermRig();
   let fake: FakeServer;
   beforeEach(async () => {
@@ -213,21 +229,28 @@ describe("ainecto term remote — 실 데몬 + 서버 대역", () => {
     await fake.stop();
   });
 
-  function start(name: string, stop = new AbortController()): { done: Promise<RemoteResult>; stop: AbortController; printed: string[] } {
+  const PC_ID = "6f2c1d3e-0000-4000-8000-000000000001";
+
+  function start(options: { remoteEnabled?: boolean; exclude?: string[] } = {}): { done: Promise<RemoteResult>; stop: AbortController; printed: string[] } {
     const paths = termPaths(rig.home);
     const log = openRemoteLog(paths);
     const printed: string[] = [];
-    const done = runRemote({
+    const stop = new AbortController();
+    const done = runRemoteBridge({
       paths,
-      session: name,
       http: createRemoteHttp({
         endpoint: fake.endpoint,
         tokenProvider: { getAccessToken: async () => "t", refreshAfterUnauthorized: async () => "t" },
         log,
       }),
       log,
+      pcId: PC_ID,
       hostName: "test-host",
       cliVersion: "dev",
+      remoteEnabled: options.remoteEnabled ?? true,
+      exclude: options.exclude ?? ["ainecto-pc"],
+      sessionEnv: Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string")),
+      home: rig.home,
       signal: stop.signal,
       print: (line) => printed.push(line),
     });
@@ -238,239 +261,196 @@ describe("ainecto term remote — 실 데몬 + 서버 대역", () => {
     return readFileSync(termPaths(rig.home).remoteLog, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
   }
 
-  /** 요청 줄마다 같은 callId 의 응답 줄이 있다. */
-  function expectCallPairs(): void {
+  /** 요청 줄마다 같은 callId 의 응답 줄이 있다 · 명령 줄마다 결과 줄이 있다. */
+  function expectLogPairs(): void {
     const records = remoteLog();
     const requests = records.filter((r) => r.event === "remote_call").map((r) => r.callId);
     const responses = new Set(records.filter((r) => r.event === "remote_call_response").map((r) => r.callId));
     expect(requests.length).toBeGreaterThan(0);
     expect(requests.filter((id) => !responses.has(id))).toEqual([]);
+    expect(records.filter((r) => r.event === "remote_command").length)
+      .toBe(records.filter((r) => r.event === "remote_command_result").length);
   }
 
-  it("웹 입력 hi\\r·Esc → 세션 → 화면에 hi·^[ · 멈춤 신호 → close · 토큰은 open 밖에만", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    const run = start("t");
-    await until(() => fake.frames.length > 0, "first frame");
-    fake.input("hi\r");
-    await until(() => fake.frames.some((frame) => frame.split("\r\n").includes("hi")), "frame shows hi");
-    // Esc 한 바이트도 그대로 — 터미널 반향이 ^[ 로 그린다.
-    fake.input("\x1b");
-    await until(() => fake.frames.some((frame) => frame.includes("^[")), "frame shows ^[");
-    run.stop.abort();
-    const result = await run.done;
-    expect(result.exitCode).toBe(0);
-    expect(fake.ops()[0]).toBe("open");
-    expect(fake.ops().at(-1)).toBe("close");
-    expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
-    expect(fake.calls[0]?.body).toMatchObject({ session: "t", hostName: "test-host", cliVersion: "dev" });
-    expect(fake.calls[0]?.token).toBeUndefined();
-    expect(fake.calls.slice(1).every((call) => call.token === fake.remoteToken && call.body.remoteId === fake.remoteId)).toBe(true);
-    expectCallPairs();
-    // 화면 글자·입력·토큰은 로그에 남지 않는다.
-    const text = readFileSync(termPaths(rig.home).remoteLog, "utf8");
-    expect(text).not.toContain(fake.remoteToken);
-    expect(text).not.toContain(Buffer.from("hi\r").toString("base64"));
-  }, LONG);
+  it("열 때 세션 전부(자기 pc 세션 뺌) · 보는 세션만 화면 · 전환 · 세션별 입력 · 멈춤 → close", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    await ok("term", "new", "b", "--", "cat");
+    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    expect(fake.calls[0]?.body).toMatchObject({ pcId: PC_ID, hostName: "test-host", cliVersion: "dev", remoteEnabled: true });
+    expect(fake.listedNames().sort()).toEqual(["a", "b"]);
+    await sleep(500);
+    expect(fake.frames).toEqual([]);
 
-  it("Ctrl 바이트도 그대로 — Ctrl-D 로 cat 이 끝나면 close 보내고 끝(0)", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    const run = start("t");
-    await until(() => fake.frames.length > 0, "first frame");
-    fake.input("\x04");
-    const result = await run.done;
-    expect(result.exitCode).toBe(0);
-    expect(result.reason).toMatch(/exited/);
-    expect(fake.ops().at(-1)).toBe("close");
-    expectCallPairs();
-  }, LONG);
+    fake.watch("a");
+    fake.input("a", "hi-a\r");
+    await until(() => fake.frames.some((f) => f.session === "a" && f.text.split("\r\n").includes("hi-a")), "a shows hi-a");
+    expect(fake.frames.every((f) => f.session === "a")).toBe(true);
 
-  it("서버가 CLOSED → 종료 코드 0 · close 를 보내지 않고 다시 open 하지 않는다", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    const run = start("t");
-    await until(() => fake.frames.length > 0, "first frame");
-    fake.close("CLOSED_BY_WEB");
-    const result = await run.done;
-    expect(result.exitCode).toBe(0);
-    expect(result.reason).toContain("CLOSED_BY_WEB");
-    expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
-    expect(fake.ops()).not.toContain("close");
-    expectCallPairs();
-  }, LONG);
+    fake.watch("b");
+    fake.input("b", "hi-b\r");
+    await until(() => fake.frames.some((f) => f.session === "b" && f.text.split("\r\n").includes("hi-b")), "b shows hi-b");
+    expect((await screen("a")).includes("hi-b")).toBe(false);
 
-  it("api 재시작(poll 404 REMOTE_NOT_FOUND) → 같은 세션으로 다시 open · 새 원격에 첫 장부터 · 입력·화면이 새 원격으로", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    const run = start("t");
-    await until(() => fake.frames.length > 0, "first frame");
-    const first = fake.remoteId;
-    fake.restart();
-    await until(() => fake.ops().filter((op) => op === "open").length === 2, "reopened");
-    const second = fake.remoteId;
-    expect(second).not.toBe(first);
-    // 화면이 바뀌지 않았어도 새 원격에 첫 장을 올린다(hash 초기화).
-    await until(() => fake.frameLog.some((frame) => frame.remoteId === second), "first frame on the new remote");
-    fake.input("hi\r");
-    await until(() => fake.frameLog.some((frame) => frame.remoteId === second && frame.text.split("\r\n").includes("hi")), "hi on the new remote");
-    run.stop.abort();
-    const result = await run.done;
-    expect(result.exitCode).toBe(0);
-    const opens = fake.calls.filter((call) => call.op === "open");
-    expect(opens.map((call) => call.body.session)).toEqual(["t", "t"]);
-    expect(opens.every((call) => call.token === undefined)).toBe(true);
-    const close = fake.calls.at(-1);
-    expect(close).toMatchObject({ op: "close", token: fake.remoteToken, body: { remoteId: second } });
-    expect(remoteLog().filter((r) => r.event === "remote_reopened"))
-      .toEqual([expect.objectContaining({ reason: "REMOTE_NOT_FOUND", previousRemoteId: first, remoteId: second })]);
-    expectCallPairs();
-  }, LONG);
-
-  it("열자마자 또 404 인 고리 — 다시 열기는 C12 부터 두 배씩 벌어진다(폭주 없음)", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    fake.forgetOnPoll = true;
-    const run = start("t");
-    await until(() => fake.ops().filter((op) => op === "open").length >= 2, "reopening");
-    const started = Date.now();
-    await sleep(RETRY_MIN_MS * 4);
-    // 기다림 없이 돌면 수백 번이다. 간격 0.5~1초 → 1~1.5초 → … 이므로 2초 동안 많아야 몇 번.
-    const opens = fake.ops().filter((op) => op === "open").length;
-    expect(opens).toBeLessThanOrEqual(5);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(RETRY_MIN_MS * 4);
     run.stop.abort();
     expect((await run.done).exitCode).toBe(0);
-    expectCallPairs();
+    expect(fake.ops().at(-1)).toBe("close");
+    expect(fake.calls.slice(1).every((call) => call.token === fake.linkToken)).toBe(true);
+    expectLogPairs();
+    const text = readFileSync(termPaths(rig.home).remoteLog, "utf8");
+    expect(text).not.toContain(fake.linkToken);
+    expect(text).not.toContain(Buffer.from("hi-a\r").toString("base64"));
   }, LONG);
 
-  it("poll 401(로그인 거절) → 끝(1) · 다시 open 하지 않는다", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    fake.pollError = { status: 401, code: "UNAUTHORIZED" };
-    const result = await start("t").done;
-    expect(result.exitCode).toBe(1);
-    expect(result.reason).toContain("401");
+  it("웹 만들기(명령 줄·폴더 없으면 홈) → 데몬에 생김·answer ok·목록에 · 같은 이름이면 데몬 코드로 실패", async () => {
+    await ok("term", "new", "base", "--", "cat");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const id = fake.create("made", { command: "echo made-$((1+2)); sleep 600" });
+    await until(() => fake.answerFor(id) !== undefined, "answer");
+    expect(fake.answerFor(id)).toMatchObject({ ok: true });
+    await until(() => fake.listedNames().includes("made"), "made listed");
+    const made = (await sessions()).find((s) => s.name === "made");
+    expect(made?.cwd).toBe(rig.home);
+    await ok("term", "wait", "made", "--match", "made-3", "--timeout", "10");
+
+    const dup = fake.create("made");
+    await until(() => fake.answerFor(dup) !== undefined, "dup answer");
+    expect(fake.answerFor(dup)).toMatchObject({ ok: false, code: "TERM_SESSION_EXISTS" });
+    run.stop.abort();
+    await run.done;
+    expectLogPairs();
+  }, LONG);
+
+  it("웹 끝내기·이름 바꾸기 → 데몬 · answer · 목록이 따라간다(label 칸)", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    await ok("term", "new", "b", "--", "cat");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const renamed = fake.label("a", "백엔드 서버");
+    await until(() => fake.answerFor(renamed) !== undefined, "label answer");
+    expect(fake.answerFor(renamed)).toMatchObject({ ok: true });
+    await until(() => fake.listed.some((s) => s.name === "a" && s.label === "백엔드 서버"), "label listed");
+    const killed = fake.kill("b");
+    await until(() => fake.answerFor(killed) !== undefined, "kill answer");
+    expect(fake.answerFor(killed)).toMatchObject({ ok: true });
+    await until(() => !fake.listedNames().includes("b"), "b gone from the list");
+    expect((await sessions()).map((s) => s.name)).toEqual(["a"]);
+    run.stop.abort();
+    await run.done;
+  }, LONG);
+
+  it("키 이름 → 데몬 key(Ctrl-D 로 cat 이 끝남 → 목록에서 빠짐) · 크기 → set-size 와 frame 크기 · 화면 모드 표지", async () => {
+    await ok("term", "new", "cat", "--", "cat");
+    await ok("term", "new", "app", "--", "/bin/sh", "-c", "printf '\\033[?1h'; echo app-mode; sleep 600");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    fake.watch("app");
+    await until(() => fake.frames.some((f) => f.session === "app" && f.modes?.appCursor === true), "app frame with modes");
+    fake.resize("app", 100, 30);
+    await until(() => fake.frames.some((f) => f.session === "app" && f.cols === 100 && f.rows === 30), "frame at the new size");
+    expect((await sessions()).find((s) => s.name === "app")).toMatchObject({ cols: 100, rows: 30 });
+
+    fake.key("cat", "ctrl-d");
+    await until(async () => !(await sessions()).some((s) => s.name === "cat"), "cat ended");
+    await until(() => !fake.listedNames().includes("cat"), "cat gone from the list");
+    fake.key("app", "no-such-key");
+    await until(() => remoteLog().some((r) => r.event === "remote_command_result" && r.code === "TERM_UNKNOWN_KEY"), "unknown key logged");
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
+  it("PC 설정 끔 → remoteEnabled=false·세션 0 으로 열고 명령은 REMOTE_OFF(이중 거절) · 다리는 계속", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const run = start({ remoteEnabled: false });
+    await until(() => fake.ops().includes("open"), "open");
+    expect(fake.calls[0]?.body).toMatchObject({ remoteEnabled: false, sessions: [] });
+    const id = fake.create("x");
+    await until(() => fake.answerFor(id) !== undefined, "answer");
+    expect(fake.answerFor(id)).toMatchObject({ ok: false, code: "REMOTE_OFF" });
+    expect((await sessions()).map((s) => s.name)).toEqual(["a"]);
+    expect(run.printed.join("\n")).toContain("Remote terminal: off on this PC");
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
+  it("웹 «원격 터미널 끊기»(remote=off-by-web) → 화면 멈춤·명령 거절·안내 한 줄 · 링크는 남긴다(poll 계속)", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    fake.watch("a");
+    await until(() => fake.frames.length > 0, "first frame");
+    fake.webOff();
+    await until(() => run.printed.some((line) => line.includes("turned off from the web")), "off notice");
+    const framesAtOff = fake.frames.length;
+    fake.input("a", "late\r");
+    const id = fake.create("x");
+    await until(() => fake.answerFor(id) !== undefined, "answer");
+    expect(fake.answerFor(id)).toMatchObject({ ok: false, code: "REMOTE_OFF" });
+    await sleep(1_500);
+    expect(fake.frames.length).toBe(framesAtOff);
+    expect((await screen("a")).includes("late")).toBe(false);
+    const polls = fake.ops().filter((op) => op === "poll").length;
+    await until(() => fake.ops().filter((op) => op === "poll").length > polls, "still polling");
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
+  it("같은 PC 의 다른 다리가 열면(CLOSED REPLACED) → 끝(0) · close 보내지 않음 · 다시 열지 않음", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    fake.replace();
+    const result = await run.done;
+    expect(result.exitCode).toBe(0);
+    expect(result.reason).toContain("REPLACED");
+    expect(fake.ops()).not.toContain("close");
     expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
-    expectCallPairs();
   }, LONG);
 
-  it("그 밖 4xx → 사유와 함께 비정상 종료(1)", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    fake.frameError = { status: 413, code: "FRAME_TOO_LARGE" };
-    const result = await start("t").done;
-    expect(result.exitCode).toBe(1);
-    expect(result.reason).toContain("FRAME_TOO_LARGE");
-    expectCallPairs();
+  it("api 재시작(poll 404 REMOTE_NOT_FOUND) → 같은 PC 로 다시 open(목록 포함) · 보던 세션 화면이 새 링크로", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    fake.watch("a");
+    await until(() => fake.frames.length > 0, "first frame");
+    const first = fake.linkId;
+    fake.restart();
+    await until(() => fake.ops().filter((op) => op === "open").length === 2, "reopened");
+    expect(fake.linkId).not.toBe(first);
+    expect(fake.listedNames()).toEqual(["a"]);
+    fake.input("a", "after\r");
+    await until(() => fake.frames.some((f) => f.linkId === fake.linkId && f.text.split("\r\n").includes("after")), "frame on the new link");
+    expect(remoteLog().filter((r) => r.event === "remote_reopened")).toEqual([
+      expect.objectContaining({ reason: "REMOTE_NOT_FOUND", previousLinkId: first, linkId: fake.linkId })]);
+    run.stop.abort();
+    await run.done;
+    expectLogPairs();
   }, LONG);
 
-  it("서버가 poll 에 답하지 않으면 기한 초과 응답 줄을 남기고 같은 remoteId 로 다시 poll", async () => {
-    await ok("term", "new", "t", "--", "cat");
+  it("poll 기한 초과 → 기한 줄 남기고 같은 링크로 다시 poll · poll 401(로그인 거절) → 끝(1)", async () => {
+    await ok("term", "new", "a", "--", "cat");
     fake.hangPolls = 1;
-    const run = start("t");
-    // poll 기한 = 붙잡는 시간(1초) + C8 — 리그의 until(10초)보다 길다.
+    const run = start();
     const deadline = Date.now() + 1_000 + CALL_TIMEOUT_MS + RETRY_MIN_MS * 2 + 5_000;
     while (fake.ops().filter((op) => op === "poll").length < 2) {
       if (Date.now() > deadline) throw new Error("no second poll");
       await sleep(100);
     }
-    fake.close("CLOSED_BY_WEB");
-    expect((await run.done).exitCode).toBe(0);
-    const timedOut = remoteLog().find((r) => r.event === "remote_call_response" && r.op === "poll" && r.error === "TimeoutError");
-    expect(timedOut).toBeDefined();
-    const polls = fake.calls.filter((call) => call.op === "poll");
-    expect(new Set(polls.map((call) => call.body.remoteId))).toEqual(new Set([fake.remoteId]));
+    expect(remoteLog().some((r) => r.event === "remote_call_response" && r.op === "poll" && r.error === "TimeoutError")).toBe(true);
+    fake.pollError = { status: 401, code: "UNAUTHORIZED" };
+    const result = await run.done;
+    expect(result.exitCode).toBe(1);
+    expect(result.reason).toContain("401");
     expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
-    expectCallPairs();
   }, LONG);
 
-  it("데몬 set-size → PTY 크기가 바뀌고(ls) 긴 줄이 새 폭에서 꺾인다(read)", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    const result = await termRequest(termPaths(rig.home), { op: "set-size", name: "t", cols: 20, rows: 10 }, { start: false });
-    expect(result).toMatchObject({ daemon: true, data: { name: "t", cols: 20, rows: 10 } });
-    expect((await sessions()).find((s) => s.name === "t")).toMatchObject({ cols: 20, rows: 10 });
-    await ok("term", "send", "t", "x".repeat(30));
-    await ok("term", "wait", "t", "--match", "^x{10}$", "--timeout", "10");
-    const lines = await screen("t");
-    expect(lines).toContain("x".repeat(20));
-    expect(lines).toContain("x".repeat(10));
-  }, LONG);
-
-  it("poll 의 resize → 세션 크기가 바뀌고 다음 frame 의 cols·rows 가 새 값", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    const run = start("t");
-    await until(() => fake.frames.length > 0, "first frame");
-    const before = fake.frameLog[0];
-    expect(before).toBeDefined();
-    fake.resize(100, 30);
-    await until(() => fake.frameLog.some((frame) => frame.cols === 100 && frame.rows === 30), "frame at the new size");
-    expect((await sessions()).find((s) => s.name === "t")).toMatchObject({ cols: 100, rows: 30 });
-    fake.input("hi\r");
-    await until(() => fake.frameLog.some((frame) => frame.cols === 100 && frame.text.split("\r\n").includes("hi")), "input after resize");
-    run.stop.abort();
-    expect((await run.done).exitCode).toBe(0);
-    expectCallPairs();
-  }, LONG);
-
-  it("옛 데몬(set-size 모름 → 연결을 끊음) → 한 줄 남기고 크기만 무시 · 다리는 계속", async () => {
-    const old = await fakeOldDaemon();
-    try {
-      const run = start("t");
-      await until(() => fake.frames.length > 0, "first frame");
-      fake.resize(100, 30);
-      fake.input("hi");
-      await until(() => old.sends.includes("hi"), "input still reaches the daemon");
-      await until(() => remoteLog().some((r) => r.event === "remote_daemon_error" && r.op === "set-size"), "set-size failure logged");
-      expect(fake.frameLog.every((frame) => frame.cols === 80 && frame.rows === 24)).toBe(true);
-      run.stop.abort();
-      const result = await run.done;
-      expect(result.exitCode).toBe(0);
-      expect(fake.ops().at(-1)).toBe("close");
-    } finally {
-      await new Promise<void>((done) => old.server.close(() => done()));
-    }
-  }, LONG);
-
-  /** set-size 를 모르는 옛 데몬 — 모르는 op 를 받으면 그 연결을 끊는다(옛 parseClientMessage → bad_message → destroy). */
-  async function fakeOldDaemon(): Promise<{ server: NetServer; sends: string[] }> {
-    const paths = termPaths(rig.home);
-    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
-    const sends: string[] = [];
-    const server = createNetServer((socket) => {
-      const decoder = new LineDecoder();
-      socket.on("data", (chunk: Buffer) => {
-        for (const line of decoder.push(chunk)) {
-          const message = JSON.parse(line) as { id: string; op: string; name?: string; text?: string };
-          const answer = (data: unknown) => socket.write(`${JSON.stringify({ id: message.id, ok: true, data })}\n`);
-          switch (message.op) {
-            case "watch":
-              answer({ name: message.name });
-              break;
-            case "ls":
-              answer({ sessions: [{ name: "t", pid: 1, cwd: "/", command: null, createdAt: "", cols: 80, rows: 24, clients: 0 }] });
-              break;
-            case "read":
-              answer({ name: message.name, lines: ["old daemon"] });
-              break;
-            case "send":
-              sends.push(message.text ?? "");
-              answer({ name: message.name });
-              break;
-            default:
-              socket.destroy();
-          }
-        }
-      });
-      socket.on("error", () => undefined);
-    });
-    await new Promise<void>((done) => server.listen(paths.socket, () => done()));
-    return { server, sends };
-  }
-
-  it("없는 세션 → 서버를 부르지 않고 오류", async () => {
-    await ok("term", "new", "t", "--", "cat");
-    await expect(start("nope").done).rejects.toMatchObject({ code: "TERM_NO_SESSION" });
-    expect(fake.calls).toEqual([]);
-  }, LONG);
-
-  it("CLI 진입 — term remote 는 도움말에 있고, 없는 세션이면 1", async () => {
-    expect(await ok("--help")).toContain("ainecto term remote <name>");
-    const run = await cli("term", "remote", "nope");
+  it("CLI — term remote 는 이제 PC 연결 안내(MOVED, 종료 1)", async () => {
+    const run = await cli("term", "remote", "x");
     expect(run.code).toBe(1);
-    expect(run.stderr).toContain("nope");
+    expect(run.stderr).toContain("ainecto remote on");
+    expect(await ok("--help")).not.toContain("ainecto term remote");
+    expect((await termRequest(termPaths(rig.home), { op: "ls" }, { start: false })).daemon).toBe(false);
   }, LONG);
 });

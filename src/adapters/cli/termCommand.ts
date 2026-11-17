@@ -1,6 +1,4 @@
 import { closeSync, writeSync } from "node:fs";
-import { hostname } from "node:os";
-import { onStopSignals } from "../../core/async/stopSignals";
 import { resolve } from "node:path";
 import { openTermClient, termRequest } from "../../core/term/client";
 import { runDaemon, type DaemonReadiness } from "../../core/term/daemon";
@@ -13,11 +11,9 @@ import { listedSessions, type TermRequestBody } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { renderSuccess } from "../../core/output/render";
 import { renderTable } from "../../core/output/table";
-import { CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
-import type { TokenProvider } from "../../core/auth/oauth";
-import { ensurePrivateDir } from "../../core/fs/privateFiles";
-import { createRemoteHttp, openRemoteLog, runRemote, type RemoteResult } from "../../core/term/remote";
+import { CLI_VERSION } from "../../core/version";
 import type { CliIO } from "./ainectoCli";
+import { CliCommandError } from "./errors";
 
 /** 도움말 — 전역 도움말이 이 줄들을 싣는다. */
 export const TERM_HELP_LINES: readonly string[] = [
@@ -30,7 +26,6 @@ export const TERM_HELP_LINES: readonly string[] = [
   `  ainecto term attach <name>                                watch and type in your terminal; detach with ${DETACH_HINT}`,
   "  ainecto term kill <name> · ainecto term kill-server",
   "  ainecto term restore [--json]                             start again the sessions that were running when the daemon or the machine stopped",
-  "  ainecto term remote <name>                                show the session in AiNecto on the web (plain text) and type there (signed in; Ctrl+C to stop; log: ~/.ainecto/term/remote.log)",
 ];
 
 interface TermCommandInput {
@@ -95,60 +90,13 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
       return await attach(paths, singleName(parseArgs(rest, {}).positionals, "term attach <name>"), input.io);
     case "daemon":
       return await daemonCommand(paths, rest);
+    case "remote":
+      // ★두 방식 금지 — 다리는 이 PC 연결(`ainecto`) 안에서 PC 당 하나다. 따로 띄우면 같은 PC 의 다리끼리 서로 밀어낸다.
+      throw new CliCommandError("MOVED", "`ainecto term remote` is now part of the PC connection: run `ainecto` (it lists every term session "
+        + "of this PC in AiNecto on the web). Allow terminals from the web with `ainecto remote on`.");
     default:
-      throw usage(`term new|ls|send|key|read|wait|attach|kill|kill-server|restore|remote — see ainecto --help`);
+      throw usage(`term new|ls|send|key|read|wait|attach|kill|kill-server|restore — see ainecto --help`);
   }
-}
-
-/**
- * `ainecto term remote <name>` — 이 기기의 세션 하나를 AiNecto 웹에 잇는다(KAN-738). term 에서 유일하게 서버·로그인을 쓴다 —
- * 그래서 runAinectoCli 가 endpoint 를 풀고 CLI 로그인(OAuth)을 넘긴 뒤 여기로 온다. 끝 사유는 한 줄로 낸다.
- */
-export async function executeTermRemote(input: TermCommandInput & {
-  endpoint: string;
-  auth: TokenProvider;
-  /** 이 PC 에서 원격 터미널이 꺼져 있으면(`ainecto remote off`) 던진다. */
-  assertAllowed: () => Promise<void>;
-}): Promise<number> {
-  const name = singleName(parseArgs(input.argv, {}).positionals, "term remote <name>");
-  const paths = termPaths();
-  // ★로컬 확인(그 세션이 있나)이 먼저 — 없는 세션은 서버 호출(계정·원격 허용 확인) 없이 바로 «없음».
-  const listed = await termRequest(paths, { op: "ls" }, { start: false });
-  if (!listedSessions(listed.daemon ? listed.data : undefined).some((session) => session.name === name)) {
-    throw noSession(name);
-  }
-  await input.assertAllowed();
-  await ensurePrivateDir(paths.dir);
-  const log = openRemoteLog(paths);
-  const host = hostname();
-  log.write({ event: "remote_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: input.endpoint, host, session: name });
-  const controller = new AbortController();
-  const onSignal = (): void => controller.abort();
-  // 두 번 와도(npx 아래 Ctrl+C) 처리기가 남는다 · SIGHUP 도 — onStopSignals 한 곳.
-  const offSignals = onStopSignals(onSignal);
-  let result: RemoteResult;
-  try {
-    result = await runRemote({
-      paths,
-      session: name,
-      http: createRemoteHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),
-      log,
-      hostName: host,
-      cliVersion: CLI_VERSION_LABEL,
-      signal: controller.signal,
-      print: (line) => input.io.stderr.write(`${line}\n`),
-    });
-  } catch (error) {
-    log.write({ event: "remote_stop", pid: process.pid, reason: `error: ${error instanceof Error ? error.message : String(error)}` });
-    throw error;
-  } finally {
-    offSignals();
-  }
-  log.write({ event: "remote_stop", pid: process.pid, reason: result.reason, exitCode: result.exitCode });
-  if (result.exitCode !== 0) {
-    throw new TermError("TERM_REMOTE_FAILED", result.reason);
-  }
-  return print(input, result, result.reason);
 }
 
 async function newSession(paths: TermPaths, argv: string[], input: TermCommandInput): Promise<number> {

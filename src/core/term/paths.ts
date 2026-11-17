@@ -22,7 +22,7 @@ export interface TermPaths {
   log: string;
   /** 크기를 넘겨 밀려난 직전 로그 — 하나만 남는다. */
   previousLog: string;
-  /** 원격 터미널 브리지 로그(`term remote`) — JSON 한 줄씩, 데몬 로그와 같은 쓰기·회전. */
+  /** 원격 터미널 다리 로그(PC 연결 안의 다리) — JSON 한 줄씩, 데몬 로그와 같은 쓰기·회전. */
   remoteLog: string;
   previousRemoteLog: string;
 }

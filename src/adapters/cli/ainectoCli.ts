@@ -15,11 +15,11 @@ import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands
 import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
-import { executeTermCommand, executeTermRemote, stringEnv, TERM_HELP_LINES } from "./termCommand";
+import { executeTermCommand, stringEnv, TERM_HELP_LINES } from "./termCommand";
 import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "./pcCommand";
 import { npxCliCommand, pcReadyDeadlineMs, pcStopDeadlineMs } from "../../core/pc/pcSession";
 import { pcSettingsPath } from "../../core/pc/pcSettings";
-import { assertRemoteAllowed, pcStatus } from "./pcStatus";
+import { pcStatus } from "./pcStatus";
 import { readAccount } from "../../core/setup/accountSummary";
 import { CliCommandError } from "./errors";
 import { termPaths } from "../../core/term/paths";
@@ -55,8 +55,8 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       return 0;
     }
     // ★term 은 이 기기 안의 터미널 다중화다 — 서버·로그인·에이전트 이름을 쓰지 않는다(KAN-738 1단계).
-    //   term remote 만 예외(서버에 잇는다) — 아래에서 endpoint·로그인을 받아 간다.
-    if (parsed.positionals[0] === "term" && parsed.positionals[1] !== "remote") {
+    //   웹에 잇는 다리는 이 PC 연결(`ainecto` → pc run) 안에 있다 — `term remote` 는 그 안내만 한다.
+    if (parsed.positionals[0] === "term") {
       return await executeTermCommand({ argv: parsed.positionals.slice(1), json: parsed.json, io });
     }
 
@@ -222,14 +222,6 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         ...(domain === "status" ? { pc: (status: MachineStatus) => pcStatus(status, resolved.endpoint) } : {}),
         json: parsed.json,
         io,
-      });
-    }
-
-    if (domain === "term") {
-      return await executeTermRemote({
-        argv: rest, json: parsed.json, io, endpoint: resolved.endpoint, auth: connect().auth,
-        // ★`ainecto remote off` 면 시작하지 않는다 — next.9 한 판 동안 남는 세션별 다리(다음 판에 pc 연결 안으로 들어간다).
-        assertAllowed: () => assertRemoteAllowed(resolved.endpoint, () => readAccount(connect().client)),
       });
     }
 
