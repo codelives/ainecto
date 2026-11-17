@@ -1,0 +1,47 @@
+# CLI npm 게시 — 세 이름(@ainecto/mcp · ainecto · @ainecto/cli)을 scripts/publish.mjs 한 곳으로 올린다.
+# npm «신뢰 게시자»(OIDC): 비밀 토큰 0 · 출처 증명(provenance) — 사용자 결재 2026-11-17.
+# ★environment «npm-publish» 의 승인자(사람)가 승인해야 job 이 돈다.
+# 실행: Actions → publish → Run workflow → 가지(게시할 커밋) · 꼬리표
+#   gh workflow run publish.yml --repo codelives/ainecto --ref <가지> -f tag=next
+# npmjs.com 의 패키지 3개 신뢰 게시자 설정은 이 파일 이름(publish.yml)과 environment 이름(npm-publish)에 묶여 있다 — 바꾸면 거기도.
+name: publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "npm 꼬리표 — next(시험판: 판 번호에 - 가 있는 것) · latest(정식)"
+        required: true
+        type: choice
+        options: [next, latest]
+
+permissions:
+  contents: read
+  id-token: write # npm 신뢰 게시자(OIDC) · 출처 증명
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: npm 판 확인 (신뢰 게시자는 11.5.1 이상)
+        run: |
+          v="$(npm --version)"
+          node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))); console.log(`npm ${process.argv[1]}`); process.exit(ok ? 0 : 1);' "$v"
+      - run: npm ci
+      - name: 게시 (prepack 한 번 → 세 이름)
+        run: node scripts/publish.mjs --tag="$TAG"
+        env:
+          TAG: ${{ inputs.tag }}
