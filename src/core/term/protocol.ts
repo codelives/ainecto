@@ -19,7 +19,12 @@ export type TermRequestBody =
   | { op: "restore"; env: Record<string, string> }
   | { op: "attach"; name: string; cols: number; rows: number }
   | { op: "detach" }
-  | { op: "watch"; name: string };
+  | { op: "watch"; name: string }
+  /**
+   * 붙지 않은 쪽(원격 웹 패널 — `term remote`)이 세션 크기를 정한다. ★attach 흐름의 `resize`(id 없는 줄)와 이름을 나눈다 — 옛 데몬은
+   * id 붙은 `resize` 를 흐름 줄로 읽어 답하지 않는다(10초 뒤 연결이 끊김). 모르는 op 면 옛 데몬이 연결을 바로 끊어 빨리 안다.
+   */
+  | { op: "set-size"; name: string; cols: number; rows: number };
 
 export type TermRequest = TermRequestBody & { id: string };
 
@@ -128,6 +133,7 @@ export function parseClientMessage(line: string): TermClientMessage {
     case "restore":
       return { id, op, env: stringMapField(record, "env") };
     case "attach":
+    case "set-size":
       return { id, op, name: stringField(record, "name"), cols: sizeField(record, "cols"), rows: sizeField(record, "rows") };
     default:
       throw new TermProtocolError(`Unknown op "${op}".`);
@@ -189,6 +195,15 @@ function isListedSession(value: unknown): value is ListedSession {
   const session = value as Record<string, unknown>;
   return typeof session.name === "string" && typeof session.pid === "number" && typeof session.cwd === "string"
     && typeof session.cols === "number" && typeof session.rows === "number";
+}
+
+/** `set-size` 응답 → 적용된 크기. 모양이 틀리면 undefined. */
+export function appliedSize(data: unknown): { cols: number; rows: number } | undefined {
+  if (data && typeof data === "object" && "cols" in data && "rows" in data
+    && typeof data.cols === "number" && typeof data.rows === "number") {
+    return { cols: data.cols, rows: data.rows };
+  }
+  return undefined;
 }
 
 /** `read` 응답 → 화면 줄. 줄이 없으면 데몬이 계약을 어긴 것이다. */

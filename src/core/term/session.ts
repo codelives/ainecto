@@ -197,6 +197,15 @@ export class TermSession {
     }
   }
 
+  /**
+   * 붙지 않은 쪽(원격 웹 패널)이 크기를 정한다 — 크기 주인을 비운다. 붙은 터미널이 있으면 그 터미널의 다음 입력이 크기를 되찾는다
+   * («따르는 크기» 그대로). 크기를 바꾸는 곳은 {@link resize} 하나.
+   */
+  resizeTo(cols: number, rows: number): void {
+    this.sizeOwner = undefined;
+    this.resize(cols, rows);
+  }
+
   watch(sink: SessionSink): void {
     this.watchers.set(sink, true);
   }

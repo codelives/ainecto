@@ -2,11 +2,15 @@ import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
-import { createRemoteHttp, openRemoteLog, runRemote, type RemoteResult } from "../src/core/term/remote";
+import { createServer as createNetServer, type Server as NetServer } from "node:net";
+import { mkdirSync } from "node:fs";
+import { termRequest } from "../src/core/term/client";
+import { LineDecoder } from "../src/core/term/protocol";
+import { createRemoteHttp, openRemoteLog, remoteCommands, runRemote, type RemoteResult } from "../src/core/term/remote";
 import { screenFrame } from "../src/core/term/remoteFrame";
 import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
 import { termPaths } from "../src/core/term/paths";
-import { cli, LONG, ok, rig, sleep, until, useTermRig } from "./termRig";
+import { cli, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
 describe("term remote — 순수 함수", () => {
   it("화면 = 줄을 \\r\\n 으로 이은 평문 · 같은 줄이면 같은 hash · 다르면 다른 hash", () => {
@@ -27,6 +31,18 @@ describe("term remote — 순수 함수", () => {
     expect(screenFrame(lines, 0).d).toBe("");
   });
 
+  it("poll 명령 — 서버 순서 그대로(resize 가 input 앞) · 모르는 것·크기 0·모양 틀림은 뺀다", () => {
+    expect(remoteCommands({ commands: [
+      { type: "resize", cols: 120, rows: 40 },
+      { type: "input", d: "aGk=" },
+      { type: "later", x: 1 },
+      { type: "resize", cols: 0, rows: 40 },
+      { type: "resize", cols: "80", rows: 24 },
+      { type: "input" },
+    ] })).toEqual([{ type: "resize", cols: 120, rows: 40 }, { type: "input", d: "aGk=" }]);
+    expect(remoteCommands({ state: "OPEN" })).toEqual([]);
+  });
+
   it("다시 하기 간격 — C12 에서 두 배씩 C13 까지 · 흔들림 0~C12", () => {
     expect(retryWait(0, 0)).toBe(RETRY_MIN_MS);
     expect(retryWait(1, 0)).toBe(RETRY_MIN_MS * 2);
@@ -44,12 +60,13 @@ class FakeServer {
   server!: Server;
   endpoint = "";
   readonly calls: Array<{ op: string; token?: string; body: Record<string, unknown> }> = [];
-  readonly frameLog: Array<{ remoteId: string; text: string }> = [];
+  readonly frameLog: Array<{ remoteId: string; text: string; cols: number; rows: number }> = [];
   remoteId = "";
   remoteToken = "";
   /** 재시작하면 잊는다. */
   private known = false;
-  private inputs: string[] = [];
+  /** 다음 poll 에 줄 명령 — 서버처럼 한 응답에 모아 준다(resize 를 input 앞에 둔 순서 그대로). */
+  private commands: Array<Record<string, unknown>> = [];
   private closedReason: string | undefined;
   /** 다음 poll 에 줄 오류. */
   pollError: { status: number; code: string } | undefined;
@@ -90,7 +107,13 @@ class FakeServer {
   }
 
   input(text: string): void {
-    this.inputs.push(Buffer.from(text, "utf8").toString("base64"));
+    this.commands.push({ type: "input", d: Buffer.from(text, "utf8").toString("base64") });
+    this.wake();
+  }
+
+  /** 웹 패널 크기 — 서버처럼 input 보다 앞에. */
+  resize(cols: number, rows: number): void {
+    this.commands.unshift({ type: "resize", cols, rows });
     this.wake();
   }
 
@@ -143,11 +166,10 @@ class FakeServer {
           } else if (this.closedReason) {
             reply(200, { state: "CLOSED", reason: this.closedReason });
           } else {
-            const d = this.inputs.shift();
-            reply(200, { state: "OPEN", commands: d ? [{ type: "input", d }] : [] });
+            reply(200, { state: "OPEN", commands: this.commands.splice(0) });
           }
         };
-        if (this.pollError || this.closedReason || this.inputs.length > 0) {
+        if (this.pollError || this.closedReason || this.commands.length > 0) {
           answer();
           return;
         }
@@ -167,7 +189,8 @@ class FakeServer {
           reply(this.frameError.status, { code: this.frameError.code, message: "refused" });
           return;
         }
-        this.frameLog.push({ remoteId: String(body.remoteId), text: Buffer.from(String(body.d), "base64").toString("utf8") });
+        this.frameLog.push({ remoteId: String(body.remoteId), text: Buffer.from(String(body.d), "base64").toString("utf8"),
+          cols: Number(body.cols), rows: Number(body.rows) });
         reply(200, { version: this.frameLog.length });
         return;
       case "close":
@@ -354,6 +377,89 @@ describe("ainecto term remote — 실 데몬 + 서버 대역", () => {
     expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
     expectCallPairs();
   }, LONG);
+
+  it("데몬 set-size → PTY 크기가 바뀌고(ls) 긴 줄이 새 폭에서 꺾인다(read)", async () => {
+    await ok("term", "new", "t", "--", "cat");
+    const result = await termRequest(termPaths(rig.home), { op: "set-size", name: "t", cols: 20, rows: 10 }, { start: false });
+    expect(result).toMatchObject({ daemon: true, data: { name: "t", cols: 20, rows: 10 } });
+    expect((await sessions()).find((s) => s.name === "t")).toMatchObject({ cols: 20, rows: 10 });
+    await ok("term", "send", "t", "x".repeat(30));
+    await ok("term", "wait", "t", "--match", "^x{10}$", "--timeout", "10");
+    const lines = await screen("t");
+    expect(lines).toContain("x".repeat(20));
+    expect(lines).toContain("x".repeat(10));
+  }, LONG);
+
+  it("poll 의 resize → 세션 크기가 바뀌고 다음 frame 의 cols·rows 가 새 값", async () => {
+    await ok("term", "new", "t", "--", "cat");
+    const run = start("t");
+    await until(() => fake.frames.length > 0, "first frame");
+    const before = fake.frameLog[0];
+    expect(before).toBeDefined();
+    fake.resize(100, 30);
+    await until(() => fake.frameLog.some((frame) => frame.cols === 100 && frame.rows === 30), "frame at the new size");
+    expect((await sessions()).find((s) => s.name === "t")).toMatchObject({ cols: 100, rows: 30 });
+    fake.input("hi\r");
+    await until(() => fake.frameLog.some((frame) => frame.cols === 100 && frame.text.split("\r\n").includes("hi")), "input after resize");
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+    expectCallPairs();
+  }, LONG);
+
+  it("옛 데몬(set-size 모름 → 연결을 끊음) → 한 줄 남기고 크기만 무시 · 다리는 계속", async () => {
+    const old = await fakeOldDaemon();
+    try {
+      const run = start("t");
+      await until(() => fake.frames.length > 0, "first frame");
+      fake.resize(100, 30);
+      fake.input("hi");
+      await until(() => old.sends.includes("hi"), "input still reaches the daemon");
+      await until(() => remoteLog().some((r) => r.event === "remote_daemon_error" && r.op === "set-size"), "set-size failure logged");
+      expect(fake.frameLog.every((frame) => frame.cols === 80 && frame.rows === 24)).toBe(true);
+      run.stop.abort();
+      const result = await run.done;
+      expect(result.exitCode).toBe(0);
+      expect(fake.ops().at(-1)).toBe("close");
+    } finally {
+      await new Promise<void>((done) => old.server.close(() => done()));
+    }
+  }, LONG);
+
+  /** set-size 를 모르는 옛 데몬 — 모르는 op 를 받으면 그 연결을 끊는다(옛 parseClientMessage → bad_message → destroy). */
+  async function fakeOldDaemon(): Promise<{ server: NetServer; sends: string[] }> {
+    const paths = termPaths(rig.home);
+    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+    const sends: string[] = [];
+    const server = createNetServer((socket) => {
+      const decoder = new LineDecoder();
+      socket.on("data", (chunk: Buffer) => {
+        for (const line of decoder.push(chunk)) {
+          const message = JSON.parse(line) as { id: string; op: string; name?: string; text?: string };
+          const answer = (data: unknown) => socket.write(`${JSON.stringify({ id: message.id, ok: true, data })}\n`);
+          switch (message.op) {
+            case "watch":
+              answer({ name: message.name });
+              break;
+            case "ls":
+              answer({ sessions: [{ name: "t", pid: 1, cwd: "/", command: null, createdAt: "", cols: 80, rows: 24, clients: 0 }] });
+              break;
+            case "read":
+              answer({ name: message.name, lines: ["old daemon"] });
+              break;
+            case "send":
+              sends.push(message.text ?? "");
+              answer({ name: message.name });
+              break;
+            default:
+              socket.destroy();
+          }
+        }
+      });
+      socket.on("error", () => undefined);
+    });
+    await new Promise<void>((done) => server.listen(paths.socket, () => done()));
+    return { server, sends };
+  }
 
   it("없는 세션 → 서버를 부르지 않고 오류", async () => {
     await ok("term", "new", "t", "--", "cat");

@@ -314,6 +314,12 @@ class TermDaemon {
       case "watch":
         this.session(request.name).watch(connection);
         return { data: { name: request.name } };
+      case "set-size": {
+        const session = this.session(request.name);
+        session.resizeTo(request.cols, request.rows);
+        const { cols, rows } = session.info();
+        return { data: { name: request.name, cols, rows } };
+      }
     }
   }
 
@@ -472,6 +478,7 @@ function requestMeta(request: TermRequest): { name?: string; textLength?: number
     case "kill":
     case "attach":
     case "watch":
+    case "set-size":
       return { name: request.name };
     default:
       return {};

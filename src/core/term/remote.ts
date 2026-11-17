@@ -2,11 +2,11 @@ import { StringDecoder } from "node:string_decoder";
 import type { TokenProvider } from "../auth/oauth";
 import { sleep } from "../async/sleep";
 import { createPcHttp, PcCallError, type PcHttp } from "../http/pcHttp";
-import { openTermClient } from "./client";
+import { openTermClient, termRequest } from "./client";
 import { DaemonLog } from "./daemonLog";
 import { noSession, TermError } from "./errors";
 import type { TermPaths } from "./paths";
-import { listedSessions, readLines } from "./protocol";
+import { appliedSize, listedSessions, readLines } from "./protocol";
 import { frameBudget, screenFrame } from "./remoteFrame";
 import { CALL_TIMEOUT_MS, FRAME_MIN_INTERVAL_MS, FRAME_SCROLLBACK_LINES, retryWait } from "./remoteLimits";
 
@@ -16,6 +16,8 @@ import { CALL_TIMEOUT_MS, FRAME_MIN_INTERVAL_MS, FRAME_SCROLLBACK_LINES, retryWa
  *
  * <pre>
  * 입력     poll(서버가 C1 동안 붙잡음) → input 명령의 바이트 그대로 → 데몬 send(paste 아님 — Esc·Ctrl·방향키 시퀀스 그대로)
+ * 크기     poll 의 resize 명령(웹 패널 크기, input 보다 앞) → 데몬 set-size(따로 연 연결) → 그 뒤 frame 의 cols·rows. 크기의 원천은
+ *          데몬이 답한 값 하나(시작은 ls). 옛 데몬(set-size 모름)이면 한 줄 남기고 크기만 무시한다 — 다리는 계속.
  * 화면     데몬 watch 의 «바뀜» → C9 간격 이상으로 read(스크롤백 C10 + 화면 줄) → 평문 hash 가 바뀐 때만 frame. 한 번에 하나, 밀린 것은 최신 하나로
  * 끝       poll CLOSED(웹 끊기·다른 PC) → 그대로 끝(0, close 안 보냄) · 세션 끝·멈춤 신호 → close 보내고 끝 · 401/403·그 밖 4xx → 사유와 함께 1
  * 다시     네트워크·5xx·기한 초과 → 같은 remoteId 로 C12 부터 두 배씩 C13 까지(흔들림 0~C12)
@@ -164,13 +166,14 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
     if (!listed) {
       throw noSession(name);
     }
-    const { cols, rows } = listed;
+    /** 세션 크기 — ★한 곳. 시작은 ls, 그 뒤는 set-size 에 데몬이 답한 값. open·read·frame 이 이것을 읽는다. */
+    let size = { cols: listed.cols, rows: listed.rows };
     if (ending) {
       return { exitCode: ending.exitCode, reason: ending.reason };
     }
     /** open 한 번 — 처음과 다시 열기가 같은 길. 새 토큰을 싣는다. */
     const openLink = async (generation: number, signal?: AbortSignal): Promise<Link> => {
-      const opened = await deps.http.call("open", { session: name, hostName: deps.hostName, cliVersion: deps.cliVersion, cols, rows },
+      const opened = await deps.http.call("open", { session: name, hostName: deps.hostName, cliVersion: deps.cliVersion, ...size },
         signal ? { signal } : undefined);
       const limits = serverLimits(opened.limits);
       if (typeof opened.remoteId !== "string" || typeof opened.remoteToken !== "string" || !limits) {
@@ -181,9 +184,9 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
     };
     let current = await openLink(1);
     opened = true;
-    deps.log.write({ event: "remote_opened", remoteId: current.remoteId, cols, rows,
+    deps.log.write({ event: "remote_opened", remoteId: current.remoteId, ...size,
       pollHoldSeconds: current.pollHoldSeconds, frameMaxBytes: current.frameMaxBytes });
-    deps.print(`Sharing ${name} (${cols}x${rows}) on AiNecto from ${deps.hostName}. Open the remote terminal in AiNecto to watch and type. Press Ctrl+C to stop.`);
+    deps.print(`Sharing ${name} (${size.cols}x${size.rows}) on AiNecto from ${deps.hostName}. Open the remote terminal in AiNecto to watch and type. Press Ctrl+C to stop.`);
 
     /** 다시 하지 않을 서버 거절 — 404 는 서버가 이미 이 연결을 모른다(정상 끝), 그 밖은 사유와 함께 1. */
     const refused = (error: unknown): RemoteEnd => {
@@ -231,6 +234,27 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
       }
     };
 
+    /**
+     * 웹 패널 크기 → 세션 크기. ★따로 연 연결로 보낸다 — 옛 데몬은 모르는 op 를 받으면 그 연결을 끊으므로, watch 를 건 주 연결이 끊기지
+     * 않게. 실패는 한 줄 남기고 크기만 무시한다(다리는 계속). 성공하면 데몬이 답한 크기로 화면을 다시 올린다.
+     */
+    const resizeSession = async (cols: number, rows: number): Promise<void> => {
+      try {
+        const result = await termRequest(deps.paths, { op: "set-size", name, cols, rows }, { start: false });
+        const applied = result.daemon ? appliedSize(result.data) : undefined;
+        if (!applied) {
+          throw new TermError(result.daemon ? "TERM_BAD_RESPONSE" : "TERM_DAEMON_GONE",
+            result.daemon ? "The term daemon answered set-size without cols and rows." : "No term daemon is running.");
+        }
+        size = applied;
+        dirty = true;
+        nudge();
+      } catch (error) {
+        deps.log.write({ event: "remote_daemon_error", op: "set-size",
+          code: error instanceof TermError ? error.code : "UNKNOWN", message: error instanceof Error ? error.message : String(error) });
+      }
+    };
+
     const decoder = new StringDecoder("utf8");
     const pollLoop = async (): Promise<void> => {
       let attempt = 0;
@@ -261,9 +285,13 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
           end({ exitCode: 0, reason: `AiNecto closed this remote terminal (${typeof answer.reason === "string" ? answer.reason : "CLOSED"}).`, close: false });
           return;
         }
-        for (const d of inputsIn(answer)) {
+        for (const command of remoteCommands(answer)) {
+          if (command.type === "resize") {
+            await resizeSession(command.cols, command.rows);
+            continue;
+          }
           // 여러 바이트 글자가 poll 경계에서 갈려도 잇는다 — 바이트는 그대로, 글자로 바꾸는 곳만 한 곳.
-          const text = decoder.write(Buffer.from(d, "base64"));
+          const text = decoder.write(Buffer.from(command.d, "base64"));
           if (text === "") continue;
           try {
             await client.request({ op: "send", name, text, paste: false });
@@ -280,7 +308,8 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
      * 세대가 바뀌기를 기다린다(poll 이 CLOSED·거절로 끝내면 그대로 끝).
      */
     const frameLoop = async (): Promise<void> => {
-      let sentHash: string | undefined;
+      /** 마지막으로 올린 화면 — 글자 hash 와 크기(크기만 바뀌어도 다시 올린다). */
+      let sentKey: string | undefined;
       let sentGeneration = 0;
       let parkedGeneration = 0;
       let lastRead = 0;
@@ -296,7 +325,7 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
         }
         if (sentGeneration !== target.generation) {
           sentGeneration = target.generation;
-          sentHash = undefined;
+          sentKey = undefined;
         }
         const gap = lastRead + FRAME_MIN_INTERVAL_MS - Date.now();
         if (gap > 0) {
@@ -305,6 +334,7 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
         }
         dirty = false;
         lastRead = Date.now();
+        const { cols, rows } = size;
         let lines: string[];
         try {
           lines = readLines(await client.request({ op: "read", name, scrollback: true, lines: FRAME_SCROLLBACK_LINES + rows }));
@@ -317,10 +347,11 @@ export async function runRemote(deps: RemoteDeps): Promise<RemoteResult> {
           dropped = frame.dropped;
           deps.log.write({ event: "remote_frame_trimmed", dropped });
         }
-        if (frame.hash === sentHash) continue;
+        const key = `${frame.hash}:${cols}x${rows}`;
+        if (key === sentKey) continue;
         try {
           await deps.http.call("frame", { remoteId: target.remoteId, cols, rows, d: frame.d }, { signal: stopper.signal });
-          sentHash = frame.hash;
+          sentKey = key;
           attempt = 0;
         } catch (error) {
           if (ending) return;
@@ -379,11 +410,23 @@ function serverLimits(value: unknown): { pollHoldSeconds: number; frameMaxBytes:
     : undefined;
 }
 
-/** poll 의 input 명령 — base64 바이트 그대로. */
-function inputsIn(answer: Record<string, unknown>): string[] {
+export type RemoteCommand = { type: "input"; d: string } | { type: "resize"; cols: number; rows: number };
+
+/** poll 의 명령 — 서버가 준 순서 그대로(resize 가 input 보다 앞). input 은 base64 바이트 그대로. 모르는 것·모양이 틀린 것은 뺀다. 순수 함수. */
+export function remoteCommands(answer: Record<string, unknown>): RemoteCommand[] {
   if (!Array.isArray(answer.commands)) return [];
-  return answer.commands.flatMap((command: unknown) =>
-    command && typeof command === "object" && "type" in command && command.type === "input" && "d" in command && typeof command.d === "string"
-      ? [command.d]
-      : []);
+  return answer.commands.flatMap((command: unknown): RemoteCommand[] => {
+    if (!command || typeof command !== "object" || !("type" in command)) return [];
+    if (command.type === "input" && "d" in command && typeof command.d === "string") {
+      return [{ type: "input", d: command.d }];
+    }
+    if (command.type === "resize" && "cols" in command && "rows" in command && isSize(command.cols) && isSize(command.rows)) {
+      return [{ type: "resize", cols: command.cols, rows: command.rows }];
+    }
+    return [];
+  });
+}
+
+function isSize(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
