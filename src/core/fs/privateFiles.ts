@@ -1,4 +1,5 @@
-import { chmod, lstat, mkdir, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, rename, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 /**
  * 이 기기 사용자만 읽는 파일·폴더 규칙 한 곳 — ★폴더 0700 · 파일 0600.
@@ -42,4 +43,16 @@ export async function ensurePrivateDir(path: string): Promise<void> {
     throw new Error(`${path} belongs to another user (uid ${info.uid}).`);
   }
   await chmodIfPermissive(path, PRIVATE_DIR_MODE);
+}
+
+/**
+ * 이 사용자만 읽는 파일을 통째로 바꿔 쓴다 — 폴더 0700 · 임시 파일(0600) → rename. 중간에 죽어도 반쪽 파일이 남지 않는다.
+ * 임시 파일 이름에 pid 를 넣어 두 프로세스가 같은 임시 파일을 쓰지 않는다.
+ */
+export async function writePrivateFileAtomic(path: string, text: string): Promise<void> {
+  await ensurePrivateDir(dirname(path));
+  const tmpPath = `${path}.${process.pid}.tmp`;
+  await writeFile(tmpPath, text, { mode: PRIVATE_FILE_MODE });
+  await chmod(tmpPath, PRIVATE_FILE_MODE);
+  await rename(tmpPath, path);
 }
