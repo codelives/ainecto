@@ -10,8 +10,8 @@ import {
   npxCliCommand,
   parseChoices,
   runningLines,
-  splitCommand,
 } from "../src/core/launcher/launcher";
+import { shellLineCommand } from "../src/core/term/session";
 
 describe("인자 없는 ainecto — 순수 함수", () => {
   it("번호 고르기 — «1,2»·«1 2»·중복은 한 번 · 범위 밖·글자는 오류 · 빈 줄은 없음", () => {
@@ -80,12 +80,14 @@ describe("인자 없는 ainecto — 순수 함수", () => {
     ]);
   });
 
-  it("세션 이름 기본값 = 폴더 이름(공백은 -) · 명령 = 공백으로 나눔, 비면 로그인 셸(null)", () => {
+  it("세션 이름 기본값 = 폴더 이름(공백은 -) · 명령 줄 = 로그인 셸 -lc 한 덩어리, 비면 로그인 셸(null)", () => {
     expect(defaultSessionName("/Users/me/my project")).toBe("my-project");
     expect(defaultSessionName("/")).toBe("shell");
     expect(defaultSessionName("/x/-dash")).toBe("shell");
-    expect(splitCommand("  claude   --resume ")).toEqual(["claude", "--resume"]);
-    expect(splitCommand("   ")).toBeNull();
+    const env = { SHELL: "/bin/zsh" };
+    expect(shellLineCommand("  claude --append-system-prompt \"a b\" ", env)).toEqual(["/bin/zsh", "-lc", "claude --append-system-prompt \"a b\""]);
+    expect(shellLineCommand("FOO=1 make && echo ok | tr o 0", env)).toEqual(["/bin/zsh", "-lc", "FOO=1 make && echo ok | tr o 0"]);
+    expect(shellLineCommand("   ", env)).toBeNull();
   });
 });
 

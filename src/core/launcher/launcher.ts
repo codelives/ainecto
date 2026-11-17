@@ -163,9 +163,3 @@ export function defaultSessionName(cwd: string): string {
     return "shell";
   }
 }
-
-/** ② 실행할 명령 — 공백으로 나눈다(셸 따옴표는 해석하지 않는다). 비면 null = 로그인 셸(`term new` 기본과 같다). */
-export function splitCommand(text: string): string[] | null {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  return words.length > 0 ? words : null;
-}

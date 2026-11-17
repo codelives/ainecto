@@ -321,6 +321,15 @@ async function loadNodePty(): Promise<typeof import("node-pty")> {
   }
 }
 
+/**
+ * 명령 «줄» → 세션 명령 — ★줄을 명령 배열로 바꾸는 곳은 여기 하나(메뉴 ②, 웹이 만드는 세션). 사용자의 로그인 셸이 그대로
+ * 해석한다(따옴표·파이프·&&·변수 대입). 빈 줄이면 null = 로그인 셸 그대로(`term new` 기본과 같다).
+ */
+export function shellLineCommand(line: string, env: Record<string, string>): string[] | null {
+  const trimmed = line.trim();
+  return trimmed.length > 0 ? [loginShell(env), "-lc", trimmed] : null;
+}
+
 /** 사용자 로그인 셸 — 환경의 SHELL, 없으면 계정의 셸. */
 function loginShell(env: Record<string, string>): string {
   return env.SHELL || userInfo().shell || "/bin/sh";

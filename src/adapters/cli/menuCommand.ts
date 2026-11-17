@@ -10,7 +10,6 @@ import {
   needsTerm,
   parseChoices,
   runningLines,
-  splitCommand,
   type LaunchFlags,
   type ManagedSession,
   type MenuItem,
@@ -18,6 +17,7 @@ import {
 import { lastLine, type CommandRunner } from "../../core/setup/commandRunner";
 import type { DoctorCheck } from "../../core/setup/doctorChecks";
 import { termRequest } from "../../core/term/client";
+import { shellLineCommand } from "../../core/term/session";
 import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, type ListedSession, type TermRequestBody } from "../../core/term/protocol";
 import type { CliIO } from "./ainectoCli";
@@ -108,11 +108,11 @@ export async function runMenu(input: MenuInput): Promise<number> {
   const createSession = async (): Promise<string | undefined> => {
     const fallback = defaultSessionName(input.cwd);
     const name = (await ask(`Session name [${fallback}]: `))?.trim() || fallback;
-    const command = splitCommand((await ask("Command to run in it [your login shell]: ")) ?? "");
     if ((await listed()).some((session) => session.name === name)) {
       out(`A session named ${name} already exists. Pick another name, or share it yourself: ainecto term remote ${name}`);
       return undefined;
     }
+    const command = shellLineCommand((await ask("Command to run in it [your login shell]: ")) ?? "", input.sessionEnv);
     await newSession(name, command);
     out(`Started session ${name}. Here: ainecto term attach ${name}`);
     return name;

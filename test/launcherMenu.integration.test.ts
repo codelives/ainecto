@@ -2,7 +2,7 @@ import { PassThrough } from "node:stream";
 import { runMenu, type MenuInput } from "../src/adapters/cli/menuCommand";
 import { systemCommandRunner } from "../src/core/setup/commandRunner";
 import { termPaths } from "../src/core/term/paths";
-import { LONG, ok, rig, sessions, until, useTermRig } from "./termRig";
+import { LONG, ok, rig, screen, sessions, until, useTermRig } from "./termRig";
 
 /**
  * 인자 없는 `ainecto` 메뉴 — 실 데몬·실 PTY. 관리 세션 명령만 대역(아래 STAND_IN)으로 바꾼다: 서버·로그인·npx 없이
@@ -13,6 +13,8 @@ const STAND_IN = "if (process.argv.includes('--version')) process.exit(0);"
   + "process.on('SIGINT', () => process.exit(0)); setInterval(() => undefined, 1000);";
 
 useTermRig();
+
+const LINE = "echo \"a  b\" | tr a x; sleep 600";
 
 function harness(overrides: Partial<MenuInput> = {}) {
   const stdin = new PassThrough();
@@ -61,13 +63,15 @@ describe("인자 없는 ainecto — 메뉴로 백그라운드 실행", () => {
     await menu.waitFor("Session name");
     menu.type("work");
     await menu.waitFor("Command to run");
-    menu.type("sleep 600");
+    menu.type(LINE);
     await menu.waitFor("Choose", 2);
     expect(menu.output()).toContain("Started session work.");
     expect(menu.output()).toContain("Shared work on AiNecto (session ainecto-remote-work).");
 
     const listed = await sessions();
-    expect(listed.find((s) => s.name === "work")?.command).toEqual(["sleep", "600"]);
+    // ★명령 줄은 로그인 셸이 해석한다 — 따옴표 안 공백 두 칸·파이프가 그대로.
+    expect(listed.find((s) => s.name === "work")?.command?.slice(1)).toEqual(["-lc", LINE]);
+    await until(async () => (await screen("work")).some((line) => line.includes("x  b")), "piped output on screen");
     expect(listed.find((s) => s.name === "work")?.cwd).toBe(rig.home);
     expect(listed.find((s) => s.name === "ainecto-remote-work")?.command?.slice(-3)).toEqual(["term", "remote", "work"]);
     expect(menu.output()).toContain("[running: work]");
