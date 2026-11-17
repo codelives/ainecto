@@ -1,6 +1,6 @@
 {
   "name": "@ainecto/mcp",
-  "version": "0.14.0-next.8",
+  "version": "0.14.0-next.9",
   "description": "AiNecto CLI — connect your coding agents to AiNecto once per machine: npx -y ainecto@latest setup. Then npx -y ainecto@latest doctor shows anything missing.",
   "mcpName": "com.ainecto/mcp",
   "type": "module",
