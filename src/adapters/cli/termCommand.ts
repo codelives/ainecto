@@ -325,7 +325,7 @@ function usage(text: string): TermError {
 }
 
 /** 세션이 받을 환경 — 명령을 친 셸의 환경(값이 문자열인 것만). */
-function stringEnv(): Record<string, string> {
+export function stringEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (typeof value === "string") {

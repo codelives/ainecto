@@ -15,7 +15,14 @@ import { executeInboxPollCommand, isInboxPollCommand } from "./inboxPollCommands
 import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
-import { executeTermCommand, executeTermRemote, TERM_HELP_LINES } from "./termCommand";
+import { executeTermCommand, executeTermRemote, stringEnv, TERM_HELP_LINES } from "./termCommand";
+import { runMenu } from "./menuCommand";
+import { npxCliCommand } from "../../core/launcher/launcher";
+import { termPaths } from "../../core/term/paths";
+import { termRuntimeProblem } from "../../core/term/daemonLock";
+import { agentPaths } from "../../core/agent/paths";
+import { doctorChecks } from "../../core/setup/doctorChecks";
+import { collectStatus, type CollectInput } from "../../core/setup/machineStatus";
 import { AGENT_HELP_LINES, executeAgentServe, isAgentCommand } from "./agentCommand";
 import { systemCommandRunner } from "../../core/setup/commandRunner";
 import { homedir } from "node:os";
@@ -37,7 +44,11 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       io.stdout.write(renderSuccess({ version: CLI_VERSION }, { json: parsed.json }));
       return 0;
     }
-    if (parsed.help || parsed.positionals.length === 0) {
+    // ★인자 없음 + 사람이 보는 터미널(stdin·stdout 모두 TTY)일 때만 메뉴다. AI 에이전트·스크립트(파이프)·--json·--help 는
+    //   지금처럼 도움말 — 에이전트가 읽는 출력은 바뀌지 않는다(KAN-738 메뉴).
+    const menu = parsed.positionals.length === 0 && !parsed.help && !parsed.json
+      && io.stdin.isTTY === true && io.stdout.isTTY === true;
+    if (parsed.help || (parsed.positionals.length === 0 && !menu)) {
       io.stdout.write(helpText());
       return 0;
     }
@@ -98,11 +109,11 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       return 0;
     }
 
-    if (domain === "init") {
-      // ⚠init 의 플래그는 전역 파서가 positional 로 흘려보낸다. 그대로 넘긴다.
+    /** `ainecto init` — 하위 명령과 메뉴 ④가 같이 쓴다. */
+    const runInit = (argv: string[]): Promise<number> => {
       const { auth } = connect();
-      return await executeInitCommand({
-        argv: parsed.positionals.slice(1),
+      return executeInitCommand({
+        argv,
         // 문서는 인증 후에 받는다 — 토큰이 없으면 패키지 기본값으로 가고, 그 사실을 보고한다.
         // ★«필요할 때» 가져온다. --undo 는 로컬 작업이라 토큰을 건드리지 않는다(S1).
         // ★판정은 setup 과 같은 {@link usableAccessToken} 하나 — 서버가 저장 로그인을 거절했으면 «없음»(→ 로그인),
@@ -119,12 +130,12 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         json: parsed.json,
         io,
       });
-    }
-
-    if (domain === "setup") {
+    };
+    /** `ainecto setup` — 하위 명령과 메뉴(로그인 전)가 같이 쓴다. */
+    const runSetup = (argv: string[]): Promise<number> => {
       const { auth, client } = connect();
-      return await executeSetupCommand({
-        argv: parsed.positionals.slice(1),
+      return executeSetupCommand({
+        argv,
         endpoint: resolved.endpoint,
         env: resolved.env,
         auth,
@@ -135,29 +146,55 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         json: parsed.json,
         io,
       });
+    };
+    /** status·doctor·메뉴 점검이 같이 쓰는 수집 입력. */
+    const collectInput = (): CollectInput => {
+      const { auth, client } = connect();
+      return {
+        endpoint: resolved.endpoint,
+        env: resolved.env,
+        cliVersion: CLI_VERSION,
+        tokenStore,
+        auth,
+        client,
+        runner: systemCommandRunner({ cwd: homedir() }),
+        hereRunner: systemCommandRunner({ cwd: process.cwd() }),
+        home: homedir(),
+        cwd: process.cwd(),
+        envVars: process.env,
+      };
+    };
+
+    if (domain === undefined) {
+      return await runMenu({
+        io,
+        paths: termPaths(),
+        cwd: process.cwd(),
+        sessionEnv: stringEnv(),
+        header: `AiNecto CLI ${CLI_VERSION} · ${resolved.endpoint}`,
+        flags: { env: parsed.env, endpoint: parsed.endpoint },
+        managedCommand: (args) => npxCliCommand(args),
+        runner: systemCommandRunner({ cwd: process.cwd() }),
+        termProblem: termRuntimeProblem(),
+        agentLog: agentPaths().log,
+        checkMachine: async () => doctorChecks(await collectStatus(collectInput())),
+        setup: () => runSetup([]),
+        init: () => runInit([]),
+      });
+    }
+
+    if (domain === "init") {
+      // ⚠init 의 플래그는 전역 파서가 positional 로 흘려보낸다. 그대로 넘긴다.
+      return await runInit(parsed.positionals.slice(1));
+    }
+
+    if (domain === "setup") {
+      return await runSetup(parsed.positionals.slice(1));
     }
 
     if (domain === "status" || domain === "doctor") {
-      const { auth, client } = connect();
       const run = domain === "status" ? executeStatusCommand : executeDoctorCommand;
-      return await run({
-        argv: parsed.positionals.slice(1),
-        collect: {
-          endpoint: resolved.endpoint,
-          env: resolved.env,
-          cliVersion: CLI_VERSION,
-          tokenStore,
-          auth,
-          client,
-          runner: systemCommandRunner({ cwd: homedir() }),
-          hereRunner: systemCommandRunner({ cwd: process.cwd() }),
-          home: homedir(),
-          cwd: process.cwd(),
-          envVars: process.env,
-        },
-        json: parsed.json,
-        io,
-      });
+      return await run({ argv: parsed.positionals.slice(1), collect: collectInput(), json: parsed.json, io });
     }
 
     if (domain === "term") {
@@ -423,6 +460,7 @@ function helpText(): string {
     NEXT_STEP,
     "",
     "Usage:",
+    "  ainecto                     with no arguments in a terminal: pick what to run in the background (your PC agent, a remote terminal)",
     "  ainecto auth login|status|logout [--env prod|dev] [--json]   (one sign-in per machine)",
     "  ainecto tools list [--env prod|dev] [--endpoint URL] [--json]",
     "  ainecto tools call <mcpName> [-f payload.json|@-] [inline-json] [--json]",
