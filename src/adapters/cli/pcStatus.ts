@@ -1,4 +1,7 @@
+import { readFile } from "node:fs/promises";
 import { hostname } from "node:os";
+import { lastServeStop } from "../../core/agent/log";
+import { isNodeError } from "../../core/fs/privateFiles";
 import { agentPaths } from "../../core/agent/paths";
 import { pcStatusView } from "../../core/pc/pcSession";
 import { accountKey, loadPcSettings, pcSettingsPath } from "../../core/pc/pcSettings";
@@ -18,11 +21,17 @@ export async function pcStatus(status: MachineStatus, endpoint: string): Promise
     : [];
   const userId = status.account?.userId;
   const settings = await loadPcSettings(pcSettingsPath(), hostname());
+  const agentLog = agentPaths().log;
+  const lastStop = lastServeStop(await readFile(agentLog, "utf8").catch((error: unknown) => {
+    if (isNodeError(error, "ENOENT")) return "";
+    throw error;
+  }));
   return pcStatusView({
     sessions,
     approval: userId ? settings.accounts[accountKey(endpoint, userId)] : undefined,
-    agentLog: agentPaths().log,
+    agentLog,
     termProblem,
+    ...(lastStop ? { lastStop } : {}),
   });
 }
 

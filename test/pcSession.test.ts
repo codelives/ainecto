@@ -12,6 +12,7 @@ import {
   pcVersionLabel,
   runningPcs,
 } from "../src/core/pc/pcSession";
+import { lastServeStop } from "../src/core/agent/log";
 
 const pcCommand = (spec: string) => ["npx", "-y", "--package", spec, "ainecto", "pc", "run", "--env", "dev"];
 
@@ -61,6 +62,18 @@ describe("이 PC 연결 — 순수 함수", () => {
     });
     expect(pcStatusView({ sessions: [], approval: undefined, agentLog: "l", termProblem: undefined }))
       .toEqual({ connected: false, approved: false, terminalSessions: [] });
+    // 연결이 없으면 마지막으로 끊긴 사유 — 다른 PC 가 가져갔으면 풀어 쓴다.
+    expect(pcStatusView({ sessions: [], approval: undefined, agentLog: "l", termProblem: undefined, lastStop: { at: "t", reason: "replaced" } }).lastStop)
+      .toEqual({ at: "t", reason: "replaced", note: "another PC took over your AiNecto agent — run `ainecto` here to take it back" });
+    expect(pcStatusView({ sessions, approval: undefined, agentLog: "l", termProblem: undefined, lastStop: { at: "t", reason: "replaced" } }).lastStop)
+      .toBeUndefined();
+    expect(lastServeStop([
+      JSON.stringify({ ts: "a", event: "serve_stop", pid: 1, reason: "signal" }),
+      JSON.stringify({ ts: "b", event: "serve_stop", pid: 2, reason: "replaced" }),
+      JSON.stringify({ ts: "c", event: "serve_start", pid: 3 }),
+      "{broken",
+    ].join("\n"))).toEqual({ at: "b", reason: "replaced" });
+    expect(lastServeStop("")).toBeUndefined();
     expect(pcStatusView({ sessions: [], approval: undefined, agentLog: "l", termProblem: "not on win32" }))
       .toEqual({ connected: false, unsupported: "not on win32" });
   });

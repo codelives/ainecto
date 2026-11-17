@@ -60,7 +60,14 @@ export class FakeServer implements AgentHttp {
     return this.calls.filter((c) => c.op === "reply").map((c) => c.body);
   }
 
-  useLinkToken(): void {}
+  /** open 이 성공한 횟수. */
+  opens = 0;
+  /** serve 가 실은 link 토큰들(순서대로). */
+  readonly linkTokens: Array<string | undefined> = [];
+
+  useLinkToken(token: string | undefined): void {
+    this.linkTokens.push(token);
+  }
 
   async call(op: AgentOp, body: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
     this.calls.push({ op, body });
@@ -77,7 +84,9 @@ export class FakeServer implements AgentHttp {
         ? sent.map((a) => a.ready ? { id: a.id, ready: true, agentUuid: `u-${String(a.id)}`, name: a.name ?? a.id, error: null }
           : { id: a.id, ready: false, agentUuid: null, name: null, error: null })
         : this.openAgents;
-      return { linkId: "11111111-1111-4111-8111-111111111111", linkToken: "tok",
+      // ★open 마다 새 linkId(서버가 재시작 뒤 다시 열린 link 를 새것으로 준다) — 첫 것은 예전 값 그대로.
+      this.opens += 1;
+      return { linkId: this.opens === 1 ? "11111111-1111-4111-8111-111111111111" : `link-${this.opens}`, linkToken: `tok-${this.opens}`,
         limits: { pollHoldSeconds: this.pollHoldSeconds, textMaxCharacters: 10_000, documentsMax: 50 }, ...(agents ? { agents } : {}) };
     }
     if (op !== "poll") return {};

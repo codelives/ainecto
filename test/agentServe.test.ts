@@ -110,15 +110,34 @@ describe("ainecto agent serve", () => {
     expect(logRecords(w).find((r) => r.event === "agent_response")?.outcome).toBe("exited");
   });
 
-  it("서버가 link 를 모르면(재시작) 다시 하지 않고 끝낸다 · 다른 PC 가 오면 끝낸다", async () => {
-    const lost = startServe();
-    lost.server.push(new AgentCallError("No such agent link.", "poll", 404, "LINK_NOT_FOUND"));
-    expect(await lost.done).toEqual({ exitCode: 1, reason: "link_not_found" });
-    expect(lost.server.calls.filter((c) => c.op === "close")).toHaveLength(0);
+  it("★서버가 link 를 잊으면(api 재시작 — poll 404 LINK_NOT_FOUND) 같은 프로세스에서 다시 열고 새 linkId 로 poll·답을 잇는다", async () => {
+    const w = startServe();
+    w.server.push(new AgentCallError("No such agent link.", "poll", 404, "LINK_NOT_FOUND"));
+    w.server.offer("t1", "conv-a", "hello");
+    const reply = await until(() => w.server.replies()[0]);
+    await finish(w);
+    expect(reply).toMatchObject({ status: "DONE", linkId: "link-2" });
+    expect(w.server.calls.filter((c) => c.op === "open")).toHaveLength(2);
+    expect(w.server.linkTokens).toEqual(["tok-1", "tok-2"]);
+    // 다시 연 뒤의 poll·close 는 새 linkId 로.
+    expect(w.server.calls.filter((c) => c.op === "poll").slice(1).every((c) => c.body.linkId === "link-2")).toBe(true);
+    expect(w.server.calls.find((c) => c.op === "close")?.body.linkId).toBe("link-2");
+    expect(logRecords(w).find((r) => r.event === "agent_reopened"))
+      .toMatchObject({ reason: "LINK_NOT_FOUND", previousLinkId: "11111111-1111-4111-8111-111111111111", linkId: "link-2", attempts: 1 });
+    expect(w.printed).toContain("AiNecto lost this connection (it may have restarted); connected again.");
+  });
+
+  it("다시 열기가 거절되면(401) 끝 · 다른 PC 가 Agent 를 가져가면(CLOSED REPLACED) 다시 열지 않고 끝(핑퐁 금지)", async () => {
+    const refused = startServe();
+    await until(() => refused.server.opens === 1 || undefined);
+    refused.server.openError = new AgentCallError("Unauthorized", "open", 401, "UNAUTHORIZED");
+    refused.server.push(new AgentCallError("No such agent link.", "poll", 404, "LINK_NOT_FOUND"));
+    expect(await refused.done).toEqual({ exitCode: 1, reason: "auth" });
 
     const replaced = startServe();
     replaced.server.push({ state: "CLOSED", reason: "REPLACED" });
     expect(await replaced.done).toEqual({ exitCode: 1, reason: "replaced" });
+    expect(replaced.server.calls.filter((c) => c.op === "open")).toHaveLength(1);
   });
 
   it("네트워크 실패는 B2 간격으로 다시 한다", async () => {

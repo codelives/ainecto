@@ -94,6 +94,13 @@ export function pcStopDeadlineMs(): number {
   return AGENT_STOP_WAIT_MS * 4 + Math.max(AGENT_CALL_TIMEOUT_MS, CALL_TIMEOUT_MS);
 }
 
+/** 마지막으로 끊긴 사유 중 사람에게 풀어 줄 것(serve_stop reason → 한 줄). */
+const STOP_NOTES: Readonly<Record<string, string>> = {
+  replaced: "another PC took over your AiNecto agent — run `ainecto` here to take it back",
+  auth: "AiNecto refused the sign-in — run `ainecto auth login`, then `ainecto`",
+  signal: "stopped on this PC",
+};
+
 /** `ainecto status` 의 «이 PC 연결» 칸(순수 함수) — 연결·동의·원격 터미널 허용·이 PC 의 터미널 세션(연결 세션은 뺀다). */
 export function pcStatusView(input: {
   sessions: ReadonlyArray<Pick<ListedSession, "name" | "cwd" | "command">>;
@@ -101,6 +108,8 @@ export function pcStatusView(input: {
   approval: { consentedAt: string; remoteTerminal: boolean } | undefined;
   agentLog: string;
   termProblem: string | undefined;
+  /** agent.log 의 마지막 serve_stop — 연결이 없을 때 «왜 끊겼나». */
+  lastStop?: { at: string; reason: string };
 }): Record<string, unknown> {
   if (input.termProblem !== undefined) {
     return { connected: false, unsupported: input.termProblem };
@@ -110,6 +119,7 @@ export function pcStatusView(input: {
   return {
     connected: running.length > 0,
     ...(running[0] ? { session: running[0].session, folder: running[0].cwd, version: pcVersionLabel(running[0]), log: input.agentLog } : {}),
+    ...(!running[0] && input.lastStop ? { lastStop: { ...input.lastStop, ...(STOP_NOTES[input.lastStop.reason] ? { note: STOP_NOTES[input.lastStop.reason] } : {}) } } : {}),
     approved: input.approval !== undefined,
     ...(input.approval ? { remoteTerminal: input.approval.remoteTerminal ? "allowed" : "blocked" } : {}),
     terminalSessions: input.sessions.filter((session) => !pcNames.has(session.name)).map((session) => session.name),

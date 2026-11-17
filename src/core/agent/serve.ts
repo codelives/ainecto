@@ -106,6 +106,11 @@ const TODO_NOTES: Readonly<Record<TodoOutcome, string>> = {
   stopped: "Stopped.",
 };
 
+/** 연결됨 표시 — serve 가 open 성공 뒤 찍는 줄의 앞머리. ★`ainecto start` 가 pc 세션 화면에서 이것을 기다린다(한 곳). */
+export const SERVE_CONNECTED_PREFIX = "Connected to AiNecto as ";
+/** 다시 붙음 표시 — 서버가 link 를 잊어 다시 열었을 때. `ainecto stop` 은 이것도 «준비됨»으로 본다. */
+export const SERVE_RECONNECTED_LINE = "AiNecto lost this connection (it may have restarted); connected again.";
+
 /**
  * `ainecto agent serve` 본체(KAN-1075 설계 v3 1절). link 하나를 열고 poll 을 계속 돌린다(긴 요청 중에도 — «PC 켜짐» 유지).
  * ★요청은 {@code offer.agent} 의 어댑터로 간다. 세션은 Agent 마다 동시에 하나 — 같은 대화면 그 세션에 한 차례,
@@ -114,23 +119,27 @@ const TODO_NOTES: Readonly<Record<TodoOutcome, string>> = {
  */
 export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   const folderName = deps.todos?.agentName;
+  const nameRefused = (error: unknown): boolean => error instanceof AgentCallError && error.status === 400 && error.code === "AGENT_NAME_INVALID";
+  const nameRefusedMessage = (error: unknown) => `AiNecto did not accept the agent name «${folderName ?? ""}» in this folder's .ainecto/agent.local `
+    + `(${error instanceof Error ? error.message : String(error)}). `
+    + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto start` again.";
   let opened: Record<string, unknown>;
   try {
     opened = await openLink(deps, openAgentsBody(deps.agents, folderName));
   } catch (error) {
-    if (error instanceof AgentCallError && error.status === 400 && error.code === "AGENT_NAME_INVALID") {
-      deps.print(`AiNecto did not accept the agent name «${folderName ?? ""}» in this folder's .ainecto/agent.local (${error.message}). `
-        + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto start` again.");
+    if (nameRefused(error)) {
+      deps.print(nameRefusedMessage(error));
       return { exitCode: 1, reason: "agent_name_invalid" };
     }
     throw error;
   }
-  const linkId = String(opened.linkId);
+  /** ★바뀔 수 있다 — 서버가 link 를 잊으면(api 재시작) 다시 열어 새 linkId 로 잇는다({@link reopen}). */
+  let linkId = String(opened.linkId);
   deps.http.useLinkToken(String(opened.linkToken));
   const limits = serverLimits(opened.limits);
   const displayName = (id: AgentId) => deps.adapters.get(id)?.displayName ?? id;
   const names = deps.agents.map((a) => displayName(a.id)).join(" / ");
-  deps.print(`Connected to AiNecto as ${deps.hostName}. Requests to «My agent» in AiNecto Chat now run in ${names} on this machine. Press Ctrl+C to stop.`);
+  deps.print(`${SERVE_CONNECTED_PREFIX}${deps.hostName}. Requests to «My agent» in AiNecto Chat now run in ${names} on this machine. Press Ctrl+C to stop.`);
   // ★할 일 신원 = open 응답의 종류별 신원(이 PC 에 어댑터가 있는 것만). 신원이 없는 종류(준비 안 됨·AGENT_LIMIT)는 받지 않는다.
   const { identities, refused } = identitiesIn(opened.agents, deps.adapters);
   for (const r of refused) {
@@ -181,12 +190,54 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   if (deps.signal.aborted) onUserStop();
   deps.signal.addEventListener("abort", onUserStop, { once: true });
 
-  /** 서버가 더는 이 link 를 모른다 · 로그인이 막혔다 — 다시 하지 않는다. */
+  /**
+   * 로그인이 막혔다 — 다시 하지 않는다. ★LINK_NOT_FOUND(서버가 link 를 잊음 — api 재시작)는 여기서 멈추지 않는다: poll 이 {@link reopen} 한다.
+   * 다른 호출(reply 등)은 그 답만 버린다 — 서버가 재시작으로 그 차례도 잊었다.
+   */
   const stopOnFatal = (error: AgentCallError) => {
-    if (error.code === "LINK_NOT_FOUND") {
-      stop("link_not_found", 1, "This connection ended (the server restarted, or the link was closed). Run `ainecto start` again.");
-    } else if (error.status === 401 || error.status === 403) {
+    if (error.status === 401 || error.status === 403) {
       stop("auth", 1, `AiNecto refused the CLI sign-in (${error.code ?? error.status}). Run \`ainecto auth login\` and start again.`);
+    }
+  };
+
+  /**
+   * 다시 열기 — 같은 프로세스에서 open 을 다시 해 새 linkId·link 토큰으로 잇는다(term remote 의 REMOTE_NOT_FOUND 와 같은 원리, 사용자 «자동해줘»).
+   * 연속 시도는 B2(nextRetryDelay — 첫 시도는 바로). ★open 이 성공해도 그 link 의 poll 이 한 번 성공하기 전까지는 간격을 이어 센다 —
+   * 열자마자 또 잊히는 고리도 간격이 벌어진다. 거절(4xx)이면 끝: 로그인(401/403)·이름 거절·그 밖.
+   */
+  let reopenDelay: number | undefined;
+  let reopenAttempts = 0;
+  const reopen = async (): Promise<void> => {
+    const previousLinkId = linkId;
+    while (!stopReason) {
+      if (reopenAttempts > 0) {
+        reopenDelay = nextRetryDelay(reopenDelay);
+        await sleep(reopenDelay, stopController.signal);
+        if (stopReason) return;
+      }
+      reopenAttempts += 1;
+      let again: Record<string, unknown>;
+      try {
+        again = await openLink(deps, openAgentsBody(deps.agents, folderName));
+      } catch (error) {
+        if (stopReason) return;
+        if (error instanceof AgentCallError && !error.retryable) {
+          if (nameRefused(error)) {
+            stop("agent_name_invalid", 1, nameRefusedMessage(error));
+          } else if (error.status === 401 || error.status === 403) {
+            stopOnFatal(error);
+          } else {
+            stop("reopen_refused", 1, `AiNecto refused to reconnect this PC (${error.code ?? error.status}): ${error.message}`);
+          }
+          return;
+        }
+        continue;
+      }
+      linkId = String(again.linkId);
+      deps.http.useLinkToken(String(again.linkToken));
+      deps.log.write({ event: "agent_reopened", reason: "LINK_NOT_FOUND", previousLinkId, linkId, attempts: reopenAttempts });
+      deps.print(SERVE_RECONNECTED_LINE);
+      return;
     }
   };
 
@@ -196,6 +247,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       try {
         const res = await deps.http.call("poll", { linkId }, { holdMs: limits.pollHoldSeconds * 1000, signal: stopController.signal });
         delay = undefined;
+        reopenDelay = undefined;
+        reopenAttempts = 0;
         if (res.state === "CLOSED") {
           stop("replaced", 1, "Another PC connected as your agent, so this one stopped.");
           return;
@@ -211,6 +264,10 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         for (const turnUuid of stopsIn(res)) requestStop(turnUuid);
       } catch (error) {
         if (stopReason) return;
+        if (error instanceof AgentCallError && error.code === "LINK_NOT_FOUND") {
+          await reopen();
+          continue;
+        }
         if (error instanceof AgentCallError && !error.retryable) {
           stopOnFatal(error);
           if (stopReason) return;

@@ -20,6 +20,8 @@ export type AgentLogRecord =
   | { event: "offer"; turnUuid: string; conversationUuid: string; agent: string; duplicate: boolean }
   | { event: "stop_request"; turnUuid: string; running: boolean; queued: boolean }
   | { event: "open_without_features"; features: string[] }
+  /** 서버가 이 link 를 잊었다(api 재시작 — link 는 서버 메모리) → 같은 프로세스에서 다시 열었다. */
+  | { event: "agent_reopened"; reason: string; previousLinkId: string; linkId: string; attempts: number }
   | { event: "process_start"; pid: number; agent: string; conversationUuid: string; resume: boolean }
   | { event: "process_exit"; pid: number; agent: string; conversationUuid: string; code: number | null; signal: string | null }
   | { event: "agent_rpc"; pid: number; agent: string; id: number; method: string }
@@ -50,4 +52,22 @@ export function openAgentLog(paths: AgentPaths): DaemonLog<AgentLogRecord> {
   const log = new DaemonLog<AgentLogRecord>(paths.log, paths.previousLog);
   log.enableRotation();
   return log;
+}
+
+/** agent.log 글 → 마지막 serve_stop(언제·사유) — `ainecto status` 가 «왜 끊겼나»를 보인다. 없으면 undefined. 순수 함수. */
+export function lastServeStop(text: string): { at: string; reason: string } | undefined {
+  const lines = text.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line?.startsWith("{")) continue;
+    try {
+      const record = JSON.parse(line) as { event?: unknown; ts?: unknown; reason?: unknown };
+      if (record.event === "serve_stop" && typeof record.reason === "string") {
+        return { at: typeof record.ts === "string" ? record.ts : "", reason: record.reason };
+      }
+    } catch {
+      // 쓰다 만 줄(회전·동시 쓰기) — 건너뛰고 앞줄을 본다.
+    }
+  }
+  return undefined;
 }
