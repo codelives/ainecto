@@ -110,8 +110,13 @@ export async function executeTermRemote(input: TermCommandInput & {
   assertAllowed: () => Promise<void>;
 }): Promise<number> {
   const name = singleName(parseArgs(input.argv, {}).positionals, "term remote <name>");
-  await input.assertAllowed();
   const paths = termPaths();
+  // ★로컬 확인(그 세션이 있나)이 먼저 — 없는 세션은 서버 호출(계정·원격 허용 확인) 없이 바로 «없음».
+  const listed = await termRequest(paths, { op: "ls" }, { start: false });
+  if (!listedSessions(listed.daemon ? listed.data : undefined).some((session) => session.name === name)) {
+    throw noSession(name);
+  }
+  await input.assertAllowed();
   await ensurePrivateDir(paths.dir);
   const log = openRemoteLog(paths);
   const host = hostname();
