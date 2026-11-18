@@ -80,6 +80,16 @@ describe("ainecto term — review #81 edge cases", () => {
     expect(processesWith("dup")).toBe(1);
   }, LONG);
 
+  it("a second new with the same name is refused with the next step — attach it or choose another name (KAN-1188)", async () => {
+    await ok("term", "new", "work", "--", "/bin/sh");
+    const again = await cli("term", "new", "work", "--", "/bin/sh");
+    expect(again.code).toBe(1);
+    expect(again.stderr.trim()).toBe(
+      'Error: A session named "work" already exists. Open it with `ainecto term attach work`, or choose another name.');
+    const json = await cli("term", "new", "work", "--json", "--", "/bin/sh");
+    expect(JSON.parse(json.stdout || json.stderr)).toMatchObject({ ok: false, error: { code: "TERM_SESSION_EXISTS" } });
+  }, LONG);
+
   it("T2: a query from the app is answered exactly once — detached, one attach, two attaches", async () => {
     await ok("term", "new", "cpr", "--", process.execPath, "-e", CPR_PROBE);
     await sleep(500);

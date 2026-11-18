@@ -352,7 +352,8 @@ class TermDaemon {
    */
   private async startSession(entry: ManifestEntry, env: Record<string, string>, cols?: number, rows?: number): Promise<TermSession> {
     if (this.sessions.has(entry.name) || this.starting.has(entry.name)) {
-      throw new TermError("TERM_SESSION_EXISTS", `A session named "${entry.name}" already exists.`);
+      throw new TermError("TERM_SESSION_EXISTS",
+        `A session named "${entry.name}" already exists. Open it with \`ainecto term attach ${entry.name}\`, or choose another name.`);
     }
     this.starting.add(entry.name);
     try {
