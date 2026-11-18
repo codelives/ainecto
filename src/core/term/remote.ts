@@ -11,6 +11,10 @@ import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
 import { sessionsKey, wireSessions, type WireSession } from "./remoteSessions";
 import { RemoteViewer, type ViewerLink } from "./remoteViewer";
 import { shellLineCommand } from "./session";
+import { ensurePrivateDir } from "../fs/privateFiles";
+import { existsSync } from "node:fs";
+import { rmdir } from "node:fs/promises";
+import { join } from "node:path";
 import { cliTagsOf, type CliTags } from "../pc/pcUpgrade";
 
 /**
@@ -63,6 +67,8 @@ export type RemoteLogRecord =
   | { event: "remote_frame_trimmed"; session: string; dropped: number }
   /** 데몬 요청 실패 — 삼키지 않는다. */
   | { event: "remote_daemon_error"; op: string; session?: string; code: string; message: string }
+  /** 거절된 웹 만들기에서 방금 만든 세션 폴더를 지우지 못했다(비어 있지 않음 등) — 폴더는 남고 원래 거절은 그대로. */
+  | { event: "remote_session_folder_kept"; requestId: string; folder: string; code: string; message: string }
   /** 보던 세션이 데몬에서 이미 끝났다(웹에서 끝낸 직후의 읽기 등) — 오류가 아니다. */
   | { event: "remote_session_ended"; op: string; session: string; code: string }
   | { event: "remote_stop"; pid: number; reason: string; exitCode?: number };
@@ -114,9 +120,10 @@ export interface BridgeDeps {
   remoteEnabled: boolean;
   /** 목록에서 뺄 세션 — 이 다리를 돌리는 pc 세션. */
   exclude: readonly string[];
-  /** 웹이 만드는 세션의 환경·기본 폴더(로컬 `term new` 와 같은 규칙: 다리 프로세스의 환경, 폴더가 없으면 홈). */
+  /** 웹이 만드는 세션의 환경(로컬 `term new` 와 같은 규칙: 다리 프로세스의 환경). */
   sessionEnv: Record<string, string>;
-  home: string;
+  /** 웹이 폴더를 비우고 만들면 그 세션 폴더(`<여기>/<requestId>`, 0700)를 만들어 그 안에서 시작한다 — 끝내도 남긴다. */
+  sessionsDir: string;
   /** 끊으면 close 를 보내고 끝낸다. */
   signal: AbortSignal;
   print(line: string): void;
@@ -416,6 +423,31 @@ class CommandRunner {
   /** 여러 바이트 글자가 poll 경계에서 갈려도 잇는다 — 세션마다(바이트는 그대로, 글자로 바꾸는 곳만 한 곳). */
   private readonly decoders = new Map<string, StringDecoder>();
 
+  /**
+   * 웹이 폴더를 비운 만들기 — `<sessionsDir>/<requestId>` 를 만든다. requestId 는 서버가 만들기마다 새로 뽑는 UUID 라
+   * 세션마다 새 폴더가 되고, remote_command 로그 줄(같은 requestId)로 어느 만들기의 폴더인지 잇는다. UUID 모양만 받는다(경로 밖으로 못 나가게).
+   */
+  private async sessionFolder(requestId: string): Promise<{ folder: string; made: boolean }> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)) {
+      throw new TermError("TERM_BAD_REQUEST", `The create request id "${requestId}" is not a UUID, so no session folder was made.`);
+    }
+    const folder = join(this.deps.sessionsDir, requestId);
+    const made = !existsSync(folder);
+    await ensurePrivateDir(folder);
+    return { folder, made };
+  }
+
+  /** 거절된 만들기 — 방금 만든 세션 폴더를 비어 있을 때만 지운다(rmdir, 재귀 아님). 못 지우면 한 줄 남기고 넘어간다. */
+  private async dropSessionFolder(requestId: string, folder: string): Promise<void> {
+    try {
+      await rmdir(folder);
+    } catch (error) {
+      this.deps.log.write({ event: "remote_session_folder_kept", requestId, folder,
+        code: error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "UNKNOWN",
+        message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   constructor(
     private readonly deps: BridgeDeps,
     private readonly control: DaemonControl,
@@ -483,15 +515,29 @@ class CommandRunner {
         this.viewers.get(command.session)?.setSize(applied);
         return true;
       }
-      case "create":
-        await this.control.request({
-          op: "new",
-          name: command.name,
-          cwd: command.cwd ?? this.deps.home,
-          command: command.command === undefined ? null : shellLineCommand(command.command, this.deps.sessionEnv),
-          env: this.deps.sessionEnv,
-        });
+      case "create": {
+        // 폴더를 주면 그대로(절대 만들거나 지우지 않는다) · 비면 세션 폴더를 만들고, 거절되면 방금 만든 것만 지운다.
+        let cwd = command.cwd;
+        let made: string | undefined;
+        if (cwd === undefined) {
+          const fresh = await this.sessionFolder(command.requestId);
+          cwd = fresh.folder;
+          if (fresh.made) made = fresh.folder;
+        }
+        try {
+          await this.control.request({
+            op: "new",
+            name: command.name,
+            cwd,
+            command: command.command === undefined ? null : shellLineCommand(command.command, this.deps.sessionEnv),
+            env: this.deps.sessionEnv,
+          });
+        } catch (error) {
+          if (made) await this.dropSessionFolder(command.requestId, made);
+          throw error;
+        }
         return true;
+      }
       case "kill":
         await this.control.request({ op: "kill", name: command.session });
         this.decoders.delete(command.session);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, posix, win32 } from "node:path";
 
 /**
  * `ainecto term` 의 파일 자리 — ★한 곳(설계 2-1·2-4·2-6·2-7). 폴더는 {@code ~/.ainecto/term}, 0700.
@@ -25,6 +25,23 @@ export interface TermPaths {
   /** 원격 터미널 다리 로그(PC 연결 안의 다리) — JSON 한 줄씩, 데몬 로그와 같은 쓰기·회전. */
   remoteLog: string;
   previousRemoteLog: string;
+}
+
+/**
+ * 앱 홈 — ★OS 가 앱 자료를 두라고 정한 곳 아래 `ainecto`(경로 규칙은 여기 한 곳, 사용자 결재 «추천대로»).
+ * macOS `~/Library/Application Support` · Windows `%LOCALAPPDATA%` · 그 밖 `${XDG_DATA_HOME:-~/.local/share}`(XDG: 절대 경로만).
+ * 데몬 파일 자리({@link termPaths} — `~/.ainecto`)는 옮기지 않는다.
+ */
+export function appHome(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  if (platform === "darwin") return posix.join(home, "Library", "Application Support", "ainecto");
+  if (platform === "win32") return win32.join(env.LOCALAPPDATA || win32.join(home, "AppData", "Local"), "ainecto");
+  const xdg = env.XDG_DATA_HOME;
+  return posix.join(xdg && isAbsolute(xdg) ? xdg : posix.join(home, ".local", "share"), "ainecto");
+}
+
+/** 웹 «+ 새 세션»에서 폴더를 비웠을 때 세션마다 만드는 폴더의 부모 — `<앱 홈>/sessions`. */
+export function webSessionsDir(app: string = appHome()): string {
+  return join(app, "sessions");
 }
 
 export function termPaths(home: string = homedir()): TermPaths {

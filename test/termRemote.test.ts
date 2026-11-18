@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
 import { createRemoteHttp, openRemoteLog, remoteCommands, remoteStateOf, runRemoteBridge, watchingOf, type BridgeDeps, type RemoteResult } from "../src/core/term/remote";
@@ -97,7 +98,7 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
       remoteEnabled: options.remoteEnabled ?? true,
       exclude: options.exclude ?? ["ainecto-pc"],
       sessionEnv: Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string")),
-      home: rig.home,
+      sessionsDir: join(rig.home, "app", "sessions"),
       signal: stop.signal,
       print: (line) => printed.push(line),
       ...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
@@ -151,21 +152,36 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     expect(text).not.toContain(Buffer.from("hi-a\r").toString("base64"));
   }, LONG);
 
-  it("웹 만들기(명령 줄·폴더 없으면 홈) → 데몬에 생김·answer ok·목록에 · 같은 이름이면 데몬 코드로 실패", async () => {
+  it("웹 만들기(명령 줄·폴더 없으면 <앱 홈>/sessions/<requestId> 를 만들어 그 안에서) → 데몬에 생김·answer ok·목록에 · 준 폴더는 그대로 · 같은 이름이면 데몬 코드로 실패", async () => {
     await ok("term", "new", "base", "--", "cat");
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
-    const id = fake.create("made", { command: "echo made-$((1+2)); sleep 600" });
+    const id = fake.create("made", { command: "echo made-$((1+2)); pwd; sleep 600" });
     await until(() => fake.answerFor(id) !== undefined, "answer");
     expect(fake.answerFor(id)).toMatchObject({ ok: true });
     await until(() => fake.listedNames().includes("made"), "made listed");
+    const folder = join(rig.home, "app", "sessions", id);
+    expect(statSync(folder).isDirectory()).toBe(true);
+    expect(statSync(folder).mode & 0o777).toBe(0o700);
     const made = (await sessions()).find((s) => s.name === "made");
-    expect(made?.cwd).toBe(rig.home);
+    expect(made?.cwd).toBe(folder);
     await ok("term", "wait", "made", "--match", "made-3", "--timeout", "10");
+    // 긴 경로는 화면 폭에서 줄이 갈린다 — 이어 붙여 본다.
+    await until(async () => (await screen("made")).join("").includes(`/sessions/${id}`), "pwd is the session folder");
+
+    const given = fake.create("given", { cwd: rig.home });
+    await until(() => fake.answerFor(given) !== undefined, "given answer");
+    expect(fake.answerFor(given)).toMatchObject({ ok: true });
+    await until(async () => (await sessions()).some((s) => s.name === "given"), "given listed");
+    expect((await sessions()).find((s) => s.name === "given")?.cwd).toBe(rig.home);
+    expect(existsSync(join(rig.home, "app", "sessions", given))).toBe(false);
 
     const dup = fake.create("made");
     await until(() => fake.answerFor(dup) !== undefined, "dup answer");
     expect(fake.answerFor(dup)).toMatchObject({ ok: false, code: "TERM_SESSION_EXISTS" });
+    // 거절된 만들기 — 방금 만든 빈 세션 폴더는 지운다(받은 폴더는 건드리지 않는다).
+    expect(existsSync(join(rig.home, "app", "sessions", dup))).toBe(false);
+    expect(existsSync(join(rig.home, "app", "sessions", id))).toBe(true);
     run.stop.abort();
     await run.done;
     expectLogPairs();

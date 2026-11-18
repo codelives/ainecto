@@ -97,7 +97,7 @@ describe("pc run 의 원격 다리 — pc.json(pcId·계정별 원격 허용) �
       },
       settingsPath,
       paths: termPaths(rig.home),
-      home: rig.home,
+      sessionsDir: join(rig.home, "app", "sessions"),
       hostName: "test-host",
       env: Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string")),
     }).then((setup) => runPcRemote(setup, stop.signal));
