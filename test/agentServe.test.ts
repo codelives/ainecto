@@ -40,7 +40,7 @@ describe("ainecto agent serve", () => {
     const plain = await until(() => w.server.replies()[1]);
     await finish(w);
     // 가짜 claude 는 stdin 한 줄을 그대로 «got <글>» 로 돌려준다.
-    expect(String(reply.reply)).toContain('got [AiNecto context — "this project" / "this document" mean these] project «MCP 완주 테스트» (projectUuid p-1, workspace «라이언» w-1) · open document «원고» (documentUuid ' + "d".repeat(32) + ", markdown)\n\n이 프로젝트에 문서 만들어 #1");
+    expect(String(reply.reply)).toContain('got [AiNecto context — "this project" / "this document" / "this card" mean these] project «MCP 완주 테스트» (projectUuid p-1, workspace «라이언» w-1) · open document «원고» (documentUuid ' + "d".repeat(32) + ", markdown)\n\n이 프로젝트에 문서 만들어 #1");
     expect(String(plain.reply)).toMatch(/^got 맥락 없음 #2/);
   });
 
@@ -51,7 +51,24 @@ describe("ainecto agent serve", () => {
     });
     const reply = await until(() => w.server.replies()[0]);
     await finish(w);
-    expect(String(reply.reply)).toContain('got [AiNecto context — "this project" / "this document" mean these] attached files «기획서.pdf», «표.csv» (names only — the files are not available on this machine)\n\n이 파일 봐 줘 #1');
+    expect(String(reply.reply)).toContain('got [AiNecto context — "this project" / "this document" / "this card" mean these] attached files «기획서.pdf», «표.csv» (names only — the files are not available on this machine)\n\n이 파일 봐 줘 #1');
+  });
+
+  it("칸반 카드 대화(KAN-1229 ⑦)면 그 카드(제목·키·cardUuid)를 맥락 줄에 — 키가 없으면 cardUuid 만 · uuid 가 없으면 뺀다", async () => {
+    const w = startServe();
+    w.server.offer("t1", "conv-a", "이 카드 정리해", {
+      project: { uuid: "p-1", name: "운영" },
+      card: { uuid: "f".repeat(32), key: "KAN-1229", title: "Connect 기본 기능" },
+    });
+    const keyed = await until(() => w.server.replies()[0]);
+    w.server.offer("t2", "conv-a", "키 없음", { card: { uuid: "e".repeat(32), title: "옛 카드" } });
+    const unkeyed = await until(() => w.server.replies()[1]);
+    w.server.offer("t3", "conv-a", "uuid 없음", { card: { key: "KAN-1", title: "x" } });
+    const noUuid = await until(() => w.server.replies()[2]);
+    await finish(w);
+    expect(String(keyed.reply)).toContain('got [AiNecto context — "this project" / "this document" / "this card" mean these] project «운영» (projectUuid p-1) · card «Connect 기본 기능» (KAN-1229, cardUuid ' + "f".repeat(32) + ")\n\n이 카드 정리해 #1");
+    expect(String(unkeyed.reply)).toContain("card «옛 카드» (cardUuid " + "e".repeat(32) + ")\n\n키 없음 #2");
+    expect(String(noUuid.reply)).toMatch(/^got uuid 없음 #3/);
   });
 
   it("대화가 바뀌면 앞 프로세스를 내리고, 돌아오면 그 대화의 세션으로 --resume", async () => {
