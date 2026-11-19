@@ -1,4 +1,4 @@
-import { WriteFactsCollector, writeResultFacts } from "../src/core/agent/documents";
+import { TurnFactsCollector, writeResultFacts } from "../src/core/agent/documents";
 
 const doc = (uuid: string) => `📄 Open in AiNecto: https://dev.ainecto.com/app/docs/${uuid}`;
 const A = "0777d9d448f6453b8a897a3a10b90543";
@@ -42,10 +42,17 @@ describe("agent write facts — 쓰기 도구 결과 → 문서·새 문서·카
   });
 
   it("한 차례 동안 모은 값은 순서대로 · 중복 없이", () => {
-    const facts = new WriteFactsCollector();
-    facts.add([{ type: "text", text: `{"created":[{"uuid":"${A}"}]}` }, { type: "text", text: doc(A) }]);
-    facts.add([{ type: "text", text: `{"documentUuid":"${BOARD}","results":[{"cardUuid":"${CARD}"}]}` }, { type: "text", text: doc(BOARD) }]);
-    facts.add([{ type: "text", text: `{"updated":[{"uuid":"${A}"}]}` }, { type: "text", text: doc(A) }]);
-    expect(facts.snapshot()).toEqual({ documents: [A, BOARD], createdDocuments: [A], cards: [CARD] });
+    const facts = new TurnFactsCollector();
+    facts.add([{ type: "text", text: `{"created":[{"uuid":"${A}"}]}` }, { type: "text", text: doc(A) }], true);
+    facts.add([{ type: "text", text: `{"documentUuid":"${BOARD}","results":[{"cardUuid":"${CARD}"}]}` }, { type: "text", text: doc(BOARD) }], true);
+    facts.add([{ type: "text", text: `{"updated":[{"uuid":"${A}"}]}` }, { type: "text", text: doc(A) }], true);
+    expect(facts.snapshot()).toEqual({ documents: [A, BOARD], createdDocuments: [A], cards: [CARD], seen: [A, BOARD, CARD] });
+  });
+
+  it("읽기 결과는 본 id(📄 줄 · JSON 안 32 hex 글 값)만 — 문서·카드로 싣지 않는다 (KAN-1229 Edwin #2172)", () => {
+    const facts = new TurnFactsCollector();
+    facts.add([{ type: "text", text: `{"cards":[{"card":{"uuid":"${CARD}","key":"KAN-1","title":"${"0".repeat(31)}"}}]}` }], false);
+    facts.add([{ type: "text", text: doc(A) }, { type: "text", text: "{not json" }], false);
+    expect(facts.snapshot()).toEqual({ documents: [], createdDocuments: [], cards: [], seen: [CARD, A] });
   });
 });

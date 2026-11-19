@@ -302,7 +302,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       await existing.close();
     }
     const session = adapter.open({ conversationUuid, resumeRef: deps.sessions.get(conversationUuid, adapter.id),
-      textMaxCharacters: limits.textMaxCharacters, ...(agentName ? { agentName } : {}) });
+      textMaxCharacters: limits.textMaxCharacters, documentsMax: limits.documentsMax, ...(agentName ? { agentName } : {}) });
     live.set(adapter.id, session);
     return session;
   };
@@ -333,7 +333,9 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       }
       current = { key: offer.key, session };
       try {
-        outcome = await session.send(agentPromptText(offer.text, offer.context), deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
+        // 할 일 차례의 답 글은 카드 실행 대화로만 간다(«열기» 단추 없음) — 지시문 그대로.
+        const text = offer.todoId === undefined ? agentPromptText(offer.text, offer.context) : offer.text;
+        outcome = await session.send(text, deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
       } finally {
         current = undefined;
       }
@@ -371,6 +373,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         sessionId: session?.sessionRef,
         documents: reply?.documentUuids.length ?? 0,
         createdDocuments: reply?.createdDocumentUuids?.length ?? 0,
+        foundDocuments: reply?.foundDocumentUuids?.length ?? 0,
         cards: reply?.cardUuids?.length ?? 0,
         numTurns: result?.numTurns,
         costUsd: result?.costUsd,
@@ -390,6 +393,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           reply: reply.reply,
           documentUuids: reply.documentUuids,
           ...(reply.createdDocumentUuids ? { createdDocumentUuids: reply.createdDocumentUuids } : {}),
+          ...(reply.foundDocumentUuids ? { foundDocumentUuids: reply.foundDocumentUuids } : {}),
           ...(reply.cardUuids ? { cardUuids: reply.cardUuids } : {}),
           ...(reply.errorCode ? { errorCode: reply.errorCode } : {}),
         }, { turnUuid: offer.turnUuid, signal: stopController.signal });

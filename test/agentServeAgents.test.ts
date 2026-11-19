@@ -5,6 +5,7 @@ const C = "c".repeat(32);
 const D = "d".repeat(32);
 const BOARD = "e".repeat(32);
 const CARD = "f".repeat(32);
+const FOUND = "a".repeat(32);
 
 /** 모든 요청 줄에 같은 짝의 응답 줄이 있다(요청 1줄 + 응답 1줄). */
 function expectPairedLines(w: World): void {
@@ -135,6 +136,19 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
       expect(reply).toMatchObject({ status: "DONE", documentUuids: [D] });
       expect(reply).not.toHaveProperty("cardUuids");
       expect(logRecords(w).find((r) => r.event === "agent_response")).toMatchObject({ documents: 1, createdDocuments: 0, cards: 0 });
+    });
+
+    it(`${agent}: 찾은 문서·카드도 «열기» — 모델이 고른 것 가운데 이 차례 도구가 돌려준 것만 · «열기» 규칙 줄이 간다 (KAN-1229 Edwin #2172)`, async () => {
+      const w = startServe({ installed: [agent] });
+      w.server.offer("t1", "conv-a", "find-open", undefined, agent);
+      const reply = await until(() => w.server.replies()[0]);
+      await finish(w);
+
+      // 실패한 읽기의 문서(b)·어느 도구도 돌려주지 않은 id(9·1)·다른 MCP 서버의 id 는 버린다.
+      expect(reply).toMatchObject({ status: "DONE", reply: "ruled=true", documentUuids: [FOUND], foundDocumentUuids: [FOUND], cardUuids: [CARD] });
+      expect(reply).not.toHaveProperty("createdDocumentUuids");
+      expect(logRecords(w).find((r) => r.event === "agent_response"))
+        .toMatchObject({ documents: 1, createdDocuments: 0, foundDocuments: 1, cards: 1 });
     });
   }
 

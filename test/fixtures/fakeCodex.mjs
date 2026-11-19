@@ -5,12 +5,15 @@
 // turn/start 의 글로 동작을 고른다:
 //   "write-card" → 읽기 하나 · 만들기(created) · 고치기 · 칸반 카드 · 다른 MCP 서버 도구 결과 뒤 답
 //   "write-failed" → 실패한 쓰기(status failed — 결과 글에 📄·카드가 있어도) + 성공한 고치기 하나 뒤 답
+//   "find-open"  → 읽기 둘(문서 찾기·카드 목록) + 실패한 읽기 + 다른 MCP 서버 결과 뒤, 본 것·실패한 것·없는 것을 open* 에 싣고
+//                  reply = «열기» 규칙 줄을 받았는가
 //   "approval"   → 우리에게 mcpServer/elicitation/request 를 묻고, 받은 답을 그대로 답 글에 싣는다
 //   "bad-schema" → 답 글이 JSON 이 아니다
 //   "fail"       → turn 이 failed 로 끝난다
 //   "hang"       → 끝내지 않는다(turn/interrupt 가 오면 interrupted 로 끝낸다)
 //   "crash"      → code 3 으로 끝난다
-//   그 밖        → {"reply":"got <글> #<이 프로세스의 차례 수> in <threadId>"}
+//   그 밖        → {"reply":"got <글> #<이 프로세스의 차례 수> in <threadId>","openDocumentUuids":[],"openCardUuids":[]}
+// 글 맨 앞의 «열기» 규칙 줄([AiNecto rule] …)은 떼고 본다.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -36,7 +39,7 @@ const complete = (turnId, status, text, error = null) => {
   if (text !== undefined) item(turnId, { type: "agentMessage", id: `msg-${turnId}`, text });
   out({ method: "turn/completed", params: { threadId: thread, turn: { id: turnId, status, error, items: [] } } });
 };
-const reply = (text) => JSON.stringify({ reply: text });
+const reply = (text, openDocumentUuids = [], openCardUuids = []) => JSON.stringify({ reply: text, openDocumentUuids, openCardUuids });
 
 function startServers(config = {}) {
   for (const name of ["ainecto", "node_repl", "openaiDeveloperDocs"]) {
@@ -46,7 +49,8 @@ function startServers(config = {}) {
   }
 }
 
-function act(turnId, text) {
+function act(turnId, raw) {
+  const text = raw.replace(/^\[AiNecto rule\][^\n]*\n\n?/, "");
   if (text === "crash") process.exit(3);
   if (text === "hang") {
     hangingTurn = turnId;
@@ -76,6 +80,15 @@ function act(turnId, text) {
   if (text === "write-failed") {
     toolCall(turnId, "ainecto", "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")], "failed");
     toolCall(turnId, "ainecto", "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
+  }
+  if (text === "find-open") {
+    toolCall(turnId, "ainecto", "search_documents", [`{"documents":[{"uuid":"${"a".repeat(32)}","title":"찾은 문서"}]}`, doc("a")]);
+    toolCall(turnId, "ainecto", "kanban_list_cards", [`{"cards":[{"card":{"uuid":"${"f".repeat(32)}","key":"KAN-1"}}]}`]);
+    toolCall(turnId, "ainecto", "get_document", [`{"uuid":"${"b".repeat(32)}"}`, doc("b")], "failed");
+    toolCall(turnId, "other", "search", [`{"uuid":"${"9".repeat(32)}"}`]);
+    complete(turnId, "completed", reply(`ruled=${raw.startsWith("[AiNecto rule]")}`,
+      ["a".repeat(32), "b".repeat(32), "9".repeat(32)], ["f".repeat(32), "1".repeat(32)]));
+    return;
   }
   complete(turnId, "completed", reply(`got ${text} #${turns} in ${thread}`));
 }

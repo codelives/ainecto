@@ -1,4 +1,4 @@
-import type { WriteFacts } from "./documents";
+import type { TurnFacts } from "./documents";
 
 /**
  * 내 PC Agent 의 공통 꼴(KAN-1075 단계 3, 증적 `.role/claude-dev/evidence/kan1075/three-agents/interface.md`).
@@ -10,7 +10,7 @@ import type { WriteFacts } from "./documents";
  *   <li>인증 확인(모델 호출 0) — {@link AgentAdapter.authStatus}</li>
  *   <li>세션 시작·재개 — {@link AgentAdapter.open}({@code resumeRef} 가 있으면 재개)</li>
  *   <li>요청 전달 → 응답 반환(닫힌 schema 값) — {@link AgentSession.send}</li>
- *   <li>응답 스트리밍 — 세션 안에서 소비한다(쓰기 도구 결과의 문서·카드만 모은다). 서버로 조각을 보내는 길은 없다.</li>
+ *   <li>응답 스트리밍 — 세션 안에서 소비한다(AiNecto 도구 결과만 모은다 — {@link TurnFacts}). 서버로 조각을 보내는 길은 없다.</li>
  *   <li>권한 승인 — 묻지 않는다. 세션을 열 때 «AiNecto MCP 도구만 허용, 나머지는 묻지 않고 거절»로 고정한다.</li>
  *   <li>중단 — {@link AgentSession.interrupt}(그 차례만), 내리기는 {@link AgentSession.close}.</li>
  * </ol>
@@ -43,7 +43,7 @@ export interface AgentTurnResult {
 }
 
 export type TurnOutcome =
-  | { kind: "result"; result: AgentTurnResult; facts: WriteFacts }
+  | { kind: "result"; result: AgentTurnResult; facts: TurnFacts }
   | { kind: "timeout" }
   | { kind: "exited"; code: number | null; signal: string | null; stderrTail: string };
 
@@ -78,7 +78,7 @@ export interface AgentAdapter {
    * 프로세스를 띄운다(동기). 재개할 세션이 있으면 {@code resumeRef}. 준비가 실패하면 첫 {@code send} 가 «exited» 로 답한다.
    * {@code agentName} = 이 세션의 AiNecto 브리지를 그 이름 붙은 에이전트로 붙인다(할 일 차례만 — Chat 차례는 이름 없는 연결).
    */
-  open(input: { conversationUuid: string; resumeRef?: string; textMaxCharacters: number; agentName?: string }): AgentSession;
+  open(input: { conversationUuid: string; resumeRef?: string; textMaxCharacters: number; documentsMax: number; agentName?: string }): AgentSession;
 }
 
 export interface AgentSession {
@@ -98,15 +98,29 @@ export interface AgentSession {
   close(): Promise<void>;
 }
 
-/** 답 schema(설계 1절) — 닫힌 schema. 두 Agent 가 같은 것을 쓴다. 문서는 모델 말이 아니라 쓰기 도구 결과에서 뽑는다. */
-export function agentReplySchema(textMaxCharacters: number): Record<string, unknown> {
+/** 답 schema 의 칸 — schema 와 판정({@code replyForOutcome})이 같은 목록을 쓴다. */
+export const REPLY_KEYS = ["reply", "openDocumentUuids", "openCardUuids"] as const;
+
+/**
+ * 답 schema(설계 1절) — 닫힌 schema. 두 Agent 가 같은 것을 쓴다(Codex 는 칸마다 required 여야 한다 — 비어도 싣는다).
+ * 만들고 고친 문서·카드는 모델 말이 아니라 쓰기 도구 결과에서 뽑는다. {@code open*} 은 «열기» 단추로 보일 것의 모델 고름이고
+ * 이 차례 도구 결과에 나온 id 만 남긴다(KAN-1229 Edwin #2172, {@code replyForOutcome}).
+ */
+export function agentReplySchema(textMaxCharacters: number, documentsMax: number): Record<string, unknown> {
+  const ids = (description: string) =>
+    ({ type: "array", maxItems: documentsMax, items: { type: "string", pattern: "^[0-9a-f]{32}$" }, description });
   return {
     type: "object",
     additionalProperties: false,
-    required: ["reply"],
-    properties: { reply: { type: "string", minLength: 1, maxLength: textMaxCharacters } },
+    required: [...REPLY_KEYS],
+    properties: {
+      reply: { type: "string", minLength: 1, maxLength: textMaxCharacters },
+      openDocumentUuids: ids("AiNecto documents you found or worked on in this turn that the user should open (documentUuid). May be empty."),
+      openCardUuids: ids("AiNecto kanban cards you found or worked on in this turn that the user should open (cardUuid). May be empty."),
+    },
   };
 }
+
 
 /** Agent 가 쓰는 MCP 서버 이름 — Claude 도구 이름 앞머리({@code mcp__ainecto__})와 Codex {@code mcp_servers.ainecto} 가 이것에서 나온다. */
 export const AINECTO_MCP_SERVER = "ainecto";

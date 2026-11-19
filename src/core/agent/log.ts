@@ -37,7 +37,7 @@ export type AgentLogRecord =
   /** Agent 한 차례 — Chat 요청은 {@code turnUuid}, 에이전트 할 일(자동 실행)은 {@code todoId}. */
   | { event: "agent_request"; turnUuid?: string; todoId?: string; agent: string; conversationUuid: string; pid: number; textLength: number }
   | { event: "agent_response"; turnUuid?: string; todoId?: string; agent: string; ms: number; outcome: string; status: string; errorCode?: string; subtype?: string;
-      sessionId?: string; documents: number; createdDocuments: number; cards: number; numTurns?: number; costUsd?: number }
+      sessionId?: string; documents: number; createdDocuments: number; foundDocuments: number; cards: number; numTurns?: number; costUsd?: number }
   | { event: "bad_line"; pid: number; agent: string; length: number }
   /** 에이전트 할 일 한 건 처리(todoRun.ts) — 시작 1줄 + 끝 1줄(같은 todoId). 끝 줄은 실패해도 반드시(실패한 도구·코드). */
   | { event: "todo_run"; todoId: string; kind: string; cardUuid: string }

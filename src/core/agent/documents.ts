@@ -9,6 +9,8 @@
  *       ({@code create_documents} 의 {@code {"created":[{uuid,…}]}}). 나머지는 고친 문서다.</li>
  *   <li>카드 = 결과 JSON 안의 {@code cardUuid}(32 hex) 값 전부({@code kanban_apply_changes} 의 {@code results[].cardUuid} 등).</li>
  * </ul>
+ * 찾기만 한 문서·카드(KAN-1229 Edwin #2172)는 모델이 «열기»로 고른 id 가운데 이 차례 AiNecto 도구(읽기·쓰기) 결과에 실제로 나온 것만 싣는다
+ * ({@code seen}) — 문서인지 카드인지·읽을 수 있는지는 서버가 가린다.
  */
 
 const DOCUMENT_LINE = /📄[^\n]*?\/app\/docs\/([0-9a-f]{32})(?![0-9a-f])/gu;
@@ -19,6 +21,11 @@ export interface WriteFacts {
   /** {@code documents} 의 부분집합. */
   createdDocuments: string[];
   cards: string[];
+}
+
+/** 한 차례의 사실 — 쓰기 결과 + 성공한 AiNecto 도구 결과 전부에 나온 32 hex id(📄 줄 · JSON 값, 순서대로 · 중복 없이). */
+export interface TurnFacts extends WriteFacts {
+  seen: string[];
 }
 
 /** tool_result 의 content(문자열 또는 [{type:"text", text}]) 에서 문서 uuid 를 순서대로(중복 없이). */
@@ -51,19 +58,29 @@ export function writeResultFacts(content: unknown): WriteFacts {
   return { documents, createdDocuments: documents.filter((uuid) => created.has(uuid)), cards };
 }
 
-/** 한 차례 동안 쓰기 도구 결과를 모은다 — 순서대로 · 중복 없이. */
-export class WriteFactsCollector {
-  private readonly facts: WriteFacts = { documents: [], createdDocuments: [], cards: [] };
+/** 결과 하나에 나온 32 hex id — 📄 줄의 문서 + JSON 안의 32 hex 글 값 전부(순수 함수). */
+export function seenIdsIn(content: unknown): string[] {
+  const out = documentUuidsIn(content);
+  for (const value of jsonObjectsIn(content)) collectHexValues(value, out);
+  return out;
+}
 
-  add(content: unknown): void {
+/** 한 차례 동안 성공한 AiNecto 도구 결과를 모은다 — 순서대로 · 중복 없이. 쓰기 도구 결과만 문서·카드가 된다. */
+export class TurnFactsCollector {
+  private readonly facts: TurnFacts = { documents: [], createdDocuments: [], cards: [], seen: [] };
+
+  add(content: unknown, write: boolean): void {
+    appendUnique(this.facts.seen, seenIdsIn(content));
+    if (!write) return;
     const next = writeResultFacts(content);
     appendUnique(this.facts.documents, next.documents);
     appendUnique(this.facts.createdDocuments, next.createdDocuments);
     appendUnique(this.facts.cards, next.cards);
   }
 
-  snapshot(): WriteFacts {
-    return { documents: [...this.facts.documents], createdDocuments: [...this.facts.createdDocuments], cards: [...this.facts.cards] };
+  snapshot(): TurnFacts {
+    return { documents: [...this.facts.documents], createdDocuments: [...this.facts.createdDocuments], cards: [...this.facts.cards],
+      seen: [...this.facts.seen] };
   }
 }
 
@@ -106,6 +123,16 @@ function collectCards(value: unknown, out: string[]): void {
     } else {
       collectCards(child, out);
     }
+  }
+}
+
+function collectHexValues(value: unknown, out: string[]): void {
+  if (typeof value === "string") {
+    if (HEX32.test(value) && !out.includes(value)) out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectHexValues(item, out);
+  } else if (value && typeof value === "object") {
+    for (const child of Object.values(value)) collectHexValues(child, out);
   }
 }
 

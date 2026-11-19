@@ -2,7 +2,7 @@ import type { DaemonLog } from "../term/daemonLog";
 import type { AgentAdapter, AgentAuthStatus, AgentSession, TurnOutcome } from "./agents";
 import { AgentChild, detectByVersion, runToEnd, withDeadline, type AgentSpawn, type ChildExit } from "./child";
 import { AINECTO_TOOL_PREFIX } from "./claudeArgs";
-import { WriteFactsCollector } from "./documents";
+import { TurnFactsCollector } from "./documents";
 import { AGENT_CALL_TIMEOUT_MS } from "./limits";
 import type { AgentLogRecord } from "./log";
 
@@ -15,8 +15,8 @@ export interface ClaudeCodeDeps {
   log: DaemonLog<AgentLogRecord>;
   /** 서버 tools/list 에서 readOnlyHint 가 아닌 도구 이름. */
   writeTools: ReadonlySet<string>;
-  /** K5 고정 인자 — 글 상한(서버 값)과 이어 붙일 세션으로 만든다({@code claudeAgentArgs}). */
-  args(input: { textMaxCharacters: number; resumeSessionId?: string; agentName?: string }): string[];
+  /** K5 고정 인자 — 글·문서 상한(서버 값)과 이어 붙일 세션으로 만든다({@code claudeAgentArgs}). */
+  args(input: { textMaxCharacters: number; documentsMax: number; resumeSessionId?: string; agentName?: string }): string[];
 }
 
 /**
@@ -36,9 +36,9 @@ export function claudeCodeAdapter(deps: ClaudeCodeDeps): AgentAdapter {
       }
       return claudeAuthFromJson(run.stdout, run.code, run.stderrTail, hasApiKeyVariable(deps.env));
     },
-    open: ({ conversationUuid, resumeRef, textMaxCharacters, agentName }) =>
+    open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName }) =>
       new ClaudeCodeSession(conversationUuid, resumeRef, agentName,
-        deps.args({ textMaxCharacters, resumeSessionId: resumeRef, agentName }), deps),
+        deps.args({ textMaxCharacters, documentsMax, resumeSessionId: resumeRef, agentName }), deps),
   };
 }
 
@@ -74,12 +74,12 @@ export function claudeAuthFromJson(stdout: string, code: number | null, stderrTa
 
 interface Pending {
   resolve(outcome: TurnOutcome): void;
-  facts: WriteFactsCollector;
+  facts: TurnFactsCollector;
 }
 
 /**
  * ★대화 하나에 붙은 Claude Code 프로세스 하나. 한 차례 = stdin 한 줄 → {@code result} 하나.
- * 쓰기 도구 결과의 문서·카드를 모은다(도구 이름은 tool_use id 로 잇는다).
+ * AiNecto 도구 결과를 모은다 — 쓰기 도구는 문서·카드까지(도구 이름은 tool_use id 로 잇는다).
  */
 class ClaudeCodeSession implements AgentSession {
   readonly agent = "claude-code" as const;
@@ -112,7 +112,7 @@ class ClaudeCodeSession implements AgentSession {
     const exit = this.child.exit;
     if (exit) return { kind: "exited", ...exit };
     const outcome = new Promise<TurnOutcome>((resolve) => {
-      this.pending = { resolve, facts: new WriteFactsCollector() };
+      this.pending = { resolve, facts: new TurnFactsCollector() };
     });
     this.child.writeLine({ type: "user", message: { role: "user", content: text } });
     try {
@@ -173,8 +173,8 @@ class ClaudeCodeSession implements AgentSession {
         // 실패한 쓰기(is_error)는 그 결과 글에 문서·카드가 있어도 «수정됨/생성됨»으로 싣지 않는다(KAN-1229 ⑧).
         if (part.type !== "tool_result" || typeof part.tool_use_id !== "string" || part.is_error === true) continue;
         const name = this.toolNames.get(part.tool_use_id);
-        if (!name?.startsWith(AINECTO_TOOL_PREFIX) || !this.deps.writeTools.has(name.slice(AINECTO_TOOL_PREFIX.length))) continue;
-        this.pending.facts.add(part.content);
+        if (!name?.startsWith(AINECTO_TOOL_PREFIX)) continue;
+        this.pending.facts.add(part.content, this.deps.writeTools.has(name.slice(AINECTO_TOOL_PREFIX.length)));
       }
       return;
     }
@@ -182,7 +182,7 @@ class ClaudeCodeSession implements AgentSession {
       if (typeof event.session_id === "string") this.sessionRef = event.session_id;
       this.finish({
         kind: "result",
-        facts: this.pending?.facts.snapshot() ?? { documents: [], createdDocuments: [], cards: [] },
+        facts: this.pending?.facts.snapshot() ?? { documents: [], createdDocuments: [], cards: [], seen: [] },
         result: {
           subtype: typeof event.subtype === "string" ? event.subtype : undefined,
           isError: event.is_error === true,

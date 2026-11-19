@@ -12,7 +12,7 @@ import {
   codexTurnResult,
   codexTurnStartParams,
 } from "./codexArgs";
-import { WriteFactsCollector } from "./documents";
+import { TurnFactsCollector } from "./documents";
 import { AGENT_CALL_TIMEOUT_MS, AGENT_STOP_WAIT_MS } from "./limits";
 import type { AgentLogRecord } from "./log";
 
@@ -53,8 +53,8 @@ export function codexAdapter(deps: CodexDeps): AgentAdapter {
         await server.child.stop();
       }
     },
-    open: ({ conversationUuid, resumeRef, textMaxCharacters, agentName }) =>
-      new CodexSession(conversationUuid, resumeRef, textMaxCharacters, agentName, deps),
+    open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName }) =>
+      new CodexSession(conversationUuid, resumeRef, agentReplySchema(textMaxCharacters, documentsMax), agentName, deps),
   };
 }
 
@@ -167,14 +167,14 @@ function startAppServer(
 
 interface ActiveTurn {
   resolve(outcome: TurnOutcome): void;
-  facts: WriteFactsCollector;
+  facts: TurnFactsCollector;
   id?: string;
   lastMessage?: string;
 }
 
 /**
  * ★대화 하나에 붙은 Codex app-server 하나 — initialize → thread/start(또는 thread/resume) → 차례마다 turn/start(outputSchema).
- * 쓰기 도구({@code mcpToolCall}, 서버 ainecto) 결과의 문서·카드를 모으고, 마지막 답 글({@code agentMessage})을 schema 값으로 읽는다.
+ * AiNecto 도구({@code mcpToolCall}, 서버 ainecto) 결과를 모으고(쓰기 도구는 문서·카드까지), 마지막 답 글({@code agentMessage})을 schema 값으로 읽는다.
  */
 class CodexSession implements AgentSession {
   readonly agent = "codex" as const;
@@ -191,7 +191,7 @@ class CodexSession implements AgentSession {
   constructor(
     readonly conversationUuid: string,
     resumeRef: string | undefined,
-    private readonly textMaxCharacters: number,
+    private readonly replySchema: Record<string, unknown>,
     readonly agentName: string | undefined,
     private readonly deps: CodexDeps,
   ) {
@@ -226,14 +226,14 @@ class CodexSession implements AgentSession {
       }
       const exit = this.child.exit;
       if (exit || !this.sessionRef) return { kind: "exited", code: exit?.code ?? null, signal: exit?.signal ?? null, stderrTail: exit?.stderrTail ?? "" };
-      const turn: ActiveTurn = { resolve: () => {}, facts: new WriteFactsCollector() };
+      const turn: ActiveTurn = { resolve: () => {}, facts: new TurnFactsCollector() };
       const outcome = new Promise<TurnOutcome>((resolve) => {
         turn.resolve = resolve;
       });
       this.turn = turn;
       try {
         const started = await this.rpc.request("turn/start",
-          codexTurnStartParams(this.sessionRef, text, agentReplySchema(this.textMaxCharacters)));
+          codexTurnStartParams(this.sessionRef, text, this.replySchema));
         const id = (started.turn as { id?: unknown } | undefined)?.id;
         if (typeof id === "string") {
           turn.id = id;
@@ -316,8 +316,8 @@ class CodexSession implements AgentSession {
     if (item.type === "agentMessage" && typeof item.text === "string") {
       turn.lastMessage = item.text;
     } else if (item.type === "mcpToolCall" && item.server === AINECTO_MCP_SERVER && typeof item.tool === "string"
-        && this.deps.writeTools.has(item.tool) && item.status !== "failed") {   // 실패한 쓰기는 싣지 않는다(KAN-1229 ⑧)
-      turn.facts.add((item.result as { content?: unknown } | null | undefined)?.content);
+        && item.status !== "failed") {   // 실패한 도구는 싣지 않는다(KAN-1229 ⑧)
+      turn.facts.add((item.result as { content?: unknown } | null | undefined)?.content, this.deps.writeTools.has(item.tool));
     }
   }
 }

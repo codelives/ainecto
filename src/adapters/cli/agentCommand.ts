@@ -90,8 +90,8 @@ export async function executeAgentServe(input: {
   const bridge = (agentName: string | undefined) => ainectoBridge(process.execPath, cliScript, input.endpoint, agentName);
   const shared = { spawnImpl: spawnAgent, cwd: paths.work, env: agentEnv(process.env), log, writeTools };
   const all: AgentAdapter[] = [
-    claudeCodeAdapter({ ...shared, args: ({ textMaxCharacters, resumeSessionId, agentName }) =>
-      claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters), mcpConfig: claudeMcpConfig(bridge(agentName)), resumeSessionId }) }),
+    claudeCodeAdapter({ ...shared, args: ({ textMaxCharacters, documentsMax, resumeSessionId, agentName }) =>
+      claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters, documentsMax), mcpConfig: claudeMcpConfig(bridge(agentName)), resumeSessionId }) }),
     codexAdapter({ ...shared, appServerArgs: (agentName) => codexAppServerArgs(bridge(agentName), writeTools), clientVersion: CLI_VERSION }),
   ];
   const checks = await checkAgents(all, log);

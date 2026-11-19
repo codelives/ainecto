@@ -7,6 +7,8 @@
 //   "crash"      → code 3 으로 끝난다
 //   "write-card" → 만들기(created)·고치기·칸반 카드 결과(쓰기 셋) + 읽기 하나 뒤 reply
 //   "write-failed" → 실패한 쓰기(is_error — 결과 글에 📄·카드가 있어도) + 성공한 고치기 하나 뒤 reply
+//   "find-open"  → 읽기 둘(문서 찾기·카드 목록) + 실패한 읽기 하나 뒤, 본 것·실패한 것·없는 것을 open* 에 싣고 reply = «열기» 규칙 줄을 받았는가
+// 글 맨 앞의 «열기» 규칙 줄([AiNecto rule] …)은 떼고 본다 — 나머지(맥락 줄 + 글)를 «got <글>» 로 돌려준다.
 // control_request interrupt 가 오면 붙잡힌 차례를 error_during_execution 으로 끝낸다(실측 모양).
 // `--version` · `auth status --json`(FAKE_CLAUDE_AUTH=out 이면 로그인 안 됨) 은 한 번 출력하고 끝난다.
 import { appendFileSync } from "node:fs";
@@ -47,7 +49,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     return;
   }
-  const text = message.message.content;
+  const raw = message.message.content;
+  const text = raw.replace(/^\[AiNecto rule\][^\n]*\n\n?/, "");
   seen += 1;
   if (!started) {
     started = true;
@@ -80,7 +83,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t2", name: "mcp__ainecto__create_documents", input: {} }] } });
     out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t2", content: [{ type: "text", text: "{}" }, { type: "text", text: "📄 Open in AiNecto: https://dev.ainecto.com/app/docs/" + "b".repeat(32) }] }] } });
   }
-  const structured = text === "bad-schema" ? { reply: "x", documents: [] } : { reply: `got ${text} #${seen} in ${sessionId}` };
+  let structured = text === "bad-schema" ? { reply: "x", documents: [] }
+    : { reply: `got ${text} #${seen} in ${sessionId}`, openDocumentUuids: [], openCardUuids: [] };
+  if (text === "find-open") {
+    tool("r1", "mcp__ainecto__search_documents", [`{"documents":[{"uuid":"${"a".repeat(32)}","title":"찾은 문서"}]}`, doc("a")]);
+    tool("r2", "mcp__ainecto__kanban_list_cards", [`{"cards":[{"card":{"uuid":"${"f".repeat(32)}","key":"KAN-1"}}]}`]);
+    tool("r3", "mcp__ainecto__get_document", [`{"uuid":"${"b".repeat(32)}"}`, doc("b")], true);
+    structured = { reply: `ruled=${raw.startsWith("[AiNecto rule]")}`,
+      openDocumentUuids: ["a".repeat(32), "b".repeat(32), "9".repeat(32)], openCardUuids: ["f".repeat(32), "1".repeat(32)] };
+  }
   out({ type: "result", subtype: "success", is_error: false, session_id: sessionId, structured_output: structured, num_turns: 2, total_cost_usd: 0.1 });
 });
 process.stdin.on("end", () => process.exit(0));
