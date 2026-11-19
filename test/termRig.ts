@@ -74,7 +74,7 @@ export async function json(...args: string[]): Promise<Record<string, unknown>> 
 }
 
 export async function sessions(): Promise<{ name: string; pid: number; cwd: string; command: string[] | null; clients: number; cols: number; rows: number;
-  label?: string; lastOutputAt?: string }[]> {
+  label?: string; project?: string; lastOutputAt?: string }[]> {
   const result = await json("term", "ls");
   return (result.data as { sessions: never[] }).sessions;
 }

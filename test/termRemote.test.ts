@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
@@ -9,6 +9,8 @@ import { wireSessions } from "../src/core/term/remoteSessions";
 import { RemoteViewer } from "../src/core/term/remoteViewer";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
 import { cli, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
+
+const PROJECT = "0b9a8c7d-1111-4222-8333-444455556666";
 
 describe("원격 다리 — 순수 함수", () => {
   it("화면 = 줄을 \\r\\n 으로 이은 평문 · 같은 줄이면 같은 hash · 상한을 넘으면 위 줄부터 덜어 낸다", () => {
@@ -33,6 +35,8 @@ describe("원격 다리 — 순수 함수", () => {
       { type: "input", d: "eA==" },
       { type: "resize", session: "a", cols: 0, rows: 40 },
       { type: "create", name: "no-request" },
+      // 꼬리표 모양은 해석에서 버리지 않는다 — 만들기가 거절로 답한다.
+      { type: "create", requestId: "r4", name: "tagged", projectUuid: "NOT-A-UUID", cwd: "/tmp" },
     ] })).toEqual([
       { type: "create", requestId: "r1", name: "new", command: "npm test" },
       { type: "resize", session: "a", cols: 120, rows: 40 },
@@ -40,6 +44,7 @@ describe("원격 다리 — 순수 함수", () => {
       { type: "key", session: "a", key: "up" },
       { type: "kill", requestId: "r2", session: "b" },
       { type: "label", requestId: "r3", session: "a", label: "백엔드" },
+      { type: "create", requestId: "r4", name: "tagged", projectUuid: "NOT-A-UUID", cwd: "/tmp" },
     ]);
     expect(remoteCommands({ state: "OPEN" })).toEqual([]);
     expect(watchingOf({ watching: ["a", 3, ""] })).toEqual(["a"]);
@@ -47,13 +52,14 @@ describe("원격 다리 — 순수 함수", () => {
     expect(remoteStateOf("later")).toBeUndefined();
   });
 
-  it("올릴 목록 — 다리 자기 세션은 뺀다 · label·lastOutputAt 은 있을 때만", () => {
+  it("올릴 목록 — 다리 자기 세션은 뺀다 · label·project·lastOutputAt 은 있을 때만", () => {
     expect(wireSessions([
       { name: "ainecto-pc", pid: 1, clients: 0, cols: 80, rows: 24, cwd: "/", command: null },
-      { name: "api", pid: 2, clients: 0, cols: 100, rows: 30, cwd: "/", command: null, label: "백엔드", lastOutputAt: "2026-11-17T00:00:00Z" },
+      { name: "api", pid: 2, clients: 0, cols: 100, rows: 30, cwd: "/", command: null, label: "백엔드", project: PROJECT,
+        lastOutputAt: "2026-11-17T00:00:00Z" },
       { name: "web", pid: 3, clients: 1, cols: 80, rows: 24, cwd: "/", command: ["npm", "start"] },
     ], ["ainecto-pc"])).toEqual([
-      { name: "api", label: "백엔드", cols: 100, rows: 30, lastOutputAt: "2026-11-17T00:00:00Z" },
+      { name: "api", label: "백엔드", project: PROJECT, cols: 100, rows: 30, lastOutputAt: "2026-11-17T00:00:00Z" },
       { name: "web", cols: 80, rows: 24 },
     ]);
   });
@@ -98,7 +104,7 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
       remoteEnabled: options.remoteEnabled ?? true,
       exclude: options.exclude ?? ["ainecto-pc"],
       sessionEnv: Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string")),
-      sessionsDir: join(rig.home, "app", "sessions"),
+      appHome: join(rig.home, "app"),
       signal: stop.signal,
       print: (line) => printed.push(line),
       ...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
@@ -184,6 +190,46 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     expect(existsSync(join(rig.home, "app", "sessions", id))).toBe(true);
     run.stop.abort();
     await run.done;
+    expectLogPairs();
+  }, LONG);
+
+  it("웹 만들기 프로젝트 꼬리표 — 폴더 <앱 홈>/projects/<uuid>/sessions/<requestId> · ls·목록에 project · 잘못된 꼬리표는 폴더를 줘도 거절 · 거절되면 이번 빈 폴더만 정리", async () => {
+    await ok("term", "new", "base", "--", "cat");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const id = fake.create("tagged", { projectUuid: PROJECT, command: "sleep 600" });
+    await until(() => fake.answerFor(id) !== undefined, "answer");
+    expect(fake.answerFor(id)).toMatchObject({ ok: true });
+    const folder = join(rig.home, "app", "projects", PROJECT, "sessions", id);
+    expect(statSync(folder).isDirectory()).toBe(true);
+    expect(statSync(folder).mode & 0o777).toBe(0o700);
+    const tagged = (await sessions()).find((s) => s.name === "tagged");
+    expect(tagged).toMatchObject({ cwd: folder, project: PROJECT });
+    await until(() => fake.listed.some((s) => s.name === "tagged" && s.project === PROJECT), "project listed");
+
+    const plain = fake.create("plain", { command: "sleep 600" });
+    await until(() => fake.answerFor(plain) !== undefined, "plain answer");
+    expect((await sessions()).find((s) => s.name === "plain")).not.toHaveProperty("project");
+    expect(existsSync(join(rig.home, "app", "sessions", plain))).toBe(true);
+
+    const badGiven = fake.create("bad-given", { projectUuid: "../x", cwd: rig.home });
+    const badFresh = fake.create("bad-fresh", { projectUuid: PROJECT.toUpperCase() });
+    await until(() => fake.answerFor(badGiven) !== undefined && fake.answerFor(badFresh) !== undefined, "bad answers");
+    expect(fake.answerFor(badGiven)).toMatchObject({ ok: false, code: "TERM_BAD_REQUEST" });
+    expect(fake.answerFor(badFresh)).toMatchObject({ ok: false, code: "TERM_BAD_REQUEST" });
+    expect((await sessions()).map((s) => s.name).sort()).toEqual(["base", "plain", "tagged"]);
+    // 대문자 폴더는 생기지 않는다(macOS 는 대소문자를 가리지 않으니 이름 목록으로 본다).
+    expect(readdirSync(join(rig.home, "app", "projects"))).toEqual([PROJECT]);
+    expect(readdirSync(join(rig.home, "app", "projects", PROJECT, "sessions"))).toEqual([id]);
+
+    const dup = fake.create("tagged", { projectUuid: PROJECT });
+    await until(() => fake.answerFor(dup) !== undefined, "dup answer");
+    expect(fake.answerFor(dup)).toMatchObject({ ok: false, code: "TERM_SESSION_EXISTS" });
+    expect(existsSync(join(rig.home, "app", "projects", PROJECT, "sessions", dup))).toBe(false);
+    expect(existsSync(folder)).toBe(true);
+    run.stop.abort();
+    await run.done;
+    expect(remoteLog().filter((r) => r.event === "remote_create_project_dropped")).toEqual([]);
     expectLogPairs();
   }, LONG);
 

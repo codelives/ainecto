@@ -14,6 +14,8 @@ export interface ManifestEntry {
   createdAt: string;
   /** 보이는 이름(term label) — 없으면 칸 없음. 옛 데몬은 이 칸을 모르고 그냥 읽는다. */
   label?: string;
+  /** 프로젝트 꼬리표(KAN-1238) — 없으면 칸 없음. 옛 파일·옛 데몬은 이 칸 없이 그대로 읽힌다. */
+  project?: string;
 }
 
 interface ManifestFile {
@@ -54,5 +56,6 @@ function isEntry(value: unknown): value is ManifestEntry {
     && typeof entry.cwd === "string"
     && typeof entry.createdAt === "string"
     && (entry.label === undefined || typeof entry.label === "string")
+    && (entry.project === undefined || typeof entry.project === "string")
     && (entry.command === null || (Array.isArray(entry.command) && entry.command.every((item) => typeof item === "string")));
 }

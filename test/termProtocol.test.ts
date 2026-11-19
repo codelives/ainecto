@@ -15,4 +15,14 @@ describe("term line protocol", () => {
     expect(() => parseClientMessage('{"op":"rename","id":"1"}')).toThrow(/Unknown op/);
     expect(parseClientMessage('{"op":"in","d":"aGk="}')).toEqual({ op: "in", d: "aGk=" });
   });
+
+  it("new 의 project — 있으면 소문자 UUID 만 · 없으면 칸 없음(옛 클라이언트 그대로)", () => {
+    const base = { op: "new", id: "1", name: "s", cwd: "/tmp", command: null, env: {} };
+    const project = "0b9a8c7d-1111-4222-8333-444455556666";
+    expect(parseClientMessage(JSON.stringify({ ...base, project }))).toMatchObject({ op: "new", project });
+    expect(parseClientMessage(JSON.stringify(base))).not.toHaveProperty("project");
+    for (const bad of [project.toUpperCase(), "", "../x", 3]) {
+      expect(() => parseClientMessage(JSON.stringify({ ...base, project: bad }))).toThrow(TermProtocolError);
+    }
+  });
 });

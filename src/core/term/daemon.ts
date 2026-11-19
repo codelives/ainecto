@@ -260,7 +260,8 @@ class TermDaemon {
     switch (request.op) {
       case "new": {
         assertSessionName(request.name);
-        const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString() };
+        const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString(),
+          ...(request.project !== undefined ? { project: request.project } : {}) };
         const session = await this.startSession(entry, request.env, request.cols, request.rows);
         this.updateManifest((entries) => [...entries.filter((item) => item.name !== entry.name), entry]);
         return { data: session.info() };

@@ -7,6 +7,8 @@ import type { ListedSession } from "./protocol";
 export interface WireSession {
   name: string;
   label?: string;
+  /** 프로젝트 꼬리표 — 있을 때만 싣는다(옛 api 는 이 칸을 모르고 400 — 배포 순서 api 먼저). */
+  project?: string;
   cols: number;
   rows: number;
   lastOutputAt?: string;
@@ -18,6 +20,7 @@ export function wireSessions(listed: readonly ListedSession[], exclude: readonly
     .map((session) => ({
       name: session.name,
       ...(session.label !== undefined ? { label: session.label } : {}),
+      ...(session.project !== undefined ? { project: session.project } : {}),
       cols: session.cols,
       rows: session.rows,
       ...(session.lastOutputAt !== undefined ? { lastOutputAt: session.lastOutputAt } : {}),

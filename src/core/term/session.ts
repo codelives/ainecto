@@ -28,6 +28,8 @@ export interface SessionSpec {
   createdAt: string;
   /** 보이는 이름 — 데몬 이름은 그대로. */
   label?: string;
+  /** 프로젝트 꼬리표(KAN-1238) — 세션 수명 동안 바뀌지 않는다. 매니페스트와 info() 가 이 값 하나를 내보낸다. */
+  project?: string;
 }
 
 /** 세션의 출력·이벤트를 받는 쪽(연결 하나). */
@@ -45,6 +47,7 @@ export interface SessionInfo {
   rows: number;
   clients: number;
   label?: string;
+  project?: string;
   lastOutputAt?: string;
 }
 
@@ -137,6 +140,7 @@ export class TermSession {
       rows: this.pty.rows,
       clients: this.attached.size,
       ...(this.label !== undefined ? { label: this.label } : {}),
+      ...(this.spec.project !== undefined ? { project: this.spec.project } : {}),
       ...(this.lastOutputAt !== undefined ? { lastOutputAt: this.lastOutputAt } : {}),
     };
   }

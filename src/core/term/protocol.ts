@@ -1,4 +1,5 @@
 import { TermError } from "./errors";
+import { isUuid } from "./paths";
 
 /**
  * 제어 소켓 프로토콜 — ★한 곳(설계 2-3·2-4). 양방향 모두 «JSON 한 줄»이다.
@@ -9,7 +10,9 @@ import { TermError } from "./errors";
 
 /** 요청 본문 — id 는 클라이언트가 붙인다. */
 export type TermRequestBody =
-  | { op: "new"; name: string; cwd: string; command: string[] | null; env: Record<string, string>; cols?: number; rows?: number }
+  /** project = 프로젝트 꼬리표(KAN-1238, {@link isUuid}) — 세션 수명 동안 그대로, 매니페스트·ls 에 남는다. 옛 데몬은 버린다. */
+  | { op: "new"; name: string; cwd: string; command: string[] | null; env: Record<string, string>; cols?: number; rows?: number;
+      project?: string }
   | { op: "ls" }
   | { op: "send"; name: string; text: string; paste: boolean }
   | { op: "key"; name: string; key: string }
@@ -122,6 +125,7 @@ export function parseClientMessage(line: string): TermClientMessage {
         env: stringMapField(record, "env"),
         cols: optionalSize(record, "cols"),
         rows: optionalSize(record, "rows"),
+        ...(record.project === undefined ? {} : { project: projectField(record, "project") }),
       };
     case "ls":
     case "kill-server":
@@ -196,6 +200,8 @@ export interface ListedSession {
   command: string[] | null;
   /** 보이는 이름 — 없으면 칸 없음. */
   label?: string;
+  /** 프로젝트 꼬리표 — 꼬리표 없이 만들었거나 옛 데몬이면 칸 없음. */
+  project?: string;
   /** 마지막 출력 시각(ISO) — 아직 출력이 없거나 옛 데몬이면 칸 없음. */
   lastOutputAt?: string;
 }
@@ -285,6 +291,14 @@ function sizeField(record: Record<string, unknown>, key: string): number {
   const value = record[key];
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
     throw new TermProtocolError(`"${key}" must be a positive integer.`);
+  }
+  return value;
+}
+
+function projectField(record: Record<string, unknown>, key: string): string {
+  const value = stringField(record, key);
+  if (!isUuid(value)) {
+    throw new TermProtocolError(`"${key}" must be a lowercase UUID.`);
   }
   return value;
 }

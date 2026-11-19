@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join, posix, win32 } from "node:path";
+import { TermError } from "./errors";
 
 /**
  * `ainecto term` 의 파일 자리 — ★한 곳(설계 2-1·2-4·2-6·2-7). 폴더는 {@code ~/.ainecto/term}, 0700.
@@ -39,9 +40,25 @@ export function appHome(platform: NodeJS.Platform = process.platform, env: NodeJ
   return posix.join(xdg && isAbsolute(xdg) ? xdg : posix.join(home, ".local", "share"), "ainecto");
 }
 
-/** 웹 «+ 새 세션»에서 폴더를 비웠을 때 세션마다 만드는 폴더의 부모 — `<앱 홈>/sessions`. */
-export function webSessionsDir(app: string = appHome()): string {
-  return join(app, "sessions");
+/** 정확한 소문자 UUID(8-4-4-4-12) — 서버 {@code UUID_PATTERN} 과 같은 모양. 빈 값·구분자·`..` 는 모양에서 걸린다. 순수 함수. */
+export function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+}
+
+/**
+ * 웹 «+ 새 세션»에서 폴더를 비웠을 때 세션마다 만드는 폴더 — ★경로 틀은 여기 한 곳(KAN-1238).
+ * 프로젝트 꼬리표가 있으면 `<앱 홈>/projects/<projectUuid>/sessions/<requestId>`, 없으면 `<앱 홈>/sessions/<requestId>`.
+ * 두 값 모두 {@link isUuid} 를 지나야 한다(경로 밖으로 못 나가게) — 아니면 TERM_BAD_REQUEST.
+ */
+export function webSessionFolder(app: string, projectUuid: string | undefined, requestId: string): string {
+  if (!isUuid(requestId)) {
+    throw new TermError("TERM_BAD_REQUEST", `The create request id "${requestId}" is not a UUID, so no session folder was made.`);
+  }
+  if (projectUuid === undefined) return join(app, "sessions", requestId);
+  if (!isUuid(projectUuid)) {
+    throw new TermError("TERM_BAD_REQUEST", `The project "${projectUuid}" is not a UUID, so no session folder was made.`);
+  }
+  return join(app, "projects", projectUuid, "sessions", requestId);
 }
 
 export function termPaths(home: string = homedir()): TermPaths {

@@ -5,7 +5,7 @@ import { createPcHttp, PcCallError, type PcHttp } from "../http/pcHttp";
 import { openTermClient, termRequest, type TermClient } from "./client";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
-import type { TermPaths } from "./paths";
+import { isUuid, webSessionFolder, type TermPaths } from "./paths";
 import { appliedSize, listedSessions, type TermRequestBody } from "./protocol";
 import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
 import { sessionsKey, wireSessions, type WireSession } from "./remoteSessions";
@@ -14,7 +14,6 @@ import { shellLineCommand } from "./session";
 import { ensurePrivateDir } from "../fs/privateFiles";
 import { existsSync } from "node:fs";
 import { rmdir } from "node:fs/promises";
-import { join } from "node:path";
 import { cliTagsOf, type CliTags } from "../pc/pcUpgrade";
 
 /**
@@ -67,6 +66,8 @@ export type RemoteLogRecord =
   | { event: "remote_frame_trimmed"; session: string; dropped: number }
   /** 데몬 요청 실패 — 삼키지 않는다. */
   | { event: "remote_daemon_error"; op: string; session?: string; code: string; message: string }
+  /** 꼬리표를 실은 만들기인데 데몬 응답(info)에 project 가 없다(옛 데몬이 칸을 버림 등) — 세션은 꼬리표 없이 돈다. */
+  | { event: "remote_create_project_dropped"; requestId: string; session: string }
   /** 거절된 웹 만들기에서 방금 만든 세션 폴더를 지우지 못했다(비어 있지 않음 등) — 폴더는 남고 원래 거절은 그대로. */
   | { event: "remote_session_folder_kept"; requestId: string; folder: string; code: string; message: string }
   /** 보던 세션이 데몬에서 이미 끝났다(웹에서 끝낸 직후의 읽기 등) — 오류가 아니다. */
@@ -122,8 +123,8 @@ export interface BridgeDeps {
   exclude: readonly string[];
   /** 웹이 만드는 세션의 환경(로컬 `term new` 와 같은 규칙: 다리 프로세스의 환경). */
   sessionEnv: Record<string, string>;
-  /** 웹이 폴더를 비우고 만들면 그 세션 폴더(`<여기>/<requestId>`, 0700)를 만들어 그 안에서 시작한다 — 끝내도 남긴다. */
-  sessionsDir: string;
+  /** 앱 홈 — 웹이 폴더를 비우고 만들면 그 아래 세션 폴더({@link webSessionFolder}, 0700)를 만들어 그 안에서 시작한다 — 끝내도 남긴다. */
+  appHome: string;
   /** 끊으면 close 를 보내고 끝낸다. */
   signal: AbortSignal;
   print(line: string): void;
@@ -424,14 +425,11 @@ class CommandRunner {
   private readonly decoders = new Map<string, StringDecoder>();
 
   /**
-   * 웹이 폴더를 비운 만들기 — `<sessionsDir>/<requestId>` 를 만든다. requestId 는 서버가 만들기마다 새로 뽑는 UUID 라
-   * 세션마다 새 폴더가 되고, remote_command 로그 줄(같은 requestId)로 어느 만들기의 폴더인지 잇는다. UUID 모양만 받는다(경로 밖으로 못 나가게).
+   * 웹이 폴더를 비운 만들기 — {@link webSessionFolder}(꼬리표가 있으면 프로젝트 아래)를 만든다. requestId 는 서버가 만들기마다 새로
+   * 뽑는 UUID 라 세션마다 새 폴더가 되고, remote_command 로그 줄(같은 requestId)로 어느 만들기의 폴더인지 잇는다.
    */
-  private async sessionFolder(requestId: string): Promise<{ folder: string; made: boolean }> {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)) {
-      throw new TermError("TERM_BAD_REQUEST", `The create request id "${requestId}" is not a UUID, so no session folder was made.`);
-    }
-    const folder = join(this.deps.sessionsDir, requestId);
+  private async sessionFolder(projectUuid: string | undefined, requestId: string): Promise<{ folder: string; made: boolean }> {
+    const folder = webSessionFolder(this.deps.appHome, projectUuid, requestId);
     const made = !existsSync(folder);
     await ensurePrivateDir(folder);
     return { folder, made };
@@ -517,24 +515,34 @@ class CommandRunner {
       }
       case "create": {
         // 폴더를 주면 그대로(절대 만들거나 지우지 않는다) · 비면 세션 폴더를 만들고, 거절되면 방금 만든 것만 지운다.
+        // 프로젝트 꼬리표는 폴더를 주든 말든 같은 검사(isUuid)를 지나야 데몬에 간다.
+        const project = command.projectUuid;
+        if (project !== undefined && !isUuid(project)) {
+          throw new TermError("TERM_BAD_REQUEST", `The project "${project}" is not a UUID, so the session was not made.`);
+        }
         let cwd = command.cwd;
         let made: string | undefined;
         if (cwd === undefined) {
-          const fresh = await this.sessionFolder(command.requestId);
+          const fresh = await this.sessionFolder(project, command.requestId);
           cwd = fresh.folder;
           if (fresh.made) made = fresh.folder;
         }
+        let created: unknown;
         try {
-          await this.control.request({
+          created = await this.control.request({
             op: "new",
             name: command.name,
             cwd,
             command: command.command === undefined ? null : shellLineCommand(command.command, this.deps.sessionEnv),
             env: this.deps.sessionEnv,
+            ...(project !== undefined ? { project } : {}),
           });
         } catch (error) {
           if (made) await this.dropSessionFolder(command.requestId, made);
           throw error;
+        }
+        if (project !== undefined && createdProject(created) !== project) {
+          this.deps.log.write({ event: "remote_create_project_dropped", requestId: command.requestId, session: command.name });
         }
         return true;
       }
@@ -562,6 +570,11 @@ function answerSummary(body: Record<string, unknown>): { state?: string; reason?
   };
 }
 
+/** 데몬 `new` 응답(세션 info)의 프로젝트 꼬리표 — 없으면(옛 데몬) undefined. 순수 함수. */
+function createdProject(data: unknown): string | undefined {
+  return data && typeof data === "object" && "project" in data && typeof data.project === "string" ? data.project : undefined;
+}
+
 /** open 응답 limits — 서버 값(C1·C3). 모양이 틀리면 undefined. */
 function serverLimits(value: unknown): { pollHoldSeconds: number; frameMaxBytes: number } | undefined {
   if (!value || typeof value !== "object") return undefined;
@@ -586,7 +599,7 @@ export type RemoteCommand =
   | { type: "input"; session: string; d: string }
   | { type: "key"; session: string; key: string }
   | { type: "resize"; session: string; cols: number; rows: number }
-  | { type: "create"; requestId: string; name: string; cwd?: string; command?: string }
+  | { type: "create"; requestId: string; name: string; projectUuid?: string; cwd?: string; command?: string }
   | { type: "kill"; requestId: string; session: string }
   | { type: "label"; requestId: string; session: string; label: string };
 
@@ -614,10 +627,13 @@ export function remoteCommands(answer: Record<string, unknown>): RemoteCommand[]
       }
       case "create": {
         const name = text(c.get("name"));
+        const projectUuid = text(c.get("projectUuid"));
         const cwd = text(c.get("cwd"));
         const command = c.get("command");
         if (!requestId || !name) return [];
-        return [{ type: "create", requestId, name, ...(cwd ? { cwd } : {}), ...(typeof command === "string" ? { command } : {}) }];
+        // 꼬리표 모양은 여기서 버리지 않는다 — 만들기가 TERM_BAD_REQUEST 로 답해야 서버가 기다리지 않는다.
+        return [{ type: "create", requestId, name, ...(projectUuid ? { projectUuid } : {}), ...(cwd ? { cwd } : {}),
+          ...(typeof command === "string" ? { command } : {}) }];
       }
       case "kill":
         return requestId && session ? [{ type: "kill", requestId, session }] : [];

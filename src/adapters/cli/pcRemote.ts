@@ -4,7 +4,7 @@ import { ensurePrivateDir } from "../../core/fs/privateFiles";
 import { PC_SESSION_NAME } from "../../core/pc/pcSession";
 import { accountKey, loadPcSettings, pcSettingsPath } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
-import { termPaths, webSessionsDir, type TermPaths } from "../../core/term/paths";
+import { appHome, termPaths, type TermPaths } from "../../core/term/paths";
 import { createRemoteHttp, openRemoteLog, runRemoteBridge, type RemoteLogRecord, type RemoteResult } from "../../core/term/remote";
 import type { DaemonLog } from "../../core/term/daemonLog";
 import type { CliTags } from "../../core/pc/pcUpgrade";
@@ -65,8 +65,8 @@ export interface PcRemoteSetup {
   pcId: string;
   hostName: string;
   remoteEnabled: boolean;
-  /** 웹이 폴더를 비우고 만든 세션의 폴더 부모 — `<앱 홈>/sessions`. */
-  sessionsDir: string;
+  /** 앱 홈 — 웹이 폴더를 비우고 만든 세션의 폴더가 그 아래에(paths.ts webSessionFolder). */
+  appHome: string;
   env: Record<string, string>;
 }
 
@@ -82,7 +82,7 @@ export async function pcRemoteSetup(input: {
   /** 시험만 바꾼다. */
   settingsPath?: string;
   paths?: TermPaths;
-  sessionsDir?: string;
+  appHome?: string;
   hostName?: string;
   env?: Record<string, string>;
 }): Promise<PcRemoteSetup> {
@@ -107,7 +107,7 @@ export async function pcRemoteSetup(input: {
     pcId: settings.pcId,
     hostName,
     remoteEnabled: userId !== undefined && settings.accounts[accountKey(input.endpoint, userId)]?.remoteTerminal === true,
-    sessionsDir: input.sessionsDir ?? webSessionsDir(),
+    appHome: input.appHome ?? appHome(),
     env: input.env ?? stringEnv(),
   };
 }
@@ -130,7 +130,7 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
       remoteEnabled: setup.remoteEnabled,
       exclude: [PC_SESSION_NAME],
       sessionEnv: setup.env,
-      sessionsDir: setup.sessionsDir,
+      appHome: setup.appHome,
       signal,
       print: (line) => setup.io.stderr.write(`${line}\n`),
       ...(onAnswer ? { onAnswer } : {}),
