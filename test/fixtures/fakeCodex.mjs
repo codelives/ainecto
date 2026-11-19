@@ -4,6 +4,7 @@
 // thread/start·resume 은 config 칸에서 `mcp_servers.<이름>.enabled=false` 로 끄지 않은 서버만 띄운다(startupStatus). thread/resume 의 threadId 가 "thr-gone" 이면 오류.
 // turn/start 의 글로 동작을 고른다:
 //   "write-card" → 읽기 하나 · 만들기(created) · 고치기 · 칸반 카드 · 다른 MCP 서버 도구 결과 뒤 답
+//   "write-failed" → 실패한 쓰기(status failed — 결과 글에 📄·카드가 있어도) + 성공한 고치기 하나 뒤 답
 //   "approval"   → 우리에게 mcpServer/elicitation/request 를 묻고, 받은 답을 그대로 답 글에 싣는다
 //   "bad-schema" → 답 글이 JSON 이 아니다
 //   "fail"       → turn 이 failed 로 끝난다
@@ -27,9 +28,10 @@ let hangingTurn;
 let answerWaiter;
 const doc = (tag) => `📄 Open in AiNecto: https://dev.ainecto.com/app/docs/${tag.repeat(32)}`;
 const item = (turnId, value) => out({ method: "item/completed", params: { threadId: thread, turnId, item: value } });
-const toolCall = (turnId, server, tool, texts) =>
-  item(turnId, { type: "mcpToolCall", id: `call-${tool}`, server, tool, status: "completed",
-    result: { content: texts.map((text) => ({ type: "text", text })), structuredContent: null }, error: null });
+const toolCall = (turnId, server, tool, texts, status = "completed") =>
+  item(turnId, { type: "mcpToolCall", id: `call-${tool}`, server, tool, status,
+    result: { content: texts.map((text) => ({ type: "text", text })), structuredContent: null },
+    error: status === "failed" ? { message: "tool failed" } : null });
 const complete = (turnId, status, text, error = null) => {
   if (text !== undefined) item(turnId, { type: "agentMessage", id: `msg-${turnId}`, text });
   out({ method: "turn/completed", params: { threadId: thread, turn: { id: turnId, status, error, items: [] } } });
@@ -70,6 +72,10 @@ function act(turnId, text) {
     toolCall(turnId, "ainecto", "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
     toolCall(turnId, "ainecto", "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")]);
     toolCall(turnId, "other", "create_documents", [`{"created":[{"uuid":"${"9".repeat(32)}","type":"x","title":"y"}]}`, doc("9")]);
+  }
+  if (text === "write-failed") {
+    toolCall(turnId, "ainecto", "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")], "failed");
+    toolCall(turnId, "ainecto", "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
   }
   complete(turnId, "completed", reply(`got ${text} #${turns} in ${thread}`));
 }

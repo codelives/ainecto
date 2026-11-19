@@ -6,6 +6,7 @@
 //   "write-then-hang" → 문서 하나를 만든 뒤 답하지 않는다(중단 시험 — 그때까지 한 일이 남는가)
 //   "crash"      → code 3 으로 끝난다
 //   "write-card" → 만들기(created)·고치기·칸반 카드 결과(쓰기 셋) + 읽기 하나 뒤 reply
+//   "write-failed" → 실패한 쓰기(is_error — 결과 글에 📄·카드가 있어도) + 성공한 고치기 하나 뒤 reply
 // control_request interrupt 가 오면 붙잡힌 차례를 error_during_execution 으로 끝낸다(실측 모양).
 // `--version` · `auth status --json`(FAKE_CLAUDE_AUTH=out 이면 로그인 안 됨) 은 한 번 출력하고 끝난다.
 import { appendFileSync } from "node:fs";
@@ -31,9 +32,10 @@ let started = false;
 let seen = 0;
 let hanging = false;
 const doc = (tag) => `📄 Open in AiNecto: https://dev.ainecto.com/app/docs/${tag.repeat(32)}`;
-const tool = (id, name, texts) => {
+const tool = (id, name, texts, isError = false) => {
   out({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input: {} }] } });
-  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: texts.map((text) => ({ type: "text", text })) }] } });
+  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: texts.map((text) => ({ type: "text", text })),
+    ...(isError ? { is_error: true } : {}) }] } });
 };
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
@@ -67,6 +69,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     tool("w1", "mcp__ainecto__create_documents", [`{"count":1,"created":[{"uuid":"${"c".repeat(32)}","type":"markdown","title":"새 문서"}]}`, doc("c")]);
     tool("w2", "mcp__ainecto__update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
     tool("w3", "mcp__ainecto__kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")]);
+  }
+  if (text === "write-failed") {
+    tool("w1", "mcp__ainecto__kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")], true);
+    tool("w2", "mcp__ainecto__update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
   }
   if (text === "write-doc") {
     out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "mcp__ainecto__list_documents", input: {} }] } });

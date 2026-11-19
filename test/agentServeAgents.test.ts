@@ -125,6 +125,17 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
       expect(reply).toMatchObject({ status: "DONE", documentUuids: [C, D, BOARD], createdDocumentUuids: [C], cardUuids: [CARD] });
       expect(logRecords(w).find((r) => r.event === "agent_response")).toMatchObject({ documents: 3, createdDocuments: 1, cards: 1 });
     });
+
+    it(`${agent}: 실패한 쓰기 도구 결과는 문서·카드로 싣지 않는다 — 성공한 것만 (KAN-1229 ⑧)`, async () => {
+      const w = startServe({ installed: [agent] });
+      w.server.offer("t1", "conv-a", "write-failed", undefined, agent);
+      const reply = await until(() => w.server.replies()[0]);
+      await finish(w);
+
+      expect(reply).toMatchObject({ status: "DONE", documentUuids: [D] });
+      expect(reply).not.toHaveProperty("cardUuids");
+      expect(logRecords(w).find((r) => r.event === "agent_response")).toMatchObject({ documents: 1, createdDocuments: 0, cards: 0 });
+    });
   }
 
   it("Codex 가 승인을 물어 오면 묻지 않고 거절하고 남긴다", async () => {

@@ -170,7 +170,8 @@ class ClaudeCodeSession implements AgentSession {
     }
     if (event.type === "user" && Array.isArray(content) && this.pending) {
       for (const part of content as Array<Record<string, unknown>>) {
-        if (part.type !== "tool_result" || typeof part.tool_use_id !== "string") continue;
+        // 실패한 쓰기(is_error)는 그 결과 글에 문서·카드가 있어도 «수정됨/생성됨»으로 싣지 않는다(KAN-1229 ⑧).
+        if (part.type !== "tool_result" || typeof part.tool_use_id !== "string" || part.is_error === true) continue;
         const name = this.toolNames.get(part.tool_use_id);
         if (!name?.startsWith(AINECTO_TOOL_PREFIX) || !this.deps.writeTools.has(name.slice(AINECTO_TOOL_PREFIX.length))) continue;
         this.pending.facts.add(part.content);

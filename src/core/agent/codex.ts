@@ -316,7 +316,7 @@ class CodexSession implements AgentSession {
     if (item.type === "agentMessage" && typeof item.text === "string") {
       turn.lastMessage = item.text;
     } else if (item.type === "mcpToolCall" && item.server === AINECTO_MCP_SERVER && typeof item.tool === "string"
-        && this.deps.writeTools.has(item.tool)) {
+        && this.deps.writeTools.has(item.tool) && item.status !== "failed") {   // 실패한 쓰기는 싣지 않는다(KAN-1229 ⑧)
       turn.facts.add((item.result as { content?: unknown } | null | undefined)?.content);
     }
   }
