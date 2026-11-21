@@ -578,7 +578,7 @@ function helpText(): string {
     "This PC (requests from AiNecto Chat and auto-run cards, answered by Claude Code or Codex on this machine):",
     ...AGENT_HELP_LINES,
     "",
-    "Terminal sessions on this machine (no tmux or cmux needed; macOS and Linux):",
+    "Terminal sessions on this machine (no tmux or cmux needed; macOS, Linux and Windows):",
     ...TERM_HELP_LINES,
     "",
   ].join("\n");
