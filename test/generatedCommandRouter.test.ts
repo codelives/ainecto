@@ -122,6 +122,11 @@ describe("generated command router", () => {
   });
 
   it("requires --yes for destructive commands in json mode", async () => {
+    // ★확인은 실행에 쓰는 서버 상세로 판단한다(r2 P1-6) — 그 상세는 가짜 서버가 준다. 실제 서버·로그인 토큰에 기대지 않는다
+    //   (11-21 CI: 심지 않아 로컬에서는 실제 dev 서버로 가 통과하고 CI 에서는 MCP_HTTP_ERROR 였다).
+    const executed = vi.fn();
+    stubOperationFetch(executed);
+    process.env.AINECTO_TOKEN = "redacted";
     const io = createIo();
 
     await expect(runAinectoCli(["documents", "delete", "--env", "dev", "-f", "-", "--json"], {
@@ -129,6 +134,7 @@ describe("generated command router", () => {
       stdin: streamWith("{\"uuids\":[\"doc-1\"]}"),
     })).resolves.toBe(1);
 
+    expect(executed, "확인 전에는 실행하지 않는다").not.toHaveBeenCalled();
     expect(JSON.parse(io.stderrText())).toMatchObject({
       ok: false,
       error: {
