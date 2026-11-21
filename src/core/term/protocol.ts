@@ -12,7 +12,7 @@ import { isUuid } from "./paths";
 export type TermRequestBody =
   /** project = 프로젝트 꼬리표(KAN-1238, {@link isUuid}) — 세션 수명 동안 그대로, 매니페스트·ls 에 남는다. 옛 데몬은 버린다. */
   | { op: "new"; name: string; cwd: string; command: string[] | null; env: Record<string, string>; cols?: number; rows?: number;
-      project?: string }
+      project?: string; input?: "none" }
   | { op: "ls" }
   | { op: "send"; name: string; text: string; paste: boolean }
   | { op: "key"; name: string; key: string }
@@ -128,6 +128,7 @@ export function parseClientMessage(line: string): TermClientMessage {
         cols: optionalSize(record, "cols"),
         rows: optionalSize(record, "rows"),
         ...(record.project === undefined ? {} : { project: projectField(record, "project") }),
+        ...(record.input === undefined ? {} : { input: noInputField(record, "input") }),
       };
     case "ls":
     case "kill-server":
@@ -305,6 +306,14 @@ function projectField(record: Record<string, unknown>, key: string): string {
     throw new TermProtocolError(`"${key}" must be a lowercase UUID.`);
   }
   return value;
+}
+
+/** 입력 없음 표지 — "none" 만 싣는다(없으면 입력을 받는다, launch.ts LaunchInput). */
+function noInputField(record: Record<string, unknown>, key: string): "none" {
+  if (record[key] !== "none") {
+    throw new TermProtocolError(`"${key}" must be "none" when present.`);
+  }
+  return "none";
 }
 
 function optionalSize(record: Record<string, unknown>, key: string): number | undefined {

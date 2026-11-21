@@ -163,6 +163,8 @@ export async function startPcSession(deps: PcDeps): Promise<PcStartOutcome> {
     cwd: deps.cwd,
     command: deps.managedCommand(pcRunArgs(deps.flags)),
     env: deps.sessionEnv,
+    // 사람 입력을 받지 않는다 — Windows 에서 stop·swap 의 ^C 뒤 cmd «일괄 작업» 확인이 기다리지 않게(launch.ts LaunchInput).
+    input: "none",
   }, { start: true });
   let line: string;
   try {

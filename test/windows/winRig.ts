@@ -82,6 +82,24 @@ export function alive(pid: number): boolean {
   }
 }
 
+/** pid 아래 모든 자손(Win32_Process 의 부모 관계) — 끈 뒤 «남은 프로세스 0» 판정용. 시험 전용. */
+export function descendants(root: number): number[] {
+  const json = execFileSync("powershell", ["-NoProfile", "-Command",
+    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"], { encoding: "utf8", windowsHide: true });
+  const rows = JSON.parse(json) as { ProcessId: number; ParentProcessId: number }[];
+  const found: number[] = [];
+  const queue = [root];
+  for (let pid = queue.shift(); pid !== undefined; pid = queue.shift()) {
+    for (const row of rows) {
+      if (row.ParentProcessId === pid && row.ProcessId !== root && !found.includes(row.ProcessId)) {
+        found.push(row.ProcessId);
+        queue.push(row.ProcessId);
+      }
+    }
+  }
+  return found;
+}
+
 export async function until(check: () => boolean | Promise<boolean>, what: string, ms: number = 30_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {

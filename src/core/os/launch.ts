@@ -44,12 +44,22 @@ export class LaunchError extends Error {
 
 type Env = Record<string, string | undefined>;
 
+/**
+ * 명령이 입력을 받는가 — `terminal`(기본) = 사람이 치는 입력을 받는다 · `none` = 받지 않는다(우리 관리 명령 — 이 PC 연결 세션).
+ * ★`none` 은 Windows 에서 cmd 가 감쌀 때만 뜻이 있다: 감싼 cmd 의 표준 입력을 NUL 로 줘서, Ctrl+C 뒤 cmd 의
+ * «일괄 작업을 끝내시겠습니까 (Y/N)?» 가 NUL 을 읽고 바로 끝나게 한다(CI 실측 e37ad08: 10초+ → 약 1초). 콘솔 Ctrl+C 신호는
+ * 표준 입력과 무관하게 가므로 자식의 SIGINT 처리기는 그대로 돈다. 사용자 세션은 `terminal` — Windows 기본 동작 그대로(결재 2026-11-21 A안).
+ */
+export const LAUNCH_INPUTS = ["terminal", "none"] as const;
+export type LaunchInput = (typeof LAUNCH_INPUTS)[number];
+
 /** 순수 함수(파일 있음 판정만 주입). 못 찾으면 이름 그대로 둔다 — 띄울 때 ENOENT(«설치 안 됨» 보고)가 그대로 난다. */
 export function planLaunch(
   argv: readonly string[],
   env: Env,
   platform: NodeJS.Platform = process.platform,
   isFile: (path: string) => boolean = fileExists,
+  input: LaunchInput = "terminal",
 ): LaunchPlan {
   const [command, ...args] = argv;
   if (command === undefined || command === "") {
@@ -61,19 +71,20 @@ export function planLaunch(
   const shellLine = shellLineOf(argv, env);
   if (shellLine !== undefined) {
     // ★사용자가 친 줄(웹 메뉴 ②) — 일부러 cmd 가 해석한다(Unix -lc 와 같은 뜻). 내부 argv 와 다른 계약이라 이스케이프하지 않는다.
-    return cmdPlan(argv, command, `"${shellLine}"`);
+    return cmdPlan(argv, command, shellLine, input);
   }
   const file = findExecutable(command, env, isFile) ?? command;
   if (!BATCH.test(file)) {
     return { argv, child: { file, args, windowsVerbatimArguments: false }, pty: { file, commandLine: args.map(quoteArgument).join(" ") } };
   }
   const twice = LOCAL_CMD_SHIM.test(file);
-  const line = `"${[escapeCmd(win32.normalize(file)), ...args.map((arg) => escapeCmd(quoteArgument(arg), twice))].join(" ")}"`;
-  return cmdPlan(argv, requireComSpec(env), line, win32.basename(file));
+  const body = [escapeCmd(win32.normalize(file)), ...args.map((arg) => escapeCmd(quoteArgument(arg), twice))].join(" ");
+  return cmdPlan(argv, requireComSpec(env), body, input, win32.basename(file));
 }
 
-/** cmd.exe 로 감싼 계획 — 한도는 최종 줄로 잰다. */
-function cmdPlan(argv: readonly string[], comspec: string, line: string, what: string = "this command"): LaunchPlan {
+/** cmd.exe 로 감싼 계획 — 줄 = `"<body>"`(/s 가 바깥 따옴표만 벗긴다) · 입력 없음이면 따옴표 안 끝에 `<nul` · 한도는 최종 줄로 잰다. */
+function cmdPlan(argv: readonly string[], comspec: string, body: string, input: LaunchInput, what: string = "this command"): LaunchPlan {
+  const line = `"${body}${input === "none" ? " <nul" : ""}"`;
   const total = `${comspec} ${SHELL_LINE_FLAGS.join(" ")} ${line}`.length;
   if (total > CMD_LINE_MAX) {
     throw new LaunchError("LAUNCH_LINE_TOO_LONG", `Running ${what} needs a ${total}-character cmd.exe line, over its ${CMD_LINE_MAX}-character limit. `

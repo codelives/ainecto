@@ -32,4 +32,16 @@ describe("term manifest", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("input 칸 — \"none\" 은 그대로 읽어 restore 가 같은 계획으로 띄운다 · 다른 값은 그 줄을 버린다", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "term-manifest-"));
+    try {
+      const path = join(dir, "sessions.json");
+      const pc = { name: "ainecto-pc", cwd: "/tmp", command: ["npx", "ainecto", "pc", "run"], createdAt: "2026-11-21T00:00:00.000Z", input: "none" };
+      await writeFile(path, `${JSON.stringify({ sessions: [pc, { ...pc, name: "broken", input: "terminal" }] })}\n`);
+      expect(await readManifest(path)).toEqual([pc]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

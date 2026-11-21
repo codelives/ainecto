@@ -25,4 +25,13 @@ describe("term line protocol", () => {
       expect(() => parseClientMessage(JSON.stringify({ ...base, project: bad }))).toThrow(TermProtocolError);
     }
   });
+
+  it("new 의 input — \"none\" 만 싣는다 · 없으면 칸 없음(입력 받음 — 옛 클라이언트 그대로)", () => {
+    const base = { op: "new", id: "1", name: "s", cwd: "/tmp", command: null, env: {} };
+    expect(parseClientMessage(JSON.stringify({ ...base, input: "none" }))).toMatchObject({ op: "new", input: "none" });
+    expect(parseClientMessage(JSON.stringify(base))).not.toHaveProperty("input");
+    for (const bad of ["terminal", "", true, 0]) {
+      expect(() => parseClientMessage(JSON.stringify({ ...base, input: bad }))).toThrow(TermProtocolError);
+    }
+  });
 });

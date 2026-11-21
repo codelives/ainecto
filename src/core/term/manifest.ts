@@ -16,6 +16,8 @@ export interface ManifestEntry {
   label?: string;
   /** 프로젝트 꼬리표(KAN-1238) — 없으면 칸 없음. 옛 파일·옛 데몬은 이 칸 없이 그대로 읽힌다. */
   project?: string;
+  /** 입력을 받지 않는 명령이면 "none"(launch.ts LaunchInput — 이 PC 연결 세션). 없으면 받는다. 옛 데몬·옛 파일은 이 칸 없이 그대로. */
+  input?: "none";
 }
 
 interface ManifestFile {
@@ -57,5 +59,6 @@ function isEntry(value: unknown): value is ManifestEntry {
     && typeof entry.createdAt === "string"
     && (entry.label === undefined || typeof entry.label === "string")
     && (entry.project === undefined || typeof entry.project === "string")
+    && (entry.input === undefined || entry.input === "none")
     && (entry.command === null || (Array.isArray(entry.command) && entry.command.every((item) => typeof item === "string")));
 }

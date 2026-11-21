@@ -30,6 +30,8 @@ export interface SessionSpec {
   label?: string;
   /** 프로젝트 꼬리표(KAN-1238) — 세션 수명 동안 바뀌지 않는다. 매니페스트와 info() 가 이 값 하나를 내보낸다. */
   project?: string;
+  /** 입력을 받지 않는 명령이면 "none"(launch.ts LaunchInput — 이 PC 연결 세션). 없으면 받는다. 옛 데몬·옛 파일은 이 칸 없이 그대로. */
+  input?: "none";
 }
 
 /** 세션의 출력·이벤트를 받는 쪽(연결 하나). */
@@ -104,7 +106,7 @@ export class TermSession {
   static async start(spec: SessionSpec, onExit: (session: TermSession, exitCode: number, signal: number) => void): Promise<TermSession> {
     const ptyModule = await loadNodePty();
     // ★원래 명령(spec.command)은 그대로 둔다 — 매니페스트·ls·runningPcs 판정이 그것을 본다. PTY 에는 실행 계획의 표현만 넘긴다.
-    const plan = planLaunch(spec.command ?? defaultShellCommand(spec.env), spec.env);
+    const plan = planLaunch(spec.command ?? defaultShellCommand(spec.env), spec.env, undefined, undefined, spec.input ?? "terminal");
     const pty = ptyModule.spawn(plan.pty.file, plan.pty.commandLine, {
       cwd: spec.cwd,
       env: { ...spec.env, [SESSION_ENV]: spec.name },

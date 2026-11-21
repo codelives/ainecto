@@ -65,6 +65,21 @@ describe("planLaunch — Windows", () => {
     expect(plan.child.args[3]).toBe('"C:\\proj\\node_modules\\.bin\\argv-echo.cmd ^^^"a^^^&b^^^""');
   });
 
+  it("입력 없음(input none): 감싼 cmd 의 표준 입력만 NUL — 따옴표 안 끝에 <nul · 한도에 넣어 잰다 · .exe·Unix·기본(terminal)은 그대로", () => {
+    const shim = "C:\\Program Files\\nodejs\\npx.cmd";
+    const none = planLaunch(["npx", "-y", "a b"], WIN_ENV, "win32", files(shim), "none");
+    const line = '"C:\\Program^ Files\\nodejs\\npx.cmd ^"-y^" ^"a^ b^" <nul"';
+    expect(none.child.args).toEqual(["/d", "/s", "/c", line]);
+    expect(none.pty).toEqual({ file: COMSPEC, commandLine: `/d /s /c ${line}` });
+    expect(planLaunch(["npx", "-y", "a b"], WIN_ENV, "win32", files(shim)).child.args[3]).not.toContain("<nul");
+    const exe = "C:\\Tools\\node.exe";
+    expect(planLaunch(["node", "x.js"], WIN_ENV, "win32", files(exe), "none").child).toEqual({ file: exe, args: ["x.js"], windowsVerbatimArguments: false });
+    expect(planLaunch(["npx", "x"], {}, "darwin", files(), "none").pty).toEqual({ file: "npx", commandLine: ["x"] });
+    const fits = "x".repeat(CMD_LINE_MAX - `${COMSPEC} /d /s /c "${shim.replace(" ", "^ ")} ^"^" <nul"`.length);
+    expect(() => planLaunch(["npx", fits], WIN_ENV, "win32", files(shim), "none")).not.toThrow();
+    expect(() => planLaunch(["npx", `${fits}x`], WIN_ENV, "win32", files(shim), "none")).toThrow(expect.objectContaining({ code: "LAUNCH_LINE_TOO_LONG" }));
+  });
+
   it("최종 줄이 cmd 한도를 넘으면 띄우기 전에 사람 말 오류(이스케이프 뒤 길이로 잰다)", () => {
     const shim = "C:\\Users\\r\\AppData\\Roaming\\npm\\claude.cmd";
     // 인자 하나 = ^" … ^"(따옴표도 cmd 메타문자라 ^ 가 붙는다).

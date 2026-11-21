@@ -1,10 +1,12 @@
+import { execFileSync } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { executePcStart, executePcStop, type PcDeps } from "../../src/adapters/cli/pcCommand";
 import { SERVE_CONNECTED_PREFIX } from "../../src/core/agent/serve";
 import { systemCommandRunner } from "../../src/core/setup/commandRunner";
 import type { MachineStatus } from "../../src/core/setup/machineStatus";
-import { LONG, ok, rig, until, useWinRig, WINDOWS } from "./winRig";
+import { alive, descendants, LONG, ok, rig, until, useWinRig, WINDOWS } from "./winRig";
 
 /**
  * W4 ⓑⓒ(설계 windows-pc r3 5-1) — «이 PC 연결» 상태·끄기 대역 시험. ★pc 세션 명령은 `node -e` 대역이다(서버·로그인·npx 없음)
@@ -21,7 +23,7 @@ const signedIn: MachineStatus = {
   account: { userId: "u1", displayName: "Ryan", projectCount: 1 }, agents: [], legacyEnv: [], legacyCodexProfiles: [],
 };
 
-function harness(script: string) {
+function harness(script: string, managedCommand?: PcDeps["managedCommand"]) {
   const stdin = new PassThrough();
   let out = "";
   let err = "";
@@ -42,7 +44,7 @@ function harness(script: string) {
     sessionEnv: env,
     flags: { env: "dev" },
     cliVersion: "9.9.9",
-    managedCommand: (args) => [process.execPath, "-e", script, "--", "--package", "@ainecto/mcp@9.9.9", "ainecto", ...args],
+    managedCommand: managedCommand ?? ((args) => [process.execPath, "-e", script, "--", "--package", "@ainecto/mcp@9.9.9", "ainecto", ...args]),
     runner: systemCommandRunner({ cwd: rig.home, env: rig.env }),
     termProblem: undefined,
     agentLog: join(rig.home, ".ainecto/agent/agent.log"),
@@ -62,9 +64,13 @@ function harness(script: string) {
   };
 }
 
+async function pcSessions(): Promise<{ name: string; pid: number }[]> {
+  const listed = JSON.parse(await ok("term", "ls", "--json")) as { data: { sessions: { name: string; pid: number; command: string[] | null }[] } };
+  return listed.data.sessions.filter((session) => session.command?.includes("pc"));
+}
+
 async function pcSessionNames(): Promise<string[]> {
-  const listed = JSON.parse(await ok("term", "ls", "--json")) as { data: { sessions: { name: string; command: string[] | null }[] } };
-  return listed.data.sessions.filter((session) => session.command?.includes("pc")).map((session) => session.name);
+  return (await pcSessions()).map((session) => session.name);
 }
 
 describe.runIf(WINDOWS)("W4 이 PC 연결 — 실 데몬·ConPTY(대역 명령)", () => {
@@ -84,6 +90,36 @@ describe.runIf(WINDOWS)("W4 이 PC 연결 — 실 데몬·ConPTY(대역 명령)"
     const stop = harness(GRACEFUL);
     expect(await executePcStop(stop.deps, [])).toBe(0);
     expect(stop.out()).toContain("Disconnected this PC (session ainecto-pc).");
+    expect(await pcSessionNames()).toEqual([]);
+  }, LONG);
+
+  it("실제 npx(npx.cmd → cmd 배치) 로 띄운 pc — stop 의 ^C 뒤 «일괄 작업» 확인 없이 바로 끝나고 남은 프로세스 0(결재 A안)", async () => {
+    // 관리 명령과 같은 모양(npx → 패키지 bin) — 패키지는 홈의 로컬 의존성(내부 npx 가 고르는 자리, managed.win 과 같은 방법).
+    const pkg = join(rig.home, "pc-stub");
+    await mkdir(pkg, { recursive: true });
+    await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "pc-stub", version: "1.0.0", bin: { "pc-stub": "stub.js" } }));
+    await writeFile(join(pkg, "stub.js"), `#!/usr/bin/env node\n${GRACEFUL}\n`);
+    await writeFile(join(rig.home, "package.json"), JSON.stringify({ name: "h", version: "1.0.0", private: true }));
+    execFileSync("npm", ["install", "--no-audit", "--no-fund", pkg], { cwd: rig.home, shell: true, windowsHide: true, env: rig.env });
+    // `--` 뒤는 npx 가 읽지 않고 bin 에 넘긴다 — 세션 명령의 --package 값(판 표기)은 진짜 관리 명령과 같은 자리에 남는다.
+    const viaNpx: PcDeps["managedCommand"] = (args) => ["npx", "--no-install", "pc-stub", "--", "--package", "@ainecto/mcp@9.9.9", "ainecto", ...args];
+    const start = harness(GRACEFUL, viaNpx);
+    const done = executePcStart(start.deps);
+    await start.answer("Connect this PC? [y/N]", "y");
+    await start.answer("Also allow terminals from the web? [y/N]", "");
+    expect(await done).toBe(0);
+    const [pc] = await pcSessions();
+    expect(pc?.name).toBe("ainecto-pc");
+    const tree = [pc?.pid ?? 0, ...descendants(pc?.pid ?? 0)];
+    expect(tree.length).toBeGreaterThan(2);
+    const stop = harness(GRACEFUL, viaNpx);
+    const sent = Date.now();
+    expect(await executePcStop(stop.deps, [])).toBe(0);
+    const ms = Date.now() - sent;
+    console.log(JSON.stringify({ measure: "pc-stop-via-npx", ms, tree: tree.length }));
+    expect(stop.out()).toContain("Disconnected this PC (session ainecto-pc).");
+    expect(ms).toBeLessThan(stop.deps.stopDeadlineMs);
+    await until(() => tree.every((pid) => !alive(pid)), `tree gone: ${tree.filter(alive).join(",")}`, 10_000);
     expect(await pcSessionNames()).toEqual([]);
   }, LONG);
 

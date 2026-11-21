@@ -117,6 +117,9 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect(pc?.name).toBe("ainecto-pc");
     expect(pc?.cwd).toBe(rig.home);
     expect(pc?.command?.slice(-4)).toEqual(["pc", "run", "--env", "dev"]);
+    // 입력 없음(결재 2026-11-21 A안) — 매니페스트에 남아 restore 로 다시 띄워도 같은 실행 계획이다.
+    const manifest = JSON.parse(await readFile(join(rig.home, ".ainecto/term/sessions.json"), "utf8")) as { sessions: { name: string; input?: string }[] };
+    expect(manifest.sessions.find((entry) => entry.name === "ainecto-pc")?.input).toBe("none");
 
     const again = harness();
     expect(await executePcStart(again.deps)).toBe(0);
