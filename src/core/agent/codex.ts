@@ -160,6 +160,7 @@ function startAppServer(
       rpc.failAll(`codex exited (code ${exit.code ?? "-"}${exit.signal ? `, ${exit.signal}` : ""})${exit.stderrTail ? `: ${exit.stderrTail}` : ""}`);
       hooks.exit?.(exit);
     },
+    killed: (result) => deps.log.write({ event: "process_kill", pid: holder.child?.pid ?? -1, agent: CODEX, ...result }),
   });
   holder.child = child;
   return { child, rpc };

@@ -116,7 +116,7 @@ jobs:
           AINECTO_WIN_EXPECTED_BUILD: ${{ env.BUILD }}
         run: |
           npm ci
-          npx vitest run test/windows/ test/termLock.test.ts test/termIpc.test.ts
+          npx vitest run test/windows/ test/termLock.test.ts test/termIpc.test.ts test/launch.test.ts test/launchArchitecture.test.ts
       - name: 증적
         if: always()
         run: |

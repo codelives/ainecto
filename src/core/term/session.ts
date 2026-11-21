@@ -1,10 +1,10 @@
-import { userInfo } from "node:os";
 // ★두 패키지는 webpack 으로 묶은 CJS 라 Node ESM 이 이름 있는 내보내기를 못 찾는다 — 기본 내보내기(module.exports)로 받는다.
 import serializeAddon from "@xterm/addon-serialize";
 import headless from "@xterm/headless";
 import type { SerializeAddon } from "@xterm/addon-serialize";
 import type { Terminal } from "@xterm/headless";
 import type { IPty } from "node-pty";
+import { loginShell, planLaunch } from "../os/launch";
 import { TermError } from "./errors";
 import { keyBytes, pasteBytes } from "./keys";
 import type { TermEvent } from "./protocol";
@@ -103,10 +103,9 @@ export class TermSession {
 
   static async start(spec: SessionSpec, onExit: (session: TermSession, exitCode: number, signal: number) => void): Promise<TermSession> {
     const ptyModule = await loadNodePty();
-    const [file, args] = spec.command
-      ? [spec.command[0] ?? "", spec.command.slice(1)]
-      : [loginShell(spec.env), ["-l"]];
-    const pty = ptyModule.spawn(file, args, {
+    // ★원래 명령(spec.command)은 그대로 둔다 — 매니페스트·ls·runningPcs 판정이 그것을 본다. PTY 에는 실행 계획의 표현만 넘긴다.
+    const plan = planLaunch(spec.command ?? [loginShell(spec.env), "-l"], spec.env);
+    const pty = ptyModule.spawn(plan.pty.file, plan.pty.commandLine, {
       cwd: spec.cwd,
       env: { ...spec.env, [SESSION_ENV]: spec.name },
       ...(spec.cols && spec.rows ? { cols: spec.cols, rows: spec.rows } : {}),
@@ -361,9 +360,4 @@ async function loadNodePty(): Promise<typeof import("node-pty")> {
 export function shellLineCommand(line: string, env: Record<string, string>): string[] | null {
   const trimmed = line.trim();
   return trimmed.length > 0 ? [loginShell(env), "-lc", trimmed] : null;
-}
-
-/** 사용자 로그인 셸 — 환경의 SHELL, 없으면 계정의 셸. */
-function loginShell(env: Record<string, string>): string {
-  return env.SHELL || userInfo().shell || "/bin/sh";
 }

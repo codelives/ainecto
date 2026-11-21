@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawnDetached } from "../../core/os/launch";
 import type { AgentLogRecord } from "../../core/agent/log";
 import { pcIdle, upgradeTarget, type CliTags } from "../../core/pc/pcUpgrade";
 import type { LaunchFlags } from "../../core/pc/pcSession";
@@ -41,7 +41,7 @@ export function launchSwapHelper(input: { from: string; to: string; flags: Launc
     ...(input.flags.endpoint ? ["--endpoint", input.flags.endpoint] : []),
   ];
   try {
-    const child = spawn(process.execPath, args, { cwd: process.cwd(), env: process.env, detached: true, stdio: "ignore" });
+    const child = spawnDetached(process.execPath, args, { cwd: process.cwd(), env: process.env, stdio: "ignore" });
     child.on("error", (error) => input.log.write({ event: "upgrade_launch", from: input.from, to: input.to, error: error.message }));
     child.unref();
     input.log.write({ event: "upgrade_launch", from: input.from, to: input.to, ...(child.pid !== undefined ? { pid: child.pid } : {}) });

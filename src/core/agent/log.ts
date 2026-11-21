@@ -24,6 +24,8 @@ export type AgentLogRecord =
   | { event: "agent_reopened"; reason: string; previousLinkId: string; linkId: string; attempts: number }
   | { event: "process_start"; pid: number; agent: string; conversationUuid: string; resume: boolean }
   | { event: "process_exit"; pid: number; agent: string; conversationUuid: string; code: number | null; signal: string | null }
+  /** stdin 을 닫아도 안 끝나 강제로 껐다(launch.ts killTree) — 직계가 끝났는지 · 트리(Windows taskkill /T) 결과. */
+  | { event: "process_kill"; pid: number; agent: string; directExited: boolean; tree: string; detail?: string }
   | { event: "agent_rpc"; pid: number; agent: string; id: number; method: string }
   | { event: "agent_rpc_response"; pid: number; agent: string; id: number; method: string; ok: boolean; error?: string; ms: number }
   /** Agent 가 우리에게 물어 온 것(승인 등) — 묻지 않는 설정이라 오면 거절하고 남긴다. */

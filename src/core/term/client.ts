@@ -1,9 +1,10 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
+import { spawnDetached, stuckProcessHint } from "../os/launch";
 import type { DaemonReadiness } from "./daemon";
 import { assertTermRuntime } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
@@ -100,7 +101,7 @@ export class TermClient {
           "TERM_DAEMON_NO_RESPONSE",
           `The term daemon${pid ? ` (pid ${pid})` : ""} did not answer "${body.op}" within ${DAEMON_RESPONSE_TIMEOUT_MS / 1000} s. `
             + "It may be stopped or busy; nothing was cleaned up. "
-            + `${pid ? `If it is stopped: kill -CONT ${pid}. If it hangs: kill ${pid}. ` : ""}See ${this.paths.log}.`,
+            + `${pid ? `${stuckProcessHint(pid)} ` : ""}See ${this.paths.log}.`,
         ));
         // ★우리 연결만 끊는다 — end() 는 멈춘 데몬이 끝을 받아 줄 때까지 연결을 붙잡아 명령이 끝나지 않는다.
         this.socket.destroy();
@@ -238,9 +239,8 @@ async function spawnDaemon(paths: TermPaths): Promise<SpawnOutcome> {
   const stderrFd = openSync(paths.log, "a", PRIVATE_FILE_MODE);
   let child: ChildProcess;
   try {
-    child = spawn(process.execPath, [...process.execArgv, entry, "term", "daemon", "--ready-fd", "3"], {
+    child = spawnDetached(process.execPath, [...process.execArgv, entry, "term", "daemon", "--ready-fd", "3"], {
       cwd: paths.dir,
-      detached: true,
       stdio: ["ignore", "ignore", stderrFd, "pipe"],
       env: process.env,
     });
@@ -305,7 +305,7 @@ function daemonPid(paths: TermPaths): number | undefined {
 function notListening(paths: TermPaths): string {
   const pid = daemonPid(paths);
   const holder = pid !== undefined && isAlive(pid)
-    ? `Daemon pid ${pid} holds the lock but is not listening on ${paths.socket} — it may be stopped (kill -CONT ${pid}) or hung (kill ${pid}).`
+    ? `Daemon pid ${pid} holds the lock but is not listening on ${paths.socket} — it may be stopped or hung. ${stuckProcessHint(pid)}`
     : "No running daemon answered.";
   return `Could not reach the term daemon after starting it ${DAEMON_START_ATTEMPTS} times. ${holder} See ${paths.log}.`;
 }

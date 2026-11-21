@@ -96,6 +96,7 @@ class ClaudeCodeSession implements AgentSession {
     this.child = new AgentChild(deps.spawnImpl, CLAUDE, args, { cwd: deps.cwd, env: deps.env }, {
       line: (line) => this.onLine(line),
       exit: (exit) => this.onExit(exit),
+      killed: (result) => deps.log.write({ event: "process_kill", pid: this.child.pid, agent: this.agent, ...result }),
     });
     deps.log.write({ event: "process_start", pid: this.child.pid, agent: this.agent, conversationUuid, resume: this.resumed });
   }
