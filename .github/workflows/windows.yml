@@ -35,6 +35,14 @@ jobs:
           git rev-parse --short HEAD > out/BUILD
           node -p 'JSON.stringify({ node: process.version, arch: process.arch })' > out/pack-runtime.json
           cat out/SHA256SUMS out/BUILD out/pack-runtime.json
+      - name: Linux 설치 두 가지 — 의존성 설치 스크립트 켬(npm 11 기본) · 끔(npm 12 기본 — 설치 스크립트 차단)
+        run: |
+          for mode in scripts no-scripts; do
+            mkdir "cand-$mode" && cd "cand-$mode" && npm init -y >/dev/null
+            if [ "$mode" = scripts ]; then npm install ../out/*.tgz; else npm install --ignore-scripts ../out/*.tgz; fi
+            node ../scripts/ci/pty-load-check.cjs "linux-$mode"
+            cd ..
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-tgz
@@ -53,6 +61,10 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: src
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
@@ -70,33 +82,27 @@ jobs:
           }
           "TGZ=$((Get-ChildItem out\*.tgz).FullName)" >> $env:GITHUB_ENV
           "BUILD=$((Get-Content out\BUILD).Trim())" >> $env:GITHUB_ENV
-      - name: 후보 폴더 — 깨끗한 설치(의존성 설치 스크립트는 켠 채로, node-pty 프리빌드 확인이 돈다)
+      - name: 후보 폴더 — 깨끗한 설치 두 가지(의존성 설치 스크립트 켬 = npm 11 기본 · 끔 = npm 12 기본)
         run: |
-          New-Item -ItemType Directory cand | Out-Null
-          Set-Location cand
-          npm init -y | Out-Null
-          npm install $env:TGZ
-          if (Test-Path node_modules\node-pty\build) { throw "node-pty 가 컴파일됐다 — 프리빌드를 못 찾았다" }
-          "CAND=$((Get-Location).Path)" >> $env:GITHUB_ENV
-      - name: node-pty 실제 로드 · PTY 한 번
-        working-directory: cand
+          foreach ($mode in @("scripts", "no-scripts")) {
+            New-Item -ItemType Directory "cand-$mode" | Out-Null
+            Push-Location "cand-$mode"
+            npm init -y | Out-Null
+            if ($mode -eq "scripts") { npm install $env:TGZ } else { npm install --ignore-scripts $env:TGZ }
+            if ($LASTEXITCODE -ne 0) { throw "npm install ($mode) failed" }
+            Pop-Location
+          }
+          "CAND=$((Resolve-Path cand-scripts).Path)" >> $env:GITHUB_ENV
+      - name: node-pty 실제 로드 · PTY 한 번 — 로드된 네이티브 폴더 = prebuilds/win32-<arch>
         run: |
-          @'
-          const { loadNativeModule } = require("node-pty/lib/utils");
-          const pty = require("node-pty");
-          const native = loadNativeModule("conpty").dir;
-          const child = pty.spawn(process.env.ComSpec, '/d /s /c "echo ainecto-pty-ok"', {});
-          let out = "";
-          child.onData((data) => { out += data; });
-          child.onExit(({ exitCode }) => {
-            console.log(JSON.stringify({ node: process.version, arch: process.arch, native, exitCode }));
-            if (!out.includes("ainecto-pty-ok")) { console.error(out); process.exit(1); }
-            if (!native.includes(`win32-${process.arch}`)) { console.error("loaded native is not this arch"); process.exit(1); }
-          });
-          '@ | Set-Content -Encoding utf8 pty-check.cjs
-          node pty-check.cjs
+          foreach ($mode in @("scripts", "no-scripts")) {
+            Push-Location "cand-$mode"
+            node ..\src\scripts\ci\pty-load-check.cjs "windows-$mode"
+            if ($LASTEXITCODE -ne 0) { throw "node-pty load check ($mode) failed" }
+            Pop-Location
+          }
       - name: 후보 CLI — 판 · 빌드 SHA
-        working-directory: cand
+        working-directory: cand-scripts
         run: |
           $want = (Get-Content node_modules\@ainecto\mcp\package.json | ConvertFrom-Json).version
           $local = (npx --no-install ainecto --version).Trim()
@@ -105,10 +111,6 @@ jobs:
           if ($local -ne $want -or $packed -ne $want) { throw "후보 CLI 의 판이 tgz 의 판과 다르다" }
           # 빌드 SHA 는 tsup 이 번들에 박는다(tsup.config.ts gitBuild) — 설치된 번들이 이 SHA 의 빌드인지 본다.
           if (-not (Select-String -Quiet -SimpleMatch "`"$env:BUILD`"" node_modules\@ainecto\mcp\dist\bin\ainecto.js)) { throw "설치된 번들에 빌드 $env:BUILD 가 없다" }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          path: src
       - name: 표적 시험(test/windows/ + 플랫폼 무관 표적 — 전수 아님)
         working-directory: src
         env:
@@ -123,5 +125,5 @@ jobs:
           cmd /c ver
           node -p "JSON.stringify({ node: process.version, arch: process.arch })"
           npm -v
-          if (Test-Path cand\node_modules\node-pty\package.json) { (Get-Content cand\node_modules\node-pty\package.json | ConvertFrom-Json).version }
+          if (Test-Path cand-scripts\node_modules\node-pty\package.json) { (Get-Content cand-scripts\node_modules\node-pty\package.json | ConvertFrom-Json).version }
           "image=$env:ImageOS $env:ImageVersion"
