@@ -4,7 +4,7 @@ import headless from "@xterm/headless";
 import type { SerializeAddon } from "@xterm/addon-serialize";
 import type { Terminal } from "@xterm/headless";
 import type { IPty } from "node-pty";
-import { loginShell, planLaunch } from "../os/launch";
+import { defaultShellCommand, planLaunch } from "../os/launch";
 import { TermError } from "./errors";
 import { keyBytes, pasteBytes } from "./keys";
 import type { TermEvent } from "./protocol";
@@ -104,7 +104,7 @@ export class TermSession {
   static async start(spec: SessionSpec, onExit: (session: TermSession, exitCode: number, signal: number) => void): Promise<TermSession> {
     const ptyModule = await loadNodePty();
     // ★원래 명령(spec.command)은 그대로 둔다 — 매니페스트·ls·runningPcs 판정이 그것을 본다. PTY 에는 실행 계획의 표현만 넘긴다.
-    const plan = planLaunch(spec.command ?? [loginShell(spec.env), "-l"], spec.env);
+    const plan = planLaunch(spec.command ?? defaultShellCommand(spec.env), spec.env);
     const pty = ptyModule.spawn(plan.pty.file, plan.pty.commandLine, {
       cwd: spec.cwd,
       env: { ...spec.env, [SESSION_ENV]: spec.name },
@@ -348,16 +348,8 @@ async function loadNodePty(): Promise<typeof import("node-pty")> {
     throw new TermError(
       "TERM_PTY_UNAVAILABLE",
       `ainecto term needs the optional package node-pty, which did not load on this machine (${reason}). `
-        + "Reinstall the CLI (npm install -g ainecto) on macOS or Linux (glibc).",
+        + "Reinstall the CLI (npm install -g ainecto) on macOS, Linux (glibc) or Windows (x64·arm64).",
     );
   }
 }
 
-/**
- * 명령 «줄» → 세션 명령 — ★줄을 명령 배열로 바꾸는 곳은 여기 하나(메뉴 ②, 웹이 만드는 세션). 사용자의 로그인 셸이 그대로
- * 해석한다(따옴표·파이프·&&·변수 대입). 빈 줄이면 null = 로그인 셸 그대로(`term new` 기본과 같다).
- */
-export function shellLineCommand(line: string, env: Record<string, string>): string[] | null {
-  const trimmed = line.trim();
-  return trimmed.length > 0 ? [loginShell(env), "-lc", trimmed] : null;
-}

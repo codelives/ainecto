@@ -10,7 +10,7 @@ import { appliedSize, listedSessions, type TermRequestBody } from "./protocol";
 import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
 import { sessionsKey, wireSessions, type WireSession } from "./remoteSessions";
 import { RemoteViewer, type ViewerLink } from "./remoteViewer";
-import { shellLineCommand } from "./session";
+import { shellLineCommand } from "../os/launch";
 import { ensurePrivateDir } from "../fs/privateFiles";
 import { existsSync } from "node:fs";
 import { rmdir } from "node:fs/promises";

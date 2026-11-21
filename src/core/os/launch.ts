@@ -58,19 +58,57 @@ export function planLaunch(
   if (platform !== "win32") {
     return { argv, child: { file: command, args, windowsVerbatimArguments: false }, pty: { file: command, commandLine: args } };
   }
+  const shellLine = shellLineOf(argv, env);
+  if (shellLine !== undefined) {
+    // ★사용자가 친 줄(웹 메뉴 ②) — 일부러 cmd 가 해석한다(Unix -lc 와 같은 뜻). 내부 argv 와 다른 계약이라 이스케이프하지 않는다.
+    return cmdPlan(argv, command, `"${shellLine}"`);
+  }
   const file = findExecutable(command, env, isFile) ?? command;
   if (!BATCH.test(file)) {
     return { argv, child: { file, args, windowsVerbatimArguments: false }, pty: { file, commandLine: args.map(quoteArgument).join(" ") } };
   }
-  const comspec = requireComSpec(env);
   const twice = LOCAL_CMD_SHIM.test(file);
   const line = `"${[escapeCmd(win32.normalize(file)), ...args.map((arg) => escapeCmd(quoteArgument(arg), twice))].join(" ")}"`;
-  const total = `${comspec} /d /s /c ${line}`.length;
+  return cmdPlan(argv, requireComSpec(env), line, win32.basename(file));
+}
+
+/** cmd.exe 로 감싼 계획 — 한도는 최종 줄로 잰다. */
+function cmdPlan(argv: readonly string[], comspec: string, line: string, what: string = "this command"): LaunchPlan {
+  const total = `${comspec} ${SHELL_LINE_FLAGS.join(" ")} ${line}`.length;
   if (total > CMD_LINE_MAX) {
-    throw new LaunchError("LAUNCH_LINE_TOO_LONG", `Running ${win32.basename(file)} needs a ${total}-character cmd.exe line, over its ${CMD_LINE_MAX}-character limit. `
+    throw new LaunchError("LAUNCH_LINE_TOO_LONG", `Running ${what} needs a ${total}-character cmd.exe line, over its ${CMD_LINE_MAX}-character limit. `
       + "Install the program's native .exe (for Claude Code: the official installer) so cmd.exe is not needed.");
   }
-  return { argv, child: { file: comspec, args: ["/d", "/s", "/c", line], windowsVerbatimArguments: true }, pty: { file: comspec, commandLine: `/d /s /c ${line}` } };
+  return {
+    argv,
+    child: { file: comspec, args: [...SHELL_LINE_FLAGS, line], windowsVerbatimArguments: true },
+    pty: { file: comspec, commandLine: `${SHELL_LINE_FLAGS.join(" ")} ${line}` },
+  };
+}
+
+/** cmd.exe 에 줄을 맡기는 깃발 — /d 자동 실행 끔 · /s 바깥 따옴표만 벗김 · /c 실행 뒤 끝. */
+const SHELL_LINE_FLAGS = ["/d", "/s", "/c"] as const;
+
+/** `[ComSpec, /d, /s, /c, 줄]`(shellLineCommand 가 만든 모양)이면 그 줄. 순수 함수. */
+function shellLineOf(argv: readonly string[], env: Env): string | undefined {
+  const comspec = envValue(env, "ComSpec");
+  if (!comspec || argv.length !== SHELL_LINE_FLAGS.length + 2 || argv[0]?.toLowerCase() !== comspec.toLowerCase()) return undefined;
+  return SHELL_LINE_FLAGS.every((flag, index) => argv[index + 1] === flag) ? argv[argv.length - 1] : undefined;
+}
+
+/** 세션 기본 셸 — macOS·Linux 로그인 셸 `-l` · Windows %ComSpec%(cmd.exe — 결재 2026-11-21 설계 7절 4). */
+export function defaultShellCommand(env: Env, platform: NodeJS.Platform = process.platform): string[] {
+  return platform === "win32" ? [requireComSpec(env)] : [loginShell(env), "-l"];
+}
+
+/**
+ * 명령 «줄» → 세션 명령 — ★줄을 명령 배열로 바꾸는 곳은 여기 하나(메뉴 ②, 웹이 만드는 세션). 사용자의 셸이 그대로 해석한다
+ * (macOS·Linux 로그인 셸 `-lc` · Windows `%ComSpec% /d /s /c`). 빈 줄이면 null = 기본 셸 그대로(`term new` 기본과 같다).
+ */
+export function shellLineCommand(line: string, env: Env, platform: NodeJS.Platform = process.platform): string[] | null {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return null;
+  return platform === "win32" ? [requireComSpec(env), ...SHELL_LINE_FLAGS, trimmed] : [loginShell(env), "-lc", trimmed];
 }
 
 /** MSVCRT(CommandLineToArgvW) 규칙으로 인자 하나를 따옴표한다 — qntm.org/cmd · cross-spawn escapeArgument 의 앞부분. 순수 함수. */
@@ -233,6 +271,6 @@ export function stuckProcessHint(pid: number, platform: NodeJS.Platform = proces
 }
 
 /** 사용자 로그인 셸 — 환경의 SHELL, 없으면 계정의 셸(macOS·Linux). */
-export function loginShell(env: Env): string {
+function loginShell(env: Env): string {
   return env.SHELL || userInfo().shell || "/bin/sh";
 }
