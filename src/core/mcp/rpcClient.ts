@@ -9,6 +9,8 @@ import {
 } from "../http/rateLimit";
 import { LEGACY_ROLE_HEADER } from "../harness/legacyRole";
 import { CLI_VERSION, PACKAGE_NAME } from "../version";
+import { bareToolName } from "../catalog/generator";
+import { isPublicTool, OperationCaller } from "./operations";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -100,9 +102,12 @@ export class McpRpcClient {
   private readonly fetchImpl: typeof fetch;
   private nextId = 1;
   private agent: string | undefined;
+  /** operation → {@code execute_*} — 상세(묶음)는 이 연결에서 한 번만 묻는다. */
+  readonly operations: OperationCaller;
 
   constructor(private readonly options: McpRpcClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.operations = new OperationCaller((tool, args) => this.request("tools/call", { name: tool, arguments: args }));
   }
 
   /**
@@ -129,8 +134,17 @@ export class McpRpcClient {
     return result.tools;
   }
 
+  /**
+   * ★CLI 안의 모든 도구 호출이 지나는 한 입구. 공개 도구(search·execute_*)는 그대로, 그 밖의 이름은 operation 으로 보고
+   * {@code execute_<묶음> {operation, args}} 로 바꿔 부른다(operations.ts) — 서버는 옛 108개 이름을 거절한다.
+   * 옛 {@code mcp__ainecto__} 앞머리는 뗀다. 브리지(sendRaw)는 이 길을 지나지 않는다 — 호스트가 고른 도구 그대로 간다.
+   */
   async toolsCall(name: string, args: unknown): Promise<unknown> {
-    return this.request("tools/call", { name, arguments: args ?? {} });
+    const bare = bareToolName(name);
+    const payload = isRecord(args) ? args : {};
+    return isPublicTool(bare)
+      ? this.request("tools/call", { name: bare, arguments: payload })
+      : this.operations.call(bare, payload);
   }
 
   async request(method: string, params?: unknown): Promise<unknown> {
