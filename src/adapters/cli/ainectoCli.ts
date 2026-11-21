@@ -287,8 +287,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       || (domain === "tools" && (action === "list" || action === "call"))
       || matchGeneratedCommand(routeTools, parsed.positionals) !== undefined;
     if (!remote) {
-      const live = await loadLiveTools(env, connect().client).catch(() => undefined);
-      const match = live && matchGeneratedCommand(live, parsed.positionals);
+      // ★목록을 못 받았으면 «없는 명령»이 아니다 — 서버의 코드·사유를 그대로 올린다(리뷰 r1 P1-6). 받았는데 없을 때만 미등록.
+      const live = await loadLiveTools(env, connect().client).catch((error: unknown) => liveListFailure(parsed.positionals, error));
+      const match = matchGeneratedCommand(live, parsed.positionals);
       if (match) {
         // 목록은 이름·한 줄뿐 — 부를 operation 하나의 상세(inputSchema)를 받아 그것으로 인자를 읽는다.
         routeTools = [await loadLiveTool(env, connect().client, match.tool.mcpName)];
@@ -390,6 +391,21 @@ async function printCatalog(
     }));
   }
   return 0;
+}
+
+/**
+ * 스냅샷에 없는 명령을 찾으려고 서버 operation 목록을 받다가 실패 — 서버가 밝힌 코드·세부는 그대로 두고, 무엇을 하다 실패했는지만 앞에 붙인다.
+ */
+function liveListFailure(positionals: string[], error: unknown): never {
+  const command = positionals.filter((arg) => !arg.startsWith("-")).join(" ");
+  const cause = error instanceof Error ? error : new Error(String(error));
+  const failure = new Error(`"${command}" is not in this CLI's catalog, and the server's operation list could not be read: ${cause.message}`) as Error & {
+    code?: string; details?: unknown;
+  };
+  const source = cause as Error & { code?: unknown; details?: unknown };
+  failure.code = typeof source.code === "string" ? source.code : "LIVE_CATALOG_UNAVAILABLE";
+  if (source.details !== undefined) failure.details = source.details;
+  throw failure;
 }
 
 /** 카탈로그 한 줄 — 라이브(search 목록)와 스냅샷이 같은 모양이게. 입력 형식은 상세에서 본다({@link CATALOG_DETAIL_HINT}). */

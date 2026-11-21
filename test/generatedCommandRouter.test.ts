@@ -220,6 +220,27 @@ describe("generated command router", () => {
     expect(io.stderrText()).toContain('Unknown command "no-such"');
   });
 
+  it("★the live operation list refused → the server's code and reason, not «Unknown command» (review r1 P1-6)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === "tools/list") {
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "search", inputSchema: { properties: {
+          action: { items: { enum: ["read"] } }, object: { items: { enum: ["document"] } } } } }] } }));
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id,
+        error: { code: -32602, message: "search is not available for this connection", data: { code: "SEARCH_UNAVAILABLE" } } }));
+    }));
+    process.env.AINECTO_TOKEN = "redacted";
+    const io = createIo();
+
+    await expect(runAinectoCli(["no-such", "thing", "--env", "dev", "--json"], io)).resolves.toBe(1);
+    const error = JSON.parse(io.stderrText()).error as { code: string; message: string };
+    expect(error.code).toBe("MCP_ERROR");
+    expect(error.message).toContain("SEARCH_UNAVAILABLE");
+    expect(error.message).toContain("server's operation list could not be read");
+    expect(error.message).not.toContain("Unknown command");
+  });
+
   it("leaves bespoke attachments upload outside generated routing", () => {
     expect(matchGeneratedCommand(devTools, ["attachments", "upload"])).toBeUndefined();
   });

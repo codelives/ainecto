@@ -1,4 +1,3 @@
-import { operationServer } from "./support/operationServer";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { PassThrough } from "node:stream";
@@ -80,13 +79,13 @@ describe("헤더 싣기", () => {
     const seen: Array<Record<string, string>> = [];
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       seen.push((init?.headers ?? {}) as Record<string, string>);
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [] } }));
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "search" }] } }));
     }) as unknown as typeof fetch;
 
-    const named = new McpRpcClient({ endpoint: ENDPOINT, fetchImpl: operationServer(fetchImpl) as typeof fetch, channel: "mcp", agentName: "tester" });
+    const named = new McpRpcClient({ endpoint: ENDPOINT, fetchImpl, channel: "mcp", agentName: "tester" });
     named.useAgent("claude-code");
     await named.toolsList();
-    await named.toolsCall("identity_get_self", {});
+    await named.toolsCall("search", {});
     expect(seen[0]).toMatchObject({ [NAME_HEADER]: "tester", "x-ainecto-agent": "claude-code" });
     expect(seen[1]).toMatchObject({ [NAME_HEADER]: "tester" });
 

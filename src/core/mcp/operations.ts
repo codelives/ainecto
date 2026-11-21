@@ -1,41 +1,21 @@
 import type { JsonSchema } from "../catalog/types";
-import { unwrapMcpToolPayload } from "./toolPayload";
+import { toolErrorText, unwrapMcpToolPayload } from "./toolPayload";
 
 /**
- * ★서버 MCP 공개면 = {@code search} + {@code execute_*} 6개(2026-11-21 rollout-today.md). 108개 operation 은 이름으로 직접 부르지 않는다 —
- * {@code execute_<묶음> {operation, args}} 로 부른다. 옛 이름으로 부르면 서버가 거절한다(별칭 없음).
+ * ★서버 MCP 공개면 = {@code search} + {@code execute_*} 6개 + {@code open_ainecto_panel}(2026-11-21 rollout-today.md · 루트 결재 c30114b9).
+ * 108개 operation 은 이름으로 직접 부르지 않는다 — {@code <executor> {operation, args}} 로 부른다. 옛 이름으로 부르면 서버가 거절한다(별칭 없음).
  *
  * 이 파일이 CLI 에서 그 공개면을 아는 한 곳이다:
  * <ul>
- *   <li>공개 도구 이름 7개({@link PUBLIC_TOOLS}) — 서버 계약 그대로.</li>
+ *   <li>★공개 도구 이름은 CLI 에 두지 않는다 — 서버 {@code tools/list} 가 진실원이다(RPC 클라이언트가 연결당 한 번 받는다).
+ *       CLI 가 아는 이름은 목록·상세를 묻는 {@link SEARCH_TOOL} 하나뿐이다.</li>
  *   <li>{@code search} 목록·상세 응답 읽기({@link parseOperationPage} · {@link parseOperationDetail}) — 모양이 바뀌면 여기만 고친다.</li>
- *   <li>operation → 어느 {@code execute_*} 로 부르나({@link OperationCaller}) — ★작업마다 실행 도구는 하나다(Ryan 11-21 «ㅇㅇ 그렇게 가자»).
+ *   <li>operation → 어느 실행 도구로 부르나({@link OperationCaller}) — ★작업마다 실행 도구는 하나다(Ryan 11-21 «ㅇㅇ 그렇게 가자»).
  *       그 표(api {@code mcp/operation-executors.json})를 CLI 에 두지 않는다 — search 상세의 {@code executor} 를 쓴다.</li>
  * </ul>
  */
 
 export const SEARCH_TOOL = "search";
-
-export const EXECUTE_TOOLS = [
-  "execute_read",
-  "execute_edit",
-  "execute_collaborate",
-  "execute_replace_remove",
-  "execute_access",
-  "execute_publish",
-] as const;
-
-export type ExecuteTool = typeof EXECUTE_TOOLS[number];
-
-export const PUBLIC_TOOLS: readonly string[] = [SEARCH_TOOL, ...EXECUTE_TOOLS];
-
-export function isPublicTool(name: string): boolean {
-  return PUBLIC_TOOLS.includes(name);
-}
-
-export function isExecuteTool(name: string): name is ExecuteTool {
-  return (EXECUTE_TOOLS as readonly string[]).includes(name);
-}
 
 /** {@code search} 목록 한 줄 — operation 과 목록용 한 줄 설명(태그는 응답에 없다). */
 export interface OperationLine {
@@ -52,13 +32,14 @@ export interface OperationPage {
 export interface OperationDetail {
   operation: string;
   summary: string;
-  executor: ExecuteTool;
+  /** 이 operation 을 부르는 공개 실행 도구 이름(서버가 정한 그대로). */
+  executor: string;
   annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
   inputSchema: JsonSchema;
 }
 
 export class OperationError extends Error {
-  constructor(message: string, readonly code: string, readonly operation: string) {
+  constructor(message: string, readonly code: string, readonly operation: string, readonly details?: unknown) {
     super(message);
     this.name = "OperationError";
   }
@@ -81,7 +62,7 @@ export function parseOperationPage(result: unknown): OperationPage {
 /**
  * {@code search {operation}} 결과(도구 결과 그대로) → 상세. 모양(chat-dev 확정 11-21 · api 1f2290f3):
  * {@code {"operation","summary","executor":"execute_…","annotations":{…},"inputSchema":{…}}}.
- * 실행 도구가 공개 도구 이름이 아니면 실패 — 모르는 이름으로 부르지 않는다.
+ * 실행 도구 이름이 없으면 실패 — 이름은 서버가 정한 그대로 쓴다.
  */
 export function parseOperationDetail(operation: string, result: unknown): OperationDetail {
   const payload = unwrapMcpToolPayload(result);
@@ -89,7 +70,7 @@ export function parseOperationDetail(operation: string, result: unknown): Operat
     throw new OperationError(`search did not return the detail of ${operation}.`, "MCP_PROTOCOL_ERROR", operation);
   }
   const executor = payload.executor;
-  if (typeof executor !== "string" || !isExecuteTool(executor)) {
+  if (typeof executor !== "string" || executor.trim() === "") {
     throw new OperationError(`search detail of ${operation} has no valid executor (${JSON.stringify(executor)}).`,
       "MCP_PROTOCOL_ERROR", operation);
   }
@@ -165,9 +146,8 @@ export class OperationCaller {
     let found = this.details.get(operation);
     if (!found) {
       found = this.callPublic(SEARCH_TOOL, { operation }).then((result) => {
-        if (isRecord(result) && result.isError === true) {
-          throw new OperationError(`search could not find operation ${operation}.`, "UNKNOWN_OPERATION", operation);
-        }
+        // ★서버가 도구 결과로 거절했으면 그 사유·코드를 그대로 올린다 — «모르는 작업»으로 덮지 않는다(리뷰 r1 P1-6).
+        if (isRecord(result) && result.isError === true) throw toolRefusal(operation, result);
         return parseOperationDetail(operation, result);
       });
       // 실패는 기억하지 않는다 — 다음 호출이 다시 묻는다.
@@ -181,6 +161,19 @@ export class OperationCaller {
     const detail = await this.detail(operation);
     return this.callPublic(detail.executor, { operation, args });
   }
+}
+
+/** isError 결과 → 서버 글 그대로의 오류. 글이 JSON 이고 {@code code} 가 있으면 그 코드, 없으면 MCP_TOOL_ERROR. 원본 결과는 details 에. */
+function toolRefusal(operation: string, result: Record<string, unknown>): OperationError {
+  const text = toolErrorText(result);
+  let code = "MCP_TOOL_ERROR";
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (isRecord(parsed) && typeof parsed.code === "string" && parsed.code) code = parsed.code;
+  } catch {
+    // 글이 JSON 이 아니다 — 글 그대로 싣는다.
+  }
+  return new OperationError(`search refused the detail of ${operation}: ${text}`, code, operation, result);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

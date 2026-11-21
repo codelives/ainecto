@@ -10,7 +10,7 @@ import {
 import { LEGACY_ROLE_HEADER } from "../harness/legacyRole";
 import { CLI_VERSION, PACKAGE_NAME } from "../version";
 import { bareToolName } from "../catalog/generator";
-import { isPublicTool, OperationCaller } from "./operations";
+import { OperationCaller } from "./operations";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -102,8 +102,10 @@ export class McpRpcClient {
   private readonly fetchImpl: typeof fetch;
   private nextId = 1;
   private agent: string | undefined;
-  /** operation → {@code execute_*} — 상세(묶음)는 이 연결에서 한 번만 묻는다. */
+  /** operation → 실행 도구 — 상세(executor)는 이 연결에서 한 번만 묻는다. */
   readonly operations: OperationCaller;
+  /** 서버가 공개한 도구 이름 — 진실원은 tools/list. 연결당 한 번(실패는 기억하지 않는다). */
+  private publicTools: Promise<ReadonlySet<string>> | undefined;
 
   constructor(private readonly options: McpRpcClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -131,18 +133,33 @@ export class McpRpcClient {
     if (!isRecord(result) || !Array.isArray(result.tools)) {
       throw new McpRpcError("tools/list response did not include a tools array.", "MCP_PROTOCOL_ERROR", result);
     }
+    // 받은 목록은 공개 이름으로도 기억한다 — 같은 연결의 다음 toolsCall 이 다시 묻지 않게.
+    this.publicTools = Promise.resolve(toolNames(result.tools));
     return result.tools;
   }
 
+  /** 공개 도구 이름 — 이 연결에서 아직 모르면 tools/list 를 한 번 부른다. */
+  private publicToolNames(): Promise<ReadonlySet<string>> {
+    if (!this.publicTools) {
+      const pending = this.toolsList().then(toolNames);
+      pending.catch(() => {
+        if (this.publicTools === pending) this.publicTools = undefined;
+      });
+      this.publicTools = pending;
+    }
+    return this.publicTools;
+  }
+
   /**
-   * ★CLI 안의 모든 도구 호출이 지나는 한 입구. 공개 도구(search·execute_*)는 그대로, 그 밖의 이름은 operation 으로 보고
-   * {@code execute_<묶음> {operation, args}} 로 바꿔 부른다(operations.ts) — 서버는 옛 108개 이름을 거절한다.
+   * ★CLI 안의 모든 도구 호출이 지나는 한 입구. 서버 tools/list 에 있는 공개 도구(search·execute_*·open_ainecto_panel)는
+   * 자기 이름으로 한 번만, 그 밖의 이름은 operation 으로 보고 {@code <executor> {operation, args}} 로 바꿔 부른다(operations.ts)
+   * — 서버는 옛 108개 이름을 거절한다. 공개 이름의 사본은 두지 않는다(리뷰 r1 P1-3).
    * 옛 {@code mcp__ainecto__} 앞머리는 뗀다. 브리지(sendRaw)는 이 길을 지나지 않는다 — 호스트가 고른 도구 그대로 간다.
    */
   async toolsCall(name: string, args: unknown): Promise<unknown> {
     const bare = bareToolName(name);
     const payload = isRecord(args) ? args : {};
-    return isPublicTool(bare)
+    return (await this.publicToolNames()).has(bare)
       ? this.request("tools/call", { name: bare, arguments: payload })
       : this.operations.call(bare, payload);
   }
@@ -346,6 +363,10 @@ function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
   return isRecord(value)
     && value.jsonrpc === "2.0"
     && ("result" in value || "error" in value);
+}
+
+function toolNames(tools: unknown[]): ReadonlySet<string> {
+  return new Set(tools.flatMap((tool) => isRecord(tool) && typeof tool.name === "string" ? [tool.name] : []));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
