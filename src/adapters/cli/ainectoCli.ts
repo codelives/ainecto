@@ -288,7 +288,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       || matchGeneratedCommand(routeTools, parsed.positionals) !== undefined;
     if (!remote) {
       // ★목록을 못 받았으면 «없는 명령»이 아니다 — 서버의 코드·사유를 그대로 올린다(리뷰 r1 P1-6). 받았는데 없을 때만 미등록.
-      const live = await loadLiveTools(env, connect().client).catch((error: unknown) => liveListFailure(parsed.positionals, error));
+      const live = await loadLiveTools(env, connect().client).catch(liveListFailure);
       const match = matchGeneratedCommand(live, parsed.positionals);
       if (match) {
         // 목록은 이름·한 줄뿐 — 부를 operation 하나의 상세(inputSchema)를 받아 그것으로 인자를 읽는다.
@@ -395,24 +395,18 @@ async function printCatalog(
 
 /**
  * 스냅샷에 없는 명령을 찾으려고 서버 operation 목록을 받다가 실패 — 서버가 밝힌 코드·세부는 그대로 두고, 무엇을 하다 실패했는지만 앞에 붙인다.
- * ★명령 경로만 싣는다 — 플래그 값·인자는 사용자 입력이라 오류 글에 싣지 않는다(리뷰 r2 P1-5).
+ * ★입력한 낱말은 하나도 싣지 않는다 — 목록을 못 받았으니 어디까지가 명령이고 어디부터가 값(인라인 JSON 등)인지 알 수 없다.
+ *   고정 문맥 + 서버 사유만(리뷰 r2 P1-5 · r3 P1).
  */
-function liveListFailure(positionals: string[], error: unknown): never {
-  const command = commandPathOf(positionals);
+function liveListFailure(error: unknown): never {
   const cause = error instanceof Error ? error : new Error(String(error));
-  const failure = new Error(`"${command}" is not in this CLI's catalog, and the server's operation list could not be read: ${cause.message}`) as Error & {
+  const failure = new Error(`This command is not in this CLI's catalog, and the server's operation list could not be read: ${cause.message}`) as Error & {
     code?: string; details?: unknown;
   };
   const source = cause as Error & { code?: unknown; details?: unknown };
   failure.code = typeof source.code === "string" ? source.code : "LIVE_CATALOG_UNAVAILABLE";
   if (source.details !== undefined) failure.details = source.details;
   throw failure;
-}
-
-/** 명령 경로 — 첫 플래그 앞의 낱말들(최대 3개). 그 뒤는 값일 수 있어 버린다. */
-function commandPathOf(positionals: string[]): string {
-  const end = positionals.findIndex((arg) => arg.startsWith("-"));
-  return (end === -1 ? positionals : positionals.slice(0, end)).slice(0, 3).join(" ");
 }
 
 /** 카탈로그 한 줄 — 라이브(search 목록)와 스냅샷이 같은 모양이게. 입력 형식은 상세에서 본다({@link CATALOG_DETAIL_HINT}). */

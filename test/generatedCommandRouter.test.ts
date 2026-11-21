@@ -227,7 +227,7 @@ describe("generated command router", () => {
     ["a JSON-RPC error", { error: { code: -32602, message: "search is not available for this connection", data: { code: "LIST_DENIED" } } }, "MCP_ERROR"],
     ["an MCP tool error (isError)", { result: { isError: true, content: [{ type: "text",
       text: JSON.stringify({ code: "LIST_DENIED", message: "search is not available for this connection" }) }] } }, "LIST_DENIED"],
-  ])("★the live operation list refused as %s → the server's code and reason, never «Unknown command» nor the typed values (review r1 P1-6 · r2 P1-5)",
+  ])("★the live operation list refused as %s → fixed context + the server's code and reason; no typed word (inline JSON, flag values) in stderr (review r1 P1-6 · r2 P1-5 · r3 P1)",
     async (_kind, refusal, code) => {
       vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body));
@@ -235,19 +235,49 @@ describe("generated command router", () => {
         return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...reply }));
       }));
       process.env.AINECTO_TOKEN = "redacted";
-      const io = createIo();
+      const typed = ["no-such", "thing", '{"note":"EXAMPLE_PRIVATE_NOTE"}', "--note", "EXAMPLE_PRIVATE_NOTE_FLAG", "--env", "dev"];
 
-      await expect(runAinectoCli(["no-such", "thing", "--note", "EXAMPLE_PRIVATE_NOTE", "--env", "dev", "--json"], io)).resolves.toBe(1);
-      const stderr = io.stderrText();
-      const error = JSON.parse(stderr).error as { code: string; message: string };
+      const json = createIo();
+      await expect(runAinectoCli([...typed, "--json"], json)).resolves.toBe(1);
+      const error = JSON.parse(json.stderrText()).error as { code: string; message: string };
       expect(error.code).toBe(code);
+      expect(error.message).toContain("This command is not in this CLI's catalog, and the server's operation list could not be read");
       expect(error.message).toContain("LIST_DENIED");
       expect(error.message).toContain("search is not available for this connection");
-      expect(error.message).toContain('"no-such thing" is not in this CLI\'s catalog');
       expect(error.message).not.toContain("Unknown command");
       expect(error.message).not.toContain("items array");
-      expect(stderr).not.toContain("EXAMPLE_PRIVATE_NOTE");
+
+      const human = createIo();
+      await expect(runAinectoCli(typed, human)).resolves.toBe(1);
+      expect(human.stderrText()).toContain("LIST_DENIED");
+      for (const stderr of [json.stderrText(), human.stderrText()]) {
+        expect(stderr).not.toContain("EXAMPLE_PRIVATE_NOTE");
+        expect(stderr).not.toContain("no-such");
+      }
     });
+
+  it("an incomplete server detail (no destructiveHint) keeps the snapshot's confirmation — it never loosens it (review r3 P2-1)", async () => {
+    const calls: Array<{ method: string; params?: { name?: string } }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      calls.push(body);
+      const text = (value: unknown) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+      const result = body.method === "tools/list" ? { tools: [searchListing, { name: "execute_edit" }] }
+        : body.params.name === "search"
+          ? text({ operation: "update_documents", summary: "", executor: "execute_edit", annotations: { readOnlyHint: false },
+            inputSchema: { type: "object", properties: {} } })
+          : text({ ok: true });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
+    }));
+    process.env.AINECTO_TOKEN = "redacted";
+    // update_documents 는 이름 앞머리로는 파괴가 아니다 — 스냅샷의 destructiveHint 만이 확인을 건다.
+    expect(matchGeneratedCommand(devTools, ["documents", "update"])?.tool.destructive).toBe(true);
+
+    const io = createIo();
+    await expect(runAinectoCli(["documents", "update", '{"items":[{"uuid":"d-1","title":"t"}]}', "--env", "dev", "--json"], io)).resolves.toBe(1);
+    expect(JSON.parse(io.stderrText()).error.code).toBe("CONFIRMATION_REQUIRED");
+    expect(calls.map((call) => call.params?.name ?? call.method)).toEqual(["tools/list", "search"]);
+  });
 
   it("★a snapshot command is confirmed against the same server detail it runs with — the server's destructiveHint wins over a stale snapshot (review r2 P1-6)", async () => {
     const calls: Array<{ method: string; params?: { name?: string; arguments?: Record<string, unknown> } }> = [];

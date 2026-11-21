@@ -62,9 +62,13 @@ export async function executeGeneratedCommand(options: GeneratedCommandExecution
 
   const parsed = await parseGeneratedCommandArgs(route.tool, route.rest, options.io.stdin);
   // ★파괴 확인은 실행에 쓰는 같은 서버 상세로 먼저 판단한다 — 스냅샷이 낡아도 서버가 선언한 파괴 효과를 건너뛰지 않는다(리뷰 r2 P1-6).
+  //   상세에 destructiveHint 가 없으면(불완전한 상세) 스냅샷 판단을 그대로 둔다 — 확인을 풀지 않는다(리뷰 r3 P2-1).
   const detail = await options.client.operationDetailFor(route.tool.mcpName);
+  const destructive = detail && typeof detail.annotations.destructiveHint === "boolean"
+    ? inferDestructive(bareToolName(route.tool.mcpName), { name: route.tool.mcpName, annotations: detail.annotations })
+    : route.tool.destructive;
   await confirmDestructiveCommand({
-    tool: detail ? { ...route.tool, destructive: inferDestructive(bareToolName(route.tool.mcpName), { name: route.tool.mcpName, annotations: detail.annotations }) } : route.tool,
+    tool: { ...route.tool, destructive },
     yes: parsed.yes,
     json: options.json,
     io: options.io,
