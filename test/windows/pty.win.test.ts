@@ -68,27 +68,38 @@ console.log("w3-ready"); setInterval(() => {}, 1000);`);
     expect(await readFile(marker, "utf8")).toBe("1");
   }, 60_000);
 
-  it("npx.cmd 로 감싼 node 에 ^C — 끝나는 시간을 잰다(«일괄 작업을 끝내시겠습니까» 멈춤 실측, 설계 9번)", async () => {
-    const pkg = join(work, "sigint-pkg");
+  /** npx.cmd 로 감싼 node 에 ^C — 끝나는 시간·«일괄 작업» 프롬프트·자식 SIGINT 처리기를 잰다(설계 9번). */
+  async function npxCtrlC(measure: string, command: (project: string) => string[]): Promise<void> {
+    const pkg = join(work, `${measure}-pkg`);
     await mkdir(pkg, { recursive: true });
-    const marker = join(work, "npx-sigint.txt");
+    const marker = join(work, `${measure}.txt`);
     await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "sigint-wait", version: "1.0.0", bin: { "sigint-wait": "wait.js" } }));
     await writeFile(join(pkg, "wait.js"), `#!/usr/bin/env node
 process.on("SIGINT", () => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "1"); process.exit(0); });
 console.log("w3-npx-ready"); setInterval(() => {}, 1000);`);
-    const project = join(work, "npx-project");
+    const project = join(work, `${measure}-project`);
     await mkdir(project, { recursive: true });
     await writeFile(join(project, "package.json"), JSON.stringify({ name: "p", version: "1.0.0", private: true }));
     execFileSync("npm", ["install", "--no-audit", "--no-fund", pkg], { cwd: project, shell: true, windowsHide: true });
-    const running = await start(["npx", "--no-install", "sigint-wait"], project);
+    const running = await start(command(project), project);
     await until(async () => (await screen(running)).includes("w3-npx-ready"), "npx ready");
     const sent = Date.now();
     await running.session.key("ctrl-c");
     const ended = await Promise.race([running.exit.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000))]);
     const text = await screen(running);
-    console.log(JSON.stringify({ measure: "npx-ctrl-c", endedWithin10s: ended, ms: Date.now() - sent, batchPrompt: /\(Y\/N\)/i.test(text) }));
+    console.log(JSON.stringify({ measure, endedWithin10s: ended, ms: Date.now() - sent, batchPrompt: /\(Y\/N\)/i.test(text) }));
     if (!ended) running.session.kill();
     expect(await readFile(marker, "utf8")).toBe("1");
+  }
+
+  it("npx.cmd 로 감싼 node 에 ^C — 지금 실행 계획(planLaunch .cmd → %ComSpec% /d /s /c)", async () => {
+    await npxCtrlC("npx-ctrl-c", () => ["npx", "--no-install", "sigint-wait"]);
+  }, 90_000);
+
+  // ★결정 전 실측(impl-notes «결정 필요» Ctrl+C) — 후보 A: 감싼 cmd 의 표준 입력을 NUL 로 주면 프롬프트가 NUL 을 읽고 바로 끝나는가.
+  //   콘솔 Ctrl+C 신호는 표준 입력과 무관하게 콘솔에 붙은 프로세스에 가므로 자식 SIGINT 처리기는 그대로 돌아야 한다.
+  it("후보 A 실측 — 같은 명령을 cmd 표준 입력 NUL 로(< nul)", async () => {
+    await npxCtrlC("npx-ctrl-c-stdin-nul", () => shellLineCommand("npx --no-install sigint-wait < nul", env) ?? []);
   }, 90_000);
 
   it("강제 끄기(TermSession.kill) 성공 기준 = 트리 소멸: cmd → node(콘솔) → node(창 숨김 자식) 가 모두 사라진다", async () => {
