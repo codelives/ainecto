@@ -37,23 +37,25 @@ describe("CLI env flag guards", () => {
 
   // ★카탈로그는 서버의 지금 목록이 먼저다 — 스냅샷만 보여 주면 서버에 열린 html 을 에이전트가 «없다»고 읽었다
   //   (2026-10-10). 시험은 네트워크를 막아(진짜 토큰·서버에 기대지 않게) 두 갈래를 다 본다.
-  it("shows the server's live tool list — a type the snapshot lacks (html) is visible without a new CLI release", async () => {
+  it("shows the server's live operation list (search) — an operation the snapshot lacks is visible without a new CLI release", async () => {
     process.env.AINECTO_TOKEN = "redacted";
     vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{
-        name: "create_documents",
-        description: "Create documents.",
-        inputSchema: { type: "object", properties: { type: { type: "string", enum: ["erd", "markdown", "diagram", "openapi", "html"] } } },
-      }] } }));
+      const result = body.method === "tools/list"
+        ? { tools: [{ name: "search", inputSchema: { type: "object", properties: {
+          action: { type: "array", items: { type: "string", enum: ["create"] } },
+          object: { type: "array", items: { type: "string", enum: ["document"] } } } } }] }
+        : { content: [{ type: "text", text: JSON.stringify({ items: [{ operation: "html_render_preview", summary: "Preview an HTML document." }] }) }] };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
     }));
     const io = createIo();
 
     await expect(runAinectoCli(["tools", "catalog", "--env", "dev", "--json"], io)).resolves.toBe(0);
-    const output = JSON.parse(io.stdoutText()) as { data?: Array<{ mcpName: string; inputSchema: unknown }>; warnings?: string[] };
-    expect(output.data?.map((tool) => tool.mcpName)).toEqual(["create_documents"]);
-    expect(JSON.stringify(output.data)).toContain("\"html\"");
-    expect(output.warnings ?? []).toEqual([]);
+    const output = JSON.parse(io.stdoutText()) as { data?: Array<{ operation: string; command: string; description: string }>; warnings?: string[] };
+    expect(output.data).toEqual([{ operation: "html_render_preview", command: "ainecto tools run html-render-preview",
+      description: "Preview an HTML document." }]);
+    expect(output.warnings?.join("\n")).toContain("tools call search");
+    expect(output.warnings?.join("\n")).not.toContain("Could not read");
   });
 
   it("falls back to the checked-in snapshot when the live list cannot be read, and says why", async () => {

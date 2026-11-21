@@ -4,6 +4,7 @@ import { OAuthClient } from "../src/core/auth/oauth";
 import { FileTokenStore } from "../src/core/auth/tokenStore";
 import { resolveEndpoint, type AinectoEnv } from "../src/core/config/endpoints";
 import { McpRpcClient } from "../src/core/mcp/rpcClient";
+import { listAllOperations } from "../src/core/mcp/operations";
 import { generateCatalog, serializeGeneratedCatalog, stableStringify } from "../src/core/catalog/generator";
 import type { McpToolListItem } from "../src/core/catalog/types";
 
@@ -54,8 +55,14 @@ async function fetchLiveTools(env: AinectoEnv, check: boolean): Promise<McpToolL
   }
   const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider, channel: "cli" });
   await client.initialize();
-  const tools = await client.toolsList();
-  return tools.map(assertMcpToolListItem);
+  // ★공개면은 search + execute_* 7개다(2026-11-21) — 스냅샷은 tools/list 가 아니라 operation 목록(search)과 각 상세에서 만든다.
+  const lines = await listAllOperations({ toolsList: () => client.toolsList(), callPublic: (tool, toolArgs) => client.toolsCall(tool, toolArgs) });
+  const tools: McpToolListItem[] = [];
+  for (const line of lines) {
+    const detail = await client.operations.detail(line.operation);
+    tools.push({ name: detail.operation, description: detail.summary, inputSchema: detail.inputSchema, annotations: detail.annotations });
+  }
+  return tools;
 }
 
 async function readFixture(path: string): Promise<McpToolListItem[]> {

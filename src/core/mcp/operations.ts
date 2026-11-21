@@ -128,6 +128,47 @@ function rpcErrorData(error: unknown): Record<string, unknown> | undefined {
   return isRecord(details) && isRecord(details.data) ? details.data : undefined;
 }
 
+/** search 한 쪽 최대(서버 계약 — 기본 20 · 최대 50). */
+export const SEARCH_PAGE_MAX = 50;
+/** 전체 목록을 넘길 때 쪽 수 상한 — 서버가 cursor 를 끝없이 주어도 멈춘다(108개 ÷ 50 = 3쪽). */
+const MAX_PAGES = 20;
+
+/**
+ * search 도구 정의(tools/list 의 한 항목)에서 두 필수 축({@code action}·{@code object})의 어휘 전부 — 정규값 + 별칭.
+ * 서버는 축 안을 OR 로 묶으므로 어휘 전부를 주면 모든 operation 이 나온다(별칭과 정규값을 같이 줘도 중복으로 거절하지 않는다).
+ */
+export function searchVocabulary(searchTool: unknown): { action: string[]; object: string[] } {
+  const props = isRecord(searchTool) && isRecord(searchTool.inputSchema) && isRecord(searchTool.inputSchema.properties)
+    ? searchTool.inputSchema.properties : {};
+  const values = (facet: string): string[] => {
+    const prop = props[facet];
+    const items = isRecord(prop) && isRecord(prop.items) ? prop.items : {};
+    return Array.isArray(items.enum) ? items.enum.filter((value): value is string => typeof value === "string") : [];
+  };
+  const vocabulary = { action: values("action"), object: values("object") };
+  if (vocabulary.action.length === 0 || vocabulary.object.length === 0) {
+    throw new OperationError("tools/list has no search tool with action/object vocabularies.", "MCP_PROTOCOL_ERROR", SEARCH_TOOL);
+  }
+  return vocabulary;
+}
+
+/** 서버의 지금 operation 전부 — tools/list 의 search 어휘로 search 를 불러 모든 쪽을 넘긴다(이름순 · 중복 없이). */
+export async function listAllOperations(input: {
+  toolsList: () => Promise<unknown[]>;
+  callPublic: PublicToolCall;
+}): Promise<OperationLine[]> {
+  const vocabulary = searchVocabulary((await input.toolsList()).find((tool) => isRecord(tool) && tool.name === SEARCH_TOOL));
+  const byName = new Map<string, OperationLine>();
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const result = parseOperationPage(await input.callPublic(SEARCH_TOOL, { ...vocabulary, limit: SEARCH_PAGE_MAX, ...(cursor ? { cursor } : {}) }));
+    for (const line of result.items) if (!byName.has(line.operation)) byName.set(line.operation, line);
+    cursor = result.nextCursor;
+    if (!cursor) return [...byName.values()].sort((a, b) => a.operation.localeCompare(b.operation));
+  }
+  throw new OperationError(`search kept returning a next page after ${MAX_PAGES} pages.`, "MCP_PROTOCOL_ERROR", SEARCH_TOOL);
+}
+
 /** 공개 도구 하나를 부르는 함수 — RPC 클라이언트가 준다(로그·오류 분류는 그쪽 책임). */
 export type PublicToolCall = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 

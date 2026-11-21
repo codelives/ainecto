@@ -178,22 +178,34 @@ describe("generated command router", () => {
     expect(JSON.parse(io.stdoutText()).warnings.join("\n")).toContain("raw MCP argument contract only");
   });
 
-  it("routes a command the snapshot lacks through the server's live tool list — no CLI release per new tool", async () => {
-    const calls: Array<{ method: string; params?: { name?: string; arguments?: unknown } }> = [];
-    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+  it("routes a command the snapshot lacks through the server's live operation list (search) — no CLI release per new operation", async () => {
+    const calls: Array<{ method: string; params?: { name?: string; arguments?: Record<string, unknown> } }> = [];
+    const search = { name: "search", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: {
+      action: { type: "array", items: { type: "string", enum: ["read", "create"] } },
+      object: { type: "array", items: { type: "string", enum: ["document"] } },
+    } } };
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       calls.push(body);
-      const result = body.method === "tools/list"
-        ? { tools: [{ name: "html_render_preview", inputSchema: { type: "object", properties: { uuid: { type: "string" } } } }] }
-        : { ok: true };
+      const text = (value: unknown) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+      const args = body.params?.arguments ?? {};
+      const result = body.method === "tools/list" ? { tools: [search] }
+        : body.params.name === "search" && args.operation
+          ? text({ operation: "html_render_preview", summary: "preview", bundles: ["execute_read"], annotations: { readOnlyHint: true },
+            inputSchema: { type: "object", properties: { uuid: { type: "string" } } } })
+          : body.params.name === "search"
+            ? text({ items: [{ operation: "html_render_preview", summary: "preview", rank: 1 }] })
+            : text({ ok: true });
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
     }));
     process.env.AINECTO_TOKEN = "redacted";
     const io = createIo();
 
     await expect(runAinectoCli(["tools", "run", "html-render-preview", "--env", "dev", "--uuid", "d-1", "--json"], io)).resolves.toBe(0);
-    expect(calls.map((call) => call.method)).toEqual(["tools/list", "tools/call"]);
-    expect(calls[1]).toMatchObject({ params: { name: "html_render_preview", arguments: { uuid: "d-1" } } });
+    expect(calls.map((call) => call.params?.name ?? call.method)).toEqual(["tools/list", "search", "search", "execute_read"]);
+    expect(calls[1]).toMatchObject({ params: { arguments: { action: ["read", "create"], object: ["document"], limit: 50 } } });
+    expect(calls[2]).toMatchObject({ params: { arguments: { operation: "html_render_preview" } } });
+    expect(calls[3]).toMatchObject({ params: { arguments: { operation: "html_render_preview", args: { uuid: "d-1" } } } });
   });
 
   it("still answers «Unknown command» when neither the snapshot nor the live list has it", async () => {

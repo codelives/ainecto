@@ -4,7 +4,7 @@ import { resolveEndpoint, assertEnv, type AinectoEnv } from "../../core/config/e
 import { parsePayloadSource } from "../../core/input/payloadSource";
 import { McpRpcClient, isToolError } from "../../core/mcp/rpcClient";
 import { renderError, renderSuccess } from "../../core/output/render";
-import { getGeneratedTools, loadLiveTools } from "../../core/catalog";
+import { getGeneratedTools, loadLiveTool, loadLiveTools } from "../../core/catalog";
 import type { GeneratedToolDefinition } from "../../core/catalog/types";
 import { runConnector } from "../mcp/connector";
 import { parseMcpArgs } from "../mcp/args";
@@ -81,8 +81,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     // ★이 폴더의 에이전트 이름(`init --agent` 가 쓴 .ainecto/agent.local) — 직접 명령도 브리지와 같은 파일을 읽는다.
     //   없으면 이름 없는 연결(지금과 같다). 브리지는 connector 가 --agent 를 먼저 보고 같은 파일을 읽는다.
     const agentName = domain === "mcp" ? undefined : await readAgentName(process.cwd());
-    /** 인증·RPC 클라이언트. ★토큰은 서버마다 한 칸이다. */
-    const connect = () => {
+    /** 인증·RPC 클라이언트 — 명령 하나에 한 벌(operation 상세를 같은 연결에서 한 번만 묻게). ★토큰은 서버마다 한 칸이다. */
+    let connection: { auth: OAuthClient; client: McpRpcClient } | undefined;
+    const connect = () => connection ??= (() => {
       const auth = new OAuthClient({
         endpoint: resolved.endpoint,
         tokenStore,
@@ -101,7 +102,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       //   에이전트 «이름»은 폴더에 붙어 있으므로 싣는다.
       const client = new McpRpcClient({ endpoint: resolved.endpoint, tokenProvider: auth, legacyRole, channel: "cli", agentName });
       return { auth, client };
-    };
+    })();
 
     if (domain === "mcp") {
       // --env·--endpoint·--role 은 전역 파서가 이미 먹었다 — 남은 브리지 인자(--agent)는 브리지와 같은 파서로 읽는다.
@@ -287,8 +288,10 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       || matchGeneratedCommand(routeTools, parsed.positionals) !== undefined;
     if (!remote) {
       const live = await loadLiveTools(env, connect().client).catch(() => undefined);
-      if (live && matchGeneratedCommand(live, parsed.positionals)) {
-        routeTools = live;
+      const match = live && matchGeneratedCommand(live, parsed.positionals);
+      if (match) {
+        // 목록은 이름·한 줄뿐 — 부를 operation 하나의 상세(inputSchema)를 받아 그것으로 인자를 읽는다.
+        routeTools = [await loadLiveTool(env, connect().client, match.tool.mcpName)];
         remote = true;
       }
     }
@@ -376,18 +379,26 @@ async function printCatalog(
   const catalogEnv = parsed.env ?? "prod";
   try {
     const tools = await loadLiveTools(catalogEnv, await liveClient());
-    io.stdout.write(renderSuccess(tools, { json: parsed.json }));
+    io.stdout.write(renderSuccess(tools.map(catalogLine), { json: parsed.json, warnings: [CATALOG_DETAIL_HINT] }));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    io.stdout.write(renderSuccess(getGeneratedTools(catalogEnv), {
+    io.stdout.write(renderSuccess(getGeneratedTools(catalogEnv).map(catalogLine), {
       json: parsed.json,
-      warnings: [`Could not read the live tool list from ${endpoint} (${reason}). `
+      warnings: [CATALOG_DETAIL_HINT, `Could not read the live tool list from ${endpoint} (${reason}). `
         + `Showing the ${catalogEnv} catalog checked in when this CLI version was built — a snapshot of that `
         + "server's tools/list that may miss newer document types and tools. Run `ainecto auth login`, then retry."],
     }));
   }
   return 0;
 }
+
+/** 카탈로그 한 줄 — 라이브(search 목록)와 스냅샷이 같은 모양이게. 입력 형식은 상세에서 본다({@link CATALOG_DETAIL_HINT}). */
+function catalogLine(tool: GeneratedToolDefinition): { operation: string; command: string; description: string } {
+  return { operation: tool.mcpName, command: `ainecto ${tool.commandPath.join(" ")}`, description: tool.description };
+}
+
+const CATALOG_DETAIL_HINT = "Each line is an operation. For its input format, run "
+  + "`ainecto tools call search '{\"operation\":\"<operation>\"}'`; run it with its command or `ainecto tools call <operation> '<json>'`.";
 
 async function handleTools(
   action: string | undefined,

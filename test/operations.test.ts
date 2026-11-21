@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { McpRpcClient, McpRpcError } from "../src/core/mcp/rpcClient";
-import { parseOperationDetail } from "../src/core/mcp/operations";
+import { listAllOperations, parseOperationDetail } from "../src/core/mcp/operations";
 import { writeToolNames } from "../src/core/agent/documents";
 import { codexAppServerArgs } from "../src/core/agent/codexArgs";
 
@@ -111,6 +111,30 @@ describe("operation → execute_* (MCP 7개)", () => {
       inputSchema: { type: "object", required: ["items"] } });
     expect(() => parseOperationDetail("x", { content: [{ type: "text", text: "{\"operation\":\"y\",\"bundles\":[\"execute_read\"]}" }] }))
       .toThrow(/detail of x/);
+  });
+});
+
+describe("operation 전체 목록(search)", () => {
+  const search = { name: "search", inputSchema: { properties: {
+    action: { items: { enum: ["read", "get"] } }, object: { items: { enum: ["card"] } } } } };
+  const page = (items: string[], nextCursor?: string) =>
+    ({ content: [{ type: "text", text: JSON.stringify({ items: items.map((operation) => ({ operation, summary: operation })), nextCursor }) }] });
+
+  it("어휘 전부로 모든 쪽을 넘겨 이름순·중복 없이 모은다", async () => {
+    const asked: unknown[] = [];
+    const pages = [page(["b", "a"], "c1"), page(["a", "c"])];
+    const lines = await listAllOperations({ toolsList: async () => [{ name: "execute_read" }, search],
+      callPublic: async (_tool, args) => { asked.push(args); return pages.shift(); } });
+
+    expect(lines.map((line) => line.operation)).toEqual(["a", "b", "c"]);
+    expect(asked).toEqual([{ action: ["read", "get"], object: ["card"], limit: 50 }, { action: ["read", "get"], object: ["card"], limit: 50, cursor: "c1" }]);
+  });
+
+  it("search 가 없거나 cursor 가 끝나지 않으면 실패한다(스냅샷으로 대체할 수 있게)", async () => {
+    await expect(listAllOperations({ toolsList: async () => [], callPublic: async () => page([]) }))
+      .rejects.toMatchObject({ code: "MCP_PROTOCOL_ERROR" });
+    await expect(listAllOperations({ toolsList: async () => [search], callPublic: async () => page(["a"], "again") }))
+      .rejects.toThrow(/next page after 20 pages/);
   });
 });
 
