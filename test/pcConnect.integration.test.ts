@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "../src/adapters/cli/pcCommand";
+import { executePcStart, executePcStop, executeRemoteSetting, restartRunningPc, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { accountKey } from "../src/core/pc/pcSettings";
 import { generateSigningJwk } from "../src/core/term/e2e";
 import { loadPcKeys, savePcKeys } from "../src/core/pc/pcKeys";
@@ -227,6 +227,20 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect(on.out()).toContain("Terminals from AiNecto on the web are allowed on this PC.");
     expect(on.err()).toContain("Reconnecting this PC so it takes effect");
     expect(on.out()).toContain("This PC is now connected to AiNecto. From AiNecto on the web");
+    const after = await pcSessions();
+    expect(after.length).toBe(1);
+    expect(after[0]?.pid).not.toBe(before);
+  }, LONG);
+
+  it("restartRunningPc(pair --remove 가 쓴다) — 없으면 undefined · 있으면 멈춘 뒤 새 프로세스로 다시 띄운다", async () => {
+    expect(await restartRunningPc(harness().deps)).toBeUndefined();
+    const start = harness();
+    const done = executePcStart(start.deps);
+    await start.answer("Connect this PC?", "y");
+    await start.answer("Also allow terminals", "y");
+    await done;
+    const before = (await pcSessions())[0]?.pid;
+    expect(await restartRunningPc(harness().deps)).toEqual({ kind: "connected", agentMissing: false });
     const after = await pcSessions();
     expect(after.length).toBe(1);
     expect(after[0]?.pid).not.toBe(before);

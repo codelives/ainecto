@@ -7,6 +7,7 @@ import { executePair, type PairDeps, type TtyIO } from "../src/adapters/cli/pair
 import { CliCommandError } from "../src/adapters/cli/errors";
 import { loadPcKeys, savePcKeys, withBrowser } from "../src/core/pc/pcKeys";
 import { PAIR_WAIT_MS, type BrowserOffer, type PairTransport } from "../src/core/pc/pcPairing";
+import type { PcStartOutcome } from "../src/adapters/cli/pcCommand";
 import { accountKey, normalizePcSettings, savePcSettings, withConsent } from "../src/core/pc/pcSettings";
 import {
   assertCommitment,
@@ -28,7 +29,8 @@ import {
  * 약속값 대조 · 같은 T 로 코드 계산 · done 서명 검증. 파일은 임시 HOME 의 실제 pc.json·pc-keys.json.
  */
 const ENDPOINT = "https://example.test/mcp";
-const KEY = accountKey(ENDPOINT, "u1");
+const USER_ID = "5B1F2C9E-0A7D-4E63-8F41-9C2D7B6A3E10";
+const KEY = accountKey(ENDPOINT, USER_ID);
 
 let home: string;
 beforeEach(async () => {
@@ -77,7 +79,7 @@ async function fakeBrowser(options: {
       if (!state.commit) throw new Error("reveal before offer");
       await assertCommitment(state.commit, pcPub, nP);
       state.pcPub = pcPub;
-      state.transcript = await pairTranscript({ accountKey: KEY, pcId: options.pcId, pcPublicRaw: pcPub, browserPublicRaw: ownPub, nP, nB });
+      state.transcript = await pairTranscript({ userId: USER_ID.toLowerCase(), pcId: options.pcId, pcPublicRaw: pcPub, browserPublicRaw: ownPub, nP, nB });
       state.codes = await pairCodes(state.transcript);
       await options.afterReveal?.();
     },
@@ -115,7 +117,7 @@ function fakeTty(answer: () => string | undefined) {
   return { tty, text: () => text, closed: () => closed };
 }
 
-function deps(overrides: Partial<PairDeps> & { transport?: () => PairTransport }) {
+function deps(overrides: Partial<PairDeps>) {
   let out = "";
   const value: PairDeps = {
     io: {
@@ -131,8 +133,9 @@ function deps(overrides: Partial<PairDeps> & { transport?: () => PairTransport }
     keysPath: keysPath(),
     hostName: "test-host",
     endpoint: ENDPOINT,
-    account: async () => ({ userId: "u1" }),
+    account: async () => ({ userId: USER_ID }),
     transport: () => { throw new Error("no transport in this test"); },
+    restartPc: async () => undefined,
     waitMs: 10_000,
     now: () => new Date("2026-11-21T09:00:00Z"),
     ...overrides,
@@ -245,6 +248,40 @@ describe("ainecto pair — PC 앞 짝짓기(설계 r2 §11-1)", () => {
     await expectCli(executePair(deps({ transport: never, openTty: never }).deps, []), "PC_NOT_APPROVED");
     await expectCli(executePair(deps({}).deps, ["--bogus"]), "USAGE");
     await expectCli(executePair(deps({}).deps, ["--remove"]), "USAGE");
+  });
+});
+
+describe("ainecto pair --remove — 떠 있는 다리를 멈췄다 다시 띄운 뒤에만 성공(§12-3)", () => {
+  async function seed(): Promise<void> {
+    const pub = publicJwkOf(await generateSigningJwk());
+    await savePcKeys(keysPath(), withBrowser({ accounts: {} }, KEY, await generateSigningJwk(),
+      { keyId: "k1", publicJwk: pub, name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
+  }
+
+  it("다리가 있으면: 파일에서 먼저 지우고 → 재시작이 끝난 뒤 성공 · 다리가 없으면 파일만", async () => {
+    await seed();
+    const seen: number[] = [];
+    const restartPc = async (): Promise<PcStartOutcome> => {
+      seen.push((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length ?? -1);
+      return { kind: "connected", agentMissing: false };
+    };
+    const running = deps({ restartPc });
+    expect(await executePair(running.deps, ["--remove", "k1"])).toBe(0);
+    expect(seen).toEqual([0]);
+    expect(running.out()).toContain("Restarted the PC connection.");
+
+    await seed();
+    const idle = deps({ json: true });
+    expect(await executePair(idle.deps, ["--remove", "Work"])).toBe(0);
+    expect(JSON.parse(idle.out())).toMatchObject({ data: { removed: { keyId: "k1", name: "Work" }, restarted: false } });
+  });
+
+  it("재시작(멈춤)이 실패하면 실패를 돌려준다 — 파일은 이미 지웠다고 알린다", async () => {
+    await seed();
+    const failing = deps({ restartPc: async () => { throw new Error("Session ainecto-pc could not be killed"); } });
+    const error = await expectCli(executePair(failing.deps, ["--remove", "k1"]), "PAIR_REMOVE_RESTART_FAILED");
+    expect(error.message).toContain("could not be killed");
+    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers).toEqual([]);
   });
 });
 

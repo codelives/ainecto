@@ -303,10 +303,24 @@ export async function executeRemoteSetting(deps: PcDeps, argv: string[]): Promis
   }
   if (!deps.json) deps.io.stdout.write(`${said}\n`);
   deps.io.stderr.write("Reconnecting this PC so it takes effect…\n");
+  return reportOutcome(deps, await restartPcs(deps, running));
+}
+
+/**
+ * 떠 있는 pc 를 멈추고(끝날 때까지 기다림 · 기한 넘으면 kill — {@link stopPc}) 다시 띄운다. 다리는 시작할 때 pc.json·pc-keys.json 을 읽으므로
+ * 이것으로 바로 반영된다(`remote on|off` · `pair --remove` — 설계 terminal-e2e §12-3). 멈추지 못하면 던진다.
+ */
+async function restartPcs(deps: PcDeps, running: RunningPc[]): Promise<PcStartOutcome> {
   for (const pc of running) {
     await stopPc(deps, pc);
   }
-  return await launchPc(deps);
+  return await startPcSession(deps);
+}
+
+/** 떠 있는 pc 가 있으면 {@link restartPcs} — 없으면(또는 term 을 못 쓰면) undefined(다음 시작 때 읽는다). */
+export async function restartRunningPc(deps: PcDeps): Promise<PcStartOutcome | undefined> {
+  const running = deps.termProblem === undefined ? runningPcs(await listed(deps)) : [];
+  return running.length === 0 ? undefined : await restartPcs(deps, running);
 }
 
 /**

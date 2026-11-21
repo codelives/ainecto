@@ -3,9 +3,10 @@ import { ReadStream, WriteStream } from "node:tty";
 import { renderSuccess } from "../../core/output/render";
 import { loadPcKeys, savePcKeys, withBrowser, withoutBrowser } from "../../core/pc/pcKeys";
 import { runPairing, type MatchedBrowser, type PairTransport } from "../../core/pc/pcPairing";
+import type { PcStartOutcome } from "./pcCommand";
 import { accountKey, loadPcSettings } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
-import { generateSigningJwk, type EcPrivateJwk } from "../../core/term/e2e";
+import { generateSigningJwk, transcriptUserId, type EcPrivateJwk } from "../../core/term/e2e";
 import type { CliIO } from "./ainectoCli";
 import { promptLine, type ConfirmationIO } from "./destructiveConfirmation";
 import { CliCommandError } from "./errors";
@@ -14,7 +15,7 @@ import { CliCommandError } from "./errors";
  * `ainecto pair` — 웹 브라우저와 이 PC 를 PC 앞에서 코드로 짝짓는다(설계 terminal-e2e r2 §11-1·§11-4).
  *   `pair`                  대화형만 — 코드 A 를 보이고 코드 B 를 한 번 받는다. 맞으면 그 브라우저 공개키를 pc-keys.json 에 넣는다.
  *   `pair --list`           짝지은 브라우저 목록.
- *   `pair --remove <id|이름>` 그 브라우저를 지운다(keyId 가 먼저).
+ *   `pair --remove <id|이름>` 그 브라우저를 지우고(keyId 가 먼저), 떠 있는 PC 연결을 멈췄다 다시 띄운 뒤에만 성공(§12-3).
  * ★코드는 /dev/tty 에만 쓰고 /dev/tty 에서만 읽는다 — 파이프·리다이렉트로 흘러가지 않게. AiNecto 터미널 세션(웹 원격 화면에 실릴 수 있음)
  *   안에서는 거절한다. 이것은 «원격 화면 중계에 코드가 실리지 않는다»까지만 보장한다.
  * 순서 판단은 core/pc/pcPairing, 여기는 입출력·파일만.
@@ -35,6 +36,8 @@ export interface PairDeps {
   account: () => Promise<Pick<AccountSummary, "userId">>;
   /** 서버 중계 — 짝짓기를 시작할 때만 연다. */
   transport: () => PairTransport;
+  /** 떠 있는 PC 연결(다리)을 멈추고 끝난 뒤 다시 띄운다 — 없으면 undefined. 운영은 pcCommand.restartRunningPc. */
+  restartPc: () => Promise<PcStartOutcome | undefined>;
   /** 짝짓기 기한 — 운영은 PAIR_WAIT_MS. */
   waitMs: number;
   now: () => Date;
@@ -84,7 +87,7 @@ async function pair(deps: PairDeps): Promise<number> {
     throw new CliCommandError("PAIR_IN_TERM_SESSION",
       "`ainecto pair` does not run inside an AiNecto terminal session (its screen can be shown on the web). Run it in a regular terminal on this PC.");
   }
-  const key = await account(deps);
+  const { key, userId } = await account(deps);
   const settings = await loadPcSettings(deps.settingsPath, deps.hostName);
   if (!settings.accounts[key]) {
     // pcId 는 동의할 때 pc.json 에 처음 쓰인다 — 그 전에 짝지으면 다음 실행의 pcId 와 다르다.
@@ -96,7 +99,7 @@ async function pair(deps: PairDeps): Promise<number> {
   let outcome: Awaited<ReturnType<typeof runPairing>>;
   try {
     outcome = await runPairing({
-      accountKey: key,
+      userId: transcriptUserId(userId),
       pcId: settings.pcId,
       pcKey,
       transport,
@@ -145,7 +148,7 @@ async function pin(deps: PairDeps, key: string, pcKey: EcPrivateJwk, browser: Ma
 }
 
 async function listBrowsers(deps: PairDeps): Promise<number> {
-  const browsers = (await loadPcKeys(deps.keysPath)).accounts[await account(deps)]?.browsers ?? [];
+  const browsers = (await loadPcKeys(deps.keysPath)).accounts[(await account(deps)).key]?.browsers ?? [];
   const data = { browsers: browsers.map((item) => ({ keyId: item.keyId, name: item.name, pairedAt: item.pairedAt })) };
   const human = browsers.length === 0
     ? "No browsers are paired with this PC. Run `ainecto pair` to pair one."
@@ -155,21 +158,39 @@ async function listBrowsers(deps: PairDeps): Promise<number> {
 }
 
 async function removeBrowser(deps: PairDeps, keyIdOrName: string): Promise<number> {
-  const key = await account(deps);
+  const { key } = await account(deps);
   const { keys: next, removed } = withoutBrowser(await loadPcKeys(deps.keysPath), key, keyIdOrName);
   if (!removed) {
     throw new CliCommandError("PAIR_NOT_FOUND", `No paired browser with key id or name "${keyIdOrName}" — \`ainecto pair --list\` shows them.`);
   }
   await savePcKeys(deps.keysPath, next);
-  const human = `Removed "${removed.name}" (${removed.keyId}). It can no longer open terminals on this PC.`;
-  deps.io.stdout.write(deps.json ? renderSuccess({ removed: { keyId: removed.keyId, name: removed.name } }, { json: true }) : `${human}\n`);
+  // ★떠 있는 다리는 지운 키의 채널·대기 작업·화면 송신을 들고 있다 — 멈춘 것을 확인한 뒤에만 성공(§12-3). mtime 감시는 하지 않는다.
+  let outcome: PcStartOutcome | undefined;
+  try {
+    outcome = await deps.restartPc();
+  } catch (error) {
+    throw new CliCommandError("PAIR_REMOVE_RESTART_FAILED", `Removed "${removed.name}" (${removed.keyId}) from this PC's keys, but restarting the PC connection `
+      + `failed (${error instanceof Error ? error.message : String(error)}). Run \`ainecto stop\` and then \`ainecto\` before relying on the removal.`);
+  }
+  const lines = [`Removed "${removed.name}" (${removed.keyId}). It can no longer open terminals on this PC.`];
+  if (outcome === undefined) {
+    lines.push("The PC connection is not running; it reads this when it starts.");
+  } else {
+    lines.push(outcome.kind === "connecting"
+      ? "Restarted the PC connection (still connecting — `ainecto status` shows when it is up). Other browsers reconnect by themselves."
+      : "Restarted the PC connection. Other browsers reconnect by themselves.");
+  }
+  deps.io.stdout.write(deps.json
+    ? renderSuccess({ removed: { keyId: removed.keyId, name: removed.name }, restarted: outcome !== undefined }, { json: true })
+    : `${lines.join("\n")}\n`);
   return 0;
 }
 
-async function account(deps: PairDeps): Promise<string> {
+/** 계정 — 저장 열쇠(`서버#userId` — pc.json 과 같은 값)와 그 userId(대화 기록에는 {@link transcriptUserId} 로 바꿔 넣는다). */
+async function account(deps: PairDeps): Promise<{ key: string; userId: string }> {
   const userId = (await deps.account()).userId;
   if (!userId) {
     throw new CliCommandError("PC_ACCOUNT_UNKNOWN", "Could not read your AiNecto account — run `ainecto doctor` to see why.");
   }
-  return accountKey(deps.endpoint, userId);
+  return { key: accountKey(deps.endpoint, userId), userId };
 }

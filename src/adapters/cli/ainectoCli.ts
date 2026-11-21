@@ -16,7 +16,7 @@ import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { executeTermCommand, stringEnv, TERM_HELP_LINES } from "./termCommand";
-import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "./pcCommand";
+import { executePcStart, executePcStop, executeRemoteSetting, restartRunningPc, type PcDeps } from "./pcCommand";
 import { executePair, openDevTty } from "./pairCommand";
 import { PAIR_WAIT_MS } from "../../core/pc/pcPairing";
 import { pcKeysPath } from "../../core/pc/pcKeys";
@@ -231,6 +231,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         transport: () => {
           throw new CliCommandError("PAIR_UNAVAILABLE", "Pairing with the web is not available in this version yet.");
         },
+        restartPc: () => restartRunningPc(pcDeps()),
         waitMs: PAIR_WAIT_MS,
         now: () => new Date(),
       }, parsed.positionals.slice(1));
