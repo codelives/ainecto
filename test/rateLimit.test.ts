@@ -1,3 +1,4 @@
+import { operationServer } from "./support/operationServer";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,7 +62,7 @@ describe("attachment PUT on 429", () => {
         token: "upload-token-redacted", uploadUrl: "https://uploads.example.test/put", storageKey: "k",
       } }));
     }) as unknown as typeof fetch;
-    const rpc = new McpRpcClient({ endpoint: ENDPOINT, fetchImpl, channel: "cli" });
+    const rpc = new McpRpcClient({ endpoint: ENDPOINT, fetchImpl: operationServer(fetchImpl) as typeof fetch, channel: "cli" });
 
     const failure = await uploadAttachments(rpc, { documentUuid: "doc-1", files: [{ path }], fetchImpl })
       .catch((error: unknown) => error);

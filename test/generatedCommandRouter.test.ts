@@ -1,3 +1,4 @@
+import { stubOperationFetch } from "./support/operationServer";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir as isolationTmpdir } from "node:os";
 import { join as isolationJoin } from "node:path";
@@ -36,7 +37,7 @@ describe("generated command router", () => {
 
   it("executes scalar flags with kebab-case and schema-case aliases", async () => {
     const calls: unknown[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       calls.push(body);
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { cards: [] } }));
@@ -90,7 +91,7 @@ describe("generated command router", () => {
 
   it("rejects bare string flags before server calls", async () => {
     const fetchImpl = vi.fn();
-    vi.stubGlobal("fetch", fetchImpl);
+    stubOperationFetch(fetchImpl);
     process.env.AINECTO_TOKEN = "redacted";
     const io = createIo();
 
@@ -106,7 +107,7 @@ describe("generated command router", () => {
 
   it("rejects array/object schema fields as scalar flags", async () => {
     const fetchImpl = vi.fn();
-    vi.stubGlobal("fetch", fetchImpl);
+    stubOperationFetch(fetchImpl);
     process.env.AINECTO_TOKEN = "redacted";
     const io = createIo();
 
@@ -138,7 +139,7 @@ describe("generated command router", () => {
 
   it("prompts destructive human commands unless --yes is supplied", async () => {
     const calls: unknown[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       calls.push(body);
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { deleted: 1 } }));
@@ -158,7 +159,7 @@ describe("generated command router", () => {
 
   it("keeps binary-upload generated commands on raw MCP argument contract only", async () => {
     const calls: unknown[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       calls.push(body);
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { uploadUrl: "redacted", storageKey: "key" } }));
@@ -179,7 +180,7 @@ describe("generated command router", () => {
 
   it("routes a command the snapshot lacks through the server's live tool list — no CLI release per new tool", async () => {
     const calls: Array<{ method: string; params?: { name?: string; arguments?: unknown } }> = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       calls.push(body);
       const result = body.method === "tools/list"
@@ -196,7 +197,7 @@ describe("generated command router", () => {
   });
 
   it("still answers «Unknown command» when neither the snapshot nor the live list has it", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [] } }));
     }));
@@ -212,7 +213,7 @@ describe("generated command router", () => {
   });
 
   it("renders enriched table output for human mode", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
         jsonrpc: "2.0",

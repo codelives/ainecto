@@ -25,7 +25,7 @@ describe("serve 의 서버 MCP 도구 입구(tools.ts)", () => {
       return { content: [{ type: "text", text: '{"items":[],"hasMore":false}' }] };
     });
     expect(await tools.call("list_agent_todos", { agent: "me" })).toEqual({ items: [], hasMore: false });
-    expect(seen).toEqual(["mcp__ainecto__list_agent_todos"]);
+    expect(seen).toEqual(["list_agent_todos"]);
     const [request, response] = lines();
     expect(request).toMatchObject({ event: "agent_call", op: "tool", tool: "list_agent_todos", bytes: 14 });
     expect(response).toMatchObject({ event: "agent_call_response", op: "tool", tool: "list_agent_todos", ok: true, callId: request?.callId });

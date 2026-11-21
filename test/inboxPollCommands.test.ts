@@ -1,3 +1,4 @@
+import { stubOperationFetch } from "./support/operationServer";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +23,7 @@ describe("inbox poll commands", () => {
     process.env.AINECTO_TOKEN = "token-redacted";
     calls = [];
     replies = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { id: number; method: string; params: { name: string; arguments: Record<string, unknown> } };
       calls.push(body.params);
       const next = replies.shift();
@@ -44,7 +45,7 @@ describe("inbox poll commands", () => {
     const first = io();
     expect(await runAinectoCli(["notifications", "poll", "--env", "dev", "--cursor-file", cursor, "--direct-only", "--json"], first)).toBe(0);
     expect(JSON.parse(first.out()).data.items).toHaveLength(2);
-    expect(calls[0]).toEqual({ name: "mcp__ainecto__list_notifications", arguments: { cursor: "saved", directOnly: true } });
+    expect(calls[0]).toEqual({ name: "list_notifications", arguments: { cursor: "saved", directOnly: true } });
     const saved = JSON.parse(readFileSync(cursor, "utf8"));
     expect(saved).toMatchObject({ ackToken: "ack-4-5", stream: "s1", filter: { directOnly: true } });
 
@@ -86,7 +87,7 @@ describe("inbox poll commands", () => {
     replies.push(tool({ items: [{ todoId: "t1" }], hasMore: false }));
     const first = io();
     expect(await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--only-new", "--seen-file", seen, "--json"], first)).toBe(0);
-    expect(calls[0]).toEqual({ name: "mcp__ainecto__list_agent_todos", arguments: { state: ["OPEN"], limit: 50 } });
+    expect(calls[0]).toEqual({ name: "list_agent_todos", arguments: { state: ["OPEN"], limit: 50 } });
 
     replies.push(tool({ items: [{ todoId: "t1" }], hasMore: false }));
     expect(await runAinectoCli(["agent-todos", "poll", "--env", "dev", "--only-new", "--seen-file", seen], io())).toBe(3);

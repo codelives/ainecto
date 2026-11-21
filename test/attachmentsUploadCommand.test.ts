@@ -1,3 +1,4 @@
+import { stubOperationFetch } from "./support/operationServer";
 import { tmpdir as isolationTmpdir } from "node:os";
 import { join as isolationJoin } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -36,7 +37,7 @@ describe("attachments upload command", () => {
   it("uploads a local file through token, PUT, and registration calls", async () => {
     const filePath = createTempFile("notes.txt", "hello");
     const calls: unknown[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "PUT") {
         calls.push({
           kind: "put",
@@ -52,14 +53,14 @@ describe("attachments upload command", () => {
 
       const body = parseJsonRpcBody(init);
       calls.push(body);
-      if (body.params.name === "mcp__ainecto__request_upload_token") {
+      if (body.params.name === "request_upload_token") {
         return jsonRpcResult(body.id, toolContent({
           token: "upload-token-redacted",
           uploadUrl: "https://uploads.example.test/put",
           storageKey: "server-storage-key",
         }));
       }
-      if (body.params.name === "mcp__ainecto__upload_attachments") {
+      if (body.params.name === "upload_attachments") {
         return jsonRpcResult(body.id, {
           uploaded: [{ uuid: "att-1", filename: "notes.txt" }],
           count: 1,
@@ -85,7 +86,7 @@ describe("attachments upload command", () => {
     expect(calls[0]).toMatchObject({
       method: "tools/call",
       params: {
-        name: "mcp__ainecto__request_upload_token",
+        name: "request_upload_token",
         arguments: {
           purpose: "attachment.upload",
         },
@@ -106,7 +107,7 @@ describe("attachments upload command", () => {
     });
     expect(calls[2]).toMatchObject({
       params: {
-        name: "mcp__ainecto__upload_attachments",
+        name: "upload_attachments",
         arguments: {
           items: [{
             documentUuid: "doc-1",
@@ -127,7 +128,7 @@ describe("attachments upload command", () => {
 
   it("rejects missing document uuid before network calls", async () => {
     const fetchImpl = vi.fn();
-    vi.stubGlobal("fetch", fetchImpl);
+    stubOperationFetch(fetchImpl);
     process.env.AINECTO_TOKEN = "redacted";
     const io = createIo();
 
@@ -144,7 +145,7 @@ describe("attachments upload command", () => {
 
   it("rejects filename override with multiple files", async () => {
     const fetchImpl = vi.fn();
-    vi.stubGlobal("fetch", fetchImpl);
+    stubOperationFetch(fetchImpl);
     process.env.AINECTO_TOKEN = "redacted";
     const io = createIo();
 
@@ -174,7 +175,7 @@ describe("attachments upload command", () => {
   it("fails before PUT when the token response omits storageKey", async () => {
     const filePath = createTempFile("notes.txt", "hello");
     const calls: unknown[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "PUT") {
         calls.push({ kind: "put" });
         return new Response("{}");
@@ -213,7 +214,7 @@ describe("attachments upload command", () => {
     const filePath = createTempFile("notes.txt", "hello");
     let putAttempts = 0;
     const calls: unknown[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "PUT") {
         putAttempts += 1;
         calls.push({ kind: "put", attempt: putAttempts });
@@ -229,7 +230,7 @@ describe("attachments upload command", () => {
 
       const body = parseJsonRpcBody(init);
       calls.push(body);
-      if (body.params.name === "mcp__ainecto__request_upload_token") {
+      if (body.params.name === "request_upload_token") {
         return jsonRpcResult(body.id, {
           token: "upload-token-redacted",
           uploadUrl: "https://uploads.example.test/put",
@@ -253,13 +254,13 @@ describe("attachments upload command", () => {
     ], io)).resolves.toBe(0);
 
     expect(putAttempts).toBe(2);
-    expect((calls[3] as JsonRpcCall).params.name).toBe("mcp__ainecto__upload_attachments");
+    expect((calls[3] as JsonRpcCall).params.name).toBe("upload_attachments");
   });
 
   it("★does not retry a rate-limited PUT — it ends with the server's wait (no automatic retry)", async () => {
     const filePath = createTempFile("notes.txt", "hello");
     let putAttempts = 0;
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "PUT") {
         putAttempts += 1;
         return new Response(JSON.stringify({ code: "RATE_LIMITED", retryAfterSeconds: 30, scope: "USER", policyId: "user" }),
@@ -290,7 +291,7 @@ describe("attachments upload command", () => {
     const filePath = createTempFile("notes.txt", "hello");
     let putAttempts = 0;
     const calls: unknown[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "PUT") {
         putAttempts += 1;
         throw new Error("network down");
@@ -333,7 +334,7 @@ describe("attachments upload command", () => {
 
   it("writes progress to stderr in human mode", async () => {
     const filePath = createTempFile("notes.txt", "hello");
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return new Response(JSON.stringify({
           storageKey: "server-storage-key",
@@ -343,7 +344,7 @@ describe("attachments upload command", () => {
       }
 
       const body = parseJsonRpcBody(init);
-      if (body.params.name === "mcp__ainecto__request_upload_token") {
+      if (body.params.name === "request_upload_token") {
         return jsonRpcResult(body.id, {
           token: "upload-token-redacted",
           uploadUrl: "https://uploads.example.test/put",
@@ -371,7 +372,7 @@ describe("attachments upload command", () => {
 
   it("maps PUT size mismatch to a structured upload error", async () => {
     const filePath = createTempFile("notes.txt", "hello");
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return new Response(JSON.stringify({
           storageKey: "server-storage-key",
@@ -411,7 +412,7 @@ describe("attachments upload command", () => {
 
   it("maps PUT conflict to a structured upload error", async () => {
     const filePath = createTempFile("notes.txt", "hello");
-    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    stubOperationFetch(vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return new Response(JSON.stringify({ message: "exists" }), { status: 409 });
       }

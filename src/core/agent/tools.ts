@@ -5,9 +5,6 @@ import { toolErrorText, unwrapMcpToolPayload } from "../mcp/toolPayload";
 import type { AgentId } from "./agents";
 import type { AgentLogRecord } from "./log";
 
-/** 서버 MCP 도구 이름의 앞머리 — 서버 핸들러 이름(`mcp__ainecto__<도구>`) 그대로. */
-const TOOL_PREFIX = "mcp__ainecto__";
-
 /** 도구 호출 실패 — {@code code} 는 서버의 도메인 오류 코드(JSON-RPC {@code data.code})가 있을 때. */
 export class AgentToolError extends Error {
   constructor(
@@ -37,7 +34,7 @@ export interface AgentToolCallOptions {
 }
 
 export interface AgentTools {
-  /** 도구 하나를 부른다 — {@code tool} 은 앞머리 없는 이름(list_agent_todos 등). 결과는 도구가 돌려준 JSON 객체. */
+  /** 도구 하나를 부른다 — {@code tool} 은 operation 이름(list_agent_todos 등) — RPC 입구가 execute_* 로 바꿔 부른다. 결과는 도구가 돌려준 JSON 객체. */
   call(tool: string, args: Record<string, unknown>, options?: AgentToolCallOptions): Promise<Record<string, unknown>>;
   /** 서버 도구 목록(tools/list). */
   list(): Promise<unknown[]>;
@@ -93,7 +90,7 @@ export function createAgentTools(input: {
   return {
     call(tool, args, options = {}) {
       return logged(tool, Buffer.byteLength(JSON.stringify(args), "utf8"), async () => {
-        const raw = await clientFor(options.as).toolsCall(TOOL_PREFIX + tool, args);
+        const raw = await clientFor(options.as).toolsCall(tool, args);
         if (isToolError(raw)) throw new AgentToolError(toolErrorText(raw), tool, codeInText(toolErrorText(raw)));
         const payload = unwrapMcpToolPayload(raw);
         if (!isRecord(payload)) throw new AgentToolError(`${tool} did not return an object.`, tool, "MCP_PROTOCOL_ERROR");

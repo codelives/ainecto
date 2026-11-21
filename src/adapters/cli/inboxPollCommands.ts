@@ -28,8 +28,8 @@ import { AGENT_TODOS_POLL_COMMAND_PATH, NOTIFICATIONS_ACK_COMMAND_PATH, NOTIFICA
 /** 새 항목 없음 — 셸이 `&&` 로 에이전트 실행을 건너뛰게. */
 export const EXIT_NOTHING_NEW = 3;
 
-const LIST_NOTIFICATIONS = "mcp__ainecto__list_notifications";
-const LIST_AGENT_TODOS = "mcp__ainecto__list_agent_todos";
+const LIST_NOTIFICATIONS = "list_notifications";
+const LIST_AGENT_TODOS = "list_agent_todos";
 
 export interface InboxCommandOptions {
   domain: string | undefined;
