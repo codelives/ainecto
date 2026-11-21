@@ -2,7 +2,7 @@
   "_comment": [
     "AiNecto 원격 터미널 E2E 시험 벡터 v1 — ainecto-cli(test/fixtures) 와 ainecto-front(src/lib/e2e) 가 같은 파일을 쓴다.",
     "★함부로 다시 만들지 않는다: 이 값이 바뀌면 양쪽 구현이 서로 다른 바이트를 내고 있다는 뜻이다. 규칙을 바꿀 때만 v2 파일을 새로 만든다.",
-    "바이트 규칙: ainecto-cli src/core/term/e2e.ts 머리 주석. 16진수는 소문자. ECDSA 서명은 무작위라 같음이 아니라 verify()=true 로 본다.",
+    "바이트 규칙: ainecto-cli src/core/term/e2e.ts 머리 주석(설계 terminal-e2e r2 §11). 16진수는 소문자. ECDSA 서명은 무작위라 같음이 아니라 verify()=true 로 본다.",
     "여기 비공개키(d)는 이 시험 전용으로 만든 값이다 — 실제 PC·브라우저 어디에도 쓰지 않는다.",
     "생성: 2026-11-21 ainecto-cli feat/term-e2e(c1)."
   ],
@@ -26,17 +26,42 @@
     "browserPublicRawHex": "045d495dc1c7d9e3dfac6020ddfb11d8106462dc708ca02a0535959b7f3d64dc6dc2083453866460921f34717a50813d3e60378a2260bcef63225c8c001ce2b087"
   },
   "pairing": {
+    "accountKey": "https://ainecto.com/mcp#5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10",
     "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47",
     "nPHex": "22cb445acf82d40a9dfde0e8c8c47bd14942be0e91702c4d1bdd524ea0d863d4",
     "nBHex": "8d3c7f84dcc1ceb3816741a89fd82bba1c21382256ca3d1753cf9dd273ea4978",
     "commitHex": "f5feb75b909394ccb4efddc3fbdbd084a484fcc8a6876f24e8a23215b365baa2",
-    "transcriptHex": "3fd21f12646f425e5fa4b23ef98dc9b0409c0a387de141e3ddbd9625b796a7ce",
-    "codeA": "261409",
-    "codeB": "987748"
+    "transcriptHex": "3b47616c0676020dd87ef63dba73ec6c5036076130702188d7c01d2006e79c45",
+    "codeBlockAHex": "a93d32eaae324fef062ce2da03bc3e3841e27216b6c5436298194b1f06ca7071",
+    "codeBlockBHex": "cc0d51b52a648bf4f2213f8be1c970deb993d3b5b1e8534a53cafddaf9e6242d",
+    "codeA": "360234",
+    "codeB": "424949",
+    "doneSignatureInputHex": "001461696e6563746f2d706169722d76312f646f6e6500203b47616c0676020dd87ef63dba73ec6c5036076130702188d7c01d2006e79c45",
+    "doneSignatureHex": "49f751e72c0ba7775aba3c6074117f48dbfe658cbfca902e4fd27a9b9c5e0de5a919831670c7e13f924fc7106c939de2016a1d79ffe14f62b7a6d9edc4e6393e"
   },
+  "codeBlockExamples": [
+    {
+      "blockHex": "0000000500000000000000000000000000000000000000000000000000000000",
+      "code": "000005"
+    },
+    {
+      "blockHex": "fff13d7f00000000000000000000000000000000000000000000000000000000",
+      "code": "999999"
+    },
+    {
+      "blockHex": "fff13d80ffffffff0012d6870000000000000000000000000000000000000000",
+      "code": "234567"
+    },
+    {
+      "blockHex": "fff13d80fff13d80fff13d80fff13d80fff13d80fff13d80fff13d80fff13d80",
+      "code": null
+    }
+  ],
   "channel": {
+    "accountKey": "https://ainecto.com/mcp#5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10",
     "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47",
     "channel": "tab-7c1e9f20",
+    "browserKeyId": "9d2b7e4a-61c3-4f0e-8a5d-3b1c7e9f2a64",
     "browserEphemeral": {
       "kty": "EC",
       "crv": "P-256",
@@ -54,53 +79,79 @@
     "eBHex": "0481b58932314c383a27d6ced977cadf35b961940ed9db8d6cdc7d0af70d8cde1d60d54c3fe1746e9416d1bbe17d3aa79d8cea86cf525873542aee2314b9e639bb",
     "ePHex": "0443138c25cbb16a97c41c30da798624a7bd8f65e76752556c65ad0f98f518d5e0bcb56141e3bea99036db5daca9dea36789af877682d9a46cfc6182b7938d4a8c",
     "nBHex": "82f8f9270a37127496d513c458d68a9e742333d88c8257fcd68d3050fcff232e",
-    "helloSignatureInputHex": "0000001461696e6563746f2d6532652d76312f68656c6c6f0000002433663063366135322d376430652d346238652d396135312d3263366631643965386234370000000c7461622d3763316539663230000000410481b58932314c383a27d6ced977cadf35b961940ed9db8d6cdc7d0af70d8cde1d60d54c3fe1746e9416d1bbe17d3aa79d8cea86cf525873542aee2314b9e639bb0000002082f8f9270a37127496d513c458d68a9e742333d88c8257fcd68d3050fcff232e",
-    "helloSignatureHex": "dfa920f5da4ae972a4cb9782167c10871f40686c8c303d808fe31dddfa32c7c6193898e9305bd4b879e5ade1d031f88cbba6c64995c41c35f8b4a8efaf16d52f",
-    "welcomeSignatureInputHex": "0000001661696e6563746f2d6532652d76312f77656c636f6d650000002433663063366135322d376430652d346238652d396135312d3263366631643965386234370000000c7461622d3763316539663230000000410481b58932314c383a27d6ced977cadf35b961940ed9db8d6cdc7d0af70d8cde1d60d54c3fe1746e9416d1bbe17d3aa79d8cea86cf525873542aee2314b9e639bb0000002082f8f9270a37127496d513c458d68a9e742333d88c8257fcd68d3050fcff232e000000410443138c25cbb16a97c41c30da798624a7bd8f65e76752556c65ad0f98f518d5e0bcb56141e3bea99036db5daca9dea36789af877682d9a46cfc6182b7938d4a8c",
-    "welcomeSignatureHex": "ec34181538656d53c9cb100a63b7a489ada0de3b1bd8a1fd0c2c82bc7d46e3653164d3646d41c54f7d93e6d6d18dc19cc3daab3fb12baf133c39d1018013f2dd",
-    "saltHex": "218ccd8d9b84bd26679799da8b70cabe693a754c31fadf5e44ad53b09cef658b",
-    "browserToPcKeySha256Hex": "375aacd8d4dc4378353afdf76597bdda26280a2fb1aefc1da5696fd071aa619e",
-    "pcToBrowserKeySha256Hex": "f7c8e51672ab31132dda25426c95e2380daaddafabec55efea5afa9d2e2f21c4"
+    "nPPrimeHex": "84040c7a9b53ee1aded1bdbdba2e7d660203e724a9fb01315147a3a81ebe407f",
+    "helloSignatureInputHex": "000e61696e6563746f2d6532652d7631000762726f77736572000568656c6c6f003c68747470733a2f2f61696e6563746f2e636f6d2f6d63702335623166326339652d306137642d346536332d386634312d396332643762366133653130002433663063366135322d376430652d346238652d396135312d326336663164396538623437000c7461622d3763316539663230002439643262376534612d363163332d346630652d386135642d33623163376539663261363400410481b58932314c383a27d6ced977cadf35b961940ed9db8d6cdc7d0af70d8cde1d60d54c3fe1746e9416d1bbe17d3aa79d8cea86cf525873542aee2314b9e639bb002082f8f9270a37127496d513c458d68a9e742333d88c8257fcd68d3050fcff232e",
+    "helloSignatureHex": "45bf7b137052f4051d5af5eb7439e00ac89605e28c4216f1ef72cf0c12b9ce196929ea66c18b57d3219377880b7b3016154b3ec4b49578a6a9b0cdfd8ac0880d",
+    "transcriptHex": "e36b41212f8d49c61e43e1e46230326619489025b62fa514c3903f4ceb9b66fb",
+    "welcomeSignatureHex": "149acf73837a6a23c2c0cb1f83746f59c659b3fe5a2d4adc11fb87f64be74675135badd9f36d595e0468894062deb999491d37ca65760c2be2a3e5d45f2a7c0b",
+    "browserToPcKeySha256Hex": "05abd46252a8a5a7a5f61836d99dd8e07eb24e2040026bb3f5bafd683e802549",
+    "pcToBrowserKeySha256Hex": "76d4261c61a3fb05157d6cc0d3d6f402aac918b51e52e1664deb801bccbc5288",
+    "connIdHex": "260669a703e0477a79933ac09cd05ca6"
   },
   "messages": [
     {
       "direction": "browser-to-pc",
       "header": {
-        "channel": "tab-7c1e9f20",
-        "type": "input",
-        "session": "main",
-        "counter": 1
+        "type": "confirm",
+        "session": "",
+        "requestId": "",
+        "projectUuid": "",
+        "counter": 0,
+        "connIdHex": "260669a703e0477a79933ac09cd05ca6",
+        "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47"
       },
-      "plaintextUtf8": "{\"d\":\"ZWNobyBoaQ0=\"}",
-      "nonceHex": "000000000000000000000001",
-      "aadHex": "0000001261696e6563746f2d6532652d76312f6d73670000000c7461622d376331653966323000000005696e707574000000046d61696e0000000000000001",
-      "ciphertextHex": "ea926943571f12819e4ed2a9fd8e72650f284bdc76d88b1e17584e72a99eb054b5c30833"
-    },
-    {
-      "direction": "pc-to-browser",
-      "header": {
-        "channel": "tab-7c1e9f20",
-        "type": "frame",
-        "session": "main",
-        "counter": 300
-      },
-      "plaintextUtf8": "{\"d\":\"$ echo 안녕\"}",
-      "nonceHex": "00000000000000000000012c",
-      "aadHex": "0000001261696e6563746f2d6532652d76312f6d73670000000c7461622d3763316539663230000000056672616d65000000046d61696e000000000000012c",
-      "ciphertextHex": "8ea1505e9a5dd230a01a5207d530bbf8855688b8c8903477a771533b01198546d7546cf485"
+      "plaintextUtf8": "{}",
+      "nonceHex": "000000000000000000000000",
+      "aadHex": "000e61696e6563746f2d6532652d76310007636f6e6669726d0010260669a703e0477a79933ac09cd05ca6002433663063366135322d376430652d346238652d396135312d32633666316439653862343700000000000000080000000000000000",
+      "ciphertextHex": "2a715aad082ae2785b8bd64986ae8d6f3c5a"
     },
     {
       "direction": "browser-to-pc",
       "header": {
-        "channel": "tab-7c1e9f20",
+        "type": "input",
+        "session": "main",
+        "requestId": "",
+        "projectUuid": "",
+        "counter": 1,
+        "connIdHex": "260669a703e0477a79933ac09cd05ca6",
+        "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47"
+      },
+      "plaintextUtf8": "{\"d\":\"ZWNobyBoaQ0=\"}",
+      "nonceHex": "000000000000000000000001",
+      "aadHex": "000e61696e6563746f2d6532652d76310005696e7075740010260669a703e0477a79933ac09cd05ca6002433663063366135322d376430652d346238652d396135312d32633666316439653862343700046d61696e0000000000080000000000000001",
+      "ciphertextHex": "96c275d66364dc8e1bb08c0909fcd84a27bfd34f888417a11f82725cfa9facda6013eb6a"
+    },
+    {
+      "direction": "browser-to-pc",
+      "header": {
         "type": "create",
-        "session": "",
-        "counter": 2
+        "session": "build",
+        "requestId": "0f6e3a2c-5b8d-4c71-9e04-a1d2c3b4e5f6",
+        "projectUuid": "c7a1e2d3-4b5c-4d6e-8f70-1a2b3c4d5e6f",
+        "counter": 2,
+        "connIdHex": "260669a703e0477a79933ac09cd05ca6",
+        "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47"
       },
       "plaintextUtf8": "{\"command\":\"ls -la\",\"cwd\":\"/tmp\"}",
       "nonceHex": "000000000000000000000002",
-      "aadHex": "0000001261696e6563746f2d6532652d76312f6d73670000000c7461622d376331653966323000000006637265617465000000000000000000000002",
-      "ciphertextHex": "2d1b28ae8aff591d9e812a792166a542626acf931f0f87f3935c479360bd809752bda92cc5f9914d5f2eccec87bb51b687"
+      "aadHex": "000e61696e6563746f2d6532652d763100066372656174650010260669a703e0477a79933ac09cd05ca6002433663063366135322d376430652d346238652d396135312d32633666316439653862343700056275696c64002430663665336132632d356238642d346337312d396530342d613164326333623465356636002463376131653264332d346235632d346436652d386637302d31613262336334643565366600080000000000000002",
+      "ciphertextHex": "7a629eb3f1375f6db933f92a7f32684ce711e19e7749d59d8e5bd4d4673e409147c662736ed8db9befb6a19809d9b44840"
+    },
+    {
+      "direction": "pc-to-browser",
+      "header": {
+        "type": "frame",
+        "session": "main",
+        "requestId": "",
+        "projectUuid": "",
+        "counter": 300,
+        "connIdHex": "260669a703e0477a79933ac09cd05ca6",
+        "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47"
+      },
+      "plaintextUtf8": "{\"d\":\"$ echo 안녕\"}",
+      "nonceHex": "00000000000000000000012c",
+      "aadHex": "000e61696e6563746f2d6532652d763100056672616d650010260669a703e0477a79933ac09cd05ca6002433663063366135322d376430652d346238652d396135312d32633666316439653862343700046d61696e000000000008000000000000012c",
+      "ciphertextHex": "20840a357cb57a83eec44bfcf177bd0652e8b48e237c52c99c17d72a1b6da1ef159776cc0d"
     }
   ]
 }
