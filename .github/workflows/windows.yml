@@ -24,8 +24,10 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: 후보 tgz (prepack = typecheck + 전수 시험 + build)
-        run: mkdir out && npm pack --pack-destination out --json > out/pack.json
+      # ★전수 시험은 돌리지 않는다(2026-11-21 Ryan «테스트는 수정범위만») — prepack 의 typecheck·build 만 같은 순서로 하고
+      #   포장은 --ignore-scripts(prepack 을 다시 부르지 않게). 시험은 windows job 의 표적 목록만. 게시(publish.yml)의 prepack 은 그대로다.
+      - name: 후보 tgz (typecheck + build — 전수 시험 없음)
+        run: npm run typecheck && npm run build && mkdir out && npm pack --ignore-scripts --pack-destination out --json > out/pack.json
       - name: 빈 dist 포장 금지
         run: tar -tzf out/*.tgz | grep -qx 'package/dist/bin/ainecto.js'
       - name: 같은 SHA 표지
