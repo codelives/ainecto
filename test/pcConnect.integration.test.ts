@@ -1,10 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { executePcStart, executePcStop, executeRemoteSetting, restartRunningPc, type PcDeps } from "../src/adapters/cli/pcCommand";
+import { executePcStart, executePcStop, executeRemoteSetting, turnOffPcs, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { accountKey } from "../src/core/pc/pcSettings";
 import { generateSigningJwk } from "../src/core/term/e2e";
-import { loadPcKeys, savePcKeys } from "../src/core/pc/pcKeys";
+import { loadPcKeys, updatePcKeys } from "../src/core/pc/pcKeys";
 import { AGENT_MISSING_LINE, SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
 import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../src/core/term/remote";
 import { systemCommandRunner } from "../src/core/setup/commandRunner";
@@ -163,7 +163,7 @@ describe("이 PC 연결 — 실 데몬", () => {
     const keysPath = join(rig.home, ".ainecto", "pc-keys.json");
     const otherServer = accountKey("https://other.test/mcp", "u1");
     const pcKey = await generateSigningJwk();
-    await savePcKeys(keysPath, { accounts: { [KEY]: { pcKey, browsers: [] }, [otherServer]: { pcKey, browsers: [] } } });
+    await updatePcKeys(keysPath, () => ({ accounts: { [KEY]: { pcKey, browsers: [] }, [otherServer]: { pcKey, browsers: [] } } }));
     const forget = harness();
     expect(await executePcStop(forget.deps, ["--forget"])).toBe(0);
     expect(forget.out()).toContain("This PC is not connected.");
@@ -232,18 +232,28 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect(after[0]?.pid).not.toBe(before);
   }, LONG);
 
-  it("restartRunningPc(pair --remove 가 쓴다) — 없으면 undefined · 있으면 멈춘 뒤 새 프로세스로 다시 띄운다", async () => {
-    expect(await restartRunningPc(harness().deps)).toBeUndefined();
+  it("turnOffPcs(pair --remove 가 쓴다) — 없으면 빈 목록 · 있으면 끈 뒤 세션이 목록에서 빠지고 pid 가 사라진 것까지 확인 · 다시 띄우지 않는다", async () => {
+    expect(await turnOffPcs(harness().deps)).toEqual([]);
     const start = harness();
     const done = executePcStart(start.deps);
     await start.answer("Connect this PC?", "y");
     await start.answer("Also allow terminals", "y");
     await done;
-    const before = (await pcSessions())[0]?.pid;
-    expect(await restartRunningPc(harness().deps)).toEqual({ kind: "connected", agentMissing: false });
-    const after = await pcSessions();
-    expect(after.length).toBe(1);
-    expect(after[0]?.pid).not.toBe(before);
+    const pid = (await pcSessions())[0]?.pid;
+    expect(pid).toBeDefined();
+    expect(await turnOffPcs(harness().deps)).toEqual(["ainecto-pc"]);
+    expect(await pcSessions()).toEqual([]);
+    expect(() => process.kill(pid ?? 0, 0)).toThrow();
+  }, LONG);
+
+  it("turnOffPcs — Ctrl+C 를 듣지 않는 pc 도 기한 뒤 kill 하고 끝난 것을 확인한다", async () => {
+    const start = harness({ script: STUBBORN, runner: async () => ({ exitCode: 0, stdout: "", stderr: "", missing: false }) });
+    const done = executePcStart(start.deps);
+    await start.answer("Connect this PC?", "y");
+    await start.answer("Also allow terminals", "n");
+    await done;
+    expect(await turnOffPcs(harness({ stopDeadlineMs: 500 }).deps)).toEqual(["ainecto-pc"]);
+    expect(await pcSessions()).toEqual([]);
   }, LONG);
 
   it("Agent(Claude Code·Codex) 없이 원격만 허용 — 다리 연결 줄로 «연결됨» · 무엇이 붙었는지 그대로 말한다", async () => {

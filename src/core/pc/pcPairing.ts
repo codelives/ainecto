@@ -1,6 +1,8 @@
 import { browserNameOf } from "./pcKeys";
 import {
   assertSigningPublicKey,
+  browserKeyIdOf,
+  pairCodeInput,
   E2eError,
   importSigningKey,
   NONCE_SEED_BYTES,
@@ -8,7 +10,6 @@ import {
   pairCommitment,
   pairDoneInput,
   pairTranscript,
-  PAIR_CODE_DIGITS,
   publicJwkFromRaw,
   publicRawFromJwk,
   randomBytes,
@@ -67,12 +68,6 @@ export type PairOutcome =
   | { kind: "timeout" }
   | { kind: "cancelled" };
 
-/** 사람이 친 코드 → 숫자 6자리(공백·하이픈은 뺀다). 아니면 undefined. */
-function typedCode(raw: string): string | undefined {
-  const digits = raw.replace(/[\s-]/g, "");
-  return new RegExp(`^\\d{${PAIR_CODE_DIGITS}}$`).test(digits) ? digits : undefined;
-}
-
 export async function runPairing(input: {
   /** 대화 기록에 들어가는 userId(UUID 소문자) — 서버 주소는 넣지 않는다(§12-4). */
   userId: string;
@@ -106,12 +101,12 @@ export async function runPairing(input: {
       + "pick this PC and choose «Pair with this PC».");
     const offer = await relayed(() => input.transport.offer(commit, signal));
     if (offer === "timeout") return { kind: "timeout" };
-    // ★중계된 값 — 모양을 먼저 본다(곡선 위 점 · keyId 모양). 이름은 화면에 찍기 전에 다듬는다(개행·제어 문자 제거).
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(offer.keyId)) {
-      throw new E2eError("E2E_BAD_INPUT", "The browser's key id is malformed — pairing aborted.");
-    }
+    // ★중계된 값 — 모양을 먼저 본다(곡선 위 점 · keyId = 공개키 지문, §13-3). 이름은 화면에 찍기 전에 다듬는다(개행·제어 문자 제거).
     const publicJwk = publicJwkFromRaw(offer.publicRaw);
     await assertSigningPublicKey(publicJwk);
+    if (offer.keyId !== await browserKeyIdOf(offer.publicRaw)) {
+      throw new E2eError("E2E_BAD_INPUT", "The browser's key id is not the fingerprint of its key — pairing aborted.");
+    }
     const name = browserNameOf(offer.name);
     if ((await relayed(() => input.transport.reveal(pcPublicRaw, nP, signal))) === "timeout") return { kind: "timeout" };
     const transcript = await pairTranscript({ userId: input.userId, pcId: input.pcId, pcPublicRaw, browserPublicRaw: offer.publicRaw, nP, nB: offer.nB });
@@ -120,8 +115,10 @@ export async function runPairing(input: {
     input.prompt.show(`Type this code in the browser: ${codes.a}`);
     const answer = await input.prompt.ask("Then type the code the browser shows (one try): ", signal);
     if (signal.aborted) return { kind: "timeout" };
-    if (answer.trim() === "") return { kind: "cancelled" };
-    if (typedCode(answer) !== codes.b) return { kind: "code-mismatch" };
+    const typed = pairCodeInput(answer);
+    if (typed.kind === "empty") return { kind: "cancelled" };
+    // 6자리가 아닌 입력도 한 번으로 센다(§13-3).
+    if (typed.kind !== "code" || typed.code !== codes.b) return { kind: "code-mismatch" };
     const browser: MatchedBrowser = { keyId: offer.keyId, publicJwk, name };
     await input.pin(browser);
     const signature = await signBytes(await importSigningKey(input.pcKey), pairDoneInput(transcript));

@@ -5,12 +5,12 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executePair, type PairDeps, type TtyIO } from "../src/adapters/cli/pairCommand";
 import { CliCommandError } from "../src/adapters/cli/errors";
-import { loadPcKeys, savePcKeys, withBrowser } from "../src/core/pc/pcKeys";
+import { loadPcKeys, updatePcKeys, withBrowser } from "../src/core/pc/pcKeys";
 import { PAIR_WAIT_MS, type BrowserOffer, type PairTransport } from "../src/core/pc/pcPairing";
-import type { PcStartOutcome } from "../src/adapters/cli/pcCommand";
 import { accountKey, normalizePcSettings, savePcSettings, withConsent } from "../src/core/pc/pcSettings";
 import {
   assertCommitment,
+  browserKeyIdOf,
   generateSigningJwk,
   pairCodes,
   pairDoneInput,
@@ -20,6 +20,7 @@ import {
   publicRawFromJwk,
   randomBytes,
   verifyBytes,
+  E2eError,
   type EcPrivateJwk,
   type PairCodes,
 } from "../src/core/term/e2e";
@@ -67,9 +68,11 @@ async function fakeBrowser(options: {
         await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
       }
       state.commit = commit;
+      // 바꿔치기하는 중계는 키 id 도 제 키의 지문으로 맞춰 보낸다(지문 검사를 지나는 가장 센 경우).
+      const publicRaw = options.relaySwapsKey ? publicRawFromJwk(await generateSigningJwk()) : ownPub;
       const relayed: BrowserOffer = {
-        keyId: options.keyId ?? "9d2b7e4a-61c3-4f0e-8a5d-3b1c7e9f2a64",
-        publicRaw: options.relaySwapsKey ? publicRawFromJwk(await generateSigningJwk()) : ownPub,
+        keyId: options.keyId ?? await browserKeyIdOf(publicRaw),
+        publicRaw,
         nB,
         name: options.name ?? "Chrome · macOS",
       };
@@ -135,7 +138,7 @@ function deps(overrides: Partial<PairDeps>) {
     endpoint: ENDPOINT,
     account: async () => ({ userId: USER_ID }),
     transport: () => { throw new Error("no transport in this test"); },
-    restartPc: async () => undefined,
+    turnOffPc: async () => [],
     waitMs: 10_000,
     now: () => new Date("2026-11-21T09:00:00Z"),
     ...overrides,
@@ -150,7 +153,7 @@ async function expectCli(promise: Promise<unknown>, code: string): Promise<CliCo
   return error as CliCommandError;
 }
 
-describe("ainecto pair — PC 앞 짝짓기(설계 r2 §11-1)", () => {
+describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
   it("기한 상수는 결재한 5분", () => {
     expect(PAIR_WAIT_MS).toBe(5 * 60_000);
   });
@@ -167,7 +170,7 @@ describe("ainecto pair — PC 앞 짝짓기(설계 r2 §11-1)", () => {
     expect(browser.state.pinnedPc).toBe(true);
     const keys = await loadPcKeys(keysPath());
     expect(keys.accounts[KEY]?.browsers).toEqual([{
-      keyId: "9d2b7e4a-61c3-4f0e-8a5d-3b1c7e9f2a64", publicJwk: publicJwkOf(browser.own), name: "Chrome[2J · macOS", pairedAt: "2026-11-21T09:00:00.000Z",
+      keyId: await browserKeyIdOf(publicRawFromJwk(browser.own)), publicJwk: publicJwkOf(browser.own), name: "Chrome[2J · macOS", pairedAt: "2026-11-21T09:00:00.000Z",
     }]);
     expect((await stat(keysPath())).mode & 0o777).toBe(0o600);
     expect(run.out()).toContain('Paired "Chrome[2J · macOS" with this PC.');
@@ -177,7 +180,7 @@ describe("ainecto pair — PC 앞 짝짓기(설계 r2 §11-1)", () => {
 
     // 두 번째 짝짓기는 같은 PC 키를 쓴다(이미 짝지은 브라우저가 계속 믿는다).
     const pcKey = keys.accounts[KEY]?.pcKey;
-    const second = await fakeBrowser({ pcId, keyId: "second-browser" });
+    const second = await fakeBrowser({ pcId });
     const tty2 = fakeTty(() => second.state.codes?.b);
     expect(await executePair(deps({ transport: () => second.transport, openTty: () => tty2.tty }).deps, [])).toBe(0);
     const after = await loadPcKeys(keysPath());
@@ -193,6 +196,29 @@ describe("ainecto pair — PC 앞 짝짓기(설계 r2 §11-1)", () => {
     await expect(stat(keysPath())).rejects.toThrow();
     expect(browser.state.done).toBe(0);
     expect(tty.closed()).toBe(true);
+  });
+
+  it("코드 입력 경계: 앞뒤 공백은 지우고 맞으면 핀 · 하이픈·가운데 공백이 든 맞는 숫자는 불일치(한 번 소모)", async () => {
+    const pcId = await approve();
+    const padded = await fakeBrowser({ pcId });
+    expect(await executePair(deps({ transport: () => padded.transport, openTty: () => fakeTty(() => `  ${padded.state.codes?.b}\t`).tty }).deps, [])).toBe(0);
+    for (const shape of [(b: string) => `${b.slice(0, 3)}-${b.slice(3)}`, (b: string) => `${b.slice(0, 3)} ${b.slice(3)}`]) {
+      const browser = await fakeBrowser({ pcId });
+      const tty = fakeTty(() => (browser.state.codes ? shape(browser.state.codes.b) : undefined));
+      await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []), "PAIR_CODE_MISMATCH");
+      expect(browser.state.done).toBe(0);
+    }
+    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length).toBe(1);
+  });
+
+  it("받은 키 id 가 공개키 지문과 다르면 거절 — 코드를 보이지 않고 저장 안 함", async () => {
+    const pcId = await approve();
+    const browser = await fakeBrowser({ pcId, keyId: "9d2b7e4a-61c3-4f0e-8a5d-3b1c7e9f2a64" });
+    const tty = fakeTty(() => browser.state.codes?.b);
+    const error = await executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []).then(() => undefined, (caught: unknown) => caught);
+    expect(error instanceof E2eError ? error.code : error).toBe("E2E_BAD_INPUT");
+    expect(tty.text()).not.toContain("Type this code");
+    await expect(stat(keysPath())).rejects.toThrow();
   });
 
   it("중계가 브라우저 키를 바꿔치기하면 — 사람이 진짜 브라우저의 코드 B 를 쳐도 맞지 않는다 · 저장 안 함", async () => {
@@ -226,14 +252,14 @@ describe("ainecto pair — PC 앞 짝짓기(설계 r2 §11-1)", () => {
     const tty = fakeTty(() => browser.state.codes?.b);
     const error = await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []), "PAIR_DONE_FAILED");
     expect(error.message).toContain("relay closed");
-    expect(error.message).toContain("ainecto pair --remove 9d2b7e4a-61c3-4f0e-8a5d-3b1c7e9f2a64");
+    expect(error.message).toContain(`ainecto pair --remove ${await browserKeyIdOf(publicRawFromJwk(browser.own))}`);
     expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length).toBe(1);
   });
 
   it("짝짓는 동안 PC 키가 바뀌면 PAIR_CONFLICT · 브라우저 핀을 넣지 않는다", async () => {
     const pcId = await approve();
     const other = await generateSigningJwk();
-    const browser = await fakeBrowser({ pcId, afterReveal: () => savePcKeys(keysPath(), { accounts: { [KEY]: { pcKey: other, browsers: [] } } }) });
+    const browser = await fakeBrowser({ pcId, afterReveal: async () => { await updatePcKeys(keysPath(), () => ({ accounts: { [KEY]: { pcKey: other, browsers: [] } } })); } });
     const tty = fakeTty(() => browser.state.codes?.b);
     await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []), "PAIR_CONFLICT");
     expect((await loadPcKeys(keysPath())).accounts[KEY]).toEqual({ pcKey: other, browsers: [] });
@@ -251,37 +277,44 @@ describe("ainecto pair — PC 앞 짝짓기(설계 r2 §11-1)", () => {
   });
 });
 
-describe("ainecto pair --remove — 떠 있는 다리를 멈췄다 다시 띄운 뒤에만 성공(§12-3)", () => {
+describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(확인) · 다시 띄우지 않음(§13-2)", () => {
   async function seed(): Promise<void> {
     const pub = publicJwkOf(await generateSigningJwk());
-    await savePcKeys(keysPath(), withBrowser({ accounts: {} }, KEY, await generateSigningJwk(),
-      { keyId: "k1", publicJwk: pub, name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
+    const pcKey = await generateSigningJwk();
+    await updatePcKeys(keysPath(), (keys) => withBrowser(keys, KEY, pcKey, { keyId: "k1", publicJwk: pub, name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
   }
 
-  it("다리가 있으면: 파일에서 먼저 지우고 → 재시작이 끝난 뒤 성공 · 다리가 없으면 파일만", async () => {
+  it("떠 있으면: 파일에서 먼저 지우고 → 끄기 확인 뒤 성공 «다시 켜려면 ainecto» · 없으면 파일만", async () => {
     await seed();
     const seen: number[] = [];
-    const restartPc = async (): Promise<PcStartOutcome> => {
+    const turnOffPc = async (): Promise<string[]> => {
       seen.push((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length ?? -1);
-      return { kind: "connected", agentMissing: false };
+      return ["ainecto-pc"];
     };
-    const running = deps({ restartPc });
+    const running = deps({ turnOffPc });
     expect(await executePair(running.deps, ["--remove", "k1"])).toBe(0);
     expect(seen).toEqual([0]);
-    expect(running.out()).toContain("Restarted the PC connection.");
+    expect(running.out()).toContain("Turned off the PC connection. Run `ainecto` to turn it back on.");
 
     await seed();
     const idle = deps({ json: true });
     expect(await executePair(idle.deps, ["--remove", "Work"])).toBe(0);
-    expect(JSON.parse(idle.out())).toMatchObject({ data: { removed: { keyId: "k1", name: "Work" }, restarted: false } });
+    expect(JSON.parse(idle.out())).toMatchObject({ data: { removed: { keyId: "k1", name: "Work" }, turnedOff: [] } });
   });
 
-  it("재시작(멈춤)이 실패하면 실패를 돌려준다 — 파일은 이미 지웠다고 알린다", async () => {
+  it("끄기를 확인 못 하면 실패 — 다시 실행하면 이미 지운 핀은 건너뛰고 끄기부터 마친다 · 둘 다 없으면 PAIR_NOT_FOUND", async () => {
     await seed();
-    const failing = deps({ restartPc: async () => { throw new Error("Session ainecto-pc could not be killed"); } });
-    const error = await expectCli(executePair(failing.deps, ["--remove", "k1"]), "PAIR_REMOVE_RESTART_FAILED");
-    expect(error.message).toContain("could not be killed");
+    const failing = deps({ turnOffPc: async () => { throw new Error("Could not confirm that the PC connection ended"); } });
+    const error = await expectCli(executePair(failing.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
+    expect(error.message).toContain("Could not confirm");
+    expect(error.message).toContain("ainecto pair --remove k1");
     expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers).toEqual([]);
+
+    const retry = deps({ turnOffPc: async () => ["ainecto-pc"] });
+    expect(await executePair(retry.deps, ["--remove", "k1"])).toBe(0);
+    expect(retry.out()).toContain('No paired browser "k1" (already removed?).');
+    expect(retry.out()).toContain("Turned off the PC connection.");
+    await expectCli(executePair(deps({}).deps, ["--remove", "k1"]), "PAIR_NOT_FOUND");
   });
 });
 
@@ -291,7 +324,7 @@ describe("ainecto pair --list · --remove", () => {
     const pub = publicJwkOf(await generateSigningJwk());
     let keys = withBrowser({ accounts: {} }, KEY, pcKey, { keyId: "k1", publicJwk: pub, name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" });
     keys = withBrowser(keys, KEY, pcKey, { keyId: "k2", publicJwk: pub, name: "Home", pairedAt: "2026-11-21T01:00:00.000Z" });
-    await savePcKeys(keysPath(), keys);
+    await updatePcKeys(keysPath(), () => keys);
 
     const human = deps({ interactive: false });
     expect(await executePair(human.deps, ["--list"])).toBe(0);

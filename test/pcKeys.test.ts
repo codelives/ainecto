@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { FileLockTimeoutError } from "../src/core/fs/fileLock";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,7 +8,7 @@ import {
   browserNameOf,
   loadPcKeys,
   normalizePcKeys,
-  savePcKeys,
+  updatePcKeys,
   withBrowser,
   withoutBrowser,
   withoutEndpointKeys,
@@ -66,14 +67,61 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     expect(browserNameOf(" \t\r\n")).toBe("Browser");
   });
 
-  it("없으면 빈 목록(쓰지 않음) · 저장은 0600 · 깨진 JSON 은 조용히 버리지 않고 오류", async () => {
+  it("잠금 경합: 지우기·넣기가 동시에 여럿 돌아도 지운 핀이 되살아나지 않고 넣은 것은 모두 남는다", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pckeys-lock-"));
+    try {
+      const path = join(dir, ".ainecto", "pc-keys.json");
+      const pcKey = await generateSigningJwk();
+      await updatePcKeys(path, () => withBrowser({ accounts: {} }, a, pcKey, { keyId: "gone", publicJwk: publicJwkOf(pcKey), name: "Old", pairedAt: "t" }));
+      const added = await Promise.all(Array.from({ length: 12 }, (_value, index) => browser(`k${index}`, `B${index}`)));
+      await Promise.all([
+        ...added.map((item) => updatePcKeys(path, (keys) => withBrowser(keys, a, pcKey, item))),
+        updatePcKeys(path, (keys) => withoutBrowser(keys, a, "gone").keys),
+      ]);
+      const ids = (await loadPcKeys(path)).accounts[a]?.browsers.map((item) => item.keyId).sort();
+      expect(ids).toEqual(added.map((item) => item.keyId).sort());
+      await expect(stat(`${path}.lock`)).rejects.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("죽은 잠금(pid 없음)은 치우고 잡는다 · 살아 있는 잠금은 기한 뒤 FileLockTimeoutError · 바꾸기가 던지면 쓰지 않고 잠금을 푼다", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pckeys-stale-"));
+    try {
+      const path = join(dir, ".ainecto", "pc-keys.json");
+      await updatePcKeys(path, () => ({ accounts: {} }));
+      await writeFile(`${path}.lock`, JSON.stringify({ pid: 999_999, token: "dead" }));
+      const quick = { waitMs: 200, pollMs: 10, isAlive: (pid: number) => pid !== 999_999 };
+      await updatePcKeys(path, (keys) => keys, quick);
+      await expect(stat(`${path}.lock`)).rejects.toThrow();
+      await writeFile(`${path}.lock`, JSON.stringify({ pid: process.pid, token: "live" }));
+      await expect(updatePcKeys(path, (keys) => keys, quick)).rejects.toBeInstanceOf(FileLockTimeoutError);
+      await rm(`${path}.lock`);
+      // 내용 없는 잠금(만든 직후 죽음) — 기한보다 오래됐으면 치운다.
+      await writeFile(`${path}.lock`, "");
+      const old = new Date(Date.now() - 10_000);
+      await utimes(`${path}.lock`, old, old);
+      await updatePcKeys(path, (keys) => keys, quick);
+      await expect(updatePcKeys(path, () => { throw new Error("boom"); })).rejects.toThrow("boom");
+      await expect(stat(`${path}.lock`)).rejects.toThrow();
+      expect(await loadPcKeys(path)).toEqual({ accounts: {} });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("없으면 빈 목록(쓰지 않음 · change 가 undefined 면 파일을 만들지 않음) · 저장은 0600 · 깨진 JSON 은 조용히 버리지 않고 오류", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pckeys-"));
     try {
       const path = join(dir, ".ainecto", "pc-keys.json");
       expect(await loadPcKeys(path)).toEqual({ accounts: {} });
       await expect(stat(path)).rejects.toThrow();
       const keys = withBrowser({ accounts: {} }, a, await generateSigningJwk(), await browser("k1", "Chrome"));
-      await savePcKeys(path, keys);
+      expect(await updatePcKeys(path, () => undefined)).toEqual({ accounts: {} });
+      await expect(stat(path)).rejects.toThrow();
+      await updatePcKeys(path, () => keys);
+      await expect(stat(`${path}.lock`)).rejects.toThrow();
       expect((await stat(path)).mode & 0o777).toBe(0o600);
       expect((await stat(join(dir, ".ainecto"))).mode & 0o777).toBe(0o700);
       expect(await loadPcKeys(path)).toEqual(keys);

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { withFileLock, type FileLockOptions } from "../fs/fileLock";
 import { isNodeError, writePrivateFileAtomic } from "../fs/privateFiles";
 import { asPrivateJwk, asPublicJwk, type EcPrivateJwk, type EcPublicJwk } from "../term/e2e";
 import { isEndpointAccount } from "./pcSettings";
@@ -9,11 +10,12 @@ import { isEndpointAccount } from "./pcSettings";
  * `~/.ainecto/pc-keys.json` — 원격 터미널 E2E 의 신뢰 한 곳(설계 terminal-e2e §4-1).
  *   계정 열쇠(`pc.json` 과 같은 `서버#userId` — pcSettings.accountKey)마다
  *   pcKey    — 이 PC·계정의 장기 서명 키(P-256 비공개 JWK). 서버에 보내지 않는다.
- *   browsers — PC 앞에서 코드로 짝지은 브라우저 공개키 목록. 다리는 hello 마다 이 파일을 다시 읽는다.
+ *   browsers — PC 앞에서 코드로 짝지은 브라우저 공개키 목록. 다리는 시작할 때 이 파일을 읽는다.
  * 0600 · 통째로 바꿔 쓴다(pcSettings 와 같은 방식).
+ * ★쓰기는 {@link updatePcKeys} 하나뿐 — `pc-keys.json.lock` 을 잡은 채 «읽기 → 바꾸기 → 원자적 교체»(§13-2). 늦게 저장된 사본이 지운 핀을 되살리지 않는다.
  */
 export interface PairedBrowser {
-  /** 브라우저가 정한 키 식별자 — hello 의 browserKeyId. */
+  /** 공개키 지문(e2e.browserKeyIdOf — SHA-256 앞 16바이트 hex) — hello 의 browserKeyId. */
   keyId: string;
   publicJwk: EcPublicJwk;
   /** 사람이 보는 이름(짝짓기 때 정함) — `pair --list`·`pair --remove`·PC 알림에 쓴다. 이 목록 안에서 겹치지 않는다. */
@@ -87,8 +89,24 @@ export async function loadPcKeys(path: string): Promise<PcKeys> {
   }
 }
 
-export async function savePcKeys(path: string, keys: PcKeys): Promise<void> {
-  await writePrivateFileAtomic(path, `${JSON.stringify(keys, null, 2)}\n`);
+/**
+ * 잠금 대기(구현 값) — 쓰기 하나는 수 ms 라, 이만큼 못 잡으면 다른 실행이 멈춰 있는 것이다.
+ * 죽은 잠금(pid 가 없음)은 기다리지 않고 바로 치운다.
+ */
+const PC_KEYS_LOCK: FileLockOptions = { waitMs: 5_000, pollMs: 50 };
+
+/**
+ * 잠금 안에서 읽고 → change → 쓴다. change 가 undefined 를 돌려주면 쓰지 않는다(파일을 새로 만들지 않는다). 쓴 값(또는 읽은 값)을 돌려준다.
+ * change 가 던지면 아무것도 쓰지 않고 잠금을 푼다.
+ */
+export async function updatePcKeys(path: string, change: (keys: PcKeys) => PcKeys | undefined, lock: FileLockOptions = PC_KEYS_LOCK): Promise<PcKeys> {
+  return await withFileLock(`${path}.lock`, lock, async () => {
+    const current = await loadPcKeys(path);
+    const next = change(current);
+    if (next === undefined) return current;
+    await writePrivateFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
+    return next;
+  });
 }
 
 /** 브라우저가 보낸 이름 → 저장·표시할 이름(순수) — 개행·제어 문자 제거·앞뒤 공백·길이 상한(글자 단위), 비면 기본값. */

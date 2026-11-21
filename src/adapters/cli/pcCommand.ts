@@ -29,7 +29,8 @@ import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { isNodeError } from "../../core/fs/privateFiles";
-import { loadPcKeys, savePcKeys, withoutEndpointKeys } from "../../core/pc/pcKeys";
+import { updatePcKeys, withoutEndpointKeys } from "../../core/pc/pcKeys";
+import { processAlive } from "../../core/fs/fileLock";
 import { readFile } from "node:fs/promises";
 import type { CliIO } from "./ainectoCli";
 import { promptLine } from "./destructiveConfirmation";
@@ -267,11 +268,14 @@ export async function executePcStop(deps: PcDeps, argv: string[]): Promise<numbe
   if (forget) {
     await savePcSettings(deps.settingsPath, withoutEndpoint(await loadPcSettings(deps.settingsPath, deps.hostName), deps.endpoint));
     lines.push(`Removed your approval for ${deps.endpoint} on this PC; \`ainecto\` asks again next time.`);
-    // ★그 서버(계정 열쇠)의 키만 — 다른 서버의 짝짓기는 그대로(설계 r2 §11-4). 지울 것이 없으면 파일을 만들지 않는다.
-    const keys = await loadPcKeys(deps.keysPath);
-    const kept = withoutEndpointKeys(keys, deps.endpoint);
-    if (Object.keys(kept.accounts).length !== Object.keys(keys.accounts).length) {
-      await savePcKeys(deps.keysPath, kept);
+    // ★그 서버(계정 열쇠)의 키만 — 다른 서버의 짝짓기는 그대로(§11-4). 잠금 안에서(§13-2). 지울 것이 없으면 파일을 만들지 않는다.
+    let removedKeys = false;
+    await updatePcKeys(deps.keysPath, (keys) => {
+      const kept = withoutEndpointKeys(keys, deps.endpoint);
+      removedKeys = Object.keys(kept.accounts).length !== Object.keys(keys.accounts).length;
+      return removedKeys ? kept : undefined;
+    });
+    if (removedKeys) {
       lines.push("Also removed this PC's terminal key and paired browsers for that server — pair again with `ainecto pair`.");
     }
   }
@@ -303,24 +307,42 @@ export async function executeRemoteSetting(deps: PcDeps, argv: string[]): Promis
   }
   if (!deps.json) deps.io.stdout.write(`${said}\n`);
   deps.io.stderr.write("Reconnecting this PC so it takes effect…\n");
-  return reportOutcome(deps, await restartPcs(deps, running));
-}
-
-/**
- * 떠 있는 pc 를 멈추고(끝날 때까지 기다림 · 기한 넘으면 kill — {@link stopPc}) 다시 띄운다. 다리는 시작할 때 pc.json·pc-keys.json 을 읽으므로
- * 이것으로 바로 반영된다(`remote on|off` · `pair --remove` — 설계 terminal-e2e §12-3). 멈추지 못하면 던진다.
- */
-async function restartPcs(deps: PcDeps, running: RunningPc[]): Promise<PcStartOutcome> {
   for (const pc of running) {
     await stopPc(deps, pc);
   }
-  return await startPcSession(deps);
+  return await launchPc(deps);
 }
 
-/** 떠 있는 pc 가 있으면 {@link restartPcs} — 없으면(또는 term 을 못 쓰면) undefined(다음 시작 때 읽는다). */
-export async function restartRunningPc(deps: PcDeps): Promise<PcStartOutcome | undefined> {
-  const running = deps.termProblem === undefined ? runningPcs(await listed(deps)) : [];
-  return running.length === 0 ? undefined : await restartPcs(deps, running);
+/**
+ * 이 PC 연결을 «완전히» 끈다(`pair --remove` — 설계 terminal-e2e §13-2). {@link stopPc} 다음에 그 pc 프로세스가 실제로 끝났는지 —
+ * 데몬 목록에서 그 세션(같은 pid)이 빠지고 pid 가 사라졌는지 — 를 stopDeadlineMs 안에 확인한다. IPC 끊김·kill 응답만으로는 끝났다고 보지 않는다.
+ * 확인하지 못하면 PC_STOP_UNCONFIRMED 로 던진다. 다시 띄우지 않는다. 끈 세션 이름들을 돌려준다(없으면 빈 목록).
+ */
+export async function turnOffPcs(deps: PcDeps): Promise<string[]> {
+  if (deps.termProblem !== undefined) return [];
+  const sessions = (await listed(deps)).filter((session) => runningPcs([session]).length > 0);
+  for (const session of sessions) {
+    const [pc] = runningPcs([session]);
+    if (pc) await stopPc(deps, pc);
+    await confirmEnded(deps, session.name, session.pid);
+  }
+  return sessions.map((session) => session.name);
+}
+
+/** 확인 간격(구현 값). */
+const STOP_CONFIRM_POLL_MS = 100;
+
+async function confirmEnded(deps: PcDeps, name: string, pid: number): Promise<void> {
+  const deadline = Date.now() + deps.stopDeadlineMs;
+  for (;;) {
+    const stillListed = (await listed(deps)).some((session) => session.name === name && session.pid === pid);
+    if (!stillListed && !processAlive(pid)) return;
+    if (Date.now() >= deadline) {
+      throw new CliCommandError("PC_STOP_UNCONFIRMED", `Could not confirm that the PC connection (session ${name}, pid ${pid}) ended within `
+        + `${deps.stopDeadlineMs / 1000} s (${stillListed ? "the session is still running" : "the process is still alive"}). See ${deps.agentLog}.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, STOP_CONFIRM_POLL_MS));
+  }
 }
 
 /**

@@ -1,9 +1,8 @@
 import { closeSync, openSync } from "node:fs";
 import { ReadStream, WriteStream } from "node:tty";
 import { renderSuccess } from "../../core/output/render";
-import { loadPcKeys, savePcKeys, withBrowser, withoutBrowser } from "../../core/pc/pcKeys";
+import { loadPcKeys, updatePcKeys, withBrowser, withoutBrowser, type PairedBrowser } from "../../core/pc/pcKeys";
 import { runPairing, type MatchedBrowser, type PairTransport } from "../../core/pc/pcPairing";
-import type { PcStartOutcome } from "./pcCommand";
 import { accountKey, loadPcSettings } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
 import { generateSigningJwk, transcriptUserId, type EcPrivateJwk } from "../../core/term/e2e";
@@ -15,7 +14,7 @@ import { CliCommandError } from "./errors";
  * `ainecto pair` — 웹 브라우저와 이 PC 를 PC 앞에서 코드로 짝짓는다(설계 terminal-e2e r2 §11-1·§11-4).
  *   `pair`                  대화형만 — 코드 A 를 보이고 코드 B 를 한 번 받는다. 맞으면 그 브라우저 공개키를 pc-keys.json 에 넣는다.
  *   `pair --list`           짝지은 브라우저 목록.
- *   `pair --remove <id|이름>` 그 브라우저를 지우고(keyId 가 먼저), 떠 있는 PC 연결을 멈췄다 다시 띄운 뒤에만 성공(§12-3).
+ *   `pair --remove <id|이름>` 그 브라우저를 지우고(keyId 가 먼저), 떠 있는 PC 연결을 완전히 끈 것을 확인한 뒤에만 성공(§13-2) — 다시 띄우지 않는다.
  * ★코드는 /dev/tty 에만 쓰고 /dev/tty 에서만 읽는다 — 파이프·리다이렉트로 흘러가지 않게. AiNecto 터미널 세션(웹 원격 화면에 실릴 수 있음)
  *   안에서는 거절한다. 이것은 «원격 화면 중계에 코드가 실리지 않는다»까지만 보장한다.
  * 순서 판단은 core/pc/pcPairing, 여기는 입출력·파일만.
@@ -36,8 +35,8 @@ export interface PairDeps {
   account: () => Promise<Pick<AccountSummary, "userId">>;
   /** 서버 중계 — 짝짓기를 시작할 때만 연다. */
   transport: () => PairTransport;
-  /** 떠 있는 PC 연결(다리)을 멈추고 끝난 뒤 다시 띄운다 — 없으면 undefined. 운영은 pcCommand.restartRunningPc. */
-  restartPc: () => Promise<PcStartOutcome | undefined>;
+  /** 떠 있는 PC 연결을 완전히 끄고 끝난 것을 확인한다(못 하면 던진다) — 끈 세션 이름들. 운영은 pcCommand.turnOffPcs. */
+  turnOffPc: () => Promise<string[]>;
   /** 짝짓기 기한 — 운영은 PAIR_WAIT_MS. */
   waitMs: number;
   now: () => Date;
@@ -138,13 +137,13 @@ async function pair(deps: PairDeps): Promise<number> {
  * ★짝짓는 동안 다른 실행이 이 계정의 PC 키를 바꿨으면 저장하지 않는다(브라우저가 받은 키와 어긋난다).
  */
 async function pin(deps: PairDeps, key: string, pcKey: EcPrivateJwk, browser: MatchedBrowser): Promise<void> {
-  const latest = await loadPcKeys(deps.keysPath);
-  const stored = latest.accounts[key]?.pcKey;
-  if (stored && stored.d !== pcKey.d) {
-    throw new CliCommandError("PAIR_CONFLICT", "This PC's key changed while pairing (another `ainecto pair`?). Nothing was saved — run `ainecto pair` again.");
-  }
-  const next = withBrowser(latest, key, pcKey, { ...browser, pairedAt: deps.now().toISOString() });
-  await savePcKeys(deps.keysPath, next);
+  await updatePcKeys(deps.keysPath, (latest) => {
+    const stored = latest.accounts[key]?.pcKey;
+    if (stored && stored.d !== pcKey.d) {
+      throw new CliCommandError("PAIR_CONFLICT", "This PC's key changed while pairing (another `ainecto pair`?). Nothing was saved — run `ainecto pair` again.");
+    }
+    return withBrowser(latest, key, pcKey, { ...browser, pairedAt: deps.now().toISOString() });
+  });
 }
 
 async function listBrowsers(deps: PairDeps): Promise<number> {
@@ -157,31 +156,36 @@ async function listBrowsers(deps: PairDeps): Promise<number> {
   return 0;
 }
 
+/**
+ * 잠금 안에서 핀을 지우고 → 떠 있는 PC 연결을 완전히 끈다(§13-2). 끄기를 확인하지 못하면 실패 — 다시 실행하면 이미 지운 핀은 건너뛰고 끄기부터 마친다.
+ * 그래서 «없는 이름»이어도 PC 연결이 떠 있으면 끈다(앞선 실행의 끄기를 마치는 길과 같다). 둘 다 없을 때만 PAIR_NOT_FOUND.
+ */
 async function removeBrowser(deps: PairDeps, keyIdOrName: string): Promise<number> {
   const { key } = await account(deps);
-  const { keys: next, removed } = withoutBrowser(await loadPcKeys(deps.keysPath), key, keyIdOrName);
-  if (!removed) {
+  let removed: PairedBrowser | undefined;
+  await updatePcKeys(deps.keysPath, (keys) => {
+    const result = withoutBrowser(keys, key, keyIdOrName);
+    removed = result.removed;
+    return removed ? result.keys : undefined;
+  });
+  let stopped: string[];
+  try {
+    stopped = await deps.turnOffPc();
+  } catch (error) {
+    throw new CliCommandError("PAIR_REMOVE_STOP_FAILED", `${removed ? `Removed "${removed.name}" (${removed.keyId}), but t` : "T"}urning off the PC connection `
+      + `was not confirmed (${error instanceof Error ? error.message : String(error)}). Run \`ainecto pair --remove ${keyIdOrName}\` again to finish.`);
+  }
+  if (!removed && stopped.length === 0) {
     throw new CliCommandError("PAIR_NOT_FOUND", `No paired browser with key id or name "${keyIdOrName}" — \`ainecto pair --list\` shows them.`);
   }
-  await savePcKeys(deps.keysPath, next);
-  // ★떠 있는 다리는 지운 키의 채널·대기 작업·화면 송신을 들고 있다 — 멈춘 것을 확인한 뒤에만 성공(§12-3). mtime 감시는 하지 않는다.
-  let outcome: PcStartOutcome | undefined;
-  try {
-    outcome = await deps.restartPc();
-  } catch (error) {
-    throw new CliCommandError("PAIR_REMOVE_RESTART_FAILED", `Removed "${removed.name}" (${removed.keyId}) from this PC's keys, but restarting the PC connection `
-      + `failed (${error instanceof Error ? error.message : String(error)}). Run \`ainecto stop\` and then \`ainecto\` before relying on the removal.`);
-  }
-  const lines = [`Removed "${removed.name}" (${removed.keyId}). It can no longer open terminals on this PC.`];
-  if (outcome === undefined) {
-    lines.push("The PC connection is not running; it reads this when it starts.");
-  } else {
-    lines.push(outcome.kind === "connecting"
-      ? "Restarted the PC connection (still connecting — `ainecto status` shows when it is up). Other browsers reconnect by themselves."
-      : "Restarted the PC connection. Other browsers reconnect by themselves.");
-  }
+  const lines = [removed
+    ? `Removed "${removed.name}" (${removed.keyId}). It can no longer open terminals on this PC.`
+    : `No paired browser "${keyIdOrName}" (already removed?).`];
+  lines.push(stopped.length > 0
+    ? "Turned off the PC connection. Run `ainecto` to turn it back on."
+    : "The PC connection is not running.");
   deps.io.stdout.write(deps.json
-    ? renderSuccess({ removed: { keyId: removed.keyId, name: removed.name }, restarted: outcome !== undefined }, { json: true })
+    ? renderSuccess({ removed: removed ? { keyId: removed.keyId, name: removed.name } : null, turnedOff: stopped }, { json: true })
     : `${lines.join("\n")}\n`);
   return 0;
 }
