@@ -105,7 +105,7 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect(await done).toBe(0);
     expect(first.err()).toContain("This connects this PC to AiNecto as Ryan (https://example.test/mcp).");
     expect(first.err()).toContain("  · It keeps itself up to date — new AiNecto releases built and signed on AiNecto's GitHub are installed when this PC is idle.");
-    expect(first.out()).toContain("Connected this PC to AiNecto (session ainecto-pc).");
+    expect(first.out()).toContain("This PC is now connected to AiNecto. From AiNecto on the web");
 
     const saved = await settings();
     expect(saved.hostName).toBe("test-host");
@@ -120,7 +120,7 @@ describe("이 PC 연결 — 실 데몬", () => {
 
     const again = harness();
     expect(await executePcStart(again.deps)).toBe(0);
-    expect(again.out()).toContain("Already connected (session ainecto-pc, folder");
+    expect(again.out()).toContain("This PC is already connected to AiNecto (folder");
     expect(again.out()).toContain("version 9.9.9)");
     expect(again.err()).not.toContain("Connect this PC?");
     expect((await pcSessions()).length).toBe(1);
@@ -213,7 +213,7 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect((await settings()).accounts[KEY]?.remoteTerminal).toBe(true);
     expect(on.out()).toContain("Terminals from AiNecto on the web are allowed on this PC.");
     expect(on.err()).toContain("Reconnecting this PC so it takes effect");
-    expect(on.out()).toContain("Connected this PC to AiNecto (session ainecto-pc).");
+    expect(on.out()).toContain("This PC is now connected to AiNecto. From AiNecto on the web");
     const after = await pcSessions();
     expect(after.length).toBe(1);
     expect(after[0]?.pid).not.toBe(before);
@@ -225,8 +225,8 @@ describe("이 PC 연결 — 실 데몬", () => {
     await start.answer("Connect this PC?", "y");
     await start.answer("Also allow terminals", "y");
     expect(await done).toBe(0);
-    expect(start.out()).toContain("Connected this PC to AiNecto (session ainecto-pc): terminals from the web only");
-    expect(start.out()).toContain("install Claude Code or Codex, then `ainecto` again");
+    expect(start.out()).toContain("No Claude Code or Codex was found");
+    expect(start.out()).toContain("install one, then run `ainecto` again");
   }, LONG);
 
   it("ainecto 재실행 — 원격이 웹에서 꺼진 pc 는(같은 판이어도) «Already» 대신 다시 띄워 원격을 켠다", async () => {
@@ -241,7 +241,7 @@ describe("이 PC 연결 — 실 데몬", () => {
     const again = harness();
     expect(await executePcStart(again.deps)).toBe(0);
     expect(again.err()).toContain("The remote terminal was turned off from the web — reconnecting this PC to turn it back on");
-    expect(again.out()).toContain("Connected this PC to AiNecto (session ainecto-pc).");
+    expect(again.out()).toContain("This PC is now connected to AiNecto. From AiNecto on the web");
     expect(again.out()).not.toContain("Already connected");
     expect((await pcSessions())[0]?.pid).not.toBe(before);
   }, LONG);
@@ -263,7 +263,7 @@ describe("이 PC 연결 — 실 데몬", () => {
 
     const slow = harness({ runner: noRunner, script: SILENT, readyDeadlineMs: 300 });
     expect(await executePcStart(slow.deps)).toBe(0);
-    expect(slow.out()).toContain("Still connecting this PC (session ainecto-pc) — `ainecto status` shows when it is up.");
+    expect(slow.out()).toContain("Still connecting this PC to AiNecto — run `ainecto status` to see when it is up.");
 
     // 아직 연결 줄을 찍지 않은 pc 는 Ctrl+C 대신 바로 kill — 매니페스트에서도 빠진다(재부팅 뒤 되살아나지 않는다).
     const stop = harness();
