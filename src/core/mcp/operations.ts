@@ -9,7 +9,8 @@ import { unwrapMcpToolPayload } from "./toolPayload";
  * <ul>
  *   <li>공개 도구 이름 7개({@link PUBLIC_TOOLS}) — 서버 계약 그대로.</li>
  *   <li>{@code search} 목록·상세 응답 읽기({@link parseOperationPage} · {@link parseOperationDetail}) — 모양이 바뀌면 여기만 고친다.</li>
- *   <li>operation → 어느 {@code execute_*} 로 부르나({@link OperationCaller}) — ★묶음 표를 CLI 에 두지 않는다. 진실원은 서버의 상세 조회다.</li>
+ *   <li>operation → 어느 {@code execute_*} 로 부르나({@link OperationCaller}) — ★작업마다 실행 도구는 하나다(Ryan 11-21 «ㅇㅇ 그렇게 가자»).
+ *       그 표(api {@code mcp/operation-executors.json})를 CLI 에 두지 않는다 — search 상세의 {@code executor} 를 쓴다.</li>
  * </ul>
  */
 
@@ -47,13 +48,11 @@ export interface OperationPage {
   nextCursor?: string;
 }
 
-/** {@code search {operation}} 상세 — 묶음 후보(1개 = 고정, 여럿 = 인자·대상 상태로 서버가 판정) · 힌트 · inputSchema. */
+/** {@code search {operation}} 상세 — 이 operation 을 부르는 실행 도구 하나 · 힌트 · inputSchema. */
 export interface OperationDetail {
   operation: string;
   summary: string;
-  bundles: ExecuteTool[];
-  /** 조건부만 — 어느 인자에서 어느 묶음이 필요한지 한 줄(Astra 표의 조건 글). */
-  bundleRule?: string;
+  executor: ExecuteTool;
   annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
   inputSchema: JsonSchema;
 }
@@ -80,26 +79,25 @@ export function parseOperationPage(result: unknown): OperationPage {
 }
 
 /**
- * {@code search {operation}} 결과(도구 결과 그대로) → 상세. 모양(chat-dev 확정 11-21):
- * {@code {"operation","summary","bundles":[…],"bundleRule"?,"annotations":{…},"inputSchema":{…}}}.
- * 묶음이 공개 도구 이름이 아니면 실패 — 모르는 이름으로 부르지 않는다.
+ * {@code search {operation}} 결과(도구 결과 그대로) → 상세. 모양(chat-dev 확정 11-21 · api 1f2290f3):
+ * {@code {"operation","summary","executor":"execute_…","annotations":{…},"inputSchema":{…}}}.
+ * 실행 도구가 공개 도구 이름이 아니면 실패 — 모르는 이름으로 부르지 않는다.
  */
 export function parseOperationDetail(operation: string, result: unknown): OperationDetail {
   const payload = unwrapMcpToolPayload(result);
   if (!isRecord(payload) || payload.operation !== operation) {
     throw new OperationError(`search did not return the detail of ${operation}.`, "MCP_PROTOCOL_ERROR", operation);
   }
-  const bundles = Array.isArray(payload.bundles) ? [...new Set(payload.bundles)] : [];
-  if (bundles.length === 0 || !bundles.every((bundle): bundle is ExecuteTool => typeof bundle === "string" && isExecuteTool(bundle))) {
-    throw new OperationError(`search detail of ${operation} has no valid bundles (${JSON.stringify(payload.bundles)}).`,
+  const executor = payload.executor;
+  if (typeof executor !== "string" || !isExecuteTool(executor)) {
+    throw new OperationError(`search detail of ${operation} has no valid executor (${JSON.stringify(executor)}).`,
       "MCP_PROTOCOL_ERROR", operation);
   }
   const hints = isRecord(payload.annotations) ? payload.annotations : {};
   return {
     operation,
     summary: typeof payload.summary === "string" ? payload.summary : "",
-    bundles,
-    ...(typeof payload.bundleRule === "string" && payload.bundleRule ? { bundleRule: payload.bundleRule } : {}),
+    executor,
     annotations: {
       ...(typeof hints.readOnlyHint === "boolean" ? { readOnlyHint: hints.readOnlyHint } : {}),
       ...(typeof hints.destructiveHint === "boolean" ? { destructiveHint: hints.destructiveHint } : {}),
@@ -108,24 +106,6 @@ export function parseOperationDetail(operation: string, result: unknown): Operat
     },
     inputSchema: isRecord(payload.inputSchema) ? payload.inputSchema : { type: "object", properties: {} },
   };
-}
-
-/**
- * 서버가 «이 묶음으로는 안 된다, 이것으로 불러라»라고 거절했을 때 그 묶음 — 아니면 undefined.
- * 거절 모양(chat-dev 확정 11-21): JSON-RPC {@code -32602} + {@code data} = {@code {"code":"BUNDLE_MISMATCH","operation","required":["execute_…"]}}.
- * ★{@code MIXED_EFFECTS}(필요한 효과 2개 이상)는 여기서 다시 부르지 않는다 — 서버가 실행하지 않고 «나눠 부르라»고 알리는 거절이라 그대로 올린다.
- */
-export function bundleMismatchRetry(error: unknown, tried: ExecuteTool): ExecuteTool | undefined {
-  const data = rpcErrorData(error);
-  if (data?.code !== "BUNDLE_MISMATCH" || !Array.isArray(data.required) || data.required.length !== 1) return undefined;
-  const required = data.required[0];
-  return typeof required === "string" && isExecuteTool(required) && required !== tried ? required : undefined;
-}
-
-/** McpRpcError.details(= JSON-RPC error) 의 {@code data}. */
-function rpcErrorData(error: unknown): Record<string, unknown> | undefined {
-  const details = isRecord(error) ? (error as { details?: unknown }).details : undefined;
-  return isRecord(details) && isRecord(details.data) ? details.data : undefined;
 }
 
 /** search 한 쪽 최대(서버 계약 — 기본 20 · 최대 50). */
@@ -173,10 +153,8 @@ export async function listAllOperations(input: {
 export type PublicToolCall = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 
 /**
- * operation 이름 + 인자 → {@code execute_<묶음> {operation, args}}. 상세는 연결 하나에서 한 번만 묻는다(같은 연결의 다음 호출은 기억한 값).
- *
- * <p>묶음이 하나면 그것으로 부른다. 여럿(조건부 23개)이면 서버가 인자로 «필요한 효과 전부»를 판정한다 — 첫 후보로 부르고,
- * {@code BUNDLE_MISMATCH} 로 필요한 묶음 하나를 밝혀 거절하면 그 묶음으로 한 번만 다시 부른다(거절은 실행 전이라 두 번 실행되지 않는다).
+ * operation 이름 + 인자 → {@code <executor> {operation, args}}. 상세는 연결 하나에서 한 번만 묻는다(같은 연결의 다음 호출은 기억한 값).
+ * 서버 거절(UNKNOWN_OPERATION·BUNDLE_MISMATCH 등)은 다시 부르지 않고 그대로 올린다.
  */
 export class OperationCaller {
   private readonly details = new Map<string, Promise<OperationDetail>>();
@@ -201,15 +179,7 @@ export class OperationCaller {
 
   async call(operation: string, args: Record<string, unknown>): Promise<unknown> {
     const detail = await this.detail(operation);
-    const first = detail.bundles[0] as ExecuteTool;
-    const payload = { operation, args };
-    try {
-      return await this.callPublic(first, payload);
-    } catch (error) {
-      const retry = detail.bundles.length > 1 ? bundleMismatchRetry(error, first) : undefined;
-      if (!retry) throw error;
-      return this.callPublic(retry, payload);
-    }
+    return this.callPublic(detail.executor, { operation, args });
   }
 }
 

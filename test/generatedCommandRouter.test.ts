@@ -191,7 +191,7 @@ describe("generated command router", () => {
       const args = body.params?.arguments ?? {};
       const result = body.method === "tools/list" ? { tools: [search] }
         : body.params.name === "search" && args.operation
-          ? text({ operation: "html_render_preview", summary: "preview", bundles: ["execute_read"], annotations: { readOnlyHint: true },
+          ? text({ operation: "html_render_preview", summary: "preview", executor: "execute_read", annotations: { readOnlyHint: true },
             inputSchema: { type: "object", properties: { uuid: { type: "string" } } } })
           : body.params.name === "search"
             ? text({ items: [{ operation: "html_render_preview", summary: "preview", rank: 1 }] })

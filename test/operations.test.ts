@@ -8,9 +8,9 @@ const ENDPOINT = "https://dev.ainecto.test/mcp";
 
 interface WireCall { name: string; arguments: Record<string, unknown> }
 
-/** 공개면 7개 서버 — search 상세(bundles)와 execute_* 응답을 테스트가 정한다. 선 위 tools/call 을 순서대로 남긴다. */
+/** 공개면 7개 서버 — search 상세(executor)와 execute_* 응답을 테스트가 정한다. 선 위 tools/call 을 순서대로 남긴다. */
 function server(options: {
-  bundles: Record<string, string[]>;
+  executors: Record<string, string>;
   execute?: (call: WireCall) => { result?: unknown; error?: unknown };
   search?: (operation: string) => unknown;
 }) {
@@ -23,7 +23,7 @@ function server(options: {
     if (body.params.name === "search") {
       const operation = String(body.params.arguments.operation);
       const detail = options.search?.(operation)
-        ?? { operation, summary: "s", bundles: options.bundles[operation], annotations: { readOnlyHint: false }, inputSchema: { type: "object" } };
+        ?? { operation, summary: "s", executor: options.executors[operation], annotations: { readOnlyHint: false }, inputSchema: { type: "object" } };
       return reply({ result: { content: [{ type: "text", text: JSON.stringify(detail) }] } });
     }
     return reply(options.execute?.(body.params) ?? { result: { content: [{ type: "text", text: "{\"ok\":true}" }] } });
@@ -32,8 +32,8 @@ function server(options: {
 }
 
 describe("operation → execute_* (MCP 7개)", () => {
-  it("옛 이름은 search 상세의 묶음으로 바꿔 부르고, 상세는 연결 하나에서 한 번만 묻는다", async () => {
-    const { wire, rpc } = server({ bundles: { identity_get_self: ["execute_read"] } });
+  it("옛 이름은 search 상세의 executor 로 바꿔 부르고, 상세는 연결 하나에서 한 번만 묻는다", async () => {
+    const { wire, rpc } = server({ executors: { identity_get_self: "execute_read" } });
 
     await rpc.toolsCall("identity_get_self", {});
     await rpc.toolsCall("mcp__ainecto__identity_get_self", { a: 1 });
@@ -46,70 +46,47 @@ describe("operation → execute_* (MCP 7개)", () => {
   });
 
   it("공개 도구 이름은 그대로 간다", async () => {
-    const { wire, rpc } = server({ bundles: {} });
+    const { wire, rpc } = server({ executors: {} });
 
     await rpc.toolsCall("execute_edit", { operation: "create_documents", args: {} });
 
     expect(wire).toEqual([{ name: "execute_edit", arguments: { operation: "create_documents", args: {} } }]);
   });
 
-  it("조건부: 서버가 BUNDLE_MISMATCH 로 필요한 묶음 하나를 밝히면 그것으로 한 번만 다시 부른다", async () => {
+  it("서버 거절(BUNDLE_MISMATCH 등)은 다시 부르지 않고 그대로 올린다", async () => {
     const { wire, rpc } = server({
-      bundles: { list_notifications: ["execute_read", "execute_edit"] },
-      execute: (call) => call.name === "execute_read"
-        ? { error: { code: -32602, message: "needs edit", data: { code: "BUNDLE_MISMATCH", operation: "list_notifications", required: ["execute_edit"] } } }
-        : { result: { content: [{ type: "text", text: "{\"items\":[]}" }] } },
+      executors: { create_documents: "execute_edit" },
+      execute: () => ({ error: { code: -32602, message: "x",
+        data: { code: "BUNDLE_MISMATCH", operation: "create_documents", executor: "execute_publish" } } }),
     });
 
-    await expect(rpc.toolsCall("list_notifications", { ack: "t" })).resolves.toMatchObject({ content: [{ text: "{\"items\":[]}" }] });
-    expect(wire.map((call) => call.name)).toEqual(["search", "execute_read", "execute_edit"]);
-  });
-
-  it("★MIXED_EFFECTS(효과 2개 이상)는 다시 부르지 않고 서버 거절을 그대로 올린다", async () => {
-    const { wire, rpc } = server({
-      bundles: { create_documents: ["execute_edit", "execute_publish"] },
-      execute: () => ({ error: { code: -32602, message: "split it",
-        data: { code: "MIXED_EFFECTS", operation: "create_documents", required: ["execute_edit", "execute_publish"] } } }),
-    });
-
-    const failure = await rpc.toolsCall("create_documents", { items: [{ shareEnabled: true }] }).catch((error: unknown) => error);
+    const failure = await rpc.toolsCall("create_documents", {}).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(McpRpcError);
-    expect((failure as McpRpcError).message).toContain("MIXED_EFFECTS");
+    expect((failure as McpRpcError).message).toContain("BUNDLE_MISMATCH");
     expect(wire.map((call) => call.name)).toEqual(["search", "execute_edit"]);
   });
 
-  it("단일 묶음이면 BUNDLE_MISMATCH 여도 다시 부르지 않는다", async () => {
-    const { wire, rpc } = server({
-      bundles: { get_document: ["execute_read"] },
-      execute: () => ({ error: { code: -32602, message: "x", data: { code: "BUNDLE_MISMATCH", required: ["execute_edit"] } } }),
-    });
-
-    await expect(rpc.toolsCall("get_document", {})).rejects.toBeInstanceOf(McpRpcError);
-    expect(wire.map((call) => call.name)).toEqual(["search", "execute_read"]);
-  });
-
-  it("상세가 모르는 묶음을 대면 실행하지 않는다 · 실패한 상세는 기억하지 않는다", async () => {
-    let bundles = ["execute_everything"];
-    const { wire, rpc } = server({ bundles: {}, search: (operation) => ({ operation, bundles }) });
+  it("상세가 모르는 executor 를 대면 실행하지 않는다 · 실패한 상세는 기억하지 않는다", async () => {
+    let executor = "execute_everything";
+    const { wire, rpc } = server({ executors: {}, search: (operation) => ({ operation, executor }) });
 
     await expect(rpc.toolsCall("list_projects", {})).rejects.toMatchObject({ code: "MCP_PROTOCOL_ERROR" });
-    bundles = ["execute_read"];
+    executor = "execute_read";
     await rpc.toolsCall("list_projects", {});
 
     expect(wire.map((call) => call.name)).toEqual(["search", "search", "execute_read"]);
   });
 
-  it("상세 모양: bundles·bundleRule·annotations·inputSchema (chat-dev 확정 11-21)", () => {
+  it("상세 모양: executor·annotations·inputSchema (chat-dev 확정 11-21 · api 1f2290f3)", () => {
     const detail = parseOperationDetail("create_documents", { content: [{ type: "text", text: JSON.stringify({
-      operation: "create_documents", summary: "만든다", bundles: ["execute_edit", "execute_publish"], bundleRule: "shareEnabled=true 면 공개",
+      operation: "create_documents", summary: "만든다", executor: "execute_edit",
       annotations: { readOnlyHint: false, destructiveHint: false }, inputSchema: { type: "object", required: ["items"] },
     }) }] });
 
-    expect(detail).toEqual({ operation: "create_documents", summary: "만든다", bundles: ["execute_edit", "execute_publish"],
-      bundleRule: "shareEnabled=true 면 공개", annotations: { readOnlyHint: false, destructiveHint: false },
-      inputSchema: { type: "object", required: ["items"] } });
-    expect(() => parseOperationDetail("x", { content: [{ type: "text", text: "{\"operation\":\"y\",\"bundles\":[\"execute_read\"]}" }] }))
+    expect(detail).toEqual({ operation: "create_documents", summary: "만든다", executor: "execute_edit",
+      annotations: { readOnlyHint: false, destructiveHint: false }, inputSchema: { type: "object", required: ["items"] } });
+    expect(() => parseOperationDetail("x", { content: [{ type: "text", text: "{\"operation\":\"y\",\"executor\":\"execute_read\"}" }] }))
       .toThrow(/detail of x/);
   });
 });
