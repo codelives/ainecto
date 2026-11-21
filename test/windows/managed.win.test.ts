@@ -45,15 +45,16 @@ describe.runIf(WINDOWS && CANDIDATE !== undefined)("W4 관리 명령 실경로 �
     expect(await readFile(bundle, "utf8")).toContain(`"${BUILD}"`);
   });
 
-  it("child_process: npxCliCommand([--version]) → 후보 판 · 실행된 스크립트 = 후보 폴더의 번들", async () => {
+  it("child_process: npxCliCommand([--version, --json]) → 후보 판 · 실행된 스크립트 = 후보 폴더의 번들", async () => {
     await rm(probeOut, { force: true });
-    const child = spawnCapture(npxCliCommand(["--version"], version), { cwd: CANDIDATE ?? "", env });
+    const child = spawnCapture(npxCliCommand(["--version", "--json"], version), { cwd: CANDIDATE ?? "", env });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     expect(await new Promise((resolve) => child.on("close", resolve)), stderr).toBe(0);
-    expect(stdout.trim()).toBe(version);
+    // 사람용 출력은 객체 모양이다 — 판은 --json 의 data.version 문자열로 비교한다(run 44899145897).
+    expect((JSON.parse(stdout) as { data: { version: string } }).data.version).toBe(version);
     expect(await scriptsRun()).toContain(bundle);
   }, 120_000);
 

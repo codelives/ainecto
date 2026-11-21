@@ -105,8 +105,9 @@ jobs:
         working-directory: cand-scripts
         run: |
           $want = (Get-Content node_modules\@ainecto\mcp\package.json | ConvertFrom-Json).version
-          $local = (npx --no-install ainecto --version).Trim()
-          $packed = (npx --yes --package $env:TGZ ainecto --version).Trim()
+          # --version 의 사람용 출력은 객체 모양이라 문자열로 비교하지 않는다 — --json 의 data.version 을 본다(run 44899145897).
+          $local = (npx --no-install ainecto --version --json | Out-String | ConvertFrom-Json).data.version
+          $packed = (npx --yes --package $env:TGZ ainecto --version --json | Out-String | ConvertFrom-Json).data.version
           "want=$want local=$local packed=$packed build=$env:BUILD"
           if ($local -ne $want -or $packed -ne $want) { throw "후보 CLI 의 판이 tgz 의 판과 다르다" }
           # 빌드 SHA 는 tsup 이 번들에 박는다(tsup.config.ts gitBuild) — 설치된 번들이 이 SHA 의 빌드인지 본다.
