@@ -27,4 +27,7 @@ child.onExit(({ exitCode }) => {
     console.error(`loaded ${native}, expected …/${want}`);
     process.exit(1);
   }
+  // ★Windows 의 ConPTY 는 자식이 끝난 뒤에도 핸들이 남아 프로세스를 붙잡는다(run 44896345214 — 결과 줄 뒤 30분 무응답).
+  //   데몬이 끝날 때 process.exit 를 부르는 것(termCommand.ts runDaemon 뒤)과 같은 이유로 여기서도 끝낸다.
+  process.exit(0);
 });
