@@ -1,0 +1,127 @@
+# Windows 지원 검증 — 설계 `_workspace/design/windows-pc/README.md` 5-1·6-1(r3).
+# ★Windows 에서는 `npm pack`·전수 시험을 돌리지 않는다. Linux job 이 같은 SHA 로 기존 prepack(typecheck + 전수 시험 + build)을 거친
+#   tgz 를 만들고, Windows job 은 그 tgz 를 해시로 대조한 뒤 설치·로드·표적 시험(test/windows/)만 한다.
+# 게시와 무관하다 — 게시는 publish.yml(사람이 Run workflow + 승인)뿐이다.
+name: windows
+
+on:
+  push:
+    branches: [feat/windows-pc]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: 후보 tgz (prepack = typecheck + 전수 시험 + build)
+        run: mkdir out && npm pack --pack-destination out --json > out/pack.json
+      - name: 빈 dist 포장 금지
+        run: tar -tzf out/*.tgz | grep -qx 'package/dist/bin/ainecto.js'
+      - name: 같은 SHA 표지
+        run: |
+          (cd out && sha256sum *.tgz > SHA256SUMS)
+          echo "$GITHUB_SHA" > out/SOURCE_SHA
+          git rev-parse --short HEAD > out/BUILD
+          node -p 'JSON.stringify({ node: process.version, arch: process.arch })' > out/pack-runtime.json
+          cat out/SHA256SUMS out/BUILD out/pack-runtime.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-tgz
+          path: out/
+          if-no-files-found: error
+
+  windows:
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cli-tgz
+          path: out
+      - name: 같은 SHA · 같은 해시
+        run: |
+          if ((Get-Content out\SOURCE_SHA).Trim() -ne $env:GITHUB_SHA) { throw "tgz 의 SOURCE_SHA 가 이 실행의 SHA 와 다르다" }
+          foreach ($line in Get-Content out\SHA256SUMS) {
+            $want, $file = $line -split '\s+', 2
+            $have = (Get-FileHash -Algorithm SHA256 (Join-Path out $file.TrimStart('*'))).Hash.ToLower()
+            if ($have -ne $want) { throw "해시가 다르다: $file" }
+          }
+          "TGZ=$((Get-ChildItem out\*.tgz).FullName)" >> $env:GITHUB_ENV
+          "BUILD=$((Get-Content out\BUILD).Trim())" >> $env:GITHUB_ENV
+      - name: 후보 폴더 — 깨끗한 설치(의존성 설치 스크립트는 켠 채로, node-pty 프리빌드 확인이 돈다)
+        run: |
+          New-Item -ItemType Directory cand | Out-Null
+          Set-Location cand
+          npm init -y | Out-Null
+          npm install $env:TGZ
+          if (Test-Path node_modules\node-pty\build) { throw "node-pty 가 컴파일됐다 — 프리빌드를 못 찾았다" }
+          "CAND=$((Get-Location).Path)" >> $env:GITHUB_ENV
+      - name: node-pty 실제 로드 · PTY 한 번
+        working-directory: cand
+        run: |
+          @'
+          const { loadNativeModule } = require("node-pty/lib/utils");
+          const pty = require("node-pty");
+          const native = loadNativeModule("conpty").dir;
+          const child = pty.spawn(process.env.ComSpec, '/d /s /c "echo ainecto-pty-ok"', {});
+          let out = "";
+          child.onData((data) => { out += data; });
+          child.onExit(({ exitCode }) => {
+            console.log(JSON.stringify({ node: process.version, arch: process.arch, native, exitCode }));
+            if (!out.includes("ainecto-pty-ok")) { console.error(out); process.exit(1); }
+            if (!native.includes(`win32-${process.arch}`)) { console.error("loaded native is not this arch"); process.exit(1); }
+          });
+          '@ | Set-Content -Encoding utf8 pty-check.cjs
+          node pty-check.cjs
+      - name: 후보 CLI — 판 · 빌드 SHA
+        working-directory: cand
+        run: |
+          $want = (Get-Content node_modules\@ainecto\mcp\package.json | ConvertFrom-Json).version
+          $local = (npx --no-install ainecto --version).Trim()
+          $packed = (npx --yes --package $env:TGZ ainecto --version).Trim()
+          "want=$want local=$local packed=$packed build=$env:BUILD"
+          if ($local -ne $want -or $packed -ne $want) { throw "후보 CLI 의 판이 tgz 의 판과 다르다" }
+          # 빌드 SHA 는 tsup 이 번들에 박는다(tsup.config.ts gitBuild) — 설치된 번들이 이 SHA 의 빌드인지 본다.
+          if (-not (Select-String -Quiet -SimpleMatch "`"$env:BUILD`"" node_modules\@ainecto\mcp\dist\bin\ainecto.js)) { throw "설치된 번들에 빌드 $env:BUILD 가 없다" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: src
+      - name: 표적 시험(test/windows/ 만 — 전수 아님)
+        working-directory: src
+        env:
+          AINECTO_WIN_CANDIDATE_DIR: ${{ env.CAND }}
+          AINECTO_WIN_EXPECTED_BUILD: ${{ env.BUILD }}
+        run: |
+          npm ci
+          npx vitest run test/windows/ --passWithNoTests
+      - name: 증적
+        if: always()
+        run: |
+          cmd /c ver
+          node -p "JSON.stringify({ node: process.version, arch: process.arch })"
+          npm -v
+          if (Test-Path cand\node_modules\node-pty\package.json) { (Get-Content cand\node_modules\node-pty\package.json | ConvertFrom-Json).version }
+          "image=$env:ImageOS $env:ImageVersion"
