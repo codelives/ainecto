@@ -167,19 +167,21 @@ describe("operation 전체 목록(search)", () => {
   });
 });
 
-describe("PC Agent Codex 승인 — 공개면 7개", () => {
-  it("readOnlyHint 가 아닌 execute_* 5개만 approve 된다(search·execute_read 는 빠진다)", () => {
-    const seven = [
-      { name: "search", annotations: { readOnlyHint: true } },
-      { name: "execute_read", annotations: { readOnlyHint: true } },
-      { name: "execute_edit", annotations: { readOnlyHint: false } },
-      { name: "execute_collaborate", annotations: { readOnlyHint: false, openWorldHint: true } },
-      { name: "execute_replace_remove", annotations: { readOnlyHint: false, destructiveHint: true } },
-      { name: "execute_access", annotations: { readOnlyHint: false, destructiveHint: true } },
-      { name: "execute_publish", annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true } },
+describe("PC Agent Codex 승인 — 공개면 8개", () => {
+  it("readOnlyHint 가 아닌 execute_* 5개만 approve 된다(search·execute_read·open_ainecto_panel 은 빠진다)", () => {
+    // 값은 서버 tools/list 그대로(api 0945fa31 — 배정된 작업들의 힌트에서 계산). 승인 대상은 readOnlyHint 만 본다.
+    const eight = [
+      { name: "search", annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+      { name: "execute_read", annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+      { name: "execute_edit", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+      { name: "execute_collaborate", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+      { name: "execute_replace_remove", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
+      { name: "execute_access", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+      { name: "execute_publish", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+      { name: "open_ainecto_panel", annotations: { readOnlyHint: true } },
     ];
 
-    const args = codexAppServerArgs({ command: "ainecto-mcp", args: [] }, writeToolNames(seven));
+    const args = codexAppServerArgs({ command: "ainecto-mcp", args: [] }, writeToolNames(eight));
     const approvals = args.filter((arg) => arg.endsWith('.approval_mode="approve"'));
 
     expect(approvals).toEqual([
