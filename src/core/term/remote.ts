@@ -28,6 +28,7 @@ import { ensurePrivateDir } from "../fs/privateFiles";
 import { existsSync } from "node:fs";
 import { rmdir } from "node:fs/promises";
 import { cliTagsOf, type CliTags } from "../pc/pcUpgrade";
+import type { PcNotifier } from "../pc/pcNotify";
 
 /**
  * 원격 터미널 다리 — 이 PC 의 term 세션 «전부»를 AiNecto 웹에 잇는다(KAN-738 next.10, 계획 multi-session-plan.md 11절).
@@ -100,7 +101,11 @@ export type RemoteLogRecord =
   | { event: "remote_session_folder_kept"; opId: string; code: string }
   /** 보던 세션이 데몬에서 이미 끝났다(웹에서 끝낸 직후의 읽기 등) — 오류가 아니다. */
   | { event: "remote_session_ended"; op: string; session: string; code: string }
-  | { event: "remote_stop"; pid: number; reason: string; exitCode?: number };
+  | { event: "remote_stop"; pid: number; reason: string; exitCode?: number }
+  /** PC 알림 한 건(pcNotify) — 종류·브라우저 키 id·묶인 수·도구. 글 내용은 남기지 않는다. */
+  | { event: "pc_notify"; kind: string; browserKeyId: string; more: number; tool: string }
+  /** 그 알림의 결과 — 실패는 이유 코드만(도구 stderr 원문 없음 · §11-7). */
+  | { event: "pc_notify_result"; kind: string; ok: boolean; tool: string; reason?: string };
 
 export function openRemoteLog(paths: TermPaths): DaemonLog<RemoteLogRecord> {
   const log = new DaemonLog<RemoteLogRecord>(paths.remoteLog, paths.previousRemoteLog);
@@ -159,6 +164,8 @@ export interface BridgeDeps {
   remoteEnabled: boolean;
   /** E2E 신뢰 — 계정을 모르면 undefined(모든 hello 가 PAIRING_REQUIRED). */
   trust: BridgeTrust | undefined;
+  /** PC 알림(§4-6 · §11-7) — 새 채널 확인·셸 생성·첫 명령 시작. 다리가 끝날 때 모아 둔 것을 내보낸다. */
+  notifier: PcNotifier;
   /** 목록에서 뺄 세션 — 이 다리를 돌리는 pc 세션. */
   exclude: readonly string[];
   /** 웹이 만드는 세션의 환경(로컬 `term new` 와 같은 규칙: 다리 프로세스의 환경). */
@@ -516,6 +523,7 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
 
     const outcome = ending ?? { exitCode: 1, reason: "The remote terminal stopped.", close: true };
     await syncing;
+    await deps.notifier.flush();
     if (outcome.close) {
       try {
         await deps.http.call("close", { linkId: link.linkId });
@@ -676,6 +684,8 @@ class CommandRunner {
         return;
       case "confirmed":
         this.deps.log.write({ event: "remote_channel", channelId: wire.channelId, state: "active", browserKeyId: outcome.browser.keyId });
+        // ★키 소유 확인 뒤에만 «웹 세션 열림»(§11-2·§11-7) — hello 만으로는 알리지 않는다.
+        void this.deps.notifier.notify({ kind: "session", keyId: outcome.browser.keyId, browserName: outcome.browser.name });
         await this.hooks.applyWatching();
         return;
       case "command":
@@ -713,6 +723,11 @@ class CommandRunner {
       await this.hooks.closeChannel(wire.channelId, failure.code === "SESSION_REPLACED" ? "SESSION_REPLACED"
         : failure.code === "REMOTE_OFF" ? "REMOTE_OFF" : "COMMAND_FAILED", browser);
       return;
+    }
+    if (command.kind === "create" && !failure) {
+      // 데몬이 실제로 만든 뒤에만(§11-7) — 첫 명령이 있으면 «명령 시작», 없으면 «새 셸». 명령 원문·폴더는 싣지 않는다.
+      void this.deps.notifier.notify({ kind: command.command !== undefined && command.command.trim() !== "" ? "command" : "shell",
+        keyId: browser.keyId, browserName: browser.name });
     }
     if (crud && !(await this.answer(wire, command, applied, failure))) return;   // 봉인 못 함 — 채널을 닫았다
     const raised = this.book.executed(wire.channelId, wire.n);

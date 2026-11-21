@@ -127,6 +127,7 @@ function fakeTty(answer: () => string | undefined) {
 
 function deps(overrides: Partial<PairDeps>) {
   let out = "";
+  const notified: Array<{ keyId: string; name: string }> = [];
   const value: PairDeps = {
     io: {
       stdin: new PassThrough() as unknown as NodeJS.ReadStream,
@@ -143,12 +144,13 @@ function deps(overrides: Partial<PairDeps>) {
     endpoint: ENDPOINT,
     account: async () => ({ userId: USER_ID }),
     transport: () => { throw new Error("no transport in this test"); },
+    notifyPaired: async (browser) => { notified.push(browser); },
     turnOffPc: async () => [],
     waitMs: 10_000,
     now: () => new Date("2026-11-21T09:00:00Z"),
     ...overrides,
   };
-  return { deps: value, out: () => out };
+  return { deps: value, out: () => out, notified };
 }
 
 async function expectCli(promise: Promise<unknown>, code: string): Promise<CliCommandError> {
@@ -179,6 +181,8 @@ describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
     }]);
     expect((await stat(keysPath())).mode & 0o777).toBe(0o600);
     expect(run.out()).toContain('Paired "Chrome[2J · macOS" with this PC.');
+    // PC 알림 — done 을 보낸 뒤 한 번(§11-7).
+    expect(run.notified).toEqual([{ keyId: await browserKeyIdOf(publicRawFromJwk(browser.own)), name: "Chrome[2J · macOS" }]);
     // ★코드는 /dev/tty 에만 — stdout(파이프로 갈 수 있는 곳)에는 없다.
     expect(run.out()).not.toContain(browser.state.codes?.a ?? "x");
     expect(run.out()).not.toContain(browser.state.codes?.b ?? "x");
@@ -259,8 +263,11 @@ describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
     const pcId = await approve();
     const browser = await fakeBrowser({ pcId, failDone: true });
     const tty = fakeTty(() => browser.state.codes?.b);
-    const error = await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []), "PAIR_DONE_FAILED");
+    const run = deps({ transport: () => browser.transport, openTty: () => tty.tty });
+    const error = await expectCli(executePair(run.deps, []), "PAIR_DONE_FAILED");
     expect(error.message).toContain("relay closed");
+    // 양쪽 완료가 아니다 — 알리지 않는다.
+    expect(run.notified).toEqual([]);
     expect(error.message).toContain(`ainecto pair --remove ${await browserKeyIdOf(publicRawFromJwk(browser.own))}`);
     expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length).toBe(1);
   });

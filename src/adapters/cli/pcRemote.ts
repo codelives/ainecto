@@ -3,6 +3,7 @@ import type { TokenProvider } from "../../core/auth/oauth";
 import { ensurePrivateDir } from "../../core/fs/privateFiles";
 import { PC_SESSION_NAME } from "../../core/pc/pcSession";
 import { pcKeysPath } from "../../core/pc/pcKeys";
+import { createPcNotifier } from "../../core/pc/pcNotify";
 import { accountKey, loadPcSettings, pcSettingsPath } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
 import { appHome, termPaths, type TermPaths } from "../../core/term/paths";
@@ -136,6 +137,7 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
       cliVersion: CLI_VERSION_LABEL,
       remoteEnabled: setup.remoteEnabled,
       trust: setup.trust,
+      notifier: createPcNotifier({ log }),
       exclude: [PC_SESSION_NAME],
       sessionEnv: setup.env,
       appHome: setup.appHome,

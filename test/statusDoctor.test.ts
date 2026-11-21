@@ -1,3 +1,4 @@
+import { notificationHint } from "../src/core/pc/pcNotify";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,6 +109,8 @@ describe("ainecto doctor", () => {
 
     expect(await executeDoctorCommand(options())).toBe(0);
     expect(data().summary).toBe("all good");
+    // macOS 면 알림 허용 안내 한 줄(판정에는 안 들어감 — 설계 terminal-e2e §4-6).
+    expect(data().note).toBe(notificationHint(process.platform));
     expect(check("Claude Code")).toMatchObject({ level: "ok", detail: `connected to ${ENDPOINT}` });
     expect(check("Cursor")).toMatchObject({ level: "ok", detail: `connected to ${ENDPOINT}` });
     expect(check("Codex")).toMatchObject({ level: "ok", detail: "connected (@ainecto/mcp@0.8.0)" });

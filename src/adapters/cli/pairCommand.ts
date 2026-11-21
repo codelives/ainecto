@@ -38,6 +38,8 @@ export interface PairDeps {
   account: () => Promise<Pick<AccountSummary, "userId">>;
   /** 서버 중계(이 PC 의 pcId 로) — 짝짓기를 시작할 때만 연다. 운영은 pcPairRelay.createPairRelay. */
   transport: (pcId: string) => PairTransport | Promise<PairTransport>;
+  /** 짝짓기가 양쪽에서 끝났다(done 송신 뒤) — PC 알림(§11-7). 운영은 pcNotify.createPcNotifier. 던지지 않는다. */
+  notifyPaired: (browser: { keyId: string; name: string }) => Promise<void>;
   /** 떠 있는 PC 연결을 완전히 끄고 끝난 것을 확인한다(못 하면 던진다) — 끈 세션 이름들. 운영은 pcCommand.turnOffPcs. */
   turnOffPc: () => Promise<TurnedOffPc[]>;
   /** 짝짓기 기한 — 운영은 PAIR_WAIT_MS. */
@@ -127,6 +129,7 @@ async function pair(deps: PairDeps): Promise<number> {
     throw new CliCommandError("PAIR_DONE_FAILED", `Saved "${browser.name}" on this PC, but the browser did not get the confirmation (${doneError}), `
       + `so it will not trust this PC yet. Remove it with \`ainecto pair --remove ${browser.keyId}\` and run \`ainecto pair\` again.`);
   }
+  await deps.notifyPaired({ keyId: browser.keyId, name: browser.name });
   const lines = [`Paired "${browser.name}" with this PC. Remove it later with \`ainecto pair --remove ${browser.keyId}\`.`];
   if (settings.accounts[key]?.remoteTerminal !== true) {
     lines.push("Terminals from the web are blocked on this PC — `ainecto remote on` allows them.");

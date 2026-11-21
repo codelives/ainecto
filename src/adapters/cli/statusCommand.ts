@@ -1,3 +1,4 @@
+import { notificationHint } from "../../core/pc/pcNotify";
 import { renderSuccess } from "../../core/output/render";
 import { AGENT_CLIENT_LABELS } from "../../core/setup/agentConnections";
 import { doctorChecks } from "../../core/setup/doctorChecks";
@@ -34,9 +35,12 @@ export async function executeDoctorCommand(options: StatusCommandOptions): Promi
   const checks = doctorChecks(status);
   const failed = checks.filter((check) => check.level === "fail").length;
   const warned = checks.filter((check) => check.level === "warn").length;
+  const notifyHint = notificationHint(process.platform);
   options.io.stdout.write(renderSuccess({
     summary: failed > 0 ? `${failed} problem(s) to fix` : warned > 0 ? `working — ${warned} suggestion(s)` : "all good",
     checks,
+    // macOS 첫 알림 허용 안내 한 줄(설계 terminal-e2e §4-6) — 판정(ok/warn/fail)에는 넣지 않는다.
+    ...(notifyHint ? { note: notifyHint } : {}),
   }, { json: options.json }));
   return failed > 0 ? 1 : 0;
 }

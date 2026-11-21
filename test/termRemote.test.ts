@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
 import { accountKey } from "../src/core/pc/pcSettings";
 import { termPaths } from "../src/core/term/paths";
+import { createPcNotifier } from "../src/core/pc/pcNotify";
 import { createRemoteHttp, openRemoteLog, pollItems, remoteStateOf, runRemoteBridge, type BridgeDeps, type RemoteResult } from "../src/core/term/remote";
 import { frameBudget, screenFrame } from "../src/core/term/remoteFrame";
 import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
@@ -97,11 +98,13 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
   const web = (options: { pin?: boolean; name?: string } = {}): Promise<FakeWeb> => FakeWeb.create(fake, ids(), options);
 
   function start(options: { remoteEnabled?: boolean; exclude?: string[]; onAnswer?: BridgeDeps["onAnswer"]; trust?: boolean } = {})
-    : { done: Promise<RemoteResult>; stop: AbortController; printed: string[] } {
+    : { done: Promise<RemoteResult>; stop: AbortController; printed: string[]; notified: string[][] } {
     const paths = termPaths(rig.home);
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });   // 운영은 pcRemoteSetup 이 만든다
     const log = openRemoteLog(paths);
     const printed: string[] = [];
+    /** 알림 도구에 넘긴 인자(macOS osascript 모양) — 실제 알림은 띄우지 않는다. */
+    const notified: string[][] = [];
     const stop = new AbortController();
     const done = runRemoteBridge({
       paths,
@@ -116,6 +119,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
       cliVersion: "dev",
       remoteEnabled: options.remoteEnabled ?? true,
       trust: options.trust === false ? undefined : { keysPath: keysPath(), accountKey: accountKey(fake.endpoint, USER_ID), userId: USER_ID.toUpperCase() },
+      notifier: createPcNotifier({ log, platform: "darwin", run: async (_file, args) => { notified.push(args); } }),
       exclude: options.exclude ?? ["ainecto-pc"],
       sessionEnv: Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string")),
       appHome: join(rig.home, "app"),
@@ -123,7 +127,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
       print: (line) => printed.push(line),
       ...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
     });
-    return { done, stop, printed };
+    return { done, stop, printed, notified };
   }
 
   function remoteLog(): Array<Record<string, unknown>> {
@@ -265,6 +269,20 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     expect(remoteLog().filter((r) => r.event === "remote_command_result" && r.type === "create").map((r) => r.executedThrough)).toEqual([1, 2, 3, 4]);
     run.stop.abort();
     await run.done;
+    // PC 알림(§11-7) — confirm 뒤 «연결» · 데몬이 만든 뒤 «명령»/«셸» · 거절된 만들기는 없음 · 글에 명령·폴더·키 id 없음 · 고정 스크립트 + 데이터 인자.
+    const bodies = run.notified.map((args) => args.at(-1) ?? "");
+    expect(run.notified.every((args) => args.slice(0, 6).join("|")
+      === "-e|on run argv|-e|display notification (item 2 of argv) with title (item 1 of argv)|-e|end run" && args[6] === "AiNecto")).toBe(true);
+    expect(bodies).toEqual([
+      expect.stringMatching(/^Chrome · macOS opened a terminal connection to this PC — \d\d:\d\d\. Not you\? Run `ainecto remote off`\.$/),
+      expect.stringContaining("started a command in a new terminal"),
+      expect.stringContaining("started a new shell"),
+    ]);
+    for (const body of bodies) {
+      for (const secret of ["made-", "echo", rig.home, made.opId, browser.browser.keyId]) expect(body).not.toContain(secret);
+    }
+    expect(remoteLog().filter((r) => r.event === "pc_notify").map((r) => r.kind)).toEqual(["session", "command", "shell"]);
+    expect(remoteLog().filter((r) => r.event === "pc_notify_result").every((r) => r.ok === true)).toBe(true);
     expectLogPairs();
   }, LONG);
 

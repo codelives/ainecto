@@ -20,6 +20,7 @@ import { executePcStart, executePcStop, executeRemoteSetting, turnOffPcs, type P
 import { executePair, openDevTty } from "./pairCommand";
 import { PAIR_WAIT_MS } from "../../core/pc/pcPairing";
 import { createPairRelay } from "../../core/pc/pcPairRelay";
+import { createPcNotifier } from "../../core/pc/pcNotify";
 import { openRemoteLog } from "../../core/term/remote";
 import { pcKeysPath } from "../../core/pc/pcKeys";
 import { SESSION_ENV } from "../../core/term/session";
@@ -234,6 +235,11 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
           const paths = termPaths();
           await ensurePrivateDir(paths.dir);
           return createPairRelay({ endpoint: resolved.endpoint, tokenProvider: connect().auth, log: openRemoteLog(paths), pcId, holdMs: PAIR_WAIT_MS });
+        },
+        notifyPaired: async (browser) => {
+          const paths = termPaths();
+          await ensurePrivateDir(paths.dir);
+          await createPcNotifier({ log: openRemoteLog(paths) }).notify({ kind: "paired", keyId: browser.keyId, browserName: browser.name });
         },
         turnOffPc: () => turnOffPcs(pcDeps()),
         waitMs: PAIR_WAIT_MS,

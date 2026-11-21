@@ -1,3 +1,4 @@
+import { notificationHint } from "../src/core/pc/pcNotify";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -91,6 +92,8 @@ describe("ainecto setup", () => {
     expect(next).toContain("signs in to AiNecto by itself");
     expect(next).toContain("/mcp");
     expect(next).toContain("codex mcp login ainecto");
+    const hint = notificationHint(process.platform);
+    if (hint) expect(result().next).toContain(hint);
     expect(result().account).toMatchObject({ signedIn: true, userId: "u-1", name: "Ryan", jobTitle: "Founder & Product Lead", projects: 2 });
     // ★이메일 칸이 없다.
     expect(JSON.stringify(result().account)).not.toMatch(/email|@/i);
