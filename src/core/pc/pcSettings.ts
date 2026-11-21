@@ -88,8 +88,12 @@ export function withRemoteTerminal(settings: PcSettings, key: string, remoteTerm
   return account ? { ...settings, accounts: { ...settings.accounts, [key]: { ...account, remoteTerminal } } } : undefined;
 }
 
+/** 그 계정 열쇠가 이 서버 주소의 것인가 — `stop --forget` 이 pc.json·pc-keys.json 에 같은 기준으로 쓴다. */
+export function isEndpointAccount(key: string, endpoint: string): boolean {
+  return key.startsWith(`${endpoint}#`);
+}
+
 /** 이 서버 주소의 동의를 모두 지운다(`ainecto stop --forget`) — 로그인 없이도 된다. */
 export function withoutEndpoint(settings: PcSettings, endpoint: string): PcSettings {
-  const prefix = `${endpoint}#`;
-  return { ...settings, accounts: Object.fromEntries(Object.entries(settings.accounts).filter(([key]) => !key.startsWith(prefix))) };
+  return { ...settings, accounts: Object.fromEntries(Object.entries(settings.accounts).filter(([key]) => !isEndpointAccount(key, endpoint))) };
 }

@@ -49,6 +49,7 @@ function swap(scenario: Scenario = {}): { deps: SwapDeps; records: () => Promise
     interactive: false,
     paths: termPaths(rig.home),
     settingsPath: join(rig.home, ".ainecto", "pc.json"),
+    keysPath: join(rig.home, ".ainecto", "pc-keys.json"),
     hostName: "test-host",
     endpoint: "https://example.test/mcp",
     cwd: rig.home,

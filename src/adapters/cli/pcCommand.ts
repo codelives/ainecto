@@ -29,6 +29,7 @@ import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { isNodeError } from "../../core/fs/privateFiles";
+import { loadPcKeys, savePcKeys, withoutEndpointKeys } from "../../core/pc/pcKeys";
 import { readFile } from "node:fs/promises";
 import type { CliIO } from "./ainectoCli";
 import { promptLine } from "./destructiveConfirmation";
@@ -46,6 +47,8 @@ export interface PcDeps {
   interactive: boolean;
   paths: TermPaths;
   settingsPath: string;
+  /** `~/.ainecto/pc-keys.json` — stop --forget 이 이 서버의 키도 지운다. */
+  keysPath: string;
   hostName: string;
   endpoint: string;
   /** pc 세션의 폴더 — serve 가 이 폴더의 .ainecto/agent.local 에서 Agent 이름을 읽는다. */
@@ -246,7 +249,7 @@ async function lastLogLineSince(path: string, since: string): Promise<string | u
   }
 }
 
-/** `ainecto stop [--forget]` — pc 세션에 Ctrl+C(서버에 끝을 알린다) · 기한 넘으면 kill · --forget 은 이 서버 주소의 동의도 지운다. */
+/** `ainecto stop [--forget]` — pc 세션에 Ctrl+C(서버에 끝을 알린다) · 기한 넘으면 kill · --forget 은 이 서버 주소의 동의·짝지은 키도 지운다. */
 export async function executePcStop(deps: PcDeps, argv: string[]): Promise<number> {
   const unknown = argv.filter((arg) => arg !== "--forget");
   if (unknown.length > 0) {
@@ -264,6 +267,13 @@ export async function executePcStop(deps: PcDeps, argv: string[]): Promise<numbe
   if (forget) {
     await savePcSettings(deps.settingsPath, withoutEndpoint(await loadPcSettings(deps.settingsPath, deps.hostName), deps.endpoint));
     lines.push(`Removed your approval for ${deps.endpoint} on this PC; \`ainecto\` asks again next time.`);
+    // ★그 서버(계정 열쇠)의 키만 — 다른 서버의 짝짓기는 그대로(설계 r2 §11-4). 지울 것이 없으면 파일을 만들지 않는다.
+    const keys = await loadPcKeys(deps.keysPath);
+    const kept = withoutEndpointKeys(keys, deps.endpoint);
+    if (Object.keys(kept.accounts).length !== Object.keys(keys.accounts).length) {
+      await savePcKeys(deps.keysPath, kept);
+      lines.push("Also removed this PC's terminal key and paired browsers for that server — pair again with `ainecto pair`.");
+    }
   }
   return print(deps, { stopped: running.map((pc) => pc.session), forgot: forget }, lines.join("\n"));
 }

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { accountKey } from "../src/core/pc/pcSettings";
+import { generateSigningJwk } from "../src/core/term/e2e";
+import { loadPcKeys, savePcKeys } from "../src/core/pc/pcKeys";
 import { AGENT_MISSING_LINE, SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
 import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../src/core/term/remote";
 import { systemCommandRunner } from "../src/core/setup/commandRunner";
@@ -56,6 +58,7 @@ function harness(overrides: Partial<PcDeps> & { version?: string; script?: strin
     interactive: true,
     paths: termPaths(rig.home),
     settingsPath: join(rig.home, ".ainecto", "pc.json"),
+    keysPath: join(rig.home, ".ainecto", "pc-keys.json"),
     hostName: "test-host",
     endpoint: ENDPOINT,
     cwd: rig.home,
@@ -156,11 +159,18 @@ describe("이 PC 연결 — 실 데몬", () => {
     // 신호 없이(코드 0) 끝났으니 매니페스트에서도 빠진다 — 재부팅 뒤 restore 가 되살리지 않는다(쓰기는 데몬이 뒤에서 한다).
     await until(async () => (await manifestNames()).join() === "warm", "manifest without ainecto-pc");
 
+    // 짝지은 키 — 이 서버의 것만 지운다(다른 서버의 짝짓기는 그대로).
+    const keysPath = join(rig.home, ".ainecto", "pc-keys.json");
+    const otherServer = accountKey("https://other.test/mcp", "u1");
+    const pcKey = await generateSigningJwk();
+    await savePcKeys(keysPath, { accounts: { [KEY]: { pcKey, browsers: [] }, [otherServer]: { pcKey, browsers: [] } } });
     const forget = harness();
     expect(await executePcStop(forget.deps, ["--forget"])).toBe(0);
     expect(forget.out()).toContain("This PC is not connected.");
     expect(forget.out()).toContain("Removed your approval for https://example.test/mcp on this PC");
+    expect(forget.out()).toContain("Also removed this PC's terminal key and paired browsers for that server");
     expect((await settings()).accounts).toEqual({});
+    expect(Object.keys((await loadPcKeys(keysPath)).accounts)).toEqual([otherServer]);
   }, LONG);
 
   it("stop — Ctrl+C 를 듣지 않으면 기한 뒤 kill", async () => {
