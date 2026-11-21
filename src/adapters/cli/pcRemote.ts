@@ -2,10 +2,11 @@ import { hostname } from "node:os";
 import type { TokenProvider } from "../../core/auth/oauth";
 import { ensurePrivateDir } from "../../core/fs/privateFiles";
 import { PC_SESSION_NAME } from "../../core/pc/pcSession";
+import { pcKeysPath } from "../../core/pc/pcKeys";
 import { accountKey, loadPcSettings, pcSettingsPath } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
 import { appHome, termPaths, type TermPaths } from "../../core/term/paths";
-import { createRemoteHttp, openRemoteLog, runRemoteBridge, type RemoteLogRecord, type RemoteResult } from "../../core/term/remote";
+import { createRemoteHttp, openRemoteLog, runRemoteBridge, type BridgeTrust, type RemoteLogRecord, type RemoteResult } from "../../core/term/remote";
 import type { DaemonLog } from "../../core/term/daemonLog";
 import type { CliTags } from "../../core/pc/pcUpgrade";
 import { CLI_VERSION_LABEL } from "../../core/version";
@@ -65,6 +66,8 @@ export interface PcRemoteSetup {
   pcId: string;
   hostName: string;
   remoteEnabled: boolean;
+  /** E2E 신뢰(pc-keys.json 의 이 계정) — 계정을 못 읽으면 undefined. */
+  trust: BridgeTrust | undefined;
   /** 앱 홈 — 웹이 폴더를 비우고 만든 세션의 폴더가 그 아래에(paths.ts webSessionFolder). */
   appHome: string;
   env: Record<string, string>;
@@ -81,6 +84,7 @@ export async function pcRemoteSetup(input: {
   io: CliIO;
   /** 시험만 바꾼다. */
   settingsPath?: string;
+  keysPath?: string;
   paths?: TermPaths;
   appHome?: string;
   hostName?: string;
@@ -107,6 +111,9 @@ export async function pcRemoteSetup(input: {
     pcId: settings.pcId,
     hostName,
     remoteEnabled: userId !== undefined && settings.accounts[accountKey(input.endpoint, userId)]?.remoteTerminal === true,
+    trust: userId !== undefined
+      ? { keysPath: input.keysPath ?? pcKeysPath(), accountKey: accountKey(input.endpoint, userId), userId }
+      : undefined,
     appHome: input.appHome ?? appHome(),
     env: input.env ?? stringEnv(),
   };
@@ -128,6 +135,7 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
       hostName: setup.hostName,
       cliVersion: CLI_VERSION_LABEL,
       remoteEnabled: setup.remoteEnabled,
+      trust: setup.trust,
       exclude: [PC_SESSION_NAME],
       sessionEnv: setup.env,
       appHome: setup.appHome,

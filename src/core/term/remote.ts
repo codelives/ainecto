@@ -2,11 +2,24 @@ import { StringDecoder } from "node:string_decoder";
 import type { TokenProvider } from "../auth/oauth";
 import { sleep } from "../async/sleep";
 import { createPcHttp, PcCallError, type PcHttp } from "../http/pcHttp";
+import { loadPcKeys } from "../pc/pcKeys";
 import { openTermClient, termRequest, type TermClient } from "./client";
 import { DaemonLog } from "./daemonLog";
+import { transcriptUserId } from "./e2e";
 import { TermError } from "./errors";
 import { isUuid, webSessionFolder, type TermPaths } from "./paths";
-import { appliedSize, listedSessions, type TermRequestBody } from "./protocol";
+import { appliedSize, listedSessions, sessionInstance, type TermRequestBody } from "./protocol";
+import {
+  answerCodeOf,
+  ChannelBook,
+  ChannelSealError,
+  wireCommand,
+  type ChannelBrowser,
+  type ChannelCommand,
+  type CloseReason,
+  type HelloTrust,
+  type WireCommand,
+} from "./remoteChannel";
 import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
 import { sessionsKey, wireSessions, type WireSession } from "./remoteSessions";
 import { RemoteViewer, type ViewerLink } from "./remoteViewer";
@@ -19,19 +32,22 @@ import { cliTagsOf, type CliTags } from "../pc/pcUpgrade";
 /**
  * 원격 터미널 다리 — 이 PC 의 term 세션 «전부»를 AiNecto 웹에 잇는다(KAN-738 next.10, 계획 multi-session-plan.md 11절).
  * PC 하나에 다리 하나(`ainecto pc run` 안에서 Agent 와 함께). 출처 = 사용자 web-cmux 의 폴링 방식.
+ * ★화면·입력·명령은 종단 간 암호(설계 terminal-e2e §14 · A1~A7) — 서버는 채널 손잡이·암호문·메타만 본다. 평문 경로는 없다.
  *
  * <pre>
- * 열기      open {pcId, hostName, cliVersion, remoteEnabled, sessions[]} — 자기 pc 세션은 목록에서 뺀다. PC 설정이 끔이면 remoteEnabled=false
- * 목록      데몬 watch-sessions 이벤트 · poll 이 돌아올 때마다 ls 를 견줘 바뀐 때만 sessions 로 통째 올린다(옛 데몬은 poll 때만)
- * 보기      poll 의 watching 에 든 세션만 화면을 흘린다(세션마다 {@link RemoteViewer})
- * 명령      input·key·resize 는 세션 이름으로 데몬에 · create·kill·label 은 데몬에서 해 보고 answer(requestId, ok|code)
- * 원격 상태  poll 의 remote — off-by-web(웹 «원격 터미널 끊기»)·off-by-pc 면 화면·명령을 멈추고 poll 만 잇는다(웹 PC 줄에 이유가 보인다)
+ * 열기      open {pcId, hostName, cliVersion, remoteEnabled, sessions[], e2e: 1} — 자기 pc 세션은 목록에서 뺀다. PC 설정이 끔이면 remoteEnabled=false
+ * 목록      데몬 watch-sessions 이벤트 · poll 이 돌아올 때마다 ls 를 견줘 바뀐 때만 sessions 로 통째 올린다(메타 — 암호 아님 §2)
+ * 채널      poll 의 hello → 고정 핀으로 검증 → welcome(또는 refuse PAIRING_REQUIRED) · cmd confirm(n=0) 복호 뒤에만 활성(remoteChannel.ts)
+ * 보기      poll 의 가장 최근 watch {channels:[{channelId, session}]} — 활성 채널의 그 세션만 채널 키로 봉인한 화면을 흘린다
+ * 명령      cmd 를 받은 순서 그대로 복호·대조 → 데몬(인스턴스 검사는 데몬이 적용하는 자리에서 §14-6 4) · CRUD 는 봉인 answer(requestId)
+ *           input·key·resize 가 거절되면 실행 확인 지점을 올리지 않고 그 채널을 닫는다(A6) · 결번·되감기·복호 실패도 닫는다
+ * 원격 상태  poll 의 remote — off-by-web·off-by-pc 면 채널을 모두 닫고(REMOTE_OFF) poll 만 잇는다(웹 PC 줄에 이유가 보인다)
  * 끝        멈춤 신호 → close · 같은 PC 의 다른 다리가 열면(CLOSED REPLACED) 그대로 끝 · 401/403·그 밖 4xx → 사유와 함께 1
- * 다시      네트워크·5xx·기한 초과 → C12 부터 두 배씩 C13 까지 · poll 404 REMOTE_NOT_FOUND(api 재시작) → 같은 PC 로 다시 open
+ * 다시      네트워크·5xx·기한 초과 → C12 부터 두 배씩 C13 까지 · poll 404 REMOTE_NOT_FOUND(api 재시작) → 같은 PC 로 다시 open(채널은 새 hello)
  * </pre>
  */
 
-export type RemoteOp = "open" | "sessions" | "poll" | "frame" | "answer" | "close";
+export type RemoteOp = "open" | "sessions" | "poll" | "frame" | "answer" | "close" | "welcome" | "channel/close";
 export type RemoteHttp = PcHttp<RemoteOp>;
 export type RemoteState = "on" | "off-by-pc" | "off-by-web";
 
@@ -43,10 +59,13 @@ export const REMOTE_OFF_BY_WEB_LINE = `${REMOTE_STATE_PREFIX}turned off from the
 /** 서버가 이 링크를 모른다(api 재시작) — 다시 열기의 유일한 계기. */
 const REMOTE_NOT_FOUND = "REMOTE_NOT_FOUND";
 
+/** open 본문의 E2E 판(§14-5) — 서버는 이것이 없으면 CLI_TOO_OLD 로 거절한다. */
+const E2E_VERSION = 1;
+
 /**
  * `remote.log` 레코드. ★서버 호출은 {@code remote_call} 1줄 + {@code remote_call_response} 1줄(같은 callId — 공용 입구가 finally 에서 쓴다).
  * 웹 명령은 {@code remote_command} 1줄 + 결과 {@code remote_command_result} 1줄(CRUD 는 requestId 로 잇는다).
- * ★남기지 않는 것: 화면 글자·입력 바이트·명령 줄·토큰(길이·수만).
+ * ★남기지 않는 것: 화면 글자·입력 바이트·명령 줄·폴더·암호문·공개키·난수·토큰·데몬 오류 원문(§11-5 — 코드·길이·수만).
  */
 export type RemoteLogRecord =
   | { event: "remote_start"; pid: number; version: string; endpoint: string; host: string; pcId: string; remote: string }
@@ -55,21 +74,30 @@ export type RemoteLogRecord =
   | { event: "remote_call_response"; callId: string; op: string; ok: boolean; status?: number; code?: string; error?: string; ms: number;
       state?: string; reason?: string; remote?: string; commands?: number; version?: number }
   /** 서버가 링크를 잊어(api 재시작) 같은 PC 로 다시 열었다. */
-  | { event: "remote_reopened"; reason: string; previousLinkId: string; linkId: string }
+  | { event: "remote_reopened"; reason: string; previousLinkId: string; linkId: string; channelsDropped: number }
   /** 원격 상태가 바뀌었다(웹 끊기 등). */
   | { event: "remote_state"; remote: string }
-  /** 웹이 보는 세션이 바뀌었다. */
-  | { event: "remote_watching"; sessions: string[] }
-  | { event: "remote_command"; type: string; session?: string; requestId?: string; bytes?: number }
-  | { event: "remote_command_result"; type: string; session?: string; requestId?: string; ok: boolean; code?: string }
+  /** 웹이 보는 (채널, 세션)이 바뀌었다. */
+  | { event: "remote_watching"; watching: Array<{ channelId: string; session: string }> }
+  /** hello 하나의 판정 — welcome·refused(PAIRING_REQUIRED)·closed(사유)·ignored(아는 channelId). */
+  | { event: "remote_hello"; channelId: string; result: "welcome" | "refused" | "closed" | "ignored"; browserKeyId?: string; reason?: string }
+  /** 채널이 활성됐다(confirm 복호) 또는 닫혔다(by = pc 면 PC 가 닫고 서버에 알림 · web 이면 웹이 닫음 · local 이면 다리 안에서만). */
+  | { event: "remote_channel"; channelId: string; state: "active" | "closed"; by?: "pc" | "web" | "local"; reason?: string; browserKeyId?: string }
+  /** 같은 번호·같은 암호문 재도착(확인만) · 모르는 채널의 명령(실행 안 함). */
+  | { event: "remote_command_skipped"; channelId: string; n: number; why: "duplicate" | "unknown-channel" | "malformed" }
+  | { event: "remote_command"; type: string; channelId: string; n: number; session?: string; opId?: string; requestId?: string; bytes?: number }
+  | { event: "remote_command_result"; type: string; channelId: string; n: number; session?: string; requestId?: string; ok: boolean; code?: string;
+      executedThrough?: number }
   /** 서버 frame 상한에 맞추려고 위 줄을 덜어 낸 수가 바뀌었다. */
-  | { event: "remote_frame_trimmed"; session: string; dropped: number }
-  /** 데몬 요청 실패 — 삼키지 않는다. */
-  | { event: "remote_daemon_error"; op: string; session?: string; code: string; message: string }
+  | { event: "remote_frame_trimmed"; channelId: string; session: string; dropped: number }
+  /** 데몬 요청 실패 — 삼키지 않는다. 웹 명령의 실패는 코드만(§11-5), 화면 루프의 실패는 사유까지(내용이 아니다). */
+  | { event: "remote_daemon_error"; op: string; session?: string; code: string; message?: string }
+  /** hello 를 검증할 신뢰(pc-keys.json)를 못 읽었다 — 그 hello 는 PAIRING_REQUIRED. */
+  | { event: "remote_trust_error"; code: string }
   /** 꼬리표를 실은 만들기인데 데몬 응답(info)에 project 가 없다(옛 데몬이 칸을 버림 등) — 세션은 꼬리표 없이 돈다. */
-  | { event: "remote_create_project_dropped"; requestId: string; session: string }
+  | { event: "remote_create_project_dropped"; opId: string; session: string }
   /** 거절된 웹 만들기에서 방금 만든 세션 폴더를 지우지 못했다(비어 있지 않음 등) — 폴더는 남고 원래 거절은 그대로. */
-  | { event: "remote_session_folder_kept"; requestId: string; folder: string; code: string; message: string }
+  | { event: "remote_session_folder_kept"; opId: string; code: string }
   /** 보던 세션이 데몬에서 이미 끝났다(웹에서 끝낸 직후의 읽기 등) — 오류가 아니다. */
   | { event: "remote_session_ended"; op: string; session: string; code: string }
   | { event: "remote_stop"; pid: number; reason: string; exitCode?: number };
@@ -108,6 +136,16 @@ export function createRemoteHttp(input: {
   });
 }
 
+/** hello 를 검증할 곳 — 다리는 hello 마다 이 파일을 다시 읽는다(§6: `pair` 가 끝나도 다리를 다시 띄우지 않는다). */
+export interface BridgeTrust {
+  /** `~/.ainecto/pc-keys.json`. */
+  keysPath: string;
+  /** 그 파일의 계정 열쇠(`서버#userId` — pcSettings.accountKey). */
+  accountKey: string;
+  /** 대화 기록의 userId(UUID — 소문자로 바꿔 넣는다). */
+  userId: string;
+}
+
 export interface BridgeDeps {
   paths: TermPaths;
   http: RemoteHttp;
@@ -117,8 +155,10 @@ export interface BridgeDeps {
   hostName: string;
   /** open 에 알리는 판({@code CLI_VERSION_LABEL}). */
   cliVersion: string;
-  /** 이 계정이 이 PC 에서 웹 터미널을 허용했나(pc.json) — 끔이면 remoteEnabled=false 로 열고 명령을 받지 않는다. */
+  /** 이 계정이 이 PC 에서 웹 터미널을 허용했나(pc.json) — 끔이면 remoteEnabled=false 로 열고 채널을 받지 않는다. */
   remoteEnabled: boolean;
+  /** E2E 신뢰 — 계정을 모르면 undefined(모든 hello 가 PAIRING_REQUIRED). */
+  trust: BridgeTrust | undefined;
   /** 목록에서 뺄 세션 — 이 다리를 돌리는 pc 세션. */
   exclude: readonly string[];
   /** 웹이 만드는 세션의 환경(로컬 `term new` 와 같은 규칙: 다리 프로세스의 환경). */
@@ -149,15 +189,24 @@ interface RemoteEnd extends RemoteResult {
   close: boolean;
 }
 
+interface Watch {
+  channelId: string;
+  session: string;
+}
+
+const viewerKey = (watch: Watch): string => `${watch.channelId}\u0000${watch.session}`;
+
 export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
   let ending: RemoteEnd | undefined;
   const stopper = new AbortController();
-  const viewers = new Map<string, RemoteViewer>();
+  /** (채널, 세션)마다 화면 루프 하나. */
+  const viewers = new Map<string, { watch: Watch; viewer: RemoteViewer }>();
+  const book = new ChannelBook(deps.pcId);
   const end = (outcome: RemoteEnd): void => {
     if (ending) return;
     ending = outcome;
     stopper.abort();
-    for (const viewer of viewers.values()) viewer.stop();
+    for (const { viewer } of viewers.values()) viewer.stop();
     viewers.clear();
   };
   const onUserStop = (): void => end({ exitCode: 0, reason: "Stopped.", close: true });
@@ -169,10 +218,17 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
   try {
     const first = await currentSessions(deps);
     if (ending) return { exitCode: ending.exitCode, reason: ending.reason };
-    let link = await openLink(deps, 1, deps.remoteEnabled, deps.remoteEnabled ? first : [], undefined);
+    let link: Link;
+    try {
+      link = await openLink(deps, 1, deps.remoteEnabled, deps.remoteEnabled ? first : [], undefined);
+    } catch (error) {
+      return { exitCode: 1, reason: refused(error).reason };
+    }
     let remote = startState(deps.remoteEnabled);
     /** 서버에 마지막으로 올린 목록 — 바뀐 때만 올린다. */
     let uploaded = deps.remoteEnabled ? sessionsKey(first) : undefined;
+    /** 서버가 마지막으로 알려 준 보기 목록(A1 — 가장 최근 watch 가 전체). 활성 채널만 화면을 받는다. */
+    let watchList: Watch[] = [];
     deps.log.write({ event: "remote_opened", linkId: link.linkId, sessions: deps.remoteEnabled ? first.length : 0, remote,
       pollHoldSeconds: link.pollHoldSeconds, frameMaxBytes: link.frameMaxBytes });
     deps.print(deps.remoteEnabled
@@ -196,7 +252,7 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
         try {
           await deps.http.call("sessions", { linkId: link.linkId, sessions }, { signal: stopper.signal });
           uploaded = key;
-          for (const viewer of viewers.values()) viewer.refresh();
+          for (const { viewer } of viewers.values()) viewer.refresh();
         } catch {
           // 응답 줄은 공용 입구가 남겼다 — 다음 poll 이 돌아올 때 다시 견준다(uploaded 그대로).
         }
@@ -217,11 +273,54 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
       }
     }
 
-    const viewerFor = (name: string, size: { cols: number; rows: number }): RemoteViewer => {
+    /** 그 채널의 화면 루프를 모두 멈춘다. */
+    const stopViewers = (channelId: string): void => {
+      for (const [key, { watch, viewer }] of viewers) {
+        if (watch.channelId !== channelId) continue;
+        viewer.stop();
+        viewers.delete(key);
+      }
+    };
+    /** 그 채널의 화면을 다시 보낸다(실행 확인 지점이 올랐다). */
+    const refreshChannel = (channelId: string): void => {
+      for (const { watch, viewer } of viewers.values()) {
+        if (watch.channelId === channelId) viewer.refresh();
+      }
+    };
+    /** PC 가 채널을 닫는다 — 장부에서 지우고 화면을 멈추고 서버에 사유(A7 허용 목록)를 알린다. */
+    const closeChannel = async (channelId: string, reason: CloseReason, browser?: ChannelBrowser): Promise<void> => {
+      book.drop(channelId);
+      stopViewers(channelId);
+      commands.forgetChannel(channelId);
+      deps.log.write({ event: "remote_channel", channelId, state: "closed", by: "pc", reason, ...(browser ? { browserKeyId: browser.keyId } : {}) });
+      try {
+        await deps.http.call("channel/close", { linkId: link.linkId, channelId, reason }, { signal: stopper.signal });
+      } catch {
+        // 응답 줄은 공용 입구가 남겼다 — 서버는 링크와 같은 수명으로 채널을 버린다.
+      }
+    };
+    /** 채널을 모두 닫는다(원격 끔). */
+    const closeAllChannels = async (reason: CloseReason): Promise<void> => {
+      for (const channelId of book.dropAll()) {
+        stopViewers(channelId);
+        commands.forgetChannel(channelId);
+        deps.log.write({ event: "remote_channel", channelId, state: "closed", by: "pc", reason });
+        try {
+          await deps.http.call("channel/close", { linkId: link.linkId, channelId, reason }, { signal: stopper.signal });
+        } catch {
+          // 응답 줄은 공용 입구가 남겼다.
+        }
+      }
+    };
+
+    const viewerFor = (watch: Watch, size: { cols: number; rows: number }): RemoteViewer => {
+      const key = viewerKey(watch);
       const viewer = new RemoteViewer({
-        paths: deps.paths, session: name, http: deps.http, log: deps.log, link: () => link, size,
+        paths: deps.paths, session: watch.session, channelId: watch.channelId, http: deps.http, log: deps.log, link: () => link, size,
+        seal: (body) => book.seal(watch.channelId, { kind: "frame", session: watch.session }, { ...body }),
+        executedThrough: () => book.executedThrough(watch.channelId),
         onGone: () => {
-          viewers.delete(name);
+          if (viewers.get(key)?.viewer === viewer) viewers.delete(key);
           void syncList();
         },
         onRefused: (error) => end(refused(error)),
@@ -229,35 +328,40 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
           uploaded = undefined;   // 서버 목록이 이 세션을 모른다 — 다시 올린다
           void syncList();
         },
+        onChannelEnded: (reason) => {
+          if (viewers.get(key)?.viewer === viewer) viewers.delete(key);
+          if (reason !== "CHANNEL_GONE") void closeChannel(watch.channelId, reason);
+        },
       });
       void viewer.run();
       return viewer;
     };
-    /** 웹이 보는 세션에 맞춰 화면 루프를 켜고 끈다. */
-    const setWatching = async (names: readonly string[]): Promise<void> => {
-      const wanted = remote === "on" ? names : [];
+    /** 보기 목록에 맞춰 화면 루프를 켜고 끈다 — 활성 채널만. */
+    const applyWatching = async (): Promise<void> => {
+      const wanted = remote === "on" ? watchList.filter((watch) => book.isActive(watch.channelId)) : [];
+      const wantedKeys = new Set(wanted.map(viewerKey));
       let changed = false;
-      for (const [name, viewer] of viewers) {
-        if (!wanted.includes(name)) {
+      for (const [key, { viewer }] of viewers) {
+        if (!wantedKeys.has(key)) {
           viewer.stop();
-          viewers.delete(name);
+          viewers.delete(key);
           changed = true;
         }
       }
-      const missing = wanted.filter((name) => !viewers.has(name));
+      const missing = wanted.filter((watch) => !viewers.has(viewerKey(watch)));
       if (missing.length > 0) {
         const sizes = new Map((await currentSessions(deps).catch(() => [])).map((s) => [s.name, { cols: s.cols, rows: s.rows }]));
-        for (const name of missing) {
-          const size = sizes.get(name);
-          if (size) {
-            viewers.set(name, viewerFor(name, size));
+        for (const watch of missing) {
+          const size = sizes.get(watch.session);
+          if (size && !viewers.has(viewerKey(watch))) {
+            viewers.set(viewerKey(watch), { watch, viewer: viewerFor(watch, size) });
             changed = true;
           }
         }
       }
-      if (changed) deps.log.write({ event: "remote_watching", sessions: [...viewers.keys()] });
+      if (changed) deps.log.write({ event: "remote_watching", watching: [...viewers.values()].map(({ watch }) => watch) });
     };
-    const applyRemote = (next: RemoteState): void => {
+    const applyRemote = async (next: RemoteState): Promise<void> => {
       if (next === remote) return;
       remote = next;
       deps.log.write({ event: "remote_state", remote });
@@ -266,15 +370,60 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
         void syncList();
         deps.print(`${REMOTE_STATE_PREFIX}on.`);
       } else {
-        for (const viewer of viewers.values()) viewer.stop();
-        viewers.clear();
+        await closeAllChannels("REMOTE_OFF");
         deps.print(remote === "off-by-web"
           ? `${REMOTE_OFF_BY_WEB_LINE} Run \`ainecto\` (or \`ainecto remote on\`) on this PC to turn it back on.`
           : `${REMOTE_STATE_PREFIX}off on this PC (\`ainecto remote on\` allows it).`);
       }
     };
 
-    const commands = new CommandRunner(deps, control, viewers, () => remote);
+    /** hello 하나 — 원격이 꺼졌으면 REMOTE_OFF, 아니면 장부가 판정하고 그대로 서버에 답한다. */
+    const onHello = async (channelId: string, hello: unknown): Promise<void> => {
+      if (remote !== "on") {
+        deps.log.write({ event: "remote_hello", channelId, result: "closed", reason: "REMOTE_OFF" });
+        await closeChannel(channelId, "REMOTE_OFF");
+        return;
+      }
+      const outcome = await book.hello(channelId, hello, await loadTrust(deps));
+      switch (outcome.type) {
+        case "ignored":
+          deps.log.write({ event: "remote_hello", channelId, result: "ignored" });
+          return;
+        case "close":
+          deps.log.write({ event: "remote_hello", channelId, result: "closed", reason: outcome.reason });
+          await closeChannel(channelId, outcome.reason);
+          return;
+        case "refuse":
+          deps.log.write({ event: "remote_hello", channelId, result: "refused", reason: "PAIRING_REQUIRED" });
+          try {
+            await deps.http.call("welcome", { linkId: link.linkId, channelId, refuse: "PAIRING_REQUIRED" }, { signal: stopper.signal });
+          } catch {
+            // 응답 줄은 공용 입구가 남겼다 — 웹은 welcome 을 못 받아 다시 연다.
+          }
+          return;
+        case "welcome":
+          deps.log.write({ event: "remote_hello", channelId, result: "welcome", browserKeyId: outcome.browser.keyId });
+          try {
+            await deps.http.call("welcome", { linkId: link.linkId, channelId, welcome: outcome.welcome }, { signal: stopper.signal });
+          } catch {
+            // 응답 줄은 공용 입구가 남겼다 — 받지 못한 welcome 의 후보는 버린다(웹이 새 hello 로 다시 연다).
+            book.drop(channelId);
+            deps.log.write({ event: "remote_channel", channelId, state: "closed", by: "local", reason: "welcome-not-delivered" });
+          }
+          return;
+      }
+    };
+
+    const commands = new CommandRunner(deps, control, book, () => remote, () => link.linkId, stopper.signal, {
+      closeChannel,
+      refreshChannel,
+      resized: (session, size) => {
+        for (const { watch, viewer } of viewers.values()) {
+          if (watch.session === session) viewer.setSize(size);
+        }
+      },
+      applyWatching,
+    });
     let reopens = 0;
     let attempt = 0;
     while (!ending) {
@@ -302,9 +451,16 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
             end(refused(reopenError));
             break;
           }
-          deps.log.write({ event: "remote_reopened", reason: REMOTE_NOT_FOUND, previousLinkId: previous.linkId, linkId: link.linkId });
+          // ★서버가 채널을 모두 잊었다 — 채널은 늘 새 hello 다(§11-2). 서버에 알릴 것도 없다.
+          const dropped = book.dropAll();
+          for (const channelId of dropped) {
+            stopViewers(channelId);
+            commands.forgetChannel(channelId);
+          }
+          watchList = [];
+          deps.log.write({ event: "remote_reopened", reason: REMOTE_NOT_FOUND, previousLinkId: previous.linkId, linkId: link.linkId,
+            channelsDropped: dropped.length });
           deps.print("AiNecto lost the remote terminal (it may have restarted); opened it again.");
-          for (const viewer of viewers.values()) viewer.refresh();
           continue;
         }
         if (!(error instanceof PcCallError) || !error.retryable) {
@@ -323,10 +479,38 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
         break;
       }
       const state = remoteStateOf(answer.remote);
-      if (state) applyRemote(state);
-      await setWatching(watchingOf(answer));
-      deps.onAnswer?.({ tags: cliTagsOf(answer.cli), watching: watchingOf(answer).length });
-      await commands.run(remoteCommands(answer), { linkId: () => link.linkId, syncList, stopSignal: stopper.signal });
+      if (state) await applyRemote(state);
+      for (const channelId of book.expired()) {
+        await closeChannel(channelId, "HANDSHAKE_EXPIRED");
+      }
+      for (const item of pollItems(answer)) {
+        if (ending) break;
+        switch (item.type) {
+          case "hello":
+            await onHello(item.channelId, item.hello);
+            break;
+          case "cmd":
+            await commands.run(item.command);
+            break;
+          case "bad-cmd":
+            // 모양이 틀린 명령 — 실행하지 않는다. 아는 채널이면 검증 실패로 닫는다(그 뒤 번호는 어차피 결번이다).
+            deps.log.write({ event: "remote_command_skipped", channelId: item.channelId, n: item.n, why: "malformed" });
+            if (book.has(item.channelId)) await closeChannel(item.channelId, "DECRYPT_FAILED");
+            break;
+          case "watch":
+            watchList = item.channels;
+            break;
+          case "channel-closed":
+            if (book.drop(item.channelId)) {
+              deps.log.write({ event: "remote_channel", channelId: item.channelId, state: "closed", by: "web" });
+            }
+            stopViewers(item.channelId);
+            commands.forgetChannel(item.channelId);
+            break;
+        }
+      }
+      await applyWatching();
+      deps.onAnswer?.({ tags: cliTagsOf(answer.cli), watching: viewers.size });
       await syncList();
     }
 
@@ -343,7 +527,7 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
     return { exitCode: outcome.exitCode, reason: outcome.reason };
   } finally {
     stopper.abort();
-    for (const viewer of viewers.values()) viewer.stop();
+    for (const { viewer } of viewers.values()) viewer.stop();
     deps.signal.removeEventListener("abort", onUserStop);
     listWatch?.close();
     control.close();
@@ -359,7 +543,7 @@ function startState(remoteEnabled: boolean): RemoteState {
 async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boolean, sessions: WireSession[],
   signal: AbortSignal | undefined): Promise<Link> {
   const opened = await deps.http.call("open", {
-    pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled, sessions,
+    pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled, sessions, e2e: E2E_VERSION,
   }, signal ? { signal } : undefined);
   const limits = serverLimits(opened.limits);
   if (typeof opened.linkId !== "string" || typeof opened.linkToken !== "string" || !limits) {
@@ -375,8 +559,23 @@ async function currentSessions(deps: BridgeDeps): Promise<WireSession[]> {
   return wireSessions(listedSessions(result.daemon ? result.data : undefined), deps.exclude);
 }
 
-/** 다시 하지 않을 서버 거절 — 사유와 함께 1. */
+/** hello 마다 — pc-keys.json 의 이 계정(PC 키·짝지은 브라우저). 없거나 못 읽으면 undefined(PAIRING_REQUIRED). */
+async function loadTrust(deps: BridgeDeps): Promise<HelloTrust | undefined> {
+  if (!deps.trust) return undefined;
+  try {
+    const account = (await loadPcKeys(deps.trust.keysPath)).accounts[deps.trust.accountKey];
+    return account ? { userId: transcriptUserId(deps.trust.userId), pcKey: account.pcKey, browsers: account.browsers } : undefined;
+  } catch (error) {
+    deps.log.write({ event: "remote_trust_error", code: errorCode(error) });
+    return undefined;
+  }
+}
+
+/** 다시 하지 않을 서버 거절 — 사유와 함께 1. 새 CLI 가 아직 옛 서버를 만나면(open 400 INVALID — §11-6) 그렇게 말한다. */
 function refused(error: unknown): RemoteEnd {
+  if (error instanceof PcCallError && error.op === "open" && error.status === 400 && error.code === "INVALID") {
+    return { exitCode: 1, reason: "AiNecto's server is not on the new version yet — run `ainecto start` again in a few minutes.", close: false };
+  }
   const what = error instanceof PcCallError
     ? `${error.op}: ${error.status ?? "-"} ${error.code ?? ""} ${error.message}`.replace(/\s+/g, " ")
     : error instanceof Error ? error.message : String(error);
@@ -387,9 +586,15 @@ function forgotten(error: unknown): boolean {
   return error instanceof PcCallError && error.status === 404 && error.code === REMOTE_NOT_FOUND;
 }
 
+function errorCode(error: unknown): string {
+  if (error instanceof TermError) return error.code;
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return error.code;
+  return "UNKNOWN";
+}
+
 function daemonFailed(deps: BridgeDeps, op: string, session: string | undefined, error: unknown): void {
   deps.log.write({ event: "remote_daemon_error", op, ...(session ? { session } : {}),
-    code: error instanceof TermError ? error.code : "UNKNOWN", message: error instanceof Error ? error.message : String(error) });
+    code: errorCode(error), message: error instanceof Error ? error.message : String(error) });
 }
 
 /**
@@ -419,99 +624,172 @@ class DaemonControl {
   }
 }
 
-/** poll 명령을 데몬으로 — 받은 순서 그대로. 결과는 명령 1줄 + 결과 1줄. CRUD 는 answer 로 서버에 돌려준다. */
+interface RunnerHooks {
+  closeChannel(channelId: string, reason: CloseReason, browser?: ChannelBrowser): Promise<void>;
+  refreshChannel(channelId: string): void;
+  /** 세션 크기가 바뀌었다(데몬 set-size 의 적용값) — 그 세션을 보는 모든 화면 루프에. */
+  resized(session: string, size: { cols: number; rows: number }): void;
+  applyWatching(): Promise<void>;
+}
+
+/** 명령 하나의 데몬 결과 — 답에 실을 인스턴스(만들기는 새 세션의 것). */
+interface Applied {
+  instance?: string;
+}
+
+/**
+ * poll 의 cmd 를 채널 장부로 복호·대조한 뒤 데몬으로 — 받은 순서 그대로. 결과는 명령 1줄 + 결과 1줄. CRUD 는 봉인 answer 로 돌려준다.
+ * 실행 확인 지점(executedThrough)은 데몬 실행이 확인된 때만 오른다(A6) — 오르면 그 채널의 화면을 다시 보낸다(§14-6 1).
+ */
 class CommandRunner {
-  /** 여러 바이트 글자가 poll 경계에서 갈려도 잇는다 — 세션마다(바이트는 그대로, 글자로 바꾸는 곳만 한 곳). */
+  /** 여러 바이트 글자가 메시지 경계에서 갈려도 잇는다 — (채널, 세션)마다(바이트는 그대로, 글자로 바꾸는 곳만 한 곳). */
   private readonly decoders = new Map<string, StringDecoder>();
-
-  /**
-   * 웹이 폴더를 비운 만들기 — {@link webSessionFolder}(꼬리표가 있으면 프로젝트 아래)를 만든다. requestId 는 서버가 만들기마다 새로
-   * 뽑는 UUID 라 세션마다 새 폴더가 되고, remote_command 로그 줄(같은 requestId)로 어느 만들기의 폴더인지 잇는다.
-   */
-  private async sessionFolder(projectUuid: string | undefined, requestId: string): Promise<{ folder: string; made: boolean }> {
-    const folder = webSessionFolder(this.deps.appHome, projectUuid, requestId);
-    const made = !existsSync(folder);
-    await ensurePrivateDir(folder);
-    return { folder, made };
-  }
-
-  /** 거절된 만들기 — 방금 만든 세션 폴더를 비어 있을 때만 지운다(rmdir, 재귀 아님). 못 지우면 한 줄 남기고 넘어간다. */
-  private async dropSessionFolder(requestId: string, folder: string): Promise<void> {
-    try {
-      await rmdir(folder);
-    } catch (error) {
-      this.deps.log.write({ event: "remote_session_folder_kept", requestId, folder,
-        code: error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "UNKNOWN",
-        message: error instanceof Error ? error.message : String(error) });
-    }
-  }
 
   constructor(
     private readonly deps: BridgeDeps,
     private readonly control: DaemonControl,
-    private readonly viewers: Map<string, RemoteViewer>,
+    private readonly book: ChannelBook,
     private readonly remote: () => RemoteState,
+    private readonly linkId: () => string,
+    private readonly stopSignal: AbortSignal,
+    private readonly hooks: RunnerHooks,
   ) {}
 
-  async run(commands: readonly RemoteCommand[], ctx: { linkId: () => string; syncList: () => Promise<void>; stopSignal: AbortSignal }): Promise<void> {
-    let listChanged = false;
-    for (const command of commands) {
-      const session = "session" in command ? command.session : command.type === "create" ? command.name : undefined;
-      const requestId = "requestId" in command ? command.requestId : undefined;
-      this.deps.log.write({ event: "remote_command", type: command.type, ...(session ? { session } : {}),
-        ...(requestId ? { requestId } : {}), ...(command.type === "input" ? { bytes: Buffer.byteLength(command.d, "base64") } : {}) });
-      let failure: { code: string; message: string } | undefined;
-      if (this.remote() !== "on") {
-        // ★이중 거절 — 서버가 먼저 막지만 PC 도 원격이 꺼졌으면 하지 않는다.
-        failure = { code: "REMOTE_OFF", message: "Terminals from the web are turned off on this PC." };
-      } else if (session !== undefined && this.deps.exclude.includes(session)) {
-        failure = { code: "TERM_NO_SESSION", message: `No session named "${session}".` };
-      } else {
-        try {
-          listChanged = (await this.apply(command)) || listChanged;
-        } catch (error) {
-          failure = { code: error instanceof TermError ? error.code : "UNKNOWN", message: error instanceof Error ? error.message : String(error) };
-          daemonFailed(this.deps, command.type, session, error);
-        }
-      }
-      this.deps.log.write({ event: "remote_command_result", type: command.type, ...(session ? { session } : {}),
-        ...(requestId ? { requestId } : {}), ok: failure === undefined, ...(failure ? { code: failure.code } : {}) });
-      if (requestId) {
-        try {
-          await this.deps.http.call("answer", { linkId: ctx.linkId(), requestId, ok: failure === undefined, ...(failure ?? {}) },
-            { signal: ctx.stopSignal });
-        } catch {
-          // 응답 줄은 공용 입구가 남겼다 — 서버는 기한(C1)이면 PC_NO_ANSWER 로 끝낸다.
-        }
-      }
+  forgetChannel(channelId: string): void {
+    for (const key of this.decoders.keys()) {
+      if (key.startsWith(`${channelId}\u0000`)) this.decoders.delete(key);
     }
-    if (listChanged) await ctx.syncList();
   }
 
-  /** 명령 하나를 데몬에 — 목록이 바뀌었으면 true. */
-  private async apply(command: RemoteCommand): Promise<boolean> {
-    switch (command.type) {
+  /** cmd 하나 — 목록 올리기는 poll 한 바퀴 끝에 다리가 한다(바뀐 때만 올라간다). */
+  async run(wire: WireCommand): Promise<void> {
+    const outcome = await this.book.receive(wire);
+    switch (outcome.type) {
+      case "unknown":
+        this.deps.log.write({ event: "remote_command_skipped", channelId: wire.channelId, n: wire.n, why: "unknown-channel" });
+        return;
+      case "duplicate":
+        this.deps.log.write({ event: "remote_command_skipped", channelId: wire.channelId, n: wire.n, why: "duplicate" });
+        return;
+      case "close":
+        await this.hooks.closeChannel(wire.channelId, outcome.reason);
+        return;
+      case "confirmed":
+        this.deps.log.write({ event: "remote_channel", channelId: wire.channelId, state: "active", browserKeyId: outcome.browser.keyId });
+        await this.hooks.applyWatching();
+        return;
+      case "command":
+        await this.execute(wire, outcome.command, outcome.browser);
+        return;
+    }
+  }
+
+  private async execute(wire: WireCommand, command: Exclude<ChannelCommand, { kind: "confirm" }>, browser: ChannelBrowser): Promise<void> {
+    const session = command.kind === "create" ? command.name : command.session;
+    const opId = "opId" in command ? command.opId : undefined;
+    this.deps.log.write({ event: "remote_command", type: command.kind, channelId: wire.channelId, n: wire.n, session,
+      ...(opId ? { opId } : {}), ...(wire.requestId ? { requestId: wire.requestId } : {}),
+      ...(command.kind === "input" ? { bytes: command.bytes.length } : {}) });
+    let failure: { code: string; message: string } | undefined;
+    let applied: Applied = {};
+    if (this.remote() !== "on") {
+      // ★이중 거절 — 서버가 먼저 막지만 PC 도 원격이 꺼졌으면 하지 않는다.
+      failure = { code: "REMOTE_OFF", message: "Terminals from the web are turned off on this PC." };
+    } else if (this.deps.exclude.includes(session)) {
+      failure = { code: "TERM_NO_SESSION", message: `No session named "${session}".` };
+    } else {
+      try {
+        applied = await this.apply(wire.channelId, command);
+      } catch (error) {
+        failure = { code: errorCode(error), message: error instanceof Error ? error.message : String(error) };
+        // ★코드만 — 원문(경로 등)은 봉인 답의 detail 에만(§11-5). 원인은 데몬 로그의 응답 줄에 있다.
+        this.deps.log.write({ event: "remote_daemon_error", op: command.kind, session, code: failure.code });
+      }
+    }
+    const crud = command.kind === "create" || command.kind === "kill" || command.kind === "label";
+    if (!crud && failure) {
+      // 답 없는 명령이 거절됐다 — 실행 확인 지점을 올리지 않고 채널을 닫는다(결번과 같은 처리 — A6).
+      this.logResult(wire, command.kind, session, false, failure.code);
+      await this.hooks.closeChannel(wire.channelId, failure.code === "SESSION_REPLACED" ? "SESSION_REPLACED"
+        : failure.code === "REMOTE_OFF" ? "REMOTE_OFF" : "COMMAND_FAILED", browser);
+      return;
+    }
+    if (crud && !(await this.answer(wire, command, applied, failure))) return;   // 봉인 못 함 — 채널을 닫았다
+    const raised = this.book.executed(wire.channelId, wire.n);
+    this.logResult(wire, command.kind, session, failure === undefined, failure?.code, raised ? wire.n : undefined);
+    if (raised) this.hooks.refreshChannel(wire.channelId);
+  }
+
+  /** CRUD 답 — 봉인 본문 {opId, kind, session?, instance?, ok, detail?} · 바깥 code 는 허용 목록만(A7). 봉인을 못 하면 채널을 닫고 false. */
+  private async answer(wire: WireCommand, command: Extract<ChannelCommand, { opId: string }>, applied: Applied,
+    failure: { code: string; message: string } | undefined): Promise<boolean> {
+    const session = command.kind === "create" ? command.name : command.session;
+    const projectUuid = command.kind === "create" ? command.projectUuid : undefined;
+    let box: { n: number; c: string };
+    try {
+      box = await this.book.seal(wire.channelId, { kind: "answer", session, opId: command.opId, ...(projectUuid ? { projectUuid } : {}) }, {
+        opId: command.opId,
+        kind: command.kind,
+        session,
+        ...(applied.instance ? { instance: applied.instance } : {}),
+        ok: failure === undefined,
+        ...(failure ? { detail: `${failure.code}: ${failure.message}` } : {}),
+      });
+    } catch (error) {
+      const reason = error instanceof ChannelSealError && error.reason !== "CHANNEL_GONE" ? error.reason : "COMMAND_FAILED";
+      this.logResult(wire, command.kind, session, false, failure?.code ?? reason);
+      await this.hooks.closeChannel(wire.channelId, reason);
+      return false;
+    }
+    if (!wire.requestId) return true;   // 서버 상관 id 가 없으면 돌려줄 곳이 없다(결과 줄은 남는다)
+    try {
+      await this.deps.http.call("answer", {
+        linkId: this.linkId(), requestId: wire.requestId, channelId: wire.channelId, ...box, ok: failure === undefined,
+        ...(failure ? { code: answerCodeOf(failure.code) } : {}),
+      }, { signal: this.stopSignal });
+    } catch {
+      // 응답 줄은 공용 입구가 남겼다 — 웹은 기한(504 ANSWER_TIMEOUT)이면 «결과 미확정»(§13-1).
+    }
+    return true;
+  }
+
+  private logResult(wire: WireCommand, type: string, session: string, ok: boolean, code?: string, executedThrough?: number): void {
+    this.deps.log.write({ event: "remote_command_result", type, channelId: wire.channelId, n: wire.n, session,
+      ...(wire.requestId ? { requestId: wire.requestId } : {}), ok, ...(code ? { code } : {}),
+      ...(executedThrough !== undefined ? { executedThrough } : {}) });
+  }
+
+  /**
+   * 명령 하나를 데몬에 — ★세션을 겨누는 명령은 인스턴스를 싣는다. 비교는 데몬이 적용하는 자리에서(§14-6 4 — 여기서 미리 보지 않는다).
+   * 데몬 응답에 인스턴스가 없으면 옛 데몬이다(검사를 하지 않았다) — 실패로 친다.
+   */
+  private async apply(channelId: string, command: Exclude<ChannelCommand, { kind: "confirm" }>): Promise<Applied> {
+    switch (command.kind) {
       case "input": {
-        let decoder = this.decoders.get(command.session);
+        const key = `${channelId}\u0000${command.session}`;
+        let decoder = this.decoders.get(key);
         if (!decoder) {
           decoder = new StringDecoder("utf8");
-          this.decoders.set(command.session, decoder);
+          this.decoders.set(key, decoder);
         }
-        const text = decoder.write(Buffer.from(command.d, "base64"));
-        if (text !== "") await this.control.request({ op: "send", name: command.session, text, paste: false });
-        return false;
+        const text = decoder.write(command.bytes);
+        if (text === "") return {};
+        return { ...checked(await this.control.request({ op: "send", name: command.session, text, paste: false,
+          instance: command.instance })) };
       }
       case "key":
-        // 이름 목록·바이트(커서키 모드)는 데몬 keys.ts 가 안다 — 모르는 이름이면 TERM_UNKNOWN_KEY 로 한 줄 남고 무시된다.
-        await this.control.request({ op: "key", name: command.session, key: command.key });
-        return false;
+        // 이름 목록·바이트(커서키 모드)는 데몬 keys.ts 가 안다 — 모르는 이름이면 TERM_UNKNOWN_KEY.
+        return { ...checked(await this.control.request({ op: "key", name: command.session, key: command.key,
+          instance: command.instance })) };
       case "resize": {
-        const result = await termRequest(this.deps.paths, { op: "set-size", name: command.session, cols: command.cols, rows: command.rows },
-          { start: false });
-        const applied = result.daemon ? appliedSize(result.data) : undefined;
+        const result = await termRequest(this.deps.paths, { op: "set-size", name: command.session, cols: command.cols, rows: command.rows,
+          instance: command.instance }, { start: false });
+        if (!result.daemon) throw new TermError("TERM_DAEMON_GONE", "No term daemon is running.");
+        const applied = appliedSize(result.data);
         if (!applied) throw new TermError("TERM_BAD_RESPONSE", "The term daemon answered set-size without cols and rows.");
-        this.viewers.get(command.session)?.setSize(applied);
-        return true;
+        const instance = checked(result.data);
+        this.hooks.resized(command.session, applied);
+        return instance;
       }
       case "create": {
         // 폴더를 주면 그대로(절대 만들거나 지우지 않는다) · 비면 세션 폴더를 만들고, 거절되면 방금 만든 것만 지운다.
@@ -523,7 +801,7 @@ class CommandRunner {
         let cwd = command.cwd;
         let made: string | undefined;
         if (cwd === undefined) {
-          const fresh = await this.sessionFolder(project, command.requestId);
+          const fresh = await this.sessionFolder(project, command.opId);
           cwd = fresh.folder;
           if (fresh.made) made = fresh.folder;
         }
@@ -538,25 +816,63 @@ class CommandRunner {
             ...(project !== undefined ? { project } : {}),
           });
         } catch (error) {
-          if (made) await this.dropSessionFolder(command.requestId, made);
+          if (made) await this.dropSessionFolder(command.opId, made);
           throw error;
         }
         if (project !== undefined && createdProject(created) !== project) {
-          this.deps.log.write({ event: "remote_create_project_dropped", requestId: command.requestId, session: command.name });
+          this.deps.log.write({ event: "remote_create_project_dropped", opId: command.opId, session: command.name });
         }
-        return true;
+        const instance = sessionInstance(created);
+        return instance ? { instance } : {};
       }
-      case "kill":
-        await this.control.request({ op: "kill", name: command.session });
-        this.decoders.delete(command.session);
-        return true;
+      case "kill": {
+        const instance = checked(await this.control.request({ op: "kill", name: command.session, instance: command.instance }));
+        this.forgetSession(command.session);
+        return instance;
+      }
       case "label": {
-        const result = await termRequest(this.deps.paths, { op: "label", name: command.session, label: command.label }, { start: false });
+        const result = await termRequest(this.deps.paths, { op: "label", name: command.session, label: command.label, instance: command.instance },
+          { start: false });
         if (!result.daemon) throw new TermError("TERM_DAEMON_GONE", "No term daemon is running.");
-        return true;
+        return checked(result.data);
       }
     }
   }
+
+  private forgetSession(session: string): void {
+    for (const key of this.decoders.keys()) {
+      if (key.endsWith(`\u0000${session}`)) this.decoders.delete(key);
+    }
+  }
+
+  /**
+   * 웹이 폴더를 비운 만들기 — {@link webSessionFolder}(꼬리표가 있으면 프로젝트 아래)를 만든다. 폴더 이름은 브라우저가 봉인 전에 정한
+   * 연산 ID(UUID — 만들기마다 새 값, §12-2)라 세션마다 새 폴더가 되고, remote_command 로그 줄(같은 opId)로 어느 만들기의 폴더인지 잇는다.
+   */
+  private async sessionFolder(projectUuid: string | undefined, opId: string): Promise<{ folder: string; made: boolean }> {
+    const folder = webSessionFolder(this.deps.appHome, projectUuid, opId);
+    const made = !existsSync(folder);
+    await ensurePrivateDir(folder);
+    return { folder, made };
+  }
+
+  /** 거절된 만들기 — 방금 만든 세션 폴더를 비어 있을 때만 지운다(rmdir, 재귀 아님). 못 지우면 한 줄 남기고 넘어간다. */
+  private async dropSessionFolder(opId: string, folder: string): Promise<void> {
+    try {
+      await rmdir(folder);
+    } catch (error) {
+      this.deps.log.write({ event: "remote_session_folder_kept", opId, code: errorCode(error) });
+    }
+  }
+}
+
+/** 세션을 겨눈 데몬 응답의 인스턴스 — 없으면 옛 데몬(인스턴스 검사를 하지 않았다)이라 실패. */
+function checked(data: unknown): { instance: string } {
+  const instance = sessionInstance(data);
+  if (!instance) {
+    throw new TermError("TERM_DAEMON_OUTDATED", "The term daemon is older than this CLI (no session instance) — restart it with `ainecto term kill-server`.");
+  }
+  return { instance };
 }
 
 /** 응답 줄에 셀 것 — 상태·사유·원격 상태·명령 수·화면 판(본문·토큰은 남기지 않는다). 순수 함수. */
@@ -590,67 +906,42 @@ export function remoteStateOf(value: unknown): RemoteState | undefined {
   return value === "on" || value === "off-by-pc" || value === "off-by-web" ? value : undefined;
 }
 
-/** poll 의 watching — 글 이름만. 순수 함수. */
-export function watchingOf(answer: Record<string, unknown>): string[] {
-  return Array.isArray(answer.watching) ? answer.watching.filter((name): name is string => typeof name === "string" && name !== "") : [];
-}
+/** poll 의 commands 항목(A1) — hello·cmd·watch·channel-closed 넷. */
+export type PollItem =
+  | { type: "hello"; channelId: string; hello: unknown }
+  | { type: "cmd"; command: WireCommand }
+  /** 채널은 알지만 모양이 틀린 cmd — 실행하지 않고 한 줄 남긴다(다음 번호가 결번이 되어 그 채널은 닫힌다). */
+  | { type: "bad-cmd"; channelId: string; n: number }
+  | { type: "watch"; channels: Watch[] }
+  | { type: "channel-closed"; channelId: string };
 
-export type RemoteCommand =
-  | { type: "input"; session: string; d: string }
-  | { type: "key"; session: string; key: string }
-  | { type: "resize"; session: string; cols: number; rows: number }
-  | { type: "create"; requestId: string; name: string; projectUuid?: string; cwd?: string; command?: string }
-  | { type: "kill"; requestId: string; session: string }
-  | { type: "label"; requestId: string; session: string; label: string };
-
-/** poll 의 명령 — 서버가 준 순서 그대로. 모르는 것·모양이 틀린 것은 뺀다. 순수 함수. */
-export function remoteCommands(answer: Record<string, unknown>): RemoteCommand[] {
+/** poll 의 commands — 서버가 준 순서 그대로. 모르는 종류·모양 틀림은 뺀다(채널을 알 수 있는 cmd 는 bad-cmd). 순수 함수. */
+export function pollItems(answer: Record<string, unknown>): PollItem[] {
   if (!Array.isArray(answer.commands)) return [];
-  return answer.commands.flatMap((raw: unknown): RemoteCommand[] => {
+  return answer.commands.flatMap((raw: unknown): PollItem[] => {
     if (!raw || typeof raw !== "object") return [];
-    const c = new Map<string, unknown>(Object.entries(raw));
-    const session = text(c.get("session"));
-    const requestId = text(c.get("requestId"));
-    switch (c.get("type")) {
-      case "input": {
-        const d = c.get("d");
-        return session && typeof d === "string" ? [{ type: "input", session, d }] : [];
+    const item = raw as Record<string, unknown>;
+    const channelId = typeof item.channelId === "string" && item.channelId !== "" ? item.channelId : undefined;
+    switch (item.type) {
+      case "hello":
+        return channelId ? [{ type: "hello", channelId, hello: item.hello }] : [];
+      case "cmd": {
+        const command = wireCommand(item);
+        if (command) return [{ type: "cmd", command }];
+        return channelId ? [{ type: "bad-cmd", channelId, n: typeof item.n === "number" ? item.n : -1 }] : [];
       }
-      case "key": {
-        const key = text(c.get("key"));
-        return session && key ? [{ type: "key", session, key }] : [];
-      }
-      case "resize": {
-        const cols = c.get("cols");
-        const rows = c.get("rows");
-        return session && isSize(cols) && isSize(rows) ? [{ type: "resize", session, cols, rows }] : [];
-      }
-      case "create": {
-        const name = text(c.get("name"));
-        const projectUuid = text(c.get("projectUuid"));
-        const cwd = text(c.get("cwd"));
-        const command = c.get("command");
-        if (!requestId || !name) return [];
-        // 꼬리표 모양은 여기서 버리지 않는다 — 만들기가 TERM_BAD_REQUEST 로 답해야 서버가 기다리지 않는다.
-        return [{ type: "create", requestId, name, ...(projectUuid ? { projectUuid } : {}), ...(cwd ? { cwd } : {}),
-          ...(typeof command === "string" ? { command } : {}) }];
-      }
-      case "kill":
-        return requestId && session ? [{ type: "kill", requestId, session }] : [];
-      case "label": {
-        const label = text(c.get("label"));
-        return requestId && session && label ? [{ type: "label", requestId, session, label }] : [];
-      }
+      case "watch":
+        return [{ type: "watch", channels: Array.isArray(item.channels) ? item.channels.flatMap((entry: unknown): Watch[] => {
+          if (!entry || typeof entry !== "object") return [];
+          const watch = entry as Record<string, unknown>;
+          return typeof watch.channelId === "string" && watch.channelId !== "" && typeof watch.session === "string" && watch.session !== ""
+            ? [{ channelId: watch.channelId, session: watch.session }]
+            : [];
+        }) : [] }];
+      case "channel-closed":
+        return channelId ? [{ type: "channel-closed", channelId }] : [];
       default:
         return [];
     }
   });
-}
-
-function text(value: unknown): string | undefined {
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-function isSize(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }

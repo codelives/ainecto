@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 // ★두 패키지는 webpack 으로 묶은 CJS 라 Node ESM 이 이름 있는 내보내기를 못 찾는다 — 기본 내보내기(module.exports)로 받는다.
 import serializeAddon from "@xterm/addon-serialize";
 import headless from "@xterm/headless";
@@ -48,6 +49,8 @@ export interface SessionInfo {
   cols: number;
   rows: number;
   clients: number;
+  /** 세션 인스턴스 id — 같은 이름으로 다시 만든 세션을 가른다(설계 terminal-e2e §13-1·§14-6 4). */
+  instance: string;
   label?: string;
   project?: string;
   lastOutputAt?: string;
@@ -95,6 +98,11 @@ export class TermSession {
   label: string | undefined;
   /** 마지막 출력 시각(ISO) — 원격 웹 목록의 «마지막 활동». */
   private lastOutputAt: string | undefined;
+  /**
+   * 인스턴스 id — 데몬이 세션을 만들 때마다 새 무작위 값(설계 terminal-e2e §13-1). 이름이 같아도 다시 만든 세션은 다른 값이라,
+   * 원격 명령은 이 값이 맞을 때만 이 세션에 적용된다(daemon.ts 의 이름 찾기 한 곳). 화면(read)도 이 객체에서 같이 낸다.
+   */
+  readonly instance = randomUUID();
 
   private constructor(
     readonly spec: SessionSpec,
@@ -140,6 +148,7 @@ export class TermSession {
       cols: this.pty.cols,
       rows: this.pty.rows,
       clients: this.attached.size,
+      instance: this.instance,
       ...(this.label !== undefined ? { label: this.label } : {}),
       ...(this.spec.project !== undefined ? { project: this.spec.project } : {}),
       ...(this.lastOutputAt !== undefined ? { lastOutputAt: this.lastOutputAt } : {}),

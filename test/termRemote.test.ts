@@ -1,16 +1,21 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
+import { accountKey } from "../src/core/pc/pcSettings";
 import { termPaths } from "../src/core/term/paths";
-import { createRemoteHttp, openRemoteLog, remoteCommands, remoteStateOf, runRemoteBridge, watchingOf, type BridgeDeps, type RemoteResult } from "../src/core/term/remote";
-import { screenFrame } from "../src/core/term/remoteFrame";
+import { createRemoteHttp, openRemoteLog, pollItems, remoteStateOf, runRemoteBridge, type BridgeDeps, type RemoteResult } from "../src/core/term/remote";
+import { frameBudget, screenFrame } from "../src/core/term/remoteFrame";
 import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
 import { wireSessions } from "../src/core/term/remoteSessions";
 import { RemoteViewer } from "../src/core/term/remoteViewer";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
+import { FakeWeb, WebChannel } from "./support/fakeWeb";
 import { cli, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
 const PROJECT = "0b9a8c7d-1111-4222-8333-444455556666";
+const USER_ID = "5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10";
+const PC_ID = "6f2c1d3e-0000-4000-8000-000000000001";
 
 describe("원격 다리 — 순수 함수", () => {
   it("화면 = 줄을 \\r\\n 으로 이은 평문 · 같은 줄이면 같은 hash · 상한을 넘으면 위 줄부터 덜어 낸다", () => {
@@ -23,36 +28,40 @@ describe("원격 다리 — 순수 함수", () => {
     expect(screenFrame(["x"], 0).d).toBe("");
   });
 
-  it("poll 명령 — 서버 순서 그대로 · 세션 이름으로 · 모르는 것·모양 틀림은 뺀다", () => {
-    expect(remoteCommands({ commands: [
-      { type: "create", requestId: "r1", name: "new", command: "npm test" },
-      { type: "resize", session: "a", cols: 120, rows: 40 },
+  it("봉인 frame 의 d 자리 = 상한 − 바깥 칸(번호는 가장 긴 값) − base64url − 태그 16 − 봉인 본문의 다른 칸 · 그 d 로 만든 본문은 상한 안", () => {
+    const outer = { linkId: randomUUID(), channelId: randomUUID(), session: "main", cols: 120, rows: 40 };
+    const sealed = { modes: { altScreen: false, appCursor: true, bracketedPaste: false }, instance: randomUUID() };
+    const maxD = frameBudget(8_000, outer, sealed);
+    const plain = JSON.stringify({ d: "A".repeat(maxD), ...sealed, executedThrough: 2 ** 32 - 1 });
+    const c = Buffer.alloc(Buffer.byteLength(plain) + 16).toString("base64url");
+    expect(Buffer.byteLength(JSON.stringify({ ...outer, n: 2 ** 32 - 1, c }))).toBeLessThanOrEqual(8_000);
+    const overC = Buffer.alloc(Buffer.byteLength(plain) + 16 + 3).toString("base64url");
+    expect(Buffer.byteLength(JSON.stringify({ ...outer, n: 2 ** 32 - 1, c: overC }))).toBeGreaterThan(8_000);
+  });
+
+  it("poll 항목(A1) — hello·cmd·watch·channel-closed 만 · 서버 순서 그대로 · 모양 틀린 cmd 는 채널을 알면 bad-cmd · 옛 평문 칸은 버린다", () => {
+    expect(pollItems({ commands: [
+      { type: "hello", channelId: "c1", hello: { channel: "t" } },
+      { type: "cmd", channelId: "c1", n: 0, c: "AA", kind: "confirm" },
+      { type: "watch", channels: [{ channelId: "c1", session: "a" }, { channelId: "", session: "b" }, { session: "x" }] },
+      { type: "cmd", channelId: "c1", n: 1, kind: "input" },
+      { type: "channel-closed", channelId: "c2" },
       { type: "input", session: "a", d: "aGk=" },
-      { type: "key", session: "a", key: "up" },
-      { type: "kill", requestId: "r2", session: "b" },
-      { type: "label", requestId: "r3", session: "a", label: "백엔드" },
-      { type: "later", x: 1 },
-      { type: "input", d: "eA==" },
-      { type: "resize", session: "a", cols: 0, rows: 40 },
-      { type: "create", name: "no-request" },
-      // 꼬리표 모양은 해석에서 버리지 않는다 — 만들기가 거절로 답한다.
-      { type: "create", requestId: "r4", name: "tagged", projectUuid: "NOT-A-UUID", cwd: "/tmp" },
+      { type: "create", requestId: "r1", name: "new", command: "npm test" },
+      { type: "hello" },
     ] })).toEqual([
-      { type: "create", requestId: "r1", name: "new", command: "npm test" },
-      { type: "resize", session: "a", cols: 120, rows: 40 },
-      { type: "input", session: "a", d: "aGk=" },
-      { type: "key", session: "a", key: "up" },
-      { type: "kill", requestId: "r2", session: "b" },
-      { type: "label", requestId: "r3", session: "a", label: "백엔드" },
-      { type: "create", requestId: "r4", name: "tagged", projectUuid: "NOT-A-UUID", cwd: "/tmp" },
+      { type: "hello", channelId: "c1", hello: { channel: "t" } },
+      { type: "cmd", command: { channelId: "c1", n: 0, c: "AA", kind: "confirm" } },
+      { type: "watch", channels: [{ channelId: "c1", session: "a" }] },
+      { type: "bad-cmd", channelId: "c1", n: 1 },
+      { type: "channel-closed", channelId: "c2" },
     ]);
-    expect(remoteCommands({ state: "OPEN" })).toEqual([]);
-    expect(watchingOf({ watching: ["a", 3, ""] })).toEqual(["a"]);
+    expect(pollItems({ state: "OPEN" })).toEqual([]);
     expect(remoteStateOf("off-by-web")).toBe("off-by-web");
     expect(remoteStateOf("later")).toBeUndefined();
   });
 
-  it("올릴 목록 — 다리 자기 세션은 뺀다 · label·project·lastOutputAt 은 있을 때만", () => {
+  it("올릴 목록 — 다리 자기 세션은 뺀다 · label·project·lastOutputAt 은 있을 때만(인스턴스는 싣지 않는다)", () => {
     expect(wireSessions([
       { name: "ainecto-pc", pid: 1, clients: 0, cols: 80, rows: 24, cwd: "/", command: null },
       { name: "api", pid: 2, clients: 0, cols: 100, rows: 30, cwd: "/", command: null, label: "백엔드", project: PROJECT,
@@ -72,7 +81,7 @@ describe("원격 다리 — 순수 함수", () => {
   });
 });
 
-describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
+describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저(진짜 암호)", () => {
   useTermRig();
   let fake: FakeRemoteServer;
   beforeEach(async () => {
@@ -83,10 +92,14 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     await fake.stop();
   });
 
-  const PC_ID = "6f2c1d3e-0000-4000-8000-000000000001";
+  const keysPath = (): string => join(rig.home, ".ainecto", "pc-keys.json");
+  const ids = () => ({ userId: USER_ID, pcId: PC_ID, keysPath: keysPath(), accountKey: accountKey(fake.endpoint, USER_ID) });
+  const web = (options: { pin?: boolean; name?: string } = {}): Promise<FakeWeb> => FakeWeb.create(fake, ids(), options);
 
-  function start(options: { remoteEnabled?: boolean; exclude?: string[]; onAnswer?: BridgeDeps["onAnswer"] } = {}): { done: Promise<RemoteResult>; stop: AbortController; printed: string[] } {
+  function start(options: { remoteEnabled?: boolean; exclude?: string[]; onAnswer?: BridgeDeps["onAnswer"]; trust?: boolean } = {})
+    : { done: Promise<RemoteResult>; stop: AbortController; printed: string[] } {
     const paths = termPaths(rig.home);
+    mkdirSync(paths.dir, { recursive: true, mode: 0o700 });   // 운영은 pcRemoteSetup 이 만든다
     const log = openRemoteLog(paths);
     const printed: string[] = [];
     const stop = new AbortController();
@@ -102,6 +115,7 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
       hostName: "test-host",
       cliVersion: "dev",
       remoteEnabled: options.remoteEnabled ?? true,
+      trust: options.trust === false ? undefined : { keysPath: keysPath(), accountKey: accountKey(fake.endpoint, USER_ID), userId: USER_ID.toUpperCase() },
       exclude: options.exclude ?? ["ainecto-pc"],
       sessionEnv: Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string")),
       appHome: join(rig.home, "app"),
@@ -127,25 +141,42 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
       .toBe(records.filter((r) => r.event === "remote_command_result").length);
   }
 
-  it("열 때 세션 전부(자기 pc 세션 뺌) · 보는 세션만 화면 · 전환 · 세션별 입력 · 멈춤 → close", async () => {
+  /** 그 채널에서 그 세션의 화면이 조건을 만족할 때까지 — 그 화면. */
+  async function frameWhere(channel: WebChannel, session: string, check: (frame: { text: string; executedThrough: number; instance: string;
+    cols: number; rows: number; modes?: Record<string, boolean> }) => boolean, what: string) {
+    let found: Awaited<ReturnType<WebChannel["latest"]>>;
+    await until(async () => {
+      found = (await channel.frames()).filter((frame) => frame.session === session).find(check);
+      return found !== undefined;
+    }, what);
+    return found!;
+  }
+
+  const lines = (text: string): string[] => text.split("\r\n");
+
+  it("open 에 e2e:1 · 짝지은 브라우저 hello → welcome(서명 검증) → confirm 뒤 보는 세션만 봉인 화면 · 세션별 입력 · 선 위 본문에 표지 없음 · 멈춤 → close", async () => {
     await ok("term", "new", "a", "--", "cat");
     await ok("term", "new", "b", "--", "cat");
     await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600");
+    const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
-    expect(fake.calls[0]?.body).toMatchObject({ pcId: PC_ID, hostName: "test-host", cliVersion: "dev", remoteEnabled: true });
+    expect(fake.calls[0]?.body).toMatchObject({ pcId: PC_ID, hostName: "test-host", cliVersion: "dev", remoteEnabled: true, e2e: 1 });
     expect(fake.listedNames().sort()).toEqual(["a", "b"]);
-    await sleep(500);
-    expect(fake.frames).toEqual([]);
+    const channel = await browser.connect();
+    channel.watch("a");
+    const first = await frameWhere(channel, "a", () => true, "first frame of a");
+    expect(first.executedThrough).toBe(0);
+    const marker = `E2E-${randomUUID()}`;
+    await channel.input("a", first.instance, `${marker}\r`);
+    const shown = await frameWhere(channel, "a", (frame) => lines(frame.text).includes(marker), "a shows the marker");
+    expect(shown.executedThrough).toBe(1);
+    expect((await channel.frames()).every((frame) => frame.session === "a")).toBe(true);
 
-    fake.watch("a");
-    fake.input("a", "hi-a\r");
-    await until(() => fake.frames.some((f) => f.session === "a" && f.text.split("\r\n").includes("hi-a")), "a shows hi-a");
-    expect(fake.frames.every((f) => f.session === "a")).toBe(true);
-
-    fake.watch("b");
-    fake.input("b", "hi-b\r");
-    await until(() => fake.frames.some((f) => f.session === "b" && f.text.split("\r\n").includes("hi-b")), "b shows hi-b");
+    channel.watch("b");
+    const b = await frameWhere(channel, "b", () => true, "first frame of b");
+    await channel.input("b", b.instance, "hi-b\r");
+    await frameWhere(channel, "b", (frame) => lines(frame.text).includes("hi-b"), "b shows hi-b");
     expect((await screen("a")).includes("hi-b")).toBe(false);
 
     run.stop.abort();
@@ -153,100 +184,243 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     expect(fake.ops().at(-1)).toBe("close");
     expect(fake.calls.slice(1).every((call) => call.token === fake.linkToken)).toBe(true);
     expectLogPairs();
-    const text = readFileSync(termPaths(rig.home).remoteLog, "utf8");
-    expect(text).not.toContain(fake.linkToken);
-    expect(text).not.toContain(Buffer.from("hi-a\r").toString("base64"));
+    // ★서버가 본 모든 본문(요청·응답)과 다리 로그에 표지가 원문으로도 base64 로도 없다(§11-8).
+    for (const text of [fake.wireText(), readFileSync(termPaths(rig.home).remoteLog, "utf8")]) {
+      expect(text).not.toContain(marker);
+      expect(text).not.toContain(Buffer.from(marker).toString("base64").slice(0, 16));
+      expect(text).not.toContain(Buffer.from(marker).toString("base64url").slice(0, 16));
+    }
+    expect(readFileSync(termPaths(rig.home).remoteLog, "utf8")).not.toContain(fake.linkToken);
   }, LONG);
 
-  it("웹 만들기(명령 줄·폴더 없으면 <앱 홈>/sessions/<requestId> 를 만들어 그 안에서) → 데몬에 생김·answer ok·목록에 · 준 폴더는 그대로 · 같은 이름이면 데몬 코드로 실패", async () => {
-    await ok("term", "new", "base", "--", "cat");
+  it("짝짓지 않은 브라우저·신뢰 없음 → welcome refuse PAIRING_REQUIRED · 채널 없음 · 그 채널 이름의 명령은 실행 안 함 · hello 마다 pc-keys 를 다시 읽는다", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const pinned = await web();
+    const stranger = await web({ pin: false });
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
-    const id = fake.create("made", { command: "echo made-$((1+2)); pwd; sleep 600" });
-    await until(() => fake.answerFor(id) !== undefined, "answer");
-    expect(fake.answerFor(id)).toMatchObject({ ok: true });
+    expect(await stranger.hello()).toMatchObject({ refused: "PAIRING_REQUIRED" });
+    // 다리를 다시 띄우지 않고 짝지으면 다음 hello 부터 받는다(§6).
+    await stranger.pin();
+    const channel = await stranger.connect();
+    channel.watch("a");
+    await frameWhere(channel, "a", () => true, "frame after a later pairing");
+    expect(await pinned.connect()).toBeInstanceOf(WebChannel);
+    run.stop.abort();
+    await run.done;
+    expect(remoteLog().filter((r) => r.event === "remote_hello" && r.result === "refused")).toHaveLength(1);
+
+    const noTrust = await web();
+    const blind = start({ trust: false });
+    await until(() => fake.ops().filter((op) => op === "open").length === 2, "second open");
+    expect(await noTrust.hello()).toMatchObject({ refused: "PAIRING_REQUIRED" });
+    blind.stop.abort();
+    await blind.done;
+  }, LONG);
+
+  it("웹 만들기(봉인 create — 폴더 없으면 <앱 홈>/sessions/<opId>) → 봉인 답 ok + 새 인스턴스 · 준 폴더 그대로 · 같은 이름이면 바깥 TERM_SESSION_EXISTS · 사유는 봉인 detail 에만", async () => {
+    await ok("term", "new", "base", "--", "cat");
+    const browser = await web();
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    const made = await channel.create({ name: "made", command: "echo made-$((1+2)); pwd; sleep 600" });
+    await until(async () => (await channel.answer(made)) !== undefined, "answer");
+    const answer = await channel.answer(made);
+    expect(answer?.outer).toMatchObject({ ok: true, channelId: channel.id });
+    expect(answer?.outer).not.toHaveProperty("code");
+    expect(answer?.sealed).toMatchObject({ opId: made.opId, kind: "create", session: "made", ok: true });
+    expect(typeof answer?.sealed.instance).toBe("string");
     await until(() => fake.listedNames().includes("made"), "made listed");
-    const folder = join(rig.home, "app", "sessions", id);
+    const folder = join(rig.home, "app", "sessions", made.opId);
     expect(statSync(folder).isDirectory()).toBe(true);
     expect(statSync(folder).mode & 0o777).toBe(0o700);
-    const made = (await sessions()).find((s) => s.name === "made");
-    expect(made?.cwd).toBe(folder);
+    expect((await sessions()).find((s) => s.name === "made")?.cwd).toBe(folder);
     await ok("term", "wait", "made", "--match", "made-3", "--timeout", "10");
-    // 긴 경로는 화면 폭에서 줄이 갈린다 — 이어 붙여 본다.
-    await until(async () => (await screen("made")).join("").includes(`/sessions/${id}`), "pwd is the session folder");
+    await until(async () => (await screen("made")).join("").includes(`/sessions/${made.opId}`), "pwd is the session folder");
 
-    const given = fake.create("given", { cwd: rig.home });
-    await until(() => fake.answerFor(given) !== undefined, "given answer");
-    expect(fake.answerFor(given)).toMatchObject({ ok: true });
-    await until(async () => (await sessions()).some((s) => s.name === "given"), "given listed");
+    const given = await channel.create({ name: "given", cwd: rig.home });
+    await until(async () => (await channel.answer(given)) !== undefined, "given answer");
+    expect((await channel.answer(given))?.sealed).toMatchObject({ ok: true });
     expect((await sessions()).find((s) => s.name === "given")?.cwd).toBe(rig.home);
-    expect(existsSync(join(rig.home, "app", "sessions", given))).toBe(false);
+    expect(existsSync(join(rig.home, "app", "sessions", given.opId))).toBe(false);
 
-    const dup = fake.create("made");
-    await until(() => fake.answerFor(dup) !== undefined, "dup answer");
-    expect(fake.answerFor(dup)).toMatchObject({ ok: false, code: "TERM_SESSION_EXISTS" });
-    // 거절된 만들기 — 방금 만든 빈 세션 폴더는 지운다(받은 폴더는 건드리지 않는다).
-    expect(existsSync(join(rig.home, "app", "sessions", dup))).toBe(false);
-    expect(existsSync(join(rig.home, "app", "sessions", id))).toBe(true);
+    const dup = await channel.create({ name: "made" });
+    await until(async () => (await channel.answer(dup)) !== undefined, "dup answer");
+    const refused = await channel.answer(dup);
+    expect(refused?.outer).toMatchObject({ ok: false, code: "TERM_SESSION_EXISTS" });
+    expect(String(refused?.sealed.detail)).toContain("TERM_SESSION_EXISTS");
+    expect(existsSync(join(rig.home, "app", "sessions", dup.opId))).toBe(false);
+
+    const badCwd = await channel.create({ name: "bad-cwd", cwd: join(rig.home, "no-such-dir") });
+    await until(async () => (await channel.answer(badCwd)) !== undefined, "bad cwd answer");
+    const bad = await channel.answer(badCwd);
+    // ★바깥 코드는 허용 목록만(A7) — 경로가 든 사유는 봉인 답 안에만.
+    expect(bad?.outer).toMatchObject({ ok: false, code: "TERM_FAILED" });
+    expect(JSON.stringify(bad?.outer)).not.toContain("no-such-dir");
+    expect(String(bad?.sealed.detail)).toContain("no-such-dir");
+    expect(fake.wireText()).not.toContain("no-such-dir");
+    expect(readFileSync(termPaths(rig.home).remoteLog, "utf8")).not.toContain("no-such-dir");
+    // 답한 CRUD 는 ok 여부와 상관없이 실행 확인 지점을 올린다(A6).
+    expect(remoteLog().filter((r) => r.event === "remote_command_result" && r.type === "create").map((r) => r.executedThrough)).toEqual([1, 2, 3, 4]);
     run.stop.abort();
     await run.done;
     expectLogPairs();
   }, LONG);
 
-  it("웹 만들기 프로젝트 꼬리표 — 폴더 <앱 홈>/projects/<uuid>/sessions/<requestId> · ls·목록에 project · 잘못된 꼬리표는 폴더를 줘도 거절 · 거절되면 이번 빈 폴더만 정리", async () => {
+  it("웹 만들기 프로젝트 꼬리표 — <앱 홈>/projects/<uuid>/sessions/<opId> · 잘못된 꼬리표는 거절(TERM_BAD_REQUEST) · 선 위 projectUuid 와 봉인이 다르면 채널이 닫힌다", async () => {
     await ok("term", "new", "base", "--", "cat");
+    const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
-    const id = fake.create("tagged", { projectUuid: PROJECT, command: "sleep 600" });
-    await until(() => fake.answerFor(id) !== undefined, "answer");
-    expect(fake.answerFor(id)).toMatchObject({ ok: true });
-    const folder = join(rig.home, "app", "projects", PROJECT, "sessions", id);
+    const channel = await browser.connect();
+    const tagged = await channel.create({ name: "tagged", projectUuid: PROJECT, command: "sleep 600" });
+    await until(async () => (await channel.answer(tagged)) !== undefined, "answer");
+    expect((await channel.answer(tagged))?.sealed).toMatchObject({ ok: true });
+    const folder = join(rig.home, "app", "projects", PROJECT, "sessions", tagged.opId);
     expect(statSync(folder).isDirectory()).toBe(true);
-    expect(statSync(folder).mode & 0o777).toBe(0o700);
-    const tagged = (await sessions()).find((s) => s.name === "tagged");
-    expect(tagged).toMatchObject({ cwd: folder, project: PROJECT });
+    expect((await sessions()).find((s) => s.name === "tagged")).toMatchObject({ cwd: folder, project: PROJECT });
     await until(() => fake.listed.some((s) => s.name === "tagged" && s.project === PROJECT), "project listed");
 
-    const plain = fake.create("plain", { command: "sleep 600" });
-    await until(() => fake.answerFor(plain) !== undefined, "plain answer");
-    expect((await sessions()).find((s) => s.name === "plain")).not.toHaveProperty("project");
-    expect(existsSync(join(rig.home, "app", "sessions", plain))).toBe(true);
-
-    const badGiven = fake.create("bad-given", { projectUuid: "../x", cwd: rig.home });
-    const badFresh = fake.create("bad-fresh", { projectUuid: PROJECT.toUpperCase() });
-    await until(() => fake.answerFor(badGiven) !== undefined && fake.answerFor(badFresh) !== undefined, "bad answers");
-    expect(fake.answerFor(badGiven)).toMatchObject({ ok: false, code: "TERM_BAD_REQUEST" });
-    expect(fake.answerFor(badFresh)).toMatchObject({ ok: false, code: "TERM_BAD_REQUEST" });
-    expect((await sessions()).map((s) => s.name).sort()).toEqual(["base", "plain", "tagged"]);
-    // 대문자 폴더는 생기지 않는다(macOS 는 대소문자를 가리지 않으니 이름 목록으로 본다).
+    const bad = await channel.create({ name: "bad", projectUuid: PROJECT.toUpperCase() });
+    await until(async () => (await channel.answer(bad)) !== undefined, "bad answer");
+    expect((await channel.answer(bad))?.outer).toMatchObject({ ok: false, code: "TERM_BAD_REQUEST" });
     expect(readdirSync(join(rig.home, "app", "projects"))).toEqual([PROJECT]);
-    expect(readdirSync(join(rig.home, "app", "projects", PROJECT, "sessions"))).toEqual([id]);
 
-    const dup = fake.create("tagged", { projectUuid: PROJECT });
-    await until(() => fake.answerFor(dup) !== undefined, "dup answer");
-    expect(fake.answerFor(dup)).toMatchObject({ ok: false, code: "TERM_SESSION_EXISTS" });
-    expect(existsSync(join(rig.home, "app", "projects", PROJECT, "sessions", dup))).toBe(false);
-    expect(existsSync(folder)).toBe(true);
+    // 서버가 선 위 projectUuid 를 지웠다 — AAD 가 달라 열리지 않는다.
+    const opId = randomUUID();
+    const sealed = await channel.channel.seal("create", { opId, name: "swapped", projectUuid: PROJECT }, { session: "swapped", opId },
+      { aad: { session: "swapped", opId, projectUuid: PROJECT } });
+    channel.push(sealed, randomUUID());
+    await until(() => channel.closedReason() !== undefined, "channel closed");
+    expect(channel.closedReason()).toBe("DECRYPT_FAILED");
+    expect((await sessions()).map((s) => s.name).sort()).toEqual(["base", "tagged"]);
     run.stop.abort();
     await run.done;
     expect(remoteLog().filter((r) => r.event === "remote_create_project_dropped")).toEqual([]);
-    expectLogPairs();
   }, LONG);
 
-  it("웹 끝내기·이름 바꾸기 → 데몬 · answer · 목록이 따라간다(label 칸)", async () => {
+  it("웹 끝내기·이름 바꾸기(봉인, 인스턴스 실음) → 데몬 · 봉인 답 · 목록이 따라간다", async () => {
     await ok("term", "new", "a", "--", "cat");
     await ok("term", "new", "b", "--", "cat");
+    const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
-    const renamed = fake.label("a", "백엔드 서버");
-    await until(() => fake.answerFor(renamed) !== undefined, "label answer");
-    expect(fake.answerFor(renamed)).toMatchObject({ ok: true });
+    const channel = await browser.connect();
+    channel.watch("a", "b");
+    const a = await frameWhere(channel, "a", () => true, "frame a");
+    const b = await frameWhere(channel, "b", () => true, "frame b");
+    const renamed = await channel.label("a", a.instance, "백엔드 서버");
+    await until(async () => (await channel.answer(renamed)) !== undefined, "label answer");
+    expect((await channel.answer(renamed))?.sealed).toMatchObject({ ok: true, kind: "label", instance: a.instance });
     await until(() => fake.listed.some((s) => s.name === "a" && s.label === "백엔드 서버"), "label listed");
-    const killed = fake.kill("b");
-    await until(() => fake.answerFor(killed) !== undefined, "kill answer");
-    expect(fake.answerFor(killed)).toMatchObject({ ok: true });
+    const killed = await channel.kill("b", b.instance);
+    await until(async () => (await channel.answer(killed)) !== undefined, "kill answer");
+    expect((await channel.answer(killed))?.outer).toMatchObject({ ok: true });
     await until(() => !fake.listedNames().includes("b"), "b gone from the list");
     expect((await sessions()).map((s) => s.name)).toEqual(["a"]);
+    run.stop.abort();
+    await run.done;
+  }, LONG);
+
+  it("r4 조건 4 — 같은 이름으로 다시 만든 세션: 옛 인스턴스의 입력은 데몬이 SESSION_REPLACED 로 거절 · 새 세션에 안 감 · 실행 확인 지점 그대로 · 채널 닫힘 · 옛 인스턴스 끝내기는 답 SESSION_REPLACED", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const browser = await web();
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    const side = await browser.connect();
+    channel.watch("a");
+    const old = await frameWhere(channel, "a", () => true, "frame of the first a");
+    await ok("term", "kill", "a");
+    await ok("term", "new", "a", "--", "cat");
+    const replaced = (await sessions()).find((s) => s.name === "a");
+    expect(replaced).toBeDefined();
+
+    const killOld = await side.kill("a", old.instance);
+    await until(async () => (await side.answer(killOld)) !== undefined, "kill answer");
+    expect((await side.answer(killOld))?.outer).toMatchObject({ ok: false, code: "SESSION_REPLACED" });
+    expect((await sessions()).map((s) => s.name)).toEqual(["a"]);
+
+    await channel.input("a", old.instance, "to-the-old-one\r");
+    await until(() => channel.closedReason() !== undefined, "channel closed");
+    expect(channel.closedReason()).toBe("SESSION_REPLACED");
+    await sleep(300);
+    expect((await screen("a")).join("\n")).not.toContain("to-the-old-one");
+    expect((await channel.frames()).every((frame) => frame.executedThrough === 0)).toBe(true);
+    expect(remoteLog().filter((r) => r.event === "remote_command_result" && r.type === "input")).toEqual([
+      expect.objectContaining({ ok: false, code: "SESSION_REPLACED" })]);
+
+    // 새 인스턴스로는 된다(새 채널 — 화면이 새 인스턴스를 알린다).
+    const fresh = await browser.connect();
+    fresh.watch("a");
+    const now = await frameWhere(fresh, "a", () => true, "frame of the new a");
+    expect(now.instance).not.toBe(old.instance);
+    await fresh.input("a", now.instance, "to-the-new-one\r");
+    await frameWhere(fresh, "a", (frame) => lines(frame.text).includes("to-the-new-one"), "new a echoes");
+    run.stop.abort();
+    await run.done;
+  }, LONG);
+
+  it("r4 조건 1 — ②화면이 그대로인 정상 실행(에코 끈 셸)도 executedThrough 가 오른 봉인 프레임이 다시 온다 · ①마지막 입력의 poll 유실 → 실행 확인 지점은 그 앞에 머문다(자동 재생 없음) · 다음 번호는 결번으로 채널을 닫는다", async () => {
+    await ok("term", "new", "quiet", "--", "/bin/sh", "-c", "stty -echo; echo ready; cat > /dev/null");
+    await ok("term", "wait", "quiet", "--match", "ready", "--timeout", "10");
+    const browser = await web();
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    channel.watch("quiet");
+    const first = await frameWhere(channel, "quiet", () => true, "first frame");
+    expect(first.executedThrough).toBe(0);
+    await channel.input("quiet", first.instance, "silent\r");
+    const second = await frameWhere(channel, "quiet", (frame) => frame.executedThrough === 1, "executedThrough 1");
+    expect(second.text).toBe(first.text);
+    await channel.key("quiet", first.instance, "enter");
+    await frameWhere(channel, "quiet", (frame) => frame.executedThrough === 2, "executedThrough 2");
+
+    // ①n=3 을 실은 poll 응답을 잃었다(다리는 받지 못함) — 다음 입력이 오기 전까지 3 은 확인되지 않는다.
+    channel.channel.skip();
+    channel.watch("quiet");   // 다른 이유로 화면이 다시 가도
+    await sleep(1_500);
+    expect(Math.max(...(await channel.frames()).map((frame) => frame.executedThrough))).toBe(2);
+    expect(channel.closedReason()).toBeUndefined();
+    await channel.input("quiet", first.instance, "after-gap\r");
+    await until(() => channel.closedReason() !== undefined, "channel closed on the gap");
+    expect(channel.closedReason()).toBe("CHANNEL_OUT_OF_ORDER");
+    expect(remoteLog().filter((r) => r.event === "remote_command" && r.type === "input").map((r) => r.n)).toEqual([1]);
+    run.stop.abort();
+    await run.done;
+  }, LONG);
+
+  it("같은 번호·같은 암호문 재도착은 확인만(두 번 실행 안 함) · 되감기·복호 실패는 그 채널만 닫는다(다른 채널은 계속)", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const browser = await web();
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    const other = await browser.connect();
+    channel.watch("a");
+    other.watch("a");
+    const frame = await frameWhere(channel, "a", () => true, "frame");
+    const once = await channel.input("a", frame.instance, "once\r");
+    await frameWhere(channel, "a", (f) => lines(f.text).includes("once"), "once shown");
+    channel.push(once);
+    await until(() => remoteLog().some((r) => r.event === "remote_command_skipped" && r.why === "duplicate"), "duplicate skipped");
+    await sleep(300);
+    expect((await screen("a")).filter((line) => line === "once")).toHaveLength(2);   // cat 의 에코 + 터미널 에코 = 한 번 실행
+    // 되감기 — 이미 지난 번호에 다른 암호문.
+    const rewound = await channel.channel.seal("key", { session: "a", instance: frame.instance, key: "enter" }, { session: "a" }, { n: 0 });
+    channel.push(rewound);
+    await until(() => channel.closedReason() !== undefined, "rewind closes");
+    expect(channel.closedReason()).toBe("CHANNEL_OUT_OF_ORDER");
+    // 다른 채널은 그대로 — 태그를 깨면 그 채널도 닫힌다.
+    const otherFrame = await frameWhere(other, "a", () => true, "other frame");
+    await other.input("a", otherFrame.instance, "still-on\r");
+    await frameWhere(other, "a", (f) => lines(f.text).includes("still-on"), "other channel still works");
+    const broken = await other.channel.seal("key", { session: "a", instance: otherFrame.instance, key: "enter" }, { session: "a" });
+    other.push({ ...broken, c: `${broken.c.slice(0, -2)}AA` });
+    await until(() => other.closedReason() !== undefined, "broken tag closes");
+    expect(other.closedReason()).toBe("DECRYPT_FAILED");
     run.stop.abort();
     await run.done;
   }, LONG);
@@ -257,12 +431,15 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     const log = openRemoteLog(paths);
     let gone: string | undefined;
     const viewer = new RemoteViewer({
-      paths, session: "gone-already", log, size: { cols: 80, rows: 24 },
+      paths, session: "gone-already", channelId: "c", log, size: { cols: 80, rows: 24 },
       http: createRemoteHttp({ endpoint: fake.endpoint, tokenProvider: { getAccessToken: async () => "t", refreshAfterUnauthorized: async () => "t" }, log }),
       link: () => ({ linkId: "l", generation: 1, frameMaxBytes: 65536 }),
+      seal: async () => ({ n: 0, c: "AA" }),
+      executedThrough: () => 0,
       onGone: (reason) => { gone = reason; },
       onRefused: () => undefined,
       onUnknownSession: () => undefined,
+      onChannelEnded: () => undefined,
     });
     await viewer.run();
     expect(gone).toContain("gone-already");
@@ -274,66 +451,69 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
 
   it("poll 응답의 cli 칸(npm 꼬리표)과 보는 세션 수를 pc run 에 넘긴다 · 칸이 없으면 undefined(옛 서버)", async () => {
     await ok("term", "new", "a", "--", "cat");
+    const browser = await web();
     const answers: Array<Parameters<NonNullable<BridgeDeps["onAnswer"]>>[0]> = [];
     const run = start({ onAnswer: (a) => answers.push(a) });
     await until(() => answers.length > 0, "first answer");
-    fake.watch();
-    await until(() => answers.some((a) => a.tags === undefined && a.watching === 0), "no cli field");
+    expect(answers.at(-1)).toEqual({ tags: undefined, watching: 0 });
+    const channel = await browser.connect();
     fake.cli = { next: "0.14.0-next.11", latest: "0.13.1" };
-    fake.watch("a");
+    channel.watch("a");
     await until(() => answers.some((a) => a.tags?.next === "0.14.0-next.11" && a.watching === 1), "tags + watching 1");
-    expect(answers.find((a) => a.watching === 1 && a.tags)?.tags).toEqual({ next: "0.14.0-next.11", latest: "0.13.1" });
     run.stop.abort();
     await run.done;
   }, LONG);
 
-  it("키 이름 → 데몬 key(Ctrl-D 로 cat 이 끝남 → 목록에서 빠짐) · 크기 → set-size 와 frame 크기 · 화면 모드 표지", async () => {
+  it("키 이름 → 데몬 key(Ctrl-D 로 cat 이 끝남 → 목록에서 빠짐) · 크기 → set-size 와 frame 크기 · 화면 모드 표지 · 모르는 키는 채널을 닫는다(A6)", async () => {
     await ok("term", "new", "cat", "--", "cat");
     await ok("term", "new", "app", "--", "/bin/sh", "-c", "printf '\\033[?1h'; echo app-mode; sleep 600");
+    const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
-    fake.watch("app");
-    await until(() => fake.frames.some((f) => f.session === "app" && f.modes?.appCursor === true), "app frame with modes");
-    fake.resize("app", 100, 30);
-    await until(() => fake.frames.some((f) => f.session === "app" && f.cols === 100 && f.rows === 30), "frame at the new size");
+    const channel = await browser.connect();
+    channel.watch("app", "cat");
+    const app = await frameWhere(channel, "app", (frame) => frame.modes?.appCursor === true, "app frame with modes");
+    const cat = await frameWhere(channel, "cat", () => true, "cat frame");
+    await channel.resize("app", app.instance, 100, 30);
+    await frameWhere(channel, "app", (frame) => frame.cols === 100 && frame.rows === 30, "frame at the new size");
     expect((await sessions()).find((s) => s.name === "app")).toMatchObject({ cols: 100, rows: 30 });
-
-    fake.key("cat", "ctrl-d");
+    await channel.key("cat", cat.instance, "ctrl-d");
     await until(async () => !(await sessions()).some((s) => s.name === "cat"), "cat ended");
     await until(() => !fake.listedNames().includes("cat"), "cat gone from the list");
-    fake.key("app", "no-such-key");
-    await until(() => remoteLog().some((r) => r.event === "remote_command_result" && r.code === "TERM_UNKNOWN_KEY"), "unknown key logged");
+    await channel.key("app", app.instance, "no-such-key");
+    await until(() => channel.closedReason() !== undefined, "unknown key closes the channel");
+    expect(channel.closedReason()).toBe("COMMAND_FAILED");
+    expect(remoteLog().some((r) => r.event === "remote_command_result" && r.code === "TERM_UNKNOWN_KEY")).toBe(true);
     run.stop.abort();
     expect((await run.done).exitCode).toBe(0);
   }, LONG);
 
-  it("PC 설정 끔 → remoteEnabled=false·세션 0 으로 열고 명령은 REMOTE_OFF(이중 거절) · 다리는 계속", async () => {
+  it("PC 설정 끔 → remoteEnabled=false·세션 0 으로 열고 hello 는 REMOTE_OFF 로 닫는다(이중 거절) · 다리는 계속", async () => {
     await ok("term", "new", "a", "--", "cat");
+    const browser = await web();
     const run = start({ remoteEnabled: false });
     await until(() => fake.ops().includes("open"), "open");
-    expect(fake.calls[0]?.body).toMatchObject({ remoteEnabled: false, sessions: [] });
-    const id = fake.create("x");
-    await until(() => fake.answerFor(id) !== undefined, "answer");
-    expect(fake.answerFor(id)).toMatchObject({ ok: false, code: "REMOTE_OFF" });
-    expect((await sessions()).map((s) => s.name)).toEqual(["a"]);
+    expect(fake.calls[0]?.body).toMatchObject({ remoteEnabled: false, sessions: [], e2e: 1 });
+    expect(await browser.hello()).toMatchObject({ closed: "REMOTE_OFF" });
     expect(run.printed.join("\n")).toContain("Remote terminal: off on this PC");
     run.stop.abort();
     expect((await run.done).exitCode).toBe(0);
   }, LONG);
 
-  it("웹 «원격 터미널 끊기»(remote=off-by-web) → 화면 멈춤·명령 거절·안내 한 줄 · 링크는 남긴다(poll 계속)", async () => {
+  it("웹 «원격 터미널 끊기»(remote=off-by-web) → 채널을 모두 REMOTE_OFF 로 닫음 · 화면 멈춤 · 안내 한 줄 · 링크는 남긴다(poll 계속)", async () => {
     await ok("term", "new", "a", "--", "cat");
+    const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
-    fake.watch("a");
-    await until(() => fake.frames.length > 0, "first frame");
+    const channel = await browser.connect();
+    channel.watch("a");
+    const frame = await frameWhere(channel, "a", () => true, "first frame");
     fake.webOff();
     await until(() => run.printed.some((line) => line.includes("turned off from the web")), "off notice");
+    await until(() => channel.closedReason() !== undefined, "closed");
+    expect(channel.closedReason()).toBe("REMOTE_OFF");
     const framesAtOff = fake.frames.length;
-    fake.input("a", "late\r");
-    const id = fake.create("x");
-    await until(() => fake.answerFor(id) !== undefined, "answer");
-    expect(fake.answerFor(id)).toMatchObject({ ok: false, code: "REMOTE_OFF" });
+    await channel.input("a", frame.instance, "late\r");
     await sleep(1_500);
     expect(fake.frames.length).toBe(framesAtOff);
     expect((await screen("a")).includes("late")).toBe(false);
@@ -341,6 +521,23 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     await until(() => fake.ops().filter((op) => op === "poll").length > polls, "still polling");
     run.stop.abort();
     expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
+  it("웹이 채널을 닫으면(channel-closed) 화면을 멈추고 그 채널의 명령은 실행하지 않는다", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const browser = await web();
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    channel.watch("a");
+    const frame = await frameWhere(channel, "a", () => true, "first frame");
+    fake.webClose(channel.id);
+    await until(() => remoteLog().some((r) => r.event === "remote_channel" && r.by === "web"), "closed by web");
+    await channel.input("a", frame.instance, "after-close\r");
+    await until(() => remoteLog().some((r) => r.event === "remote_command_skipped" && r.why === "unknown-channel"), "skipped");
+    expect((await screen("a")).includes("after-close")).toBe(false);
+    run.stop.abort();
+    await run.done;
   }, LONG);
 
   it("같은 PC 의 다른 다리가 열면(CLOSED REPLACED) → 끝(0) · close 보내지 않음 · 다시 열지 않음", async () => {
@@ -355,24 +552,42 @@ describe("원격 다리 — 실 데몬 + 서버 대역(여러 세션)", () => {
     expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
   }, LONG);
 
-  it("api 재시작(poll 404 REMOTE_NOT_FOUND) → 같은 PC 로 다시 open(목록 포함) · 보던 세션 화면이 새 링크로", async () => {
+  it("api 재시작(poll 404 REMOTE_NOT_FOUND) → 같은 PC 로 다시 open(목록 포함) · 옛 채널은 버린다(새 hello 로만) · 새 채널 화면이 새 링크로", async () => {
     await ok("term", "new", "a", "--", "cat");
+    const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
-    fake.watch("a");
-    await until(() => fake.frames.length > 0, "first frame");
+    const old = await browser.connect();
+    old.watch("a");
+    const frame = await frameWhere(old, "a", () => true, "first frame");
     const first = fake.linkId;
     fake.restart();
     await until(() => fake.ops().filter((op) => op === "open").length === 2, "reopened");
     expect(fake.linkId).not.toBe(first);
     expect(fake.listedNames()).toEqual(["a"]);
-    fake.input("a", "after\r");
-    await until(() => fake.frames.some((f) => f.linkId === fake.linkId && f.text.split("\r\n").includes("after")), "frame on the new link");
+    await old.input("a", frame.instance, "on-the-old-channel\r");
+    await until(() => remoteLog().some((r) => r.event === "remote_command_skipped" && r.why === "unknown-channel"), "old channel ignored");
+    const channel = await browser.connect();
+    channel.watch("a");
+    const now = await frameWhere(channel, "a", () => true, "new channel frame");
+    await channel.input("a", now.instance, "after\r");
+    await frameWhere(channel, "a", (f) => lines(f.text).includes("after"), "frame on the new link");
+    expect(fake.frames.filter((f) => f.channelId === channel.id).every((f) => f.linkId === fake.linkId)).toBe(true);
     expect(remoteLog().filter((r) => r.event === "remote_reopened")).toEqual([
-      expect.objectContaining({ reason: "REMOTE_NOT_FOUND", previousLinkId: first, linkId: fake.linkId })]);
+      expect.objectContaining({ reason: "REMOTE_NOT_FOUND", previousLinkId: first, linkId: fake.linkId, channelsDropped: 1 })]);
+    expect((await screen("a")).includes("on-the-old-channel")).toBe(false);
     run.stop.abort();
     await run.done;
     expectLogPairs();
+  }, LONG);
+
+  it("새 CLI 가 아직 옛 서버를 만나면(open 400 INVALID) — «서버가 아직 새 판이 아님» 사유로 끝(1) · 다시 하지 않음", async () => {
+    fake.openError = { status: 400, code: "INVALID" };
+    const run = start();
+    const result = await run.done;
+    expect(result.exitCode).toBe(1);
+    expect(result.reason).toContain("not on the new version yet");
+    expect(fake.ops()).toEqual(["open"]);
   }, LONG);
 
   it("poll 기한 초과 → 기한 줄 남기고 같은 링크로 다시 poll · poll 401(로그인 거절) → 끝(1)", async () => {

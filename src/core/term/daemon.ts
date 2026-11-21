@@ -278,24 +278,29 @@ class TermDaemon {
       }
       case "ls":
         return { data: { sessions: [...this.sessions.values()].map((session) => session.info()) } };
-      case "send":
-        await this.session(request.name).send(request.text, request.paste);
-        return { data: { name: request.name, sent: request.text.length } };
-      case "key":
-        await this.session(request.name).key(request.key);
-        return { data: { name: request.name, key: request.key } };
+      case "send": {
+        const session = this.session(request.name, request.instance);
+        await session.send(request.text, request.paste);
+        return { data: { name: request.name, instance: session.instance, sent: request.text.length } };
+      }
+      case "key": {
+        const session = this.session(request.name, request.instance);
+        await session.key(request.key);
+        return { data: { name: request.name, instance: session.instance, key: request.key } };
+      }
       case "read": {
+        // ★화면과 인스턴스 id 는 같은 세션 객체에서(§14-6 4) — 웹은 이 값으로 다음 명령을 겨눈다.
         const session = this.session(request.name);
         const lines = await session.read({ scrollback: request.scrollback, lines: request.lines }, connection);
-        return { data: { name: request.name, lines, modes: await session.modes() } };
+        return { data: { name: request.name, instance: session.instance, lines, modes: await session.modes() } };
       }
       case "kill": {
-        const session = this.session(request.name);
+        const session = this.session(request.name, request.instance);
         this.sessions.delete(request.name);
         session.kill();
         this.updateManifest((entries) => entries.filter((item) => item.name !== request.name));
         this.notifySessions();
-        return { data: { name: request.name, killed: true } };
+        return { data: { name: request.name, instance: session.instance, killed: true } };
       }
       case "kill-server": {
         // ★먼저 새 요청을 막고, 이미 받은 생성(new·restore)을 마치게 한 «뒤» 일괄로 끝낸다 — 성공을 답한 생성이
@@ -334,25 +339,32 @@ class TermDaemon {
         this.listWatchers.add(connection);
         return { data: { watching: "sessions" } };
       case "label": {
-        const session = this.session(request.name);
+        const session = this.session(request.name, request.instance);
         session.label = request.label;
         this.updateManifest((entries) => entries.map((item) => item.name === request.name ? { ...item, label: request.label } : item));
         this.notifySessions();
-        return { data: { name: request.name, label: request.label } };
+        return { data: { name: request.name, instance: session.instance, label: request.label } };
       }
       case "set-size": {
-        const session = this.session(request.name);
+        const session = this.session(request.name, request.instance);
         session.resizeTo(request.cols, request.rows);
         const { cols, rows } = session.info();
-        return { data: { name: request.name, cols, rows } };
+        return { data: { name: request.name, instance: session.instance, cols, rows } };
       }
     }
   }
 
-  private session(name: string): TermSession {
+  /**
+   * 이름으로 세션을 찾는 한 곳. instance 를 주면 ★지금 그 이름의 세션이 그 인스턴스일 때만 — 같은 이름으로 다시 만든 세션이면
+   * SESSION_REPLACED(설계 terminal-e2e §13-1·§14-6 4). 원격 명령의 인스턴스 검사는 다리가 아니라 명령을 적용하는 여기서 한다.
+   */
+  private session(name: string, instance?: string): TermSession {
     const session = this.sessions.get(name);
     if (!session) {
       throw new TermError("TERM_NO_SESSION", `No session named "${name}".`);
+    }
+    if (instance !== undefined && session.instance !== instance) {
+      throw new TermError("SESSION_REPLACED", `The session "${name}" was replaced by a new one with the same name.`);
     }
     return session;
   }

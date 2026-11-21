@@ -4,6 +4,8 @@ import { renderSuccess } from "../../core/output/render";
 import { loadPcKeys, updatePcKeys, withBrowser, withoutBrowser, withPendingTurnOff, type PairedBrowser } from "../../core/pc/pcKeys";
 import type { TurnedOffPc } from "./pcCommand";
 import { runPairing, type MatchedBrowser, type PairTransport } from "../../core/pc/pcPairing";
+import { PairRelayError } from "../../core/pc/pcPairRelay";
+import { PcCallError } from "../../core/http/pcHttp";
 import { accountKey, loadPcSettings } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
 import { generateSigningJwk, transcriptUserId, type EcPrivateJwk } from "../../core/term/e2e";
@@ -34,8 +36,8 @@ export interface PairDeps {
   hostName: string;
   endpoint: string;
   account: () => Promise<Pick<AccountSummary, "userId">>;
-  /** 서버 중계 — 짝짓기를 시작할 때만 연다. */
-  transport: () => PairTransport;
+  /** 서버 중계(이 PC 의 pcId 로) — 짝짓기를 시작할 때만 연다. 운영은 pcPairRelay.createPairRelay. */
+  transport: (pcId: string) => PairTransport | Promise<PairTransport>;
   /** 떠 있는 PC 연결을 완전히 끄고 끝난 것을 확인한다(못 하면 던진다) — 끈 세션 이름들. 운영은 pcCommand.turnOffPcs. */
   turnOffPc: () => Promise<TurnedOffPc[]>;
   /** 짝짓기 기한 — 운영은 PAIR_WAIT_MS. */
@@ -94,11 +96,11 @@ async function pair(deps: PairDeps): Promise<number> {
     throw new CliCommandError("PC_NOT_APPROVED", "This PC is not connected yet — run `ainecto` in a terminal once to approve, then `ainecto pair`.");
   }
   const pcKey = (await loadPcKeys(deps.keysPath)).accounts[key]?.pcKey ?? await generateSigningJwk();
-  const transport = deps.transport();
+  const transport = await deps.transport(settings.pcId);
   const tty = deps.openTty();
   let outcome: Awaited<ReturnType<typeof runPairing>>;
   try {
-    outcome = await runPairing({
+    outcome = await relayErrors(() => runPairing({
       userId: transcriptUserId(userId),
       pcId: settings.pcId,
       pcKey,
@@ -106,7 +108,7 @@ async function pair(deps: PairDeps): Promise<number> {
       prompt: { show: (line) => { tty.stderr.write(`${line}\n`); }, ask: (question, signal) => promptLine(tty, question, signal) },
       pin: (browser) => pin(deps, key, pcKey, browser),
       waitMs: deps.waitMs,
-    });
+    }));
   } finally {
     tty.close();
   }
@@ -202,6 +204,22 @@ async function removeBrowser(deps: PairDeps, keyIdOrName: string): Promise<numbe
     ? renderSuccess({ removed: removed ? { keyId: removed.keyId, name: removed.name } : null, turnedOff: stopped }, { json: true })
     : `${lines.join("\n")}\n`);
   return 0;
+}
+
+/** 중계 실패 → 사람이 읽는 오류(코드 그대로). 응답 줄은 공용 입구가 remote.log 에 남겼다. */
+async function relayErrors<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof PairRelayError) {
+      throw new CliCommandError(error.code, `${error.message} Nothing was saved — run \`ainecto pair\` again.`);
+    }
+    if (error instanceof PcCallError) {
+      throw new CliCommandError("PAIR_RELAY_FAILED", `Could not reach AiNecto to pair (${error.op}: ${error.status ?? "-"} ${error.code ?? ""} `
+        + `${error.message}`.replace(/\s+/g, " ").trim() + "). Nothing was saved — run `ainecto pair` again.");
+    }
+    throw error;
+  }
 }
 
 /** 계정 — 저장 열쇠(`서버#userId` — pc.json 과 같은 값)와 그 userId(대화 기록에는 {@link transcriptUserId} 로 바꿔 넣는다). */

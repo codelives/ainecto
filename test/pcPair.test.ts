@@ -60,8 +60,9 @@ async function fakeBrowser(options: {
   const own: EcPrivateJwk = await generateSigningJwk();
   const ownPub = publicRawFromJwk(own);
   const nB = randomBytes(32);
-  const state: { commit?: Uint8Array; pcPub?: Uint8Array; transcript?: Uint8Array; codes?: PairCodes; pinnedPc: boolean; done: number } = {
-    pinnedPc: false, done: 0,
+  const state: { commit?: Uint8Array; pcPub?: Uint8Array; transcript?: Uint8Array; codes?: PairCodes; pinnedPc: boolean; done: number;
+    aborts: string[] } = {
+    pinnedPc: false, done: 0, aborts: [],
   };
   const transport: PairTransport = {
     async offer(commit, signal) {
@@ -92,6 +93,9 @@ async function fakeBrowser(options: {
       if (options.failDone) throw new Error("relay closed");
       if (!state.pcPub || !state.transcript) throw new Error("done before reveal");
       state.pinnedPc = await verifyBytes(publicJwkFromRaw(state.pcPub), signature, pairDoneInput(state.transcript));
+    },
+    async abort(reason) {
+      state.aborts.push(reason);
     },
   };
   return { own, transport, state };
@@ -197,6 +201,8 @@ describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
     await expect(stat(keysPath())).rejects.toThrow();
     expect(browser.state.done).toBe(0);
     expect(tty.closed()).toBe(true);
+    // 짝짓지 못하고 끝나면 브라우저에 abort 를 알린다.
+    expect(browser.state.aborts).toEqual(["code-mismatch"]);
   });
 
   it("코드 입력 경계: 앞뒤 공백은 지우고 맞으면 핀 · 하이픈·가운데 공백이 든 맞는 숫자는 불일치(한 번 소모)", async () => {
@@ -245,6 +251,8 @@ describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
     const empty = await fakeBrowser({ pcId });
     await expectCli(executePair(deps({ transport: () => empty.transport, openTty: () => fakeTty(() => "").tty }).deps, []), "PAIR_CANCELLED");
     await expect(stat(keysPath())).rejects.toThrow();
+    expect(slow.state.aborts).toEqual(["timeout"]);
+    expect(empty.state.aborts).toEqual(["cancelled"]);
   });
 
   it("done 을 못 보내면 PAIR_DONE_FAILED — PC 에는 핀했다고 사유와 지우는 명령을 알린다", async () => {

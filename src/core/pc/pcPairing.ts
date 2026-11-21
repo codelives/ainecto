@@ -20,7 +20,7 @@ import {
 
 /**
  * PC 쪽 첫 짝짓기 한 번(설계 terminal-e2e §11-1 · §12) — 약속값 → 브라우저 제안 → 드러내기 → 코드 A 보이기 → 코드 B 한 번 받기 → 비교
- * → (맞으면) 브라우저 핀 → done 서명 보내기. 서버 중계는 {@link PairTransport} 로 주입한다(실제 왕복은 c2).
+ * → (맞으면) 브라우저 핀 → done 서명 보내기. 서버 중계는 {@link PairTransport} 로 주입한다(운영 = pcPairRelay.createPairRelay).
  * ★시도는 한 번: 난수 한 쌍 · 코드 입력 한 번. 틀리거나 기한이 지나면 끝 — 다시 하려면 사람이 `ainecto pair` 를 다시 실행한다.
  */
 
@@ -46,6 +46,8 @@ export interface PairTransport {
   reveal(pcPublicRaw: Uint8Array, nP: Uint8Array, signal: AbortSignal): Promise<void>;
   /** 코드 B 가 맞고 핀한 뒤 — done 서명을 보낸다(브라우저는 이것을 검증한 뒤에만 PC 핀을 저장한다). */
   done(signature: Uint8Array, signal: AbortSignal): Promise<void>;
+  /** 짝짓지 못하고 끝났다(틀림·기한·취소·오류) — 브라우저에 알린다(최선 — 던지지 않는다). done 을 보냈으면 아무것도 안 한다. */
+  abort(reason: "code-mismatch" | "timeout" | "cancelled" | "error"): Promise<void>;
 }
 
 /** 사람과 주고받기 — ask 는 한 줄을 돌려주고, 입력이 끝났거나 중단되면 빈 문자열. */
@@ -93,7 +95,16 @@ export async function runPairing(input: {
       throw error;
     }
   };
+  let outcome: PairOutcome | undefined;
   try {
+    outcome = await pairOnce();
+    return outcome;
+  } finally {
+    clearTimeout(timer);
+    if (outcome?.kind !== "paired") await input.transport.abort(outcome?.kind ?? "error");
+  }
+
+  async function pairOnce(): Promise<PairOutcome> {
     const pcPublicRaw = publicRawFromJwk(input.pcKey);
     const nP = (input.random ?? (() => randomBytes(NONCE_SEED_BYTES)))();
     const commit = await pairCommitment(pcPublicRaw, nP);
@@ -129,7 +140,5 @@ export async function runPairing(input: {
       doneError = signal.aborted ? "timed out" : error instanceof Error ? error.message : String(error);
     }
     return { kind: "paired", browser, doneError };
-  } finally {
-    clearTimeout(timer);
   }
 }

@@ -8,16 +8,20 @@ import { isUuid } from "./paths";
  * attach 의 출력·입력 바이트는 base64 로 싣는다 — 바이트 흐름과 제어 줄을 한 가지 틀로(두 방식 금지).
  */
 
-/** 요청 본문 — id 는 클라이언트가 붙인다. */
+/**
+ * 요청 본문 — id 는 클라이언트가 붙인다.
+ * instance(있으면) = 그 이름의 «지금» 세션 인스턴스와 같을 때만 적용한다 — 다르면 SESSION_REPLACED(설계 terminal-e2e §14-6 4).
+ * 원격 다리는 웹 명령마다 봉인 본문의 인스턴스를 싣는다. 로컬 `term` 명령은 싣지 않는다(이름만).
+ */
 export type TermRequestBody =
   /** project = 프로젝트 꼬리표(KAN-1238, {@link isUuid}) — 세션 수명 동안 그대로, 매니페스트·ls 에 남는다. 옛 데몬은 버린다. */
   | { op: "new"; name: string; cwd: string; command: string[] | null; env: Record<string, string>; cols?: number; rows?: number;
       project?: string; input?: "none" }
   | { op: "ls" }
-  | { op: "send"; name: string; text: string; paste: boolean }
-  | { op: "key"; name: string; key: string }
+  | { op: "send"; name: string; text: string; paste: boolean; instance?: string }
+  | { op: "key"; name: string; key: string; instance?: string }
   | { op: "read"; name: string; scrollback: boolean; lines?: number }
-  | { op: "kill"; name: string }
+  | { op: "kill"; name: string; instance?: string }
   | { op: "kill-server" }
   | { op: "restore"; env: Record<string, string> }
   | { op: "attach"; name: string; cols: number; rows: number }
@@ -27,9 +31,9 @@ export type TermRequestBody =
    * 붙지 않은 쪽(원격 웹 패널 — 원격 다리)이 세션 크기를 정한다. ★attach 흐름의 `resize`(id 없는 줄)와 이름을 나눈다 — 옛 데몬은
    * id 붙은 `resize` 를 흐름 줄로 읽어 답하지 않는다(10초 뒤 연결이 끊김). 모르는 op 면 옛 데몬이 연결을 바로 끊어 빨리 안다.
    */
-  | { op: "set-size"; name: string; cols: number; rows: number }
+  | { op: "set-size"; name: string; cols: number; rows: number; instance?: string }
   /** 보이는 이름 — 데몬 이름(세션 열쇠·AINECTO_TERM_SESSION)은 그대로(KAN-738 결재 «가»). 매니페스트에 남아 restore 가 되살린다. */
-  | { op: "label"; name: string; label: string }
+  | { op: "label"; name: string; label: string; instance?: string }
   /** 이 연결에 세션 목록 변화(생김·끝·label)를 {@code sessions} 이벤트로 알린다 — 원격 다리가 목록을 올릴 때를 안다. */
   | { op: "watch-sessions" }
   /** Windows 만 — 데몬 증명. 답은 `{proof}`(ipc.ts helloProof). 클라이언트는 이 답을 확인하기 전에 다른 요청을 보내지 않는다. */
@@ -140,15 +144,16 @@ export function parseClientMessage(line: string): TermClientMessage {
       if (label.length === 0) {
         throw new TermProtocolError(`"label" must not be empty.`);
       }
-      return { id, op, name: stringField(record, "name"), label };
+      return { id, op, name: stringField(record, "name"), label, ...optionalInstance(record) };
     }
     case "send":
-      return { id, op, name: stringField(record, "name"), text: stringField(record, "text"), paste: record.paste === true };
+      return { id, op, name: stringField(record, "name"), text: stringField(record, "text"), paste: record.paste === true, ...optionalInstance(record) };
     case "key":
-      return { id, op, name: stringField(record, "name"), key: stringField(record, "key") };
+      return { id, op, name: stringField(record, "name"), key: stringField(record, "key"), ...optionalInstance(record) };
     case "read":
       return { id, op, name: stringField(record, "name"), scrollback: record.scrollback === true, lines: optionalSize(record, "lines") };
     case "kill":
+      return { id, op, name: stringField(record, "name"), ...optionalInstance(record) };
     case "watch":
       return { id, op, name: stringField(record, "name") };
     case "restore":
@@ -156,8 +161,9 @@ export function parseClientMessage(line: string): TermClientMessage {
     case "hello":
       return { id, op, nonce: stringField(record, "nonce") };
     case "attach":
-    case "set-size":
       return { id, op, name: stringField(record, "name"), cols: sizeField(record, "cols"), rows: sizeField(record, "rows") };
+    case "set-size":
+      return { id, op, name: stringField(record, "name"), cols: sizeField(record, "cols"), rows: sizeField(record, "rows"), ...optionalInstance(record) };
     default:
       throw new TermProtocolError(`Unknown op "${op}".`);
   }
@@ -250,6 +256,13 @@ export function readModes(data: unknown): { altScreen: boolean; appCursor: boole
     : undefined;
 }
 
+/** `read`·`new` 응답의 세션 인스턴스 id — 옛 데몬이면 칸이 없어 undefined. */
+export function sessionInstance(data: unknown): string | undefined {
+  return data && typeof data === "object" && "instance" in data && typeof data.instance === "string" && data.instance !== ""
+    ? data.instance
+    : undefined;
+}
+
 /** `read` 응답 → 화면 줄. 줄이 없으면 데몬이 계약을 어긴 것이다. */
 export function readLines(data: unknown): string[] {
   if (data && typeof data === "object" && "lines" in data && Array.isArray(data.lines)) {
@@ -314,6 +327,16 @@ function noInputField(record: Record<string, unknown>, key: string): "none" {
     throw new TermProtocolError(`"${key}" must be "none" when present.`);
   }
   return "none";
+}
+
+/** 인스턴스 칸 — 없으면 칸 없음(이름만), 있으면 빈 글이 아닌 문자열. */
+function optionalInstance(record: Record<string, unknown>): { instance?: string } {
+  if (record.instance === undefined) return {};
+  const instance = stringField(record, "instance");
+  if (instance === "") {
+    throw new TermProtocolError(`"instance" must not be empty.`);
+  }
+  return { instance };
 }
 
 function optionalSize(record: Record<string, unknown>, key: string): number | undefined {

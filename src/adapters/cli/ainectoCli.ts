@@ -19,6 +19,8 @@ import { executeTermCommand, stringEnv, TERM_HELP_LINES } from "./termCommand";
 import { executePcStart, executePcStop, executeRemoteSetting, turnOffPcs, type PcDeps } from "./pcCommand";
 import { executePair, openDevTty } from "./pairCommand";
 import { PAIR_WAIT_MS } from "../../core/pc/pcPairing";
+import { createPairRelay } from "../../core/pc/pcPairRelay";
+import { openRemoteLog } from "../../core/term/remote";
 import { pcKeysPath } from "../../core/pc/pcKeys";
 import { SESSION_ENV } from "../../core/term/session";
 import { npxCliCommand, pcReadyDeadlineMs, pcStopDeadlineMs, skipUpgradeOf } from "../../core/pc/pcSession";
@@ -227,9 +229,11 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         hostName: hostname(),
         endpoint: resolved.endpoint,
         account: () => readAccount(connect().client),
-        // ★서버 중계(/mcp/term/pc/pair)는 c2 — 그때 여기를 실제 transport 로 바꾼다.
-        transport: () => {
-          throw new CliCommandError("PAIR_UNAVAILABLE", "Pairing with the web is not available in this version yet.");
+        // 중계 호출 줄(요청 1 + 응답 1)은 원격 다리와 같은 remote.log 에(op = pair/…).
+        transport: async (pcId) => {
+          const paths = termPaths();
+          await ensurePrivateDir(paths.dir);
+          return createPairRelay({ endpoint: resolved.endpoint, tokenProvider: connect().auth, log: openRemoteLog(paths), pcId, holdMs: PAIR_WAIT_MS });
         },
         turnOffPc: () => turnOffPcs(pcDeps()),
         waitMs: PAIR_WAIT_MS,

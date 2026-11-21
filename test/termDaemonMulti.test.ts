@@ -101,4 +101,37 @@ describe("ainecto term — 여러 세션용 데몬 op", () => {
       client.close();
     }
   }, LONG);
+
+  it("인스턴스 id(§14-6 4) — read·ls·new 가 같은 세션 객체의 값을 싣는다 · 같은 이름으로 다시 만들면 새 값 · 옛 값으로 겨눈 send·key·set-size·label·kill 은 SESSION_REPLACED(적용 안 함) · 값 없이 부르면 이름만", async () => {
+    const paths = termPaths(rig.home);
+    await ok("term", "new", "work", "--", "cat");
+    const first = await termRequest(paths, { op: "read", name: "work", scrollback: false }, { start: false });
+    const old = (first as { data: { instance: string } }).data.instance;
+    expect(typeof old).toBe("string");
+    expect((await sessions()).find((s) => s.name === "work")).toMatchObject({ instance: old });
+    await ok("term", "kill", "work");
+    await ok("term", "new", "work", "--", "cat");
+    const now = (await sessions()).find((s) => s.name === "work") as { instance?: string } | undefined;
+    expect(now?.instance).toBeDefined();
+    expect(now?.instance).not.toBe(old);
+    for (const body of [
+      { op: "send", name: "work", text: "stale\r", paste: false, instance: old },
+      { op: "key", name: "work", key: "enter", instance: old },
+      { op: "set-size", name: "work", cols: 99, rows: 33, instance: old },
+      { op: "label", name: "work", label: "stale", instance: old },
+      { op: "kill", name: "work", instance: old },
+    ] as const) {
+      await expect(termRequest(paths, body, { start: false })).rejects.toMatchObject({ code: "SESSION_REPLACED" });
+    }
+    const after = (await sessions()).find((s) => s.name === "work");
+    expect(after).toMatchObject({ instance: now?.instance, cols: expect.any(Number) });
+    expect(after?.cols).not.toBe(99);
+    expect(after?.label).toBeUndefined();
+    expect((await termRequest(paths, { op: "read", name: "work", scrollback: false }, { start: false }) as { data: { lines: string[] } }).data.lines
+      .join("\n")).not.toContain("stale");
+    expect(await termRequest(paths, { op: "send", name: "work", text: "fresh", paste: false, instance: now!.instance! }, { start: false }))
+      .toMatchObject({ daemon: true, data: { instance: now?.instance } });
+    expect(await termRequest(paths, { op: "key", name: "work", key: "enter" }, { start: false })).toMatchObject({ daemon: true });
+  }, LONG);
 });
+

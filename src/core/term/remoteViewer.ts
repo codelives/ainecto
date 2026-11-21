@@ -4,8 +4,9 @@ import { openTermClient, type TermClient } from "./client";
 import type { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
 import type { TermPaths } from "./paths";
-import { readLines, readModes } from "./protocol";
+import { readLines, readModes, sessionInstance } from "./protocol";
 import type { RemoteHttp, RemoteLogRecord } from "./remote";
+import { ChannelSealError, type CloseReason } from "./remoteChannel";
 import { frameBudget, screenFrame } from "./remoteFrame";
 import { FRAME_MIN_INTERVAL_MS, FRAME_SCROLLBACK_LINES, retryWait } from "./remoteLimits";
 
@@ -16,9 +17,19 @@ export interface ViewerLink {
   frameMaxBytes: number;
 }
 
+/** 봉인 frame 본문(§14-4 · A6) — d = base64(UTF-8 화면) · instance = 이 화면을 읽은 세션 객체의 인스턴스 id. */
+export interface FrameBody {
+  d: string;
+  modes?: { altScreen: boolean; appCursor: boolean; bracketedPaste: boolean };
+  instance: string;
+  executedThrough: number;
+}
+
 export interface ViewerDeps {
   paths: TermPaths;
   session: string;
+  /** 이 화면을 받는 채널(연결) — 채널마다 따로 봉인한다(§11-2 구독 = (연결, 세션)). */
+  channelId: string;
   http: RemoteHttp;
   log: DaemonLog<RemoteLogRecord>;
   link(): ViewerLink;
@@ -29,11 +40,19 @@ export interface ViewerDeps {
   onRefused(error: unknown): void;
   /** 서버 목록이 이 세션을 아직 모른다(SESSION_NOT_FOUND) — 다리가 목록을 올린다. */
   onUnknownSession(): void;
+  /** 그 채널 키로 봉인 — 번호는 채널 장부가 정한다(remoteChannel.ChannelBook.seal). */
+  seal(body: FrameBody): Promise<{ n: number; c: string }>;
+  /** 그 채널의 연속 실행 확인 지점 — 없으면(채널이 닫힘) undefined. */
+  executedThrough(): number | undefined;
+  /** 봉인을 못 한다(채널 닫힘·번호 다 씀) — 다리가 그 채널을 이 사유로 닫는다. */
+  onChannelEnded(reason: CloseReason | "CHANNEL_GONE"): void;
 }
 
 /**
- * 웹이 보고 있는 세션 하나의 화면 루프 — 데몬 watch 의 «바뀜» → C9 간격 이상으로 read(스크롤백 C10 + 화면 줄, 모드 포함) →
- * 글자·크기·모드가 바뀐 때만 frame. 한 번에 하나, 밀린 것은 최신 하나로. 세션마다 데몬 연결 하나(watch 의 «바뀜»에는 세션 이름이 없다).
+ * 한 채널이 보고 있는 세션 하나의 화면 루프 — 데몬 watch 의 «바뀜» → C9 간격 이상으로 read(스크롤백 C10 + 화면 줄, 모드·인스턴스 포함) →
+ * 글자·크기·모드·인스턴스·executedThrough 가 바뀐 때만 봉인 frame. 한 번에 하나, 밀린 것은 최신 하나로. (채널, 세션)마다 데몬 연결 하나.
+ * ★executedThrough 가 오르면 화면 글자가 그대로여도 다시 보낸다(§14-6 1 — 에코 없는 실행도 웹이 «실행됨»을 안다).
+ *   read «전에» 그 값을 잡는다 — 실려 가는 화면은 늘 그 실행 뒤의 화면이다.
  * ★원격의 생사는 poll 한 곳이 정한다 — frame 이 REMOTE_NOT_FOUND 면 그 세대에서 멈추고 다리가 다시 열기를 기다린다.
  */
 export class RemoteViewer {
@@ -64,7 +83,7 @@ export class RemoteViewer {
     this.refresh();
   }
 
-  /** 다시 그려 보낸다(다시 열린 링크·목록을 올린 뒤). */
+  /** 다시 그려 보낸다(다시 열린 링크·목록을 올린 뒤·실행 확인 지점이 오른 뒤). */
   refresh(): void {
     this.dirty = true;
     this.nudge();
@@ -132,6 +151,12 @@ export class RemoteViewer {
       this.dirty = false;
       lastRead = Date.now();
       const { cols, rows } = this.size;
+      const executedThrough = this.deps.executedThrough();
+      if (executedThrough === undefined) {
+        this.stop();
+        this.deps.onChannelEnded("CHANNEL_GONE");
+        return;
+      }
       let data: unknown;
       try {
         data = await client.request({ op: "read", name, scrollback: true, lines: FRAME_SCROLLBACK_LINES + rows });
@@ -139,17 +164,33 @@ export class RemoteViewer {
         this.daemonFailed("read", error);
         return;
       }
+      const instance = sessionInstance(data);
+      if (instance === undefined) {
+        // 옛 데몬 — 인스턴스를 모르면 웹이 명령을 겨눌 수 없고(§14-6 4) 데몬도 검사하지 않는다. 화면을 보내지 않는다.
+        this.daemonFailed("read", new TermError("TERM_DAEMON_OUTDATED",
+          "The term daemon is older than this CLI (no session instance) — restart it with `ainecto term kill-server`."));
+        return;
+      }
       const modes = readModes(data);
-      const head = { linkId: target.linkId, session: name, cols, rows, ...(modes ? { modes } : {}) };
-      const frame = screenFrame(readLines(data), frameBudget(target.frameMaxBytes, head));
+      const outer = { linkId: target.linkId, channelId: this.deps.channelId, session: name, cols, rows };
+      const sealed = { ...(modes ? { modes } : {}), instance };
+      const frame = screenFrame(readLines(data), frameBudget(target.frameMaxBytes, outer, sealed));
       if (frame.dropped !== dropped) {
         dropped = frame.dropped;
-        this.deps.log.write({ event: "remote_frame_trimmed", session: name, dropped });
+        this.deps.log.write({ event: "remote_frame_trimmed", channelId: this.deps.channelId, session: name, dropped });
       }
-      const key = `${frame.hash}:${cols}x${rows}:${JSON.stringify(modes ?? null)}`;
+      const key = `${frame.hash}:${cols}x${rows}:${JSON.stringify(modes ?? null)}:${instance}:${executedThrough}`;
       if (key === sentKey) continue;
+      let box: { n: number; c: string };
       try {
-        await this.deps.http.call("frame", { ...head, d: frame.d }, { signal: this.stopper.signal });
+        box = await this.deps.seal({ d: frame.d, ...sealed, executedThrough });
+      } catch (error) {
+        this.stop();
+        this.deps.onChannelEnded(error instanceof ChannelSealError ? error.reason : "CHANNEL_GONE");
+        return;
+      }
+      try {
+        await this.deps.http.call("frame", { ...outer, ...box }, { signal: this.stopper.signal });
         sentKey = key;
         attempt = 0;
       } catch (error) {
@@ -161,9 +202,13 @@ export class RemoteViewer {
         }
         if (error instanceof PcCallError && error.status === 404 && error.code === "SESSION_NOT_FOUND") {
           this.deps.onUnknownSession();
-        } else if (!(error instanceof PcCallError) || !error.retryable) {
+        } else if (error instanceof PcCallError && (error.status === 401 || error.status === 403)) {
           this.stop();
           this.deps.onRefused(error);
+          return;
+        } else if (!(error instanceof PcCallError) || !error.retryable) {
+          // 그 밖 4xx(채널을 서버가 이미 닫음 등) — 이 화면만 멈춘다. 다리는 계속(응답 줄은 공용 입구가 남겼다).
+          this.stop();
           return;
         }
         await sleep(retryWait(attempt, Math.random()), this.stopper.signal);
