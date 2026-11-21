@@ -31,19 +31,22 @@ import {
   type HelloFields,
   type MessageHeader,
   type ReceiveState,
+  MAX_MESSAGES_PER_KEY,
+  transcriptUserId,
 } from "../src/core/term/e2e";
 
 /** ★front 와 같은 파일 — 기준(golden)이다. 구현을 고쳐서 이 값을 맞추지, 이 파일을 다시 만들지 않는다. */
-interface VectorHeader { type: string; session: string; requestId: string; projectUuid: string; counter: number; connIdHex: string; pcId: string }
+interface VectorHeader { type: string; session: string; operationId: string; projectUuid: string; counter: number; connIdHex: string; pcId: string }
 interface Vectors {
   keys: { pcSigning: EcPrivateJwk; browserSigning: EcPrivateJwk; pcPublicRawHex: string; browserPublicRawHex: string };
   pairing: {
-    accountKey: string; pcId: string; nPHex: string; nBHex: string; commitHex: string; transcriptHex: string;
+    userId: string; pcId: string; nPHex: string; nBHex: string; commitHex: string; transcriptHex: string;
     codeBlockAHex: string; codeBlockBHex: string; codeA: string; codeB: string; doneSignatureInputHex: string; doneSignatureHex: string;
   };
   codeBlockExamples: Array<{ blockHex: string; code: string | null }>;
+  userIdExamples: Array<{ label: string; rawUserId: string; transcriptUserId: string; transcriptHex: string; a: string; b: string }>;
   channel: {
-    accountKey: string; pcId: string; channel: string; browserKeyId: string; browserEphemeral: EcPrivateJwk; pcEphemeral: EcPrivateJwk;
+    userId: string; pcId: string; channel: string; browserKeyId: string; browserEphemeral: EcPrivateJwk; pcEphemeral: EcPrivateJwk;
     eBHex: string; ePHex: string; nBHex: string; nPPrimeHex: string; helloSignatureInputHex: string; helloSignatureHex: string;
     transcriptHex: string; welcomeSignatureHex: string; browserToPcKeySha256Hex: string; pcToBrowserKeySha256Hex: string; connIdHex: string;
   };
@@ -66,11 +69,11 @@ const enc = (...fields: Array<Uint8Array | string>): Buffer => Buffer.concat(fie
 
 function hello(): HelloFields {
   const c = V.channel;
-  return { accountKey: c.accountKey, pcId: c.pcId, channel: c.channel, browserKeyId: c.browserKeyId, eB: bytes(c.eBHex), nB: bytes(c.nBHex) };
+  return { userId: c.userId, pcId: c.pcId, channel: c.channel, browserKeyId: c.browserKeyId, eB: bytes(c.eBHex), nB: bytes(c.nBHex) };
 }
 
 function header(vector: VectorHeader): MessageHeader {
-  return { type: vector.type, connId: bytes(vector.connIdHex), pcId: vector.pcId, session: vector.session, requestId: vector.requestId,
+  return { type: vector.type, connId: bytes(vector.connIdHex), pcId: vector.pcId, session: vector.session, operationId: vector.operationId,
     projectUuid: vector.projectUuid, counter: vector.counter };
 }
 
@@ -92,7 +95,7 @@ async function expectCode(promise: Promise<unknown>, code: E2eError["code"]): Pr
 const exact = (next: number): ReceiveState => ({ order: "exact", next });
 const increasing = (next: number): ReceiveState => ({ order: "increasing", next });
 
-describe("E2E 시험 벡터 v1 — CLI·front 가 같은 바이트를 낸다(설계 r2 §11)", () => {
+describe("E2E 시험 벡터 v1 — CLI·front 가 같은 바이트를 낸다(설계 r3 §12 > §11)", () => {
   it("키: JWK ↔ 비압축 점 65바이트", () => {
     expect(hex(publicRawFromJwk(V.keys.pcSigning))).toBe(V.keys.pcPublicRawHex);
     expect(hex(publicRawFromJwk(V.keys.browserSigning))).toBe(V.keys.browserPublicRawHex);
@@ -106,13 +109,13 @@ describe("E2E 시험 벡터 v1 — CLI·front 가 같은 바이트를 낸다(설
     const nP = bytes(p.nPHex);
     const nB = bytes(p.nBHex);
     expect(hex(await pairCommitment(pcPub, nP))).toBe(p.commitHex);
-    const T = await pairTranscript({ accountKey: p.accountKey, pcId: p.pcId, pcPublicRaw: pcPub, browserPublicRaw: browserPub, nP, nB });
+    const T = await pairTranscript({ userId: p.userId, pcId: p.pcId, pcPublicRaw: pcPub, browserPublicRaw: browserPub, nP, nB });
     expect(hex(T)).toBe(p.transcriptHex);
     expect(await pairCodes(T)).toEqual({ a: p.codeA, b: p.codeB });
     expect(hex(pairDoneInput(T))).toBe(p.doneSignatureInputHex);
 
     expect(sha256Hex(Buffer.concat([pcPub, nP]))).toBe(p.commitHex);
-    expect(sha256Hex(enc("ainecto-pair-v1", p.accountKey, p.pcId, pcPub, browserPub, nP, nB))).toBe(p.transcriptHex);
+    expect(sha256Hex(enc("ainecto-pair-v1", p.userId, p.pcId, pcPub, browserPub, nP, nB))).toBe(p.transcriptHex);
     const block = (info: string): Buffer => createHmac("sha256", T).update(Buffer.concat([Buffer.from(info), Buffer.of(1)])).digest();
     expect(hex(block("ainecto-pair-code-A"))).toBe(p.codeBlockAHex);
     expect(hex(block("ainecto-pair-code-B"))).toBe(p.codeBlockBHex);
@@ -129,16 +132,30 @@ describe("E2E 시험 벡터 v1 — CLI·front 가 같은 바이트를 낸다(설
     expect(V.codeBlockExamples.map((example) => example.code)).toEqual(["000005", "999999", "234567", null]);
   });
 
+  it("userId: 서버 주소 없이 UUID 소문자 36자 — 대문자로 온 값도 같은 바이트 · UUID 가 아니면 E2E_BAD_INPUT", async () => {
+    const p = V.pairing;
+    for (const example of V.userIdExamples) {
+      expect(transcriptUserId(example.rawUserId)).toBe(example.transcriptUserId);
+      const T = await pairTranscript({ userId: transcriptUserId(example.rawUserId), pcId: p.pcId, pcPublicRaw: bytes(V.keys.pcPublicRawHex),
+        browserPublicRaw: bytes(V.keys.browserPublicRawHex), nP: bytes(p.nPHex), nB: bytes(p.nBHex) });
+      expect(hex(T)).toBe(example.transcriptHex);
+      expect(await pairCodes(T)).toEqual({ a: example.a, b: example.b });
+    }
+    expect(() => transcriptUserId("https://ainecto.com/mcp#5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10")).toThrow(E2eError);
+    await expectCode(pairTranscript({ userId: "5B1F2C9E-0A7D-4E63-8F41-9C2D7B6A3E10", pcId: p.pcId, pcPublicRaw: bytes(V.keys.pcPublicRawHex),
+      browserPublicRaw: bytes(V.keys.browserPublicRawHex), nP: bytes(p.nPHex), nB: bytes(p.nBHex) }), "E2E_BAD_INPUT");
+  });
+
   it("hello·welcome: 서명 입력·H 가 같고, 저장된 서명이 검증된다(ECDSA 는 무작위라 같음이 아니라 verify)", async () => {
     const c = V.channel;
     expect(hex(helloSignatureInput(hello()))).toBe(c.helloSignatureInputHex);
-    expect(hex(enc("ainecto-e2e-v1", "browser", "hello", c.accountKey, c.pcId, c.channel, c.browserKeyId, bytes(c.eBHex), bytes(c.nBHex))))
+    expect(hex(enc("ainecto-e2e-v1", "browser", "hello", c.userId, c.pcId, c.channel, c.browserKeyId, bytes(c.eBHex), bytes(c.nBHex))))
       .toBe(c.helloSignatureInputHex);
     const pcPub = bytes(V.keys.pcPublicRawHex);
     const browserPub = bytes(V.keys.browserPublicRawHex);
     const H = await channelTranscript({ hello: hello(), pcPublicRaw: pcPub, browserPublicRaw: browserPub, eP: bytes(c.ePHex), nP: bytes(c.nPPrimeHex) });
     expect(hex(H)).toBe(c.transcriptHex);
-    expect(sha256Hex(enc("ainecto-e2e-v1", c.accountKey, c.pcId, c.channel, c.browserKeyId, pcPub, browserPub,
+    expect(sha256Hex(enc("ainecto-e2e-v1", c.userId, c.pcId, c.channel, c.browserKeyId, pcPub, browserPub,
       bytes(c.eBHex), bytes(c.nBHex), bytes(c.ePHex), bytes(c.nPPrimeHex)))).toBe(c.transcriptHex);
     expect(await verifyBytes(publicJwkOf(V.keys.browserSigning), bytes(c.helloSignatureHex), bytes(c.helloSignatureInputHex))).toBe(true);
     expect(await verifyBytes(publicJwkOf(V.keys.pcSigning), bytes(c.welcomeSignatureHex), H)).toBe(true);
@@ -166,7 +183,7 @@ describe("E2E 시험 벡터 v1 — CLI·front 가 같은 바이트를 낸다(설
       const key = await importMessageKey(message.direction === "browser-to-pc" ? secrets.browserToPc : secrets.pcToBrowser);
       expect(hex(messageNonce(h.counter))).toBe(message.nonceHex);
       expect(hex(messageAad(h))).toBe(message.aadHex);
-      expect(hex(enc("ainecto-e2e-v1", h.type, h.connId, h.pcId, h.session, h.requestId, h.projectUuid, bytes(message.nonceHex).subarray(4))))
+      expect(hex(enc("ainecto-e2e-v1", h.type, h.connId, h.pcId, h.session, h.operationId, h.projectUuid, bytes(message.nonceHex).subarray(4))))
         .toBe(message.aadHex);
       expect(hex(await sealMessage(key, h, utf8(message.plaintextUtf8)))).toBe(message.ciphertextHex);
       const state = message.direction === "browser-to-pc" ? toPc : increasing(0);
@@ -189,11 +206,11 @@ describe("E2E 거절 — 약속값·서명·카운터·AAD", () => {
     await expectCode(assertCommitment(commit, bytes(V.keys.pcPublicRawHex), otherNonce), "E2E_COMMITMENT_MISMATCH");
   });
 
-  it("T 의 칸이 하나라도 다르면(계정 열쇠 포함) 코드가 달라진다", async () => {
+  it("T 의 칸이 하나라도 다르면(userId 포함) 코드가 달라진다", async () => {
     const p = V.pairing;
-    const input = { accountKey: p.accountKey, pcId: p.pcId, pcPublicRaw: bytes(V.keys.pcPublicRawHex), browserPublicRaw: bytes(V.keys.browserPublicRawHex),
+    const input = { userId: p.userId, pcId: p.pcId, pcPublicRaw: bytes(V.keys.pcPublicRawHex), browserPublicRaw: bytes(V.keys.browserPublicRawHex),
       nP: bytes(p.nPHex), nB: bytes(p.nBHex) };
-    const other = await pairCodes(await pairTranscript({ ...input, accountKey: "https://dev.ainecto.com/mcp#other" }));
+    const other = await pairCodes(await pairTranscript({ ...input, userId: "a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d" }));
     expect(other).not.toEqual({ a: p.codeA, b: p.codeB });
   });
 
@@ -222,6 +239,10 @@ describe("E2E 거절 — 약속값·서명·카운터·AAD", () => {
     expect((await openMessage(key, header(input.header), bytes(input.ciphertextHex), first.state)).state).toEqual(exact(2));
     await expectCode(sealMessage(key, { ...header(input.header), counter: 1.5 }, utf8("x")), "E2E_COUNTER_REJECTED");
     await expectCode(sealMessage(key, { ...header(input.header), counter: -1 }, utf8("x")), "E2E_COUNTER_REJECTED");
+    // 방향 키당 2^32 개(C-E4) — 마지막 번호까지는 쓰고, 그다음은 새 hello.
+    expect(MAX_MESSAGES_PER_KEY).toBe(2 ** 32);
+    expect(hex(messageNonce(MAX_MESSAGES_PER_KEY - 1))).toBe("0000000000000000ffffffff");
+    await expectCode(sealMessage(key, { ...header(input.header), counter: MAX_MESSAGES_PER_KEY }, utf8("x")), "E2E_COUNTER_REJECTED");
   });
 
   it("PC→웹(increasing): 건너뛰기는 받고, 같은 값·작은 값은 거절", async () => {
@@ -233,7 +254,7 @@ describe("E2E 거절 — 약속값·서명·카운터·AAD", () => {
     await expectCode(openMessage(key, header(frame.header), bytes(frame.ciphertextHex), opened.state), "E2E_COUNTER_REJECTED");
   });
 
-  it("AAD(종류·연결 id·pcId·세션·requestId·projectUuid·카운터)나 본문이 하나라도 다르면 E2E_DECRYPT_FAILED · 다른 방향 키로도 실패", async () => {
+  it("AAD(종류·연결 id·pcId·세션·연산 ID·projectUuid·카운터)나 본문이 하나라도 다르면 E2E_DECRYPT_FAILED · 다른 방향 키로도 실패", async () => {
     const secrets = await vectorSecrets("pc");
     const key = await importMessageKey(secrets.browserToPc);
     const create = V.messages.find((item) => item.header.type === "create");
@@ -247,7 +268,7 @@ describe("E2E 거절 — 약속값·서명·카운터·AAD", () => {
       { ...h, connId: otherConn },
       { ...h, pcId: "other-pc" },
       { ...h, session: "other" },
-      { ...h, requestId: "" },
+      { ...h, operationId: "" },
       { ...h, projectUuid: "" },
       { ...h, counter: h.counter + 1 },
     ]) {
@@ -268,7 +289,7 @@ describe("E2E 거절 — 약속값·서명·카운터·AAD", () => {
     const pc = await deriveChannelSecrets({ own: eP.privateKey, peerPublicRaw: eB.publicRaw, transcript });
     const browser = await deriveChannelSecrets({ own: eB.privateKey, peerPublicRaw: eP.publicRaw, transcript });
     expect(hex(pc.pcToBrowser)).toBe(hex(browser.pcToBrowser));
-    const h: MessageHeader = { type: "frame", connId: pc.connId, pcId: "pc", session: "s", requestId: "", projectUuid: "", counter: 0 };
+    const h: MessageHeader = { type: "frame", connId: pc.connId, pcId: "pc", session: "s", operationId: "", projectUuid: "", counter: 0 };
     const sealed = await sealMessage(await importMessageKey(pc.pcToBrowser), h, utf8("hi"));
     expect(new TextDecoder().decode((await openMessage(await importMessageKey(browser.pcToBrowser), h, sealed, increasing(0))).plaintext)).toBe("hi");
     const offCurve = eB.publicRaw.slice();

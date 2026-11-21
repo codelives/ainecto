@@ -31,7 +31,7 @@ export interface PcKeys {
   accounts: Record<string, PcKeyAccount>;
 }
 
-/** 브라우저 이름 최대 글자 수(설계 r2 §11-7 C-E6 — 알림 한 줄). */
+/** 브라우저 이름 최대 글자 수(설계 §11-7 C-E6 — Ryan 11-21 승인 · 알림 한 줄). */
 export const BROWSER_NAME_MAX = 40;
 /** 이름이 비었을 때. */
 const DEFAULT_BROWSER_NAME = "Browser";

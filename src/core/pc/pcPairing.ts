@@ -18,7 +18,7 @@ import {
 } from "../term/e2e";
 
 /**
- * PC 쪽 첫 짝짓기 한 번(설계 terminal-e2e r2 §11-1) — 약속값 → 브라우저 제안 → 드러내기 → 코드 A 보이기 → 코드 B 한 번 받기 → 비교
+ * PC 쪽 첫 짝짓기 한 번(설계 terminal-e2e §11-1 · §12) — 약속값 → 브라우저 제안 → 드러내기 → 코드 A 보이기 → 코드 B 한 번 받기 → 비교
  * → (맞으면) 브라우저 핀 → done 서명 보내기. 서버 중계는 {@link PairTransport} 로 주입한다(실제 왕복은 c2).
  * ★시도는 한 번: 난수 한 쌍 · 코드 입력 한 번. 틀리거나 기한이 지나면 끝 — 다시 하려면 사람이 `ainecto pair` 를 다시 실행한다.
  */
@@ -74,7 +74,8 @@ function typedCode(raw: string): string | undefined {
 }
 
 export async function runPairing(input: {
-  accountKey: string;
+  /** 대화 기록에 들어가는 userId(UUID 소문자) — 서버 주소는 넣지 않는다(§12-4). */
+  userId: string;
   pcId: string;
   pcKey: EcPrivateJwk;
   transport: PairTransport;
@@ -113,7 +114,7 @@ export async function runPairing(input: {
     await assertSigningPublicKey(publicJwk);
     const name = browserNameOf(offer.name);
     if ((await relayed(() => input.transport.reveal(pcPublicRaw, nP, signal))) === "timeout") return { kind: "timeout" };
-    const transcript = await pairTranscript({ accountKey: input.accountKey, pcId: input.pcId, pcPublicRaw, browserPublicRaw: offer.publicRaw, nP, nB: offer.nB });
+    const transcript = await pairTranscript({ userId: input.userId, pcId: input.pcId, pcPublicRaw, browserPublicRaw: offer.publicRaw, nP, nB: offer.nB });
     const codes = await pairCodes(transcript);
     input.prompt.show(`A browser asked to pair: ${name}`);
     input.prompt.show(`Type this code in the browser: ${codes.a}`);

@@ -2,7 +2,7 @@ import { webcrypto } from "node:crypto";
 
 /**
  * 원격 터미널 종단 간 암호화(E2E)의 순수 암호 한 벌 — I/O 0 · 새 의존성 0(`node:crypto` 의 WebCrypto 만).
- * 설계: `_workspace/design/terminal-e2e/README.md` r2 §11(확정 계약 — §4 와 다르면 §11).
+ * 설계: `_workspace/design/terminal-e2e/README.md` r3 §12 > §11(확정 계약 — §4 와 다르면 §12·§11). 이 파일이 정한 세부는 §12-6.
  *
  * ★브라우저(ainecto-front `src/lib/e2e`)가 아래 바이트를 **한 바이트도 다르지 않게** 다시 만든다.
  *   묶음은 `test/fixtures/e2e-vectors.v1.json`(front 와 같은 파일)이 지킨다 — 여기를 바꾸면 그 벡터가 깨져야 한다.
@@ -10,13 +10,13 @@ import { webcrypto } from "node:crypto";
  * ── 바이트 규칙(v1) ─────────────────────────────────────────────
  * - `enc(f1, f2, …)` = 칸마다 u16be(길이) ‖ 바이트 를 이어 붙인다. 문자열은 UTF-8. 칸 하나는 65535바이트 이하.
  * - 공개키(장기 ECDSA·임시 ECDH 모두)는 SEC1 비압축 점 65바이트 = 0x04 ‖ X(32) ‖ Y(32) — WebCrypto `exportKey("raw")` 그대로.
- * - 무작위 nP·nB·nP′ 는 32바이트. 계정 열쇠 = `서버 주소#userId`(pc.json 과 같은 값).
+ * - 무작위 nP·nB·nP′ 는 32바이트. userId = UUID 소문자 36자 — 서버 주소는 넣지 않는다(§12-4: CLI·front 의 주소 표기가 달라도 같은 바이트).
  * - 서명 = ECDSA P-256 / SHA-256, IEEE-P1363(r ‖ s, 64바이트) — WebCrypto `sign` 그대로(DER 아님).
  * - u64be(n) = 8바이트 big-endian. enc 안에 넣을 때도 다른 칸처럼 u16be(8) 이 앞에 붙는다.
  *
  * 짝짓기(§11-1)
  * - commit = SHA-256(pcPub(65) ‖ nP(32))                          — 두 칸 길이가 고정이라 enc 없이 그대로 잇는다.
- * - T      = SHA-256(enc("ainecto-pair-v1", 계정 열쇠, pcId, pcPub, browserPub, nP, nB))
+ * - T      = SHA-256(enc("ainecto-pair-v1", userId, pcId, pcPub, browserPub, nP, nB))
  * - 코드 X(X = A·B) : K = HKDF-Expand(PRK = T, info = "ainecto-pair-code-A" | "ainecto-pair-code-B", L = 32)
  *                     = HMAC-SHA256(key = T, info ‖ 0x01)   (RFC 5869 §2.3, L ≤ 32 라 한 블록)
  *                     K 를 앞에서부터 4바이트씩 u32be 로 읽어 v < 4294000000 인 첫 v → (v mod 10^6) 6자리 0 채움.
@@ -24,17 +24,18 @@ import { webcrypto } from "node:crypto";
  * - done   = PC 키 서명(enc("ainecto-pair-v1/done", T)) — 브라우저는 이것을 임시 PC 키로 검증한 뒤에만 PC 핀을 저장한다.
  *
  * 채널(§11-2)
- * - hello 서명 입력(브라우저 키) = enc("ainecto-e2e-v1", "browser", "hello", 계정 열쇠, pcId, 채널, 브라우저 키 id, eB, nB)
- * - H = SHA-256(enc("ainecto-e2e-v1", 계정 열쇠, pcId, 채널, 브라우저 키 id, pcPub, browserPub, eB, nB, eP, nP′))
+ * - hello 서명 입력(브라우저 키) = enc("ainecto-e2e-v1", "browser", "hello", userId, pcId, 채널, 브라우저 키 id, eB, nB)
+ * - H = SHA-256(enc("ainecto-e2e-v1", userId, pcId, 채널, 브라우저 키 id, pcPub, browserPub, eB, nB, eP, nP′))
  * - welcome 서명 입력(PC 키) = H 32바이트 그대로.
  * - Z = ECDH(자기 임시 비공개, 상대 임시 공개) 의 x 좌표 32바이트(WebCrypto `deriveBits(…, 256)`).
  * - HKDF-SHA256(IKM = Z, salt = H):
  *     웹→PC 키 info "ainecto-e2e-v1 b2p" 32바이트 · PC→웹 키 info "ainecto-e2e-v1 p2b" 32바이트 · 연결 id info "ainecto-e2e-v1 conn-id" 16바이트
  *
  * 메시지(AES-256-GCM, 태그 128비트 — 암호문 뒤에 붙는다, WebCrypto 그대로)
- * - 카운터: 방향 키마다 하나(모든 종류 공유) · 0 부터 1씩(웹→PC 의 0 = confirm).
+ * - 카운터: 방향 키마다 하나(모든 종류 공유) · 0 부터 1씩(웹→PC 의 0 = confirm) · 2^32 개까지(0 ‥ 2^32−1) — 닿으면 새 hello.
  * - nonce(12바이트) = 0x00000000 ‖ u64be(카운터)
- * - AAD = enc("ainecto-e2e-v1", 종류, 연결 id(16), pcId, 세션 이름, requestId | "", projectUuid | "", u64be(카운터))
+ * - AAD = enc("ainecto-e2e-v1", 종류, 연결 id(16), pcId, 세션 이름, 연산 ID | "", projectUuid | "", u64be(카운터))
+ *         연산 ID = 브라우저가 봉인 전에 정한 UUID v4(만들기·끝내기·이름 — §12-2). 서버의 상관 id 가 아니다.
  * - 받기: 웹→PC 는 정확히 직전 + 1(첫 값 0), PC→웹 은 직전보다 크기만 하면(첫 값 0 이상). 태그가 맞은 뒤에만 상태를 넘긴다.
  */
 
@@ -48,6 +49,9 @@ const PAIR_CODE_INFO = { a: "ainecto-pair-code-A", b: "ainecto-pair-code-B" } as
 const KEY_INFO = { browserToPc: "ainecto-e2e-v1 b2p", pcToBrowser: "ainecto-e2e-v1 p2b", connId: "ainecto-e2e-v1 conn-id" } as const;
 /** 10^6 의 배수 중 2^32 보다 작은 가장 큰 값 — 이보다 작은 u32 만 써야 mod 10^6 이 고르다. */
 const PAIR_CODE_LIMIT = 4_294_000_000;
+
+/** 방향 키당 메시지 상한(설계 §11-9 C-E4 — Ryan 11-21 승인): 카운터 0 ‥ 2^32−1. 닿으면 채널을 끝내고 새 hello. */
+export const MAX_MESSAGES_PER_KEY = 2 ** 32;
 
 export const PUBLIC_KEY_BYTES = 65;
 export const NONCE_SEED_BYTES = 32;
@@ -261,6 +265,22 @@ export async function importEphemeral(jwk: EcPrivateJwk): Promise<EphemeralKey> 
 
 // ── 짝짓기(§11-1) ───────────────────────────────────────────────
 
+const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** 계정 userId → 대화 기록에 넣을 값(소문자 UUID 36자 — §12-4). 다리·pair 가 모두 이것으로 바꾼다. UUID 가 아니면 E2E_BAD_INPUT. */
+export function transcriptUserId(raw: string): string {
+  const userId = raw.toLowerCase();
+  expectUserId(userId);
+  return userId;
+}
+
+/** 대화 기록의 userId — UUID 소문자 36자만(§12-4). */
+function expectUserId(userId: string): void {
+  if (!USER_ID.test(userId)) {
+    throw new E2eError("E2E_BAD_INPUT", "userId must be a lowercase 36-character UUID.");
+  }
+}
+
 /** 1단계 약속값 = SHA-256(pcPub ‖ nP). */
 export async function pairCommitment(pcPublicRaw: Uint8Array, nP: Uint8Array): Promise<Uint8Array> {
   expectLength("pcPub", pcPublicRaw, PUBLIC_KEY_BYTES);
@@ -276,7 +296,7 @@ export async function assertCommitment(commit: Uint8Array, pcPublicRaw: Uint8Arr
 }
 
 export interface PairTranscriptInput {
-  accountKey: string;
+  userId: string;
   pcId: string;
   pcPublicRaw: Uint8Array;
   browserPublicRaw: Uint8Array;
@@ -284,13 +304,14 @@ export interface PairTranscriptInput {
   nB: Uint8Array;
 }
 
-/** T = SHA-256(enc("ainecto-pair-v1", 계정 열쇠, pcId, pcPub, browserPub, nP, nB)). */
+/** T = SHA-256(enc("ainecto-pair-v1", userId, pcId, pcPub, browserPub, nP, nB)). */
 export async function pairTranscript(input: PairTranscriptInput): Promise<Uint8Array> {
+  expectUserId(input.userId);
   expectLength("pcPub", input.pcPublicRaw, PUBLIC_KEY_BYTES);
   expectLength("browserPub", input.browserPublicRaw, PUBLIC_KEY_BYTES);
   expectLength("nP", input.nP, NONCE_SEED_BYTES);
   expectLength("nB", input.nB, NONCE_SEED_BYTES);
-  return await sha256(enc(PAIR_LABEL, input.accountKey, input.pcId, input.pcPublicRaw, input.browserPublicRaw, input.nP, input.nB));
+  return await sha256(enc(PAIR_LABEL, input.userId, input.pcId, input.pcPublicRaw, input.browserPublicRaw, input.nP, input.nB));
 }
 
 /** 코드 블록 K(32바이트) → 6자리(순수 · 거절 샘플링). 8개 u32 가 모두 한도 이상이면 undefined. */
@@ -338,7 +359,7 @@ export function pairDoneInput(transcript: Uint8Array): Uint8Array {
 
 /** hello 칸 — 브라우저가 보내고 브라우저 키로 서명한다. */
 export interface HelloFields {
-  accountKey: string;
+  userId: string;
   pcId: string;
   channel: string;
   browserKeyId: string;
@@ -360,6 +381,7 @@ export interface ChannelTranscriptInput {
 }
 
 function assertHello(hello: HelloFields): void {
+  expectUserId(hello.userId);
   expectLength("eB", hello.eB, PUBLIC_KEY_BYTES);
   expectLength("nB", hello.nB, NONCE_SEED_BYTES);
 }
@@ -367,7 +389,7 @@ function assertHello(hello: HelloFields): void {
 /** 브라우저 키가 서명하는 바이트. */
 export function helloSignatureInput(hello: HelloFields): Uint8Array {
   assertHello(hello);
-  return enc(VERSION, "browser", "hello", hello.accountKey, hello.pcId, hello.channel, hello.browserKeyId, hello.eB, hello.nB);
+  return enc(VERSION, "browser", "hello", hello.userId, hello.pcId, hello.channel, hello.browserKeyId, hello.eB, hello.nB);
 }
 
 /** H — welcome 서명 입력이자 HKDF salt. */
@@ -378,7 +400,7 @@ export async function channelTranscript(input: ChannelTranscriptInput): Promise<
   expectLength("browserPub", input.browserPublicRaw, PUBLIC_KEY_BYTES);
   expectLength("eP", input.eP, PUBLIC_KEY_BYTES);
   expectLength("nP'", input.nP, NONCE_SEED_BYTES);
-  return await sha256(enc(VERSION, hello.accountKey, hello.pcId, hello.channel, hello.browserKeyId,
+  return await sha256(enc(VERSION, hello.userId, hello.pcId, hello.channel, hello.browserKeyId,
     input.pcPublicRaw, input.browserPublicRaw, hello.eB, hello.nB, input.eP, input.nP));
 }
 
@@ -427,7 +449,8 @@ export interface MessageHeader {
   connId: Uint8Array;
   pcId: string;
   session: string;
-  requestId: string;
+  /** 연산 ID — 브라우저가 봉인 전에 정한 UUID(만들기·끝내기·이름), 없으면 "". */
+  operationId: string;
   projectUuid: string;
   counter: number;
 }
@@ -442,8 +465,8 @@ export interface ReceiveState {
 }
 
 function assertCounter(counter: number): void {
-  if (!Number.isSafeInteger(counter) || counter < 0) {
-    throw new E2eError("E2E_COUNTER_REJECTED", "counter must be a non-negative integer.");
+  if (!Number.isSafeInteger(counter) || counter < 0 || counter >= MAX_MESSAGES_PER_KEY) {
+    throw new E2eError("E2E_COUNTER_REJECTED", `counter must be an integer from 0 to ${MAX_MESSAGES_PER_KEY - 1} (then start a new hello).`);
   }
 }
 
@@ -455,7 +478,7 @@ export function messageNonce(counter: number): Uint8Array {
 export function messageAad(header: MessageHeader): Uint8Array {
   assertCounter(header.counter);
   expectLength("connId", header.connId, CONN_ID_BYTES);
-  return enc(VERSION, header.type, header.connId, header.pcId, header.session, header.requestId, header.projectUuid, u64be(header.counter));
+  return enc(VERSION, header.type, header.connId, header.pcId, header.session, header.operationId, header.projectUuid, u64be(header.counter));
 }
 
 /** 보내는 쪽 — 카운터는 부르는 쪽이 방향 키마다 0 부터 원자적으로 배정한다(같은 키·같은 카운터를 두 번 쓰지 않는다). */
