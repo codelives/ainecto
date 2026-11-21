@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
+import { processAlive } from "../os/processes";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "./privateFiles";
 
 /**
@@ -27,16 +28,6 @@ export class FileLockTimeoutError extends Error {
 interface LockContent {
   pid: number;
   token: string;
-}
-
-export function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM = 살아 있지만 남의 것.
-    return isNodeError(error, "EPERM");
-  }
 }
 
 export async function withFileLock<T>(lockPath: string, options: FileLockOptions, run: () => Promise<T>): Promise<T> {

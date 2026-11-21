@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executePair, type PairDeps, type TtyIO } from "../src/adapters/cli/pairCommand";
 import { CliCommandError } from "../src/adapters/cli/errors";
+import type { TurnedOffPc } from "../src/adapters/cli/pcCommand";
 import { loadPcKeys, updatePcKeys, withBrowser } from "../src/core/pc/pcKeys";
 import { PAIR_WAIT_MS, type BrowserOffer, type PairTransport } from "../src/core/pc/pcPairing";
 import { accountKey, normalizePcSettings, savePcSettings, withConsent } from "../src/core/pc/pcSettings";
@@ -283,38 +284,54 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
     const pcKey = await generateSigningJwk();
     await updatePcKeys(keysPath(), (keys) => withBrowser(keys, KEY, pcKey, { keyId: "k1", publicJwk: pub, name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
   }
+  const turnedOff = async (): Promise<TurnedOffPc[]> => [{ session: "ainecto-pc", checked: "group" }];
 
   it("떠 있으면: 파일에서 먼저 지우고 → 끄기 확인 뒤 성공 «다시 켜려면 ainecto» · 없으면 파일만", async () => {
     await seed();
     const seen: number[] = [];
-    const turnOffPc = async (): Promise<string[]> => {
+    const turnOffPc = async (): Promise<TurnedOffPc[]> => {
       seen.push((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length ?? -1);
-      return ["ainecto-pc"];
+      return await turnedOff();
     };
     const running = deps({ turnOffPc });
     expect(await executePair(running.deps, ["--remove", "k1"])).toBe(0);
     expect(seen).toEqual([0]);
     expect(running.out()).toContain("Turned off the PC connection. Run `ainecto` to turn it back on.");
+    expect(running.out()).not.toContain("Could not read the process group");
 
     await seed();
     const idle = deps({ json: true });
     expect(await executePair(idle.deps, ["--remove", "Work"])).toBe(0);
     expect(JSON.parse(idle.out())).toMatchObject({ data: { removed: { keyId: "k1", name: "Work" }, turnedOff: [] } });
+
+    await seed();
+    const pidOnly = deps({ turnOffPc: async () => [{ session: "ainecto-pc", checked: "pid" }] });
+    expect(await executePair(pidOnly.deps, ["--remove", "k1"])).toBe(0);
+    expect(pidOnly.out()).toContain("Could not read the process group here");
   });
 
-  it("끄기를 확인 못 하면 실패 — 다시 실행하면 이미 지운 핀은 건너뛰고 끄기부터 마친다 · 둘 다 없으면 PAIR_NOT_FOUND", async () => {
+  it("끄기 확인 실패 → pendingTurnOff(지운 때) 표지 · 다시 실행하면 이름이 없어도 끄기부터 마치고 표지를 지움 · 표지·이름 둘 다 없으면 끄지 않고 PAIR_NOT_FOUND", async () => {
     await seed();
     const failing = deps({ turnOffPc: async () => { throw new Error("Could not confirm that the PC connection ended"); } });
     const error = await expectCli(executePair(failing.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
     expect(error.message).toContain("Could not confirm");
     expect(error.message).toContain("ainecto pair --remove k1");
-    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers).toEqual([]);
+    expect((await loadPcKeys(keysPath())).accounts[KEY]).toMatchObject({ browsers: [], pendingTurnOff: { removedAt: "2026-11-21T09:00:00.000Z" } });
 
-    const retry = deps({ turnOffPc: async () => ["ainecto-pc"] });
+    // 재시도도 실패하면 표지는 그대로.
+    await expectCli(executePair(failing.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
+    expect((await loadPcKeys(keysPath())).accounts[KEY]?.pendingTurnOff).toBeDefined();
+
+    let calls = 0;
+    const retry = deps({ turnOffPc: async () => { calls += 1; return await turnedOff(); } });
     expect(await executePair(retry.deps, ["--remove", "k1"])).toBe(0);
-    expect(retry.out()).toContain('No paired browser "k1" (already removed?).');
+    expect(retry.out()).toContain("Finished the earlier removal.");
     expect(retry.out()).toContain("Turned off the PC connection.");
-    await expectCli(executePair(deps({}).deps, ["--remove", "k1"]), "PAIR_NOT_FOUND");
+    expect((await loadPcKeys(keysPath())).accounts[KEY]?.pendingTurnOff).toBeUndefined();
+
+    // 오타: 표지도 이름도 없으면 끄지 않는다.
+    await expectCli(executePair(retry.deps, ["--remove", "Wrok"]), "PAIR_NOT_FOUND");
+    expect(calls).toBe(1);
   });
 });
 

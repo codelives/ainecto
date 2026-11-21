@@ -1,7 +1,8 @@
 import { closeSync, openSync } from "node:fs";
 import { ReadStream, WriteStream } from "node:tty";
 import { renderSuccess } from "../../core/output/render";
-import { loadPcKeys, updatePcKeys, withBrowser, withoutBrowser, type PairedBrowser } from "../../core/pc/pcKeys";
+import { loadPcKeys, updatePcKeys, withBrowser, withoutBrowser, withPendingTurnOff, type PairedBrowser } from "../../core/pc/pcKeys";
+import type { TurnedOffPc } from "./pcCommand";
 import { runPairing, type MatchedBrowser, type PairTransport } from "../../core/pc/pcPairing";
 import { accountKey, loadPcSettings } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
@@ -36,7 +37,7 @@ export interface PairDeps {
   /** 서버 중계 — 짝짓기를 시작할 때만 연다. */
   transport: () => PairTransport;
   /** 떠 있는 PC 연결을 완전히 끄고 끝난 것을 확인한다(못 하면 던진다) — 끈 세션 이름들. 운영은 pcCommand.turnOffPcs. */
-  turnOffPc: () => Promise<string[]>;
+  turnOffPc: () => Promise<TurnedOffPc[]>;
   /** 짝짓기 기한 — 운영은 PAIR_WAIT_MS. */
   waitMs: number;
   now: () => Date;
@@ -157,33 +158,46 @@ async function listBrowsers(deps: PairDeps): Promise<number> {
 }
 
 /**
- * 잠금 안에서 핀을 지우고 → 떠 있는 PC 연결을 완전히 끈다(§13-2). 끄기를 확인하지 못하면 실패 — 다시 실행하면 이미 지운 핀은 건너뛰고 끄기부터 마친다.
- * 그래서 «없는 이름»이어도 PC 연결이 떠 있으면 끈다(앞선 실행의 끄기를 마치는 길과 같다). 둘 다 없을 때만 PAIR_NOT_FOUND.
+ * 잠금 안에서 핀을 지우고 → 떠 있는 PC 연결을 완전히 끈다(§13-2). 다시 띄우지 않는다.
+ * 끄기를 확인하지 못하면 그 계정에 «끄기 미완료» 표지(pendingTurnOff)를 남기고 실패 — 다시 실행하면 이름이 없어도 표지가 있으니
+ * 끄기부터 마치고 표지를 지운다. 이름도 표지도 없으면 아무것도 끄지 않고 PAIR_NOT_FOUND(오타가 연결을 끄지 않게).
  */
 async function removeBrowser(deps: PairDeps, keyIdOrName: string): Promise<number> {
   const { key } = await account(deps);
   let removed: PairedBrowser | undefined;
+  let pending = false;
   await updatePcKeys(deps.keysPath, (keys) => {
+    pending = keys.accounts[key]?.pendingTurnOff !== undefined;
     const result = withoutBrowser(keys, key, keyIdOrName);
     removed = result.removed;
     return removed ? result.keys : undefined;
   });
-  let stopped: string[];
+  if (!removed && !pending) {
+    throw new CliCommandError("PAIR_NOT_FOUND", `No paired browser with key id or name "${keyIdOrName}" — \`ainecto pair --list\` shows them.`);
+  }
+  let stopped: TurnedOffPc[];
   try {
     stopped = await deps.turnOffPc();
   } catch (error) {
+    if (removed) {
+      const at = deps.now();
+      await updatePcKeys(deps.keysPath, (keys) => withPendingTurnOff(keys, key, at));
+    }
     throw new CliCommandError("PAIR_REMOVE_STOP_FAILED", `${removed ? `Removed "${removed.name}" (${removed.keyId}), but t` : "T"}urning off the PC connection `
       + `was not confirmed (${error instanceof Error ? error.message : String(error)}). Run \`ainecto pair --remove ${keyIdOrName}\` again to finish.`);
   }
-  if (!removed && stopped.length === 0) {
-    throw new CliCommandError("PAIR_NOT_FOUND", `No paired browser with key id or name "${keyIdOrName}" — \`ainecto pair --list\` shows them.`);
+  if (pending) {
+    await updatePcKeys(deps.keysPath, (keys) => withPendingTurnOff(keys, key, undefined));
   }
   const lines = [removed
     ? `Removed "${removed.name}" (${removed.keyId}). It can no longer open terminals on this PC.`
-    : `No paired browser "${keyIdOrName}" (already removed?).`];
+    : "Finished the earlier removal."];
   lines.push(stopped.length > 0
     ? "Turned off the PC connection. Run `ainecto` to turn it back on."
     : "The PC connection is not running.");
+  if (stopped.some((item) => item.checked === "pid")) {
+    lines.push("(Could not read the process group here — checked that the PC connection process itself ended.)");
+  }
   deps.io.stdout.write(deps.json
     ? renderSuccess({ removed: removed ? { keyId: removed.keyId, name: removed.name } : null, turnedOff: stopped }, { json: true })
     : `${lines.join("\n")}\n`);

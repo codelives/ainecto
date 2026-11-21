@@ -27,6 +27,11 @@ export interface PairedBrowser {
 export interface PcKeyAccount {
   pcKey: EcPrivateJwk;
   browsers: PairedBrowser[];
+  /**
+   * `pair --remove` 가 핀은 지웠는데 PC 연결 끄기를 확인하지 못했을 때만 남는 표지(지운 때 ISO). 다시 실행하면 이름이 없어도
+   * 끄기부터 마치고 지운다(설계 §13-2). 없으면 칸 없음.
+   */
+  pendingTurnOff?: { removedAt: string };
 }
 
 export interface PcKeys {
@@ -55,7 +60,10 @@ export function normalizePcKeys(raw: unknown): PcKeys {
         const browser = asPairedBrowser(item);
         return browser ? [browser] : [];
       }) : [];
-      accounts[key] = { pcKey, browsers };
+      const pending = value?.pendingTurnOff as { removedAt?: unknown } | undefined;
+      accounts[key] = typeof pending?.removedAt === "string"
+        ? { pcKey, browsers, pendingTurnOff: { removedAt: pending.removedAt } }
+        : { pcKey, browsers };
     }
   }
   return { accounts };
@@ -90,7 +98,7 @@ export async function loadPcKeys(path: string): Promise<PcKeys> {
 }
 
 /**
- * 잠금 대기(구현 값) — 쓰기 하나는 수 ms 라, 이만큼 못 잡으면 다른 실행이 멈춰 있는 것이다.
+ * 잠금 대기 5 s · 다시 보기 50 ms — ★결재 대기(새 시간 값 — 루트가 올림). 쓰기 하나는 수 ms 라, 이만큼 못 잡으면 다른 실행이 멈춰 있는 것이다.
  * 죽은 잠금(pid 가 없음)은 기다리지 않고 바로 치운다.
  */
 const PC_KEYS_LOCK: FileLockOptions = { waitMs: 5_000, pollMs: 50 };
@@ -147,6 +155,15 @@ export function withoutBrowser(keys: PcKeys, account: string, keyIdOrName: strin
     keys: { accounts: { ...keys.accounts, [account]: { ...current, browsers: current.browsers.filter((item) => item !== removed) } } },
     removed,
   };
+}
+
+/** 끄기 미완료 표지를 남기거나(at) 지운다(undefined) — 계정이 없으면 그대로. */
+export function withPendingTurnOff(keys: PcKeys, account: string, at: Date | undefined): PcKeys {
+  const current = keys.accounts[account];
+  if (!current) return keys;
+  const { pendingTurnOff: _previous, ...rest } = current;
+  const next: PcKeyAccount = at ? { ...rest, pendingTurnOff: { removedAt: at.toISOString() } } : rest;
+  return { accounts: { ...keys.accounts, [account]: next } };
 }
 
 /** 이 서버 주소의 키를 모두 지운다(`ainecto stop --forget`). */

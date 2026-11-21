@@ -12,6 +12,7 @@ import {
   withBrowser,
   withoutBrowser,
   withoutEndpointKeys,
+  withPendingTurnOff,
   type PairedBrowser,
 } from "../src/core/pc/pcKeys";
 import { accountKey } from "../src/core/pc/pcSettings";
@@ -58,6 +59,16 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     expect(withoutBrowser(keys, a, "k1").keys.accounts[a]?.browsers.map((item) => item.keyId)).toEqual(["Work"]);
     expect(withoutBrowser(keys, a, "nope")).toEqual({ keys, removed: undefined });
     expect(Object.keys(withoutEndpointKeys(keys, "https://ainecto.com/mcp").accounts)).toEqual([b]);
+  });
+
+  it("끄기 미완료 표지(pendingTurnOff): 남기기·지우기 · 정규화가 보존 · 계정이 없으면 그대로", async () => {
+    const pcKey = await generateSigningJwk();
+    const keys = withBrowser({ accounts: {} }, a, pcKey, await browser("k1", "Work"));
+    const marked = withPendingTurnOff(keys, a, new Date("2026-11-21T09:00:00Z"));
+    expect(marked.accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z" });
+    expect(normalizePcKeys(JSON.parse(JSON.stringify(marked)))).toEqual(marked);
+    expect(withPendingTurnOff(marked, a, undefined)).toEqual(keys);
+    expect(withPendingTurnOff(keys, b, new Date())).toBe(keys);
   });
 
   it("이름 다듬기: 개행·제어 문자 제거 · 40자 · 비면 «Browser»", () => {

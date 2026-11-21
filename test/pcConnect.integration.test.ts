@@ -241,7 +241,7 @@ describe("이 PC 연결 — 실 데몬", () => {
     await done;
     const pid = (await pcSessions())[0]?.pid;
     expect(pid).toBeDefined();
-    expect(await turnOffPcs(harness().deps)).toEqual(["ainecto-pc"]);
+    expect(await turnOffPcs(harness().deps)).toEqual([{ session: "ainecto-pc", checked: "group" }]);
     expect(await pcSessions()).toEqual([]);
     expect(() => process.kill(pid ?? 0, 0)).toThrow();
   }, LONG);
@@ -252,8 +252,32 @@ describe("이 PC 연결 — 실 데몬", () => {
     await start.answer("Connect this PC?", "y");
     await start.answer("Also allow terminals", "n");
     await done;
-    expect(await turnOffPcs(harness({ stopDeadlineMs: 500 }).deps)).toEqual(["ainecto-pc"]);
+    expect(await turnOffPcs(harness({ stopDeadlineMs: 500 }).deps)).toEqual([{ session: "ainecto-pc", checked: "group" }]);
     expect(await pcSessions()).toEqual([]);
+  }, LONG);
+
+  it("turnOffPcs — pc 는 끝났어도 같은 프로세스 그룹에 손자(다리)가 남으면 «끝남»으로 보지 않는다(PC_STOP_UNCONFIRMED)", async () => {
+    // pc 가 SIGINT·SIGHUP 을 무시하는 손자를 같은 그룹에 남기고 Ctrl+C 에 혼자 끝난다 — npx 아래 다리가 남는 경우.
+    const ORPHAN = "if (process.argv.includes('--version')) process.exit(0);"
+      + " const { spawn } = require('node:child_process');"
+      + " const child = spawn(process.execPath, ['-e', \"process.on('SIGINT',()=>{});process.on('SIGHUP',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"], { stdio: 'ignore' });"
+      + " console.log('grandchild=' + child.pid);"
+      + ` process.on('SIGINT', () => process.exit(0)); ${CONNECTED} setInterval(() => undefined, 1000);`;
+    const start = harness({ script: ORPHAN });
+    const done = executePcStart(start.deps);
+    await start.answer("Connect this PC?", "y");
+    await start.answer("Also allow terminals", "n");
+    await done;
+    const pid = (await pcSessions())[0]?.pid ?? 0;
+    try {
+      await expect(turnOffPcs(harness({ stopDeadlineMs: 1_000 }).deps)).rejects.toMatchObject({ code: "PC_STOP_UNCONFIRMED" });
+    } finally {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // 이미 비었다.
+      }
+    }
   }, LONG);
 
   it("Agent(Claude Code·Codex) 없이 원격만 허용 — 다리 연결 줄로 «연결됨» · 무엇이 붙었는지 그대로 말한다", async () => {
