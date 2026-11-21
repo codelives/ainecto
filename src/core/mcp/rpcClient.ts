@@ -10,7 +10,7 @@ import {
 import { LEGACY_ROLE_HEADER } from "../harness/legacyRole";
 import { CLI_VERSION, PACKAGE_NAME } from "../version";
 import { bareToolName } from "../catalog/generator";
-import { OperationCaller } from "./operations";
+import { OperationCaller, type OperationDetail } from "./operations";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -162,6 +162,15 @@ export class McpRpcClient {
     return (await this.publicToolNames()).has(bare)
       ? this.request("tools/call", { name: bare, arguments: payload })
       : this.operations.call(bare, payload);
+  }
+
+  /**
+   * {@link toolsCall} 가 이 이름을 부를 때 쓸 상세 — 공개 도구 이름이면 undefined(자기 이름으로 바로 간다).
+   * 같은 연결의 상세라 뒤이은 toolsCall 이 똑같은 것을 쓴다(실행 전 판단과 실행이 같은 사실을 본다).
+   */
+  async operationDetailFor(name: string): Promise<OperationDetail | undefined> {
+    const bare = bareToolName(name);
+    return (await this.publicToolNames()).has(bare) ? undefined : this.operations.detail(bare);
   }
 
   async request(method: string, params?: unknown): Promise<unknown> {

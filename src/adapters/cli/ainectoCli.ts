@@ -395,9 +395,10 @@ async function printCatalog(
 
 /**
  * 스냅샷에 없는 명령을 찾으려고 서버 operation 목록을 받다가 실패 — 서버가 밝힌 코드·세부는 그대로 두고, 무엇을 하다 실패했는지만 앞에 붙인다.
+ * ★명령 경로만 싣는다 — 플래그 값·인자는 사용자 입력이라 오류 글에 싣지 않는다(리뷰 r2 P1-5).
  */
 function liveListFailure(positionals: string[], error: unknown): never {
-  const command = positionals.filter((arg) => !arg.startsWith("-")).join(" ");
+  const command = commandPathOf(positionals);
   const cause = error instanceof Error ? error : new Error(String(error));
   const failure = new Error(`"${command}" is not in this CLI's catalog, and the server's operation list could not be read: ${cause.message}`) as Error & {
     code?: string; details?: unknown;
@@ -406,6 +407,12 @@ function liveListFailure(positionals: string[], error: unknown): never {
   failure.code = typeof source.code === "string" ? source.code : "LIVE_CATALOG_UNAVAILABLE";
   if (source.details !== undefined) failure.details = source.details;
   throw failure;
+}
+
+/** 명령 경로 — 첫 플래그 앞의 낱말들(최대 3개). 그 뒤는 값일 수 있어 버린다. */
+function commandPathOf(positionals: string[]): string {
+  const end = positionals.findIndex((arg) => arg.startsWith("-"));
+  return (end === -1 ? positionals : positionals.slice(0, end)).slice(0, 3).join(" ");
 }
 
 /** 카탈로그 한 줄 — 라이브(search 목록)와 스냅샷이 같은 모양이게. 입력 형식은 상세에서 본다({@link CATALOG_DETAIL_HINT}). */

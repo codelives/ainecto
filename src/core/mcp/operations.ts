@@ -45,9 +45,19 @@ export class OperationError extends Error {
   }
 }
 
+/**
+ * ★search 결과 읽기의 한 입구(목록·상세 공통 — 리뷰 r2 P1-5). 서버가 도구 결과로 거절했으면({@code isError}) 그 글·코드를 그대로 올린다
+ * — 형식 오류로 바꾸지 않는다. JSON-RPC 오류는 RPC 클라이언트가 이미 코드·사유를 살려 던진다(여기까지 오지 않는다).
+ * ★오류 글에는 무엇을 묻다 실패했는지({@code asked} — 고정 문구·operation 이름)와 서버 글만 싣는다. 사용자가 넣은 값은 싣지 않는다.
+ */
+export function searchPayload(asked: string, operation: string, result: unknown): unknown {
+  if (isRecord(result) && result.isError === true) throw toolRefusal(asked, operation, result);
+  return unwrapMcpToolPayload(result);
+}
+
 /** {@code search} 목록 결과(도구 결과 그대로) → 한 쪽. */
 export function parseOperationPage(result: unknown): OperationPage {
-  const payload = unwrapMcpToolPayload(result);
+  const payload = searchPayload("the operation list", SEARCH_TOOL, result);
   if (!isRecord(payload) || !Array.isArray(payload.items)) {
     throw new OperationError("search did not return an items array.", "MCP_PROTOCOL_ERROR", SEARCH_TOOL);
   }
@@ -65,7 +75,7 @@ export function parseOperationPage(result: unknown): OperationPage {
  * 실행 도구 이름이 없으면 실패 — 이름은 서버가 정한 그대로 쓴다.
  */
 export function parseOperationDetail(operation: string, result: unknown): OperationDetail {
-  const payload = unwrapMcpToolPayload(result);
+  const payload = searchPayload(`the detail of ${operation}`, operation, result);
   if (!isRecord(payload) || payload.operation !== operation) {
     throw new OperationError(`search did not return the detail of ${operation}.`, "MCP_PROTOCOL_ERROR", operation);
   }
@@ -145,11 +155,8 @@ export class OperationCaller {
   detail(operation: string): Promise<OperationDetail> {
     let found = this.details.get(operation);
     if (!found) {
-      found = this.callPublic(SEARCH_TOOL, { operation }).then((result) => {
-        // ★서버가 도구 결과로 거절했으면 그 사유·코드를 그대로 올린다 — «모르는 작업»으로 덮지 않는다(리뷰 r1 P1-6).
-        if (isRecord(result) && result.isError === true) throw toolRefusal(operation, result);
-        return parseOperationDetail(operation, result);
-      });
+      // 서버 거절은 searchPayload 가 사유·코드 그대로 올린다 — «모르는 작업»으로 덮지 않는다(리뷰 r1 P1-6).
+      found = this.callPublic(SEARCH_TOOL, { operation }).then((result) => parseOperationDetail(operation, result));
       // 실패는 기억하지 않는다 — 다음 호출이 다시 묻는다.
       found.catch(() => this.details.delete(operation));
       this.details.set(operation, found);
@@ -164,7 +171,7 @@ export class OperationCaller {
 }
 
 /** isError 결과 → 서버 글 그대로의 오류. 글이 JSON 이고 {@code code} 가 있으면 그 코드, 없으면 MCP_TOOL_ERROR. 원본 결과는 details 에. */
-function toolRefusal(operation: string, result: Record<string, unknown>): OperationError {
+function toolRefusal(asked: string, operation: string, result: Record<string, unknown>): OperationError {
   const text = toolErrorText(result);
   let code = "MCP_TOOL_ERROR";
   try {
@@ -173,7 +180,7 @@ function toolRefusal(operation: string, result: Record<string, unknown>): Operat
   } catch {
     // 글이 JSON 이 아니다 — 글 그대로 싣는다.
   }
-  return new OperationError(`search refused the detail of ${operation}: ${text}`, code, operation, result);
+  return new OperationError(`search refused ${asked}: ${text}`, code, operation, result);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

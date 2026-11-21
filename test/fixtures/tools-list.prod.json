@@ -6274,7 +6274,7 @@
         "additionalProperties": false
       },
       "annotations": {
-        "destructiveHint": false,
+        "destructiveHint": true,
         "readOnlyHint": false
       }
     },
@@ -6650,7 +6650,7 @@
         "additionalProperties": false
       },
       "annotations": {
-        "destructiveHint": false,
+        "destructiveHint": true,
         "readOnlyHint": false
       }
     }

@@ -220,25 +220,61 @@ describe("generated command router", () => {
     expect(io.stderrText()).toContain('Unknown command "no-such"');
   });
 
-  it("★the live operation list refused → the server's code and reason, not «Unknown command» (review r1 P1-6)", async () => {
+  const searchListing = { name: "search", inputSchema: { properties: {
+    action: { items: { enum: ["read"] } }, object: { items: { enum: ["document"] } } } } };
+
+  it.each([
+    ["a JSON-RPC error", { error: { code: -32602, message: "search is not available for this connection", data: { code: "LIST_DENIED" } } }, "MCP_ERROR"],
+    ["an MCP tool error (isError)", { result: { isError: true, content: [{ type: "text",
+      text: JSON.stringify({ code: "LIST_DENIED", message: "search is not available for this connection" }) }] } }, "LIST_DENIED"],
+  ])("★the live operation list refused as %s → the server's code and reason, never «Unknown command» nor the typed values (review r1 P1-6 · r2 P1-5)",
+    async (_kind, refusal, code) => {
+      vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        const reply = body.method === "tools/list" ? { result: { tools: [searchListing] } } : refusal;
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, ...reply }));
+      }));
+      process.env.AINECTO_TOKEN = "redacted";
+      const io = createIo();
+
+      await expect(runAinectoCli(["no-such", "thing", "--note", "EXAMPLE_PRIVATE_NOTE", "--env", "dev", "--json"], io)).resolves.toBe(1);
+      const stderr = io.stderrText();
+      const error = JSON.parse(stderr).error as { code: string; message: string };
+      expect(error.code).toBe(code);
+      expect(error.message).toContain("LIST_DENIED");
+      expect(error.message).toContain("search is not available for this connection");
+      expect(error.message).toContain('"no-such thing" is not in this CLI\'s catalog');
+      expect(error.message).not.toContain("Unknown command");
+      expect(error.message).not.toContain("items array");
+      expect(stderr).not.toContain("EXAMPLE_PRIVATE_NOTE");
+    });
+
+  it("★a snapshot command is confirmed against the same server detail it runs with — the server's destructiveHint wins over a stale snapshot (review r2 P1-6)", async () => {
+    const calls: Array<{ method: string; params?: { name?: string; arguments?: Record<string, unknown> } }> = [];
     vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
-      if (body.method === "tools/list") {
-        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "search", inputSchema: { properties: {
-          action: { items: { enum: ["read"] } }, object: { items: { enum: ["document"] } } } } }] } }));
-      }
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id,
-        error: { code: -32602, message: "search is not available for this connection", data: { code: "SEARCH_UNAVAILABLE" } } }));
+      calls.push(body);
+      const text = (value: unknown) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+      const result = body.method === "tools/list" ? { tools: [searchListing, { name: "execute_read" }] }
+        : body.params.name === "search"
+          ? text({ operation: "kanban_list_cards", summary: "", executor: "execute_read",
+            annotations: { readOnlyHint: false, destructiveHint: true }, inputSchema: { type: "object", properties: {} } })
+          : text({ cards: [] });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
     }));
     process.env.AINECTO_TOKEN = "redacted";
-    const io = createIo();
+    expect(matchGeneratedCommand(devTools, ["kanban", "list-cards"])?.tool.destructive).toBe(false);
 
-    await expect(runAinectoCli(["no-such", "thing", "--env", "dev", "--json"], io)).resolves.toBe(1);
-    const error = JSON.parse(io.stderrText()).error as { code: string; message: string };
-    expect(error.code).toBe("MCP_ERROR");
-    expect(error.message).toContain("SEARCH_UNAVAILABLE");
-    expect(error.message).toContain("server's operation list could not be read");
-    expect(error.message).not.toContain("Unknown command");
+    const refused = createIo();
+    await expect(runAinectoCli(["kanban", "list-cards", "--board-uuid", "b-1", "--env", "dev", "--json"], refused)).resolves.toBe(1);
+    expect(JSON.parse(refused.stderrText()).error.code).toBe("CONFIRMATION_REQUIRED");
+    expect(calls.map((call) => call.params?.name ?? call.method)).toEqual(["tools/list", "search"]);
+
+    calls.length = 0;
+    const confirmed = createIo();
+    await expect(runAinectoCli(["kanban", "list-cards", "--board-uuid", "b-1", "--yes", "--env", "dev", "--json"], confirmed)).resolves.toBe(0);
+    expect(calls.map((call) => call.params?.name ?? call.method)).toEqual(["tools/list", "search", "execute_read"]);
+    expect(calls[2]).toMatchObject({ params: { arguments: { operation: "kanban_list_cards", args: { boardUuid: "b-1" } } } });
   });
 
   it("leaves bespoke attachments upload outside generated routing", () => {

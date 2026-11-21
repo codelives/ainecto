@@ -113,6 +113,16 @@ describe("operation → 실행 도구 (MCP 공개면 8개)", () => {
     expect(wire.map((call) => call.name)).toEqual(["tools/list", "search"]);
   });
 
+  it("★목록(search)도 isError 거절은 서버 코드·사유 그대로 — 형식 오류로 바꾸지 않는다 (리뷰 r2 P1-5)", async () => {
+    const refusal = { isError: true, content: [{ type: "text", text: JSON.stringify({ code: "LIST_DENIED", message: "not for this connection" }) }] };
+    const failure = await listAllOperations({ toolsList: async () => [{ name: "search", inputSchema: { properties: {
+      action: { items: { enum: ["read"] } }, object: { items: { enum: ["card"] } } } } }], callPublic: async () => refusal })
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: "LIST_DENIED", details: refusal });
+    expect((failure as Error).message).toBe(`search refused the operation list: ${refusal.content[0]!.text}`);
+  });
+
   it("상세 거절 글이 JSON 이 아니어도 글 그대로 싣는다", async () => {
     const { rpc } = server({ executors: {}, search: () => ({ isError: true, content: [{ type: "text", text: "no access to that" }] }) });
 
@@ -169,15 +179,15 @@ describe("operation 전체 목록(search)", () => {
 
 describe("PC Agent Codex 승인 — 공개면 8개", () => {
   it("readOnlyHint 가 아닌 execute_* 5개만 approve 된다(search·execute_read·open_ainecto_panel 은 빠진다)", () => {
-    // 값은 서버 tools/list 그대로(api 0945fa31 — 배정된 작업들의 힌트에서 계산). 승인 대상은 readOnlyHint 만 본다.
+    // 승인 대상은 readOnlyHint 만 본다(documents.ts writeToolNames) — 시험 입력도 그 칸만 싣는다(리뷰 r2 P2).
     const eight = [
-      { name: "search", annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
-      { name: "execute_read", annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
-      { name: "execute_edit", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
-      { name: "execute_collaborate", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
-      { name: "execute_replace_remove", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
-      { name: "execute_access", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
-      { name: "execute_publish", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } },
+      { name: "search", annotations: { readOnlyHint: true } },
+      { name: "execute_read", annotations: { readOnlyHint: true } },
+      { name: "execute_edit", annotations: { readOnlyHint: false } },
+      { name: "execute_collaborate", annotations: { readOnlyHint: false } },
+      { name: "execute_replace_remove", annotations: { readOnlyHint: false } },
+      { name: "execute_access", annotations: { readOnlyHint: false } },
+      { name: "execute_publish", annotations: { readOnlyHint: false } },
       { name: "open_ainecto_panel", annotations: { readOnlyHint: true } },
     ];
 

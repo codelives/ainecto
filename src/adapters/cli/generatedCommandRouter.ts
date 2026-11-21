@@ -9,6 +9,7 @@ import { renderTable } from "../../core/output/table";
 import { parseGeneratedCommandArgs } from "./flagParser";
 import { confirmDestructiveCommand, type ConfirmationIO } from "./destructiveConfirmation";
 import { BESPOKE_COMMAND_PATHS } from "./bespokeCommands";
+import { bareToolName, inferDestructive } from "../../core/catalog/generator";
 
 export interface GeneratedCommandRoute {
   tool: GeneratedToolDefinition;
@@ -60,8 +61,10 @@ export async function executeGeneratedCommand(options: GeneratedCommandExecution
   }
 
   const parsed = await parseGeneratedCommandArgs(route.tool, route.rest, options.io.stdin);
+  // ★파괴 확인은 실행에 쓰는 같은 서버 상세로 먼저 판단한다 — 스냅샷이 낡아도 서버가 선언한 파괴 효과를 건너뛰지 않는다(리뷰 r2 P1-6).
+  const detail = await options.client.operationDetailFor(route.tool.mcpName);
   await confirmDestructiveCommand({
-    tool: route.tool,
+    tool: detail ? { ...route.tool, destructive: inferDestructive(bareToolName(route.tool.mcpName), { name: route.tool.mcpName, annotations: detail.annotations }) } : route.tool,
     yes: parsed.yes,
     json: options.json,
     io: options.io,

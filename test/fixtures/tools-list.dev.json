@@ -6542,7 +6542,7 @@
         "additionalProperties": false
       },
       "annotations": {
-        "destructiveHint": false,
+        "destructiveHint": true,
         "readOnlyHint": false
       }
     }
