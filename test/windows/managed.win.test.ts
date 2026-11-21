@@ -26,7 +26,8 @@ beforeAll(async () => {
   probeOut = join(work, "scripts.txt");
   const probe = join(work, "probe.cjs");
   await writeFile(probe, `require("node:fs").appendFileSync(${JSON.stringify(probeOut)}, (process.argv[1] ?? "") + "\\n");`);
-  env = { ...process.env, NODE_OPTIONS: `--require "${probe}"` };
+  // NODE_OPTIONS 는 따옴표 안의 역슬래시를 이스케이프로 읽는다 — JSON 문자열로 두 배로 넣는다(run 44901543830 «C:Users…probe.cjs»).
+  env = { ...process.env, NODE_OPTIONS: `--require ${JSON.stringify(probe)}` };
   version = (JSON.parse(await readFile(join(CANDIDATE, "node_modules", "@ainecto", "mcp", "package.json"), "utf8")) as { version: string }).version;
   bundle = (await realpath(join(CANDIDATE, "node_modules", "@ainecto", "mcp", "dist", "bin", "ainecto.js"))).toLowerCase();
 });

@@ -5,9 +5,9 @@ import { defaultShellCommand, planLaunch, shellLineCommand } from "../src/core/o
 describe("shellLineCommand", () => {
   it("줄 = [로그인 셸, -lc, 줄] 한 덩어리 · 공백만이면 null(로그인 셸 그대로)", () => {
     const env = { SHELL: "/bin/zsh" };
-    expect(shellLineCommand("  claude --append-system-prompt \"a b\" ", env)).toEqual(["/bin/zsh", "-lc", "claude --append-system-prompt \"a b\""]);
-    expect(shellLineCommand("FOO=1 make && echo ok | tr o 0", env)).toEqual(["/bin/zsh", "-lc", "FOO=1 make && echo ok | tr o 0"]);
-    expect(shellLineCommand("   ", env)).toBeNull();
+    expect(shellLineCommand("  claude --append-system-prompt \"a b\" ", env, "darwin")).toEqual(["/bin/zsh", "-lc", "claude --append-system-prompt \"a b\""]);
+    expect(shellLineCommand("FOO=1 make && echo ok | tr o 0", env, "darwin")).toEqual(["/bin/zsh", "-lc", "FOO=1 make && echo ok | tr o 0"]);
+    expect(shellLineCommand("   ", env, "darwin")).toBeNull();
   });
 
   it("Windows: 줄 = [%ComSpec%, /d, /s, /c, 줄] · 기본 셸 = %ComSpec% · 실행 계획은 줄을 이스케이프하지 않고 cmd 에 그대로(사용자 줄 계약)", () => {

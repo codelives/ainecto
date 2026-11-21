@@ -2,6 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { termRuntimeProblem } from "../src/core/term/daemonLock";
 
 /**
@@ -11,8 +12,9 @@ import { termRuntimeProblem } from "../src/core/term/daemonLock";
  */
 const ROOT = resolve(__dirname, "..");
 const TSX = execFileSync(process.execPath, ["--input-type=module", "-e", "console.log(import.meta.resolve('tsx'))"], { cwd: ROOT, encoding: "utf8" }).trim();
-const LOCK_MODULE = join(ROOT, "src/core/term/daemonLock.ts");
-const PATHS_MODULE = join(ROOT, "src/core/term/paths.ts");
+// ★import() 에는 URL 을 준다 — Windows 절대 경로(D:\…)는 ESM 이 «d: 프로토콜»로 읽어 자식이 바로 죽는다(run 44901543830).
+const LOCK_MODULE = pathToFileURL(join(ROOT, "src/core/term/daemonLock.ts")).href;
+const PATHS_MODULE = pathToFileURL(join(ROOT, "src/core/term/paths.ts")).href;
 
 let home: string;
 let otherHome: string;
@@ -48,6 +50,8 @@ function contender(where: string = home): { child: ChildProcess; verdict: Promis
         done(out.trim());
       }
     });
+    // 판정 줄 없이 끝나면 기다리지 않는다 — 시간 초과 대신 끝 코드가 실패 문구로 남는다.
+    child.once("exit", (code, signal) => done(out.includes("\n") ? out.trim() : `exited ${code ?? signal}`));
   });
   return { child, verdict };
 }
@@ -73,7 +77,7 @@ describe("term daemon lock (real processes)", () => {
     await exited(d.child);
     c.child.stdin?.end();
     await exited(c.child);
-  }, 60_000);
+  }, 30_000);
 
   it("two different homes hold their own locks at the same time (Linux: the abstract name keeps the folder)", async () => {
     const a = contender(home);
@@ -83,7 +87,7 @@ describe("term daemon lock (real processes)", () => {
     a.child.stdin?.end();
     b.child.stdin?.end();
     await Promise.all([exited(a.child), exited(b.child)]);
-  }, 60_000);
+  }, 30_000);
 });
 
 describe("term runtime floor", () => {

@@ -46,7 +46,10 @@ beforeAll(async () => {
   // 일반 배치 파일 두 종류 — %* 재전달 · %1 직접.
   await writeFile(join(work, "forward.bat"), `@"${process.execPath}" "%~dp0echo.js" %*\r\n`);
   await writeFile(join(work, "direct.bat"), `@"${process.execPath}" "%~dp0echo.js" %1\r\n`);
-  env = { ...process.env, ARGV_OUT: outFile, Path: `${join(work, "global")};${process.env.Path ?? process.env.PATH ?? ""}` };
+  // ★Path 는 키가 하나여야 한다 — 러너의 키는 «PATH» 라 «Path» 를 따로 얹으면 대소문자 무시 찾기가 앞의 PATH(전역 폴더 없음)를
+  //   읽는다(run 44901543830 spawn argv-echo ENOENT). 원래 키를 지우고 한 키로 넣는다.
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+  env = { ...inherited, ARGV_OUT: outFile, Path: `${join(work, "global")};${process.env.Path ?? ""}` };
 }, 180_000);
 
 afterAll(async () => {
@@ -59,7 +62,11 @@ async function viaChild(argv: readonly string[]): Promise<string[]> {
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
   child.stdout.resume();
-  const code = await new Promise<number | null>((resolve) => child.on("close", resolve));
+  // 띄우기 실패(ENOENT 등)는 close 없이 error 만 온다 — 기다리지 않고 그 오류로 실패한다.
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
   expect(code, stderr).toBe(0);
   return JSON.parse(await readFile(outFile, "utf8")) as string[];
 }
@@ -67,9 +74,10 @@ async function viaChild(argv: readonly string[]): Promise<string[]> {
 async function viaPty(argv: readonly string[]): Promise<string[]> {
   await rm(outFile, { force: true });
   const sessionEnv = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-  const ended = new Promise<number>((resolve) => {
-    void TermSession.start({ name: "w2", cwd: join(work, "project"), command: [...argv], env: sessionEnv, createdAt: new Date().toISOString() },
-      (_session, exitCode) => resolve(exitCode));
+  // 띄우기 실패(node-pty «File not found»)는 start 의 거절로 온다 — 버리지 않고 그 오류로 실패한다.
+  const ended = new Promise<number>((resolve, reject) => {
+    TermSession.start({ name: "w2", cwd: join(work, "project"), command: [...argv], env: sessionEnv, createdAt: new Date().toISOString() },
+      (_session, exitCode) => resolve(exitCode)).catch(reject);
   });
   expect(await ended).toBe(0);
   return JSON.parse(await readFile(outFile, "utf8")) as string[];
@@ -87,10 +95,10 @@ describe.runIf(WINDOWS)("W2 실행 계획 — 대상별 argv 왕복(child_proces
   for (const target of TARGETS) {
     it(`${target.name} · child_process`, async () => {
       expect(await viaChild([...target.argv(), ...target.args])).toEqual(target.args);
-    }, 120_000);
+    }, 30_000);
     it(`${target.name} · PTY`, async () => {
       expect(await viaPty([...target.argv(), ...target.args])).toEqual(target.args);
-    }, 120_000);
+    }, 30_000);
   }
 
   it("일반 배치 %1 직접 — 공백·따옴표·한글 인자 하나", async () => {
