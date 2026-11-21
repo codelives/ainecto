@@ -33,16 +33,20 @@ export async function confirmDestructiveCommand(options: {
   }
 }
 
-/** 한 줄 묻고 한 줄 받는다(stderr 에 묻는다 — stdout 은 결과 전용). 입력이 끝났으면 빈 줄. */
-export async function promptLine(io: ConfirmationIO, message: string): Promise<string> {
+/** 한 줄 묻고 한 줄 받는다(stderr 에 묻는다 — stdout 은 결과 전용). 입력이 끝났거나 signal 이 멈추면 빈 줄. */
+export async function promptLine(io: ConfirmationIO, message: string, signal?: AbortSignal): Promise<string> {
+  if (signal?.aborted) return "";
   io.stderr.write(message);
   const rl = createInterface({ input: io.stdin, terminal: false });
+  const close = (): void => rl.close();
+  signal?.addEventListener("abort", close, { once: true });
   try {
     for await (const line of rl) {
       return line;
     }
     return "";
   } finally {
+    signal?.removeEventListener("abort", close);
     rl.close();
   }
 }

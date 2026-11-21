@@ -17,6 +17,10 @@ import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { executeTermCommand, stringEnv, TERM_HELP_LINES } from "./termCommand";
 import { executePcStart, executePcStop, executeRemoteSetting, type PcDeps } from "./pcCommand";
+import { executePair, openDevTty } from "./pairCommand";
+import { PAIR_WAIT_MS } from "../../core/pc/pcPairing";
+import { pcKeysPath } from "../../core/pc/pcKeys";
+import { SESSION_ENV } from "../../core/term/session";
 import { npxCliCommand, pcReadyDeadlineMs, pcStopDeadlineMs, skipUpgradeOf } from "../../core/pc/pcSession";
 import { executePcSwap } from "./pcSwap";
 import { swapArgsOf } from "./pcAutoUpgrade";
@@ -181,6 +185,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       interactive,
       paths: termPaths(),
       settingsPath: pcSettingsPath(),
+      keysPath: pcKeysPath(),
       hostName: hostname(),
       endpoint: resolved.endpoint,
       cwd: process.cwd(),
@@ -209,6 +214,26 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
     }
     if (domain === "remote") {
       return await executeRemoteSetting(pcDeps(), parsed.positionals.slice(1));
+    }
+    if (domain === "pair") {
+      return await executePair({
+        io,
+        json: parsed.json,
+        interactive,
+        insideTermSession: process.env[SESSION_ENV] !== undefined,
+        openTty: openDevTty,
+        settingsPath: pcSettingsPath(),
+        keysPath: pcKeysPath(),
+        hostName: hostname(),
+        endpoint: resolved.endpoint,
+        account: () => readAccount(connect().client),
+        // ★서버 중계(/mcp/term/pc/pair)는 c2 — 그때 여기를 실제 transport 로 바꾼다.
+        transport: () => {
+          throw new CliCommandError("PAIR_UNAVAILABLE", "Pairing with the web is not available in this version yet.");
+        },
+        waitMs: PAIR_WAIT_MS,
+        now: () => new Date(),
+      }, parsed.positionals.slice(1));
     }
 
     if (domain === "init") {
