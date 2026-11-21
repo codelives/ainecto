@@ -31,6 +31,9 @@ import {
   type HelloFields,
   type MessageHeader,
   type ReceiveState,
+  browserKeyIdOf,
+  pairCodeInput,
+  type PairCodeInput,
   MAX_MESSAGES_PER_KEY,
   transcriptUserId,
 } from "../src/core/term/e2e";
@@ -44,6 +47,8 @@ interface Vectors {
     codeBlockAHex: string; codeBlockBHex: string; codeA: string; codeB: string; doneSignatureInputHex: string; doneSignatureHex: string;
   };
   codeBlockExamples: Array<{ blockHex: string; code: string | null }>;
+  keyIdExamples: Array<{ label: string; publicRawHex: string; keyId: string }>;
+  codeInputExamples: Array<{ input: string; result: PairCodeInput }>;
   userIdExamples: Array<{ label: string; rawUserId: string; transcriptUserId: string; transcriptHex: string; a: string; b: string }>;
   channel: {
     userId: string; pcId: string; channel: string; browserKeyId: string; browserEphemeral: EcPrivateJwk; pcEphemeral: EcPrivateJwk;
@@ -130,6 +135,22 @@ describe("E2E 시험 벡터 v1 — CLI·front 가 같은 바이트를 낸다(설
       expect(pairCodeFromBlock(bytes(example.blockHex)) ?? null).toBe(example.code);
     }
     expect(V.codeBlockExamples.map((example) => example.code)).toEqual(["000005", "999999", "234567", null]);
+  });
+
+  it("브라우저 키 id = SHA-256(공개키 65바이트) 앞 16바이트 소문자 hex · hello 의 키 id 도 그 값", async () => {
+    for (const example of V.keyIdExamples) {
+      expect(await browserKeyIdOf(bytes(example.publicRawHex))).toBe(example.keyId);
+      expect(sha256Hex(bytes(example.publicRawHex)).slice(0, 32)).toBe(example.keyId);
+    }
+    expect(V.channel.browserKeyId).toBe(await browserKeyIdOf(bytes(V.keys.browserPublicRawHex)));
+  });
+
+  it("코드 입력 규칙(A·B 같은 규칙): 앞뒤 공백만 지움 · 비면 취소 · 정확히 ASCII 숫자 6개만 · 하이픈·가운데 공백·전각 숫자는 불일치", () => {
+    for (const example of V.codeInputExamples) {
+      expect(pairCodeInput(example.input)).toEqual(example.result);
+    }
+    expect(V.codeInputExamples.find((example) => example.input === "123-456")?.result).toEqual({ kind: "invalid" });
+    expect(V.codeInputExamples.find((example) => example.input === "")?.result).toEqual({ kind: "empty" });
   });
 
   it("userId: 서버 주소 없이 UUID 소문자 36자 — 대문자로 온 값도 같은 바이트 · UUID 가 아니면 E2E_BAD_INPUT", async () => {

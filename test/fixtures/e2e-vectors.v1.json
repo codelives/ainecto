@@ -1,9 +1,9 @@
 {
   "_comment": [
-    "★재리뷰 전 — 확정 아님. 설계 r3 §12-6 바이트 세부가 Astra 재리뷰를 받기 전이다. 아직 ainecto-front 로 복사하지 않는다.",
+    "★재리뷰 전 — 확정 아님. 설계 r3 §12-6·r4 §13-3 바이트 세부가 Astra 재리뷰를 받기 전이다. 아직 ainecto-front 로 복사하지 않는다.",
     "AiNecto 원격 터미널 E2E 시험 벡터 v1 — 확정되면 ainecto-cli(test/fixtures) 와 ainecto-front(src/lib/e2e) 가 같은 파일을 쓴다.",
     "★함부로 다시 만들지 않는다: 이 값이 바뀌면 양쪽 구현이 서로 다른 바이트를 내고 있다는 뜻이다. 규칙을 바꿀 때만 v2 파일을 새로 만든다.",
-    "바이트 규칙: ainecto-cli src/core/term/e2e.ts 머리 주석(설계 terminal-e2e r3 §12 > §11). 대화 기록의 userId 는 서버 주소 없이 UUID 소문자 36자. 16진수는 소문자. ECDSA 서명은 무작위라 같음이 아니라 verify()=true 로 본다.",
+    "바이트 규칙: ainecto-cli src/core/term/e2e.ts 머리 주석(설계 terminal-e2e r4 §13 > §12 > §11). 대화 기록의 userId 는 서버 주소 없이 UUID 소문자 36자. 16진수는 소문자. ECDSA 서명은 무작위라 같음이 아니라 verify()=true 로 본다.",
     "여기 비공개키(d)는 이 시험 전용으로 만든 값이다 — 실제 PC·브라우저 어디에도 쓰지 않는다.",
     "생성: 2026-11-21 ainecto-cli feat/term-e2e(c1)."
   ],
@@ -24,7 +24,8 @@
       "d": "JTLCgwFb5SOcPQvMYMqq6GIgynnUsjTnk0-L8Y15iso"
     },
     "pcPublicRawHex": "040b0b283ce4755bcddf514249c028c89a693296dc9826486334d802aa7de3f4d9ad4035e4a7aa13dbba175cb547bc6ed928ce6694717c9fd1837a80f0a0659e2f",
-    "browserPublicRawHex": "045d495dc1c7d9e3dfac6020ddfb11d8106462dc708ca02a0535959b7f3d64dc6dc2083453866460921f34717a50813d3e60378a2260bcef63225c8c001ce2b087"
+    "browserPublicRawHex": "045d495dc1c7d9e3dfac6020ddfb11d8106462dc708ca02a0535959b7f3d64dc6dc2083453866460921f34717a50813d3e60378a2260bcef63225c8c001ce2b087",
+    "browserKeyId": "c0495cf983e314e307b0406063614409"
   },
   "pairing": {
     "userId": "5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10",
@@ -38,7 +39,7 @@
     "codeA": "065832",
     "codeB": "936676",
     "doneSignatureInputHex": "001461696e6563746f2d706169722d76312f646f6e650020010bd0b3792a2ce91c33daa9c8af7b0a1b96f0d9fecb9a0642e971815a47026c",
-    "doneSignatureHex": "e8c32bbf0dca781e6da4500d3d00dd130a38a512d99054581ed9cfbfc153b3a2cefc1fa88b303a7e0eb4138ddca70b01b4b21180c06d296d79353e521a7c0e67"
+    "doneSignatureHex": "aad4f59a967fc8cfbfdc90ed6df4fe701c175510d5052c69a39173dac25003457fd865221bf0ac1ed60d6f4d56a7d66f0129937be8e79e9e018923d94571f475"
   },
   "codeBlockExamples": [
     {
@@ -76,11 +77,94 @@
       "b": "012456"
     }
   ],
+  "keyIdExamples": [
+    {
+      "label": "browser signing key (keys.browserSigning)",
+      "publicRawHex": "045d495dc1c7d9e3dfac6020ddfb11d8106462dc708ca02a0535959b7f3d64dc6dc2083453866460921f34717a50813d3e60378a2260bcef63225c8c001ce2b087",
+      "keyId": "c0495cf983e314e307b0406063614409"
+    },
+    {
+      "label": "another key (keys.pcSigning, only as an example input)",
+      "publicRawHex": "040b0b283ce4755bcddf514249c028c89a693296dc9826486334d802aa7de3f4d9ad4035e4a7aa13dbba175cb547bc6ed928ce6694717c9fd1837a80f0a0659e2f",
+      "keyId": "62ecbb730174db44f7b50a209fcb3f56"
+    }
+  ],
+  "codeInputExamples": [
+    {
+      "input": "123456",
+      "result": {
+        "kind": "code",
+        "code": "123456"
+      }
+    },
+    {
+      "input": "  123456\t",
+      "result": {
+        "kind": "code",
+        "code": "123456"
+      }
+    },
+    {
+      "input": "",
+      "result": {
+        "kind": "empty"
+      }
+    },
+    {
+      "input": "   ",
+      "result": {
+        "kind": "empty"
+      }
+    },
+    {
+      "input": "123-456",
+      "result": {
+        "kind": "invalid"
+      }
+    },
+    {
+      "input": "123 456",
+      "result": {
+        "kind": "invalid"
+      }
+    },
+    {
+      "input": "12345",
+      "result": {
+        "kind": "invalid"
+      }
+    },
+    {
+      "input": "1234567",
+      "result": {
+        "kind": "invalid"
+      }
+    },
+    {
+      "input": "１２３４５６",
+      "result": {
+        "kind": "invalid"
+      }
+    },
+    {
+      "input": "12345a",
+      "result": {
+        "kind": "invalid"
+      }
+    },
+    {
+      "input": "\n042000\n",
+      "result": {
+        "kind": "code",
+        "code": "042000"
+      }
+    }
+  ],
   "channel": {
     "userId": "5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10",
     "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47",
     "channel": "tab-7c1e9f20",
-    "browserKeyId": "9d2b7e4a-61c3-4f0e-8a5d-3b1c7e9f2a64",
+    "browserKeyId": "c0495cf983e314e307b0406063614409",
     "browserEphemeral": {
       "kty": "EC",
       "crv": "P-256",
@@ -99,13 +183,13 @@
     "ePHex": "0443138c25cbb16a97c41c30da798624a7bd8f65e76752556c65ad0f98f518d5e0bcb56141e3bea99036db5daca9dea36789af877682d9a46cfc6182b7938d4a8c",
     "nBHex": "82f8f9270a37127496d513c458d68a9e742333d88c8257fcd68d3050fcff232e",
     "nPPrimeHex": "84040c7a9b53ee1aded1bdbdba2e7d660203e724a9fb01315147a3a81ebe407f",
-    "helloSignatureInputHex": "000e61696e6563746f2d6532652d7631000762726f77736572000568656c6c6f002435623166326339652d306137642d346536332d386634312d396332643762366133653130002433663063366135322d376430652d346238652d396135312d326336663164396538623437000c7461622d3763316539663230002439643262376534612d363163332d346630652d386135642d33623163376539663261363400410481b58932314c383a27d6ced977cadf35b961940ed9db8d6cdc7d0af70d8cde1d60d54c3fe1746e9416d1bbe17d3aa79d8cea86cf525873542aee2314b9e639bb002082f8f9270a37127496d513c458d68a9e742333d88c8257fcd68d3050fcff232e",
-    "helloSignatureHex": "7b19b309dac2f48f75a40ca48cc05bb0dab95f26e9d539d7b1f341d78ef6b7275b4dca27eb31a4d58e0884c42f6633cf26f1a24047b8225025c7d0d45e2625d7",
-    "transcriptHex": "c961406d827ae109564fa62294b6f15c79832e8660d8551e5188aa68b4247dce",
-    "welcomeSignatureHex": "55b9fe98fbaa2a2c350d90b51ae7647b9093dba7367616c31056335963e7126a89d4d65aa039f15f2ad7b7f839c207d16a182c39ce7e129f8c5974e09471d312",
-    "browserToPcKeySha256Hex": "72570c6a3fe230f065aba124b0387aca627a4ff41a438041076a37cf40074fd4",
-    "pcToBrowserKeySha256Hex": "6dfb154a64bf2316e0bb013db1839056a07c1c01a7ba859454192c6343195357",
-    "connIdHex": "1701ec57ff2d520ce34b7cfbae2d8faa"
+    "helloSignatureInputHex": "000e61696e6563746f2d6532652d7631000762726f77736572000568656c6c6f002435623166326339652d306137642d346536332d386634312d396332643762366133653130002433663063366135322d376430652d346238652d396135312d326336663164396538623437000c7461622d37633165396632300020633034393563663938336533313465333037623034303630363336313434303900410481b58932314c383a27d6ced977cadf35b961940ed9db8d6cdc7d0af70d8cde1d60d54c3fe1746e9416d1bbe17d3aa79d8cea86cf525873542aee2314b9e639bb002082f8f9270a37127496d513c458d68a9e742333d88c8257fcd68d3050fcff232e",
+    "helloSignatureHex": "296def77eddbc713cc556984dd62c8e957e4c76823c59087113bf4d8f27970f7dc1529f12f4a54f38cc1afacc6e65c9b6d0b151427be195c31141a8f0adbe5ad",
+    "transcriptHex": "07994aa5c035404aa8394ef468a4ab4ae0f4b7fe283e39776830c580c63db1b0",
+    "welcomeSignatureHex": "3f35a96fd844a5e494b6453152586e38c99ed7420a1655b831987dbc4e8c2278b051c1bbfed029b4e6ef6519100909bc90fafb929eae52146972ece30a13d9a7",
+    "browserToPcKeySha256Hex": "10314e391bfeb94290e412515c8b55b9f11de4d6f1b85f8546ecdf0b8b2abaf7",
+    "pcToBrowserKeySha256Hex": "79391fc20918a359884ef2dfaccbfa8c6c083d42d5c7b3fcfb1050dd91fee406",
+    "connIdHex": "ff3c00d3d5c65b049f3f27d71906a4cf"
   },
   "messages": [
     {
@@ -116,13 +200,13 @@
         "operationId": "",
         "projectUuid": "",
         "counter": 0,
-        "connIdHex": "1701ec57ff2d520ce34b7cfbae2d8faa",
+        "connIdHex": "ff3c00d3d5c65b049f3f27d71906a4cf",
         "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47"
       },
       "plaintextUtf8": "{}",
       "nonceHex": "000000000000000000000000",
-      "aadHex": "000e61696e6563746f2d6532652d76310007636f6e6669726d00101701ec57ff2d520ce34b7cfbae2d8faa002433663063366135322d376430652d346238652d396135312d32633666316439653862343700000000000000080000000000000000",
-      "ciphertextHex": "2effde3de8354a017c5e7c3884f8a904d0a6"
+      "aadHex": "000e61696e6563746f2d6532652d76310007636f6e6669726d0010ff3c00d3d5c65b049f3f27d71906a4cf002433663063366135322d376430652d346238652d396135312d32633666316439653862343700000000000000080000000000000000",
+      "ciphertextHex": "2ee8a6a2d2f244694c3d7796f8850770fa7f"
     },
     {
       "direction": "browser-to-pc",
@@ -132,13 +216,13 @@
         "operationId": "",
         "projectUuid": "",
         "counter": 1,
-        "connIdHex": "1701ec57ff2d520ce34b7cfbae2d8faa",
+        "connIdHex": "ff3c00d3d5c65b049f3f27d71906a4cf",
         "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47"
       },
       "plaintextUtf8": "{\"d\":\"ZWNobyBoaQ0=\"}",
       "nonceHex": "000000000000000000000001",
-      "aadHex": "000e61696e6563746f2d6532652d76310005696e70757400101701ec57ff2d520ce34b7cfbae2d8faa002433663063366135322d376430652d346238652d396135312d32633666316439653862343700046d61696e0000000000080000000000000001",
-      "ciphertextHex": "93c4a33e942d280dc2f68917b1ff823b84d50b998ad2c6958cc9807fd2635a98f2995b16"
+      "aadHex": "000e61696e6563746f2d6532652d76310005696e7075740010ff3c00d3d5c65b049f3f27d71906a4cf002433663063366135322d376430652d346238652d396135312d32633666316439653862343700046d61696e0000000000080000000000000001",
+      "ciphertextHex": "c545953558aa5623ca30fd36165596747135e88cad4e0c67fff6b780aa1cc2f0bc2b9857"
     },
     {
       "direction": "browser-to-pc",
@@ -148,13 +232,13 @@
         "operationId": "0f6e3a2c-5b8d-4c71-9e04-a1d2c3b4e5f6",
         "projectUuid": "c7a1e2d3-4b5c-4d6e-8f70-1a2b3c4d5e6f",
         "counter": 2,
-        "connIdHex": "1701ec57ff2d520ce34b7cfbae2d8faa",
+        "connIdHex": "ff3c00d3d5c65b049f3f27d71906a4cf",
         "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47"
       },
       "plaintextUtf8": "{\"command\":\"ls -la\",\"cwd\":\"/tmp\"}",
       "nonceHex": "000000000000000000000002",
-      "aadHex": "000e61696e6563746f2d6532652d7631000663726561746500101701ec57ff2d520ce34b7cfbae2d8faa002433663063366135322d376430652d346238652d396135312d32633666316439653862343700056275696c64002430663665336132632d356238642d346337312d396530342d613164326333623465356636002463376131653264332d346235632d346436652d386637302d31613262336334643565366600080000000000000002",
-      "ciphertextHex": "683cb0d068cf5a172acf91fe4d6e4494bafab8d062d0607fca88055d159371c63b1793cd02f209067704cab4fc37b31b72"
+      "aadHex": "000e61696e6563746f2d6532652d763100066372656174650010ff3c00d3d5c65b049f3f27d71906a4cf002433663063366135322d376430652d346238652d396135312d32633666316439653862343700056275696c64002430663665336132632d356238642d346337312d396530342d613164326333623465356636002463376131653264332d346235632d346436652d386637302d31613262336334643565366600080000000000000002",
+      "ciphertextHex": "999ed7b19dd1a76beac51b093b4f46b23ac55652d9328ef435fbc9059b8bbdd83a3b393727492afce629f01efa17e4371a"
     },
     {
       "direction": "pc-to-browser",
@@ -164,13 +248,13 @@
         "operationId": "",
         "projectUuid": "",
         "counter": 300,
-        "connIdHex": "1701ec57ff2d520ce34b7cfbae2d8faa",
+        "connIdHex": "ff3c00d3d5c65b049f3f27d71906a4cf",
         "pcId": "3f0c6a52-7d0e-4b8e-9a51-2c6f1d9e8b47"
       },
       "plaintextUtf8": "{\"d\":\"$ echo 안녕\"}",
       "nonceHex": "00000000000000000000012c",
-      "aadHex": "000e61696e6563746f2d6532652d763100056672616d6500101701ec57ff2d520ce34b7cfbae2d8faa002433663063366135322d376430652d346238652d396135312d32633666316439653862343700046d61696e000000000008000000000000012c",
-      "ciphertextHex": "4ffb6360ade568798b9ca6903cc3fa89d3bd394b7c5132271cadb4a3549a9d0674c01ce36c"
+      "aadHex": "000e61696e6563746f2d6532652d763100056672616d650010ff3c00d3d5c65b049f3f27d71906a4cf002433663063366135322d376430652d346238652d396135312d32633666316439653862343700046d61696e000000000008000000000000012c",
+      "ciphertextHex": "9100ab66ab9a933010cee1e41e4018b2b7a6f1edbc5d41b65ab74bd7ca622a4fcd33b1a098"
     }
   ]
 }

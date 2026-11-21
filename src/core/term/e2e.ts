@@ -2,7 +2,7 @@ import { webcrypto } from "node:crypto";
 
 /**
  * 원격 터미널 종단 간 암호화(E2E)의 순수 암호 한 벌 — I/O 0 · 새 의존성 0(`node:crypto` 의 WebCrypto 만).
- * 설계: `_workspace/design/terminal-e2e/README.md` r3 §12 > §11(확정 계약 — §4 와 다르면 §12·§11). 이 파일이 정한 세부는 §12-6.
+ * 설계: `_workspace/design/terminal-e2e/README.md` r4 §13 > §12 > §11(확정 계약). 이 파일이 정한 세부는 §12-6·§13-3.
  *
  * ★브라우저(ainecto-front `src/lib/e2e`)가 아래 바이트를 **한 바이트도 다르지 않게** 다시 만든다.
  *   묶음은 `test/fixtures/e2e-vectors.v1.json`(front 와 같은 파일)이 지킨다 — 여기를 바꾸면 그 벡터가 깨져야 한다.
@@ -22,6 +22,9 @@ import { webcrypto } from "node:crypto";
  *                     K 를 앞에서부터 4바이트씩 u32be 로 읽어 v < 4294000000 인 첫 v → (v mod 10^6) 6자리 0 채움.
  *                     8개 모두 넘으면 그 시도는 실패(E2E_PAIR_CODE_UNAVAILABLE).
  * - done   = PC 키 서명(enc("ainecto-pair-v1/done", T)) — 브라우저는 이것을 임시 PC 키로 검증한 뒤에만 PC 핀을 저장한다.
+ * - 코드 입력(A·B 같은 규칙, §13-3): 앞뒤 공백만 지운다(JS String.prototype.trim 그대로). 비면 취소. 정확히 ASCII 숫자 6개면 비교, 그 밖은 불일치(한 번 소모).
+ *   하이픈·가운데 공백은 지우지 않는다.
+ * - 브라우저 키 id = SHA-256(브라우저 공개키 65바이트) 앞 16바이트의 소문자 hex(32자, §13-3). 받은 id 가 이와 다르면 거절.
  *
  * 채널(§11-2)
  * - hello 서명 입력(브라우저 키) = enc("ainecto-e2e-v1", "browser", "hello", userId, pcId, 채널, 브라우저 키 id, eB, nB)
@@ -279,6 +282,22 @@ function expectUserId(userId: string): void {
   if (!USER_ID.test(userId)) {
     throw new E2eError("E2E_BAD_INPUT", "userId must be a lowercase 36-character UUID.");
   }
+}
+
+/** 브라우저 키 id = SHA-256(공개키 65바이트) 앞 16바이트 소문자 hex. */
+export async function browserKeyIdOf(browserPublicRaw: Uint8Array): Promise<string> {
+  expectLength("browserPub", browserPublicRaw, PUBLIC_KEY_BYTES);
+  return Buffer.from((await sha256(browserPublicRaw)).subarray(0, 16)).toString("hex");
+}
+
+/** 사람이 친 짝짓기 코드(A·B 같은 규칙). */
+export type PairCodeInput = { kind: "empty" } | { kind: "code"; code: string } | { kind: "invalid" };
+
+/** 코드 입력 정규화(순수) — 앞뒤 공백만 지운다 · 비면 empty(취소) · 정확히 ASCII 숫자 6개면 code · 그 밖은 invalid(불일치로 센다). */
+export function pairCodeInput(raw: string): PairCodeInput {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { kind: "empty" };
+  return new RegExp(`^[0-9]{${PAIR_CODE_DIGITS}}$`).test(trimmed) ? { kind: "code", code: trimmed } : { kind: "invalid" };
 }
 
 /** 1단계 약속값 = SHA-256(pcPub ‖ nP). */
