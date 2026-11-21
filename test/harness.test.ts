@@ -271,7 +271,7 @@ describe("marker block", () => {
     }
     expect(doc).toContain("https://ainecto.com/mcp");
     // D7 — 세션 시작 뒤에 더해진 도구를 만나면 무엇을 할지.
-    expect(doc.replace(/\s+/g, " ")).toContain("this session started before that tool was added");
+    expect(doc.replace(/\s+/g, " ")).toContain("this session started before it was added");
   });
 });
 

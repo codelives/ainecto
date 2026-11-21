@@ -152,8 +152,15 @@ const PROMPT_HEADS: Readonly<Record<RunKind, string>> = {
   CARD_ASSIGNED: "[AiNecto auto-run] The person handed you this kanban card with auto-run. Do the work with the AiNecto tools.",
   DECISION_ANSWERED: "[AiNecto auto-run — continue] The person answered on this card (or asked for changes). Continue the same work.",
   RESUME: "[AiNecto auto-run — resume] This machine stopped while you were working this card. Continue the same work: "
-    + "first check what is already done with report_work_progress (CHECKPOINT).",
+    + "first check what is already done with operation report_work_progress (CHECKPOINT).",
 };
+
+/**
+ * ★AiNecto MCP 공개면은 search + execute_* 7개다(2026-11-21). 지시문의 이름은 operation 이고, 부르는 법은 이 한 줄이 알린다 —
+ * 묶음(어느 execute_*)은 서버의 search 상세가 진실원이라 여기에 적지 않는다.
+ */
+const OPERATIONS_LINE = "AiNecto names below are operations. Run one with the execute_* tool that `search {operation: \"<name>\"}` names, "
+  + "as `{operation: \"<name>\", args: {…}}` — a wrong execute_* is refused with the one to use.";
 
 export function todoPromptText(input: { kind: RunKind; card: CardFacts; workId: string; answers: AnswerComment[] }): string {
   const { card, workId } = input;
@@ -162,7 +169,8 @@ export function todoPromptText(input: { kind: RunKind; card: CardFacts; workId: 
     PROMPT_HEADS[input.kind],
     "",
     `Card «${card.title}» (${card.key ? `${card.key}, ` : ""}cardUuid ${card.uuid}${card.boardUuid ? `, boardUuid ${card.boardUuid}` : ""}) · status ${card.status}${card.blocked ? " · blocked" : ""}`,
-    `AI work: workId ${workId} — send this workId with every AiNecto call for this card and report each step with report_work_progress (read each response before going on).`,
+    `AI work: workId ${workId} — send this workId with every AiNecto call for this card and report each step with operation report_work_progress (read each response before going on).`,
+    OPERATIONS_LINE,
   ];
   if (card.description) lines.push("", "Description:", card.description);
   if (card.criteria.length > 0) {
@@ -171,20 +179,20 @@ export function todoPromptText(input: { kind: RunKind; card: CardFacts; workId: 
   if (input.answers.length > 0) {
     lines.push("", "Comments to read (oldest first):",
       ...input.answers.map((a) => `- #${a.id} ${a.kind}${a.questionState ? ` (${a.questionState})` : ""} by ${a.author}: ${a.body}`));
-    lines.push("", "First read them: report_work_progress (it lists the comments to read — send `read` with its checkId), "
-      + "resolve_comments for the questions that are answered, and if the card is blocked, kanban_card_action "
+    lines.push("", "First read them: operation report_work_progress (it lists the comments to read — send `read` with its checkId), "
+      + "resolve_comments for the questions that are answered, and if the card is blocked, kanban_card_action with args "
       + `{cardUuid: "${card.uuid}", action: "unblock"}`
       + ". Then continue the work.");
   }
   lines.push("",
-    "If you need the person's decision, do not guess. Ask and stop:",
+    "If you need the person's decision, do not guess. Ask and stop (operation, then its args):",
     `1) create_comments {cardUuid: "${card.uuid}", workId: "${workId}", items: [{kind: "QUESTION", body: <your question>}]}`,
     `2) kanban_card_action {cardUuid: "${card.uuid}", action: "block", reason: <one line>, responderIds: ["${owner}"]}`,
     `3) report_work_progress {workId: "${workId}", stepId: <the step>, status: "BLOCKED"}`,
     "Then answer with what you asked. You will be called again on this card when they answer.",
     "",
     "Do not request review, approve, or finish the card yourself — this PC posts your answer as the result and asks the person to review it.",
-    "Do not call finish_work: the AI work stays open until the person approves the result (finishing it early blocks the hand-over).",
+    "Do not run operation finish_work: the AI work stays open until the person approves the result (finishing it early blocks the hand-over).",
     "Your answer (reply) is shown to the person in this card's auto-run conversation: say what you did, or what you asked.");
   return lines.join("\n");
 }

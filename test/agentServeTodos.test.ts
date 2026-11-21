@@ -85,7 +85,7 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(second).toMatch(/^got \[AiNecto auto-run — continue\] /);
     expect(second).toContain("- #10 QUESTION (ANSWERED) by 에이전트: A 와 B 중 어느 쪽?\n- #11 COMMENT by 주인: B 로 해 주세요");
     expect(second).not.toContain("상관없는 댓글");
-    expect(second).toContain(`kanban_card_action {cardUuid: "${CARD}", action: "unblock"}`);
+    expect(second).toContain(`kanban_card_action with args {cardUuid: "${CARD}", action: "unblock"}`);
     expect(second).toMatch(/#2 in sess-\d+$/);   // 같은 Claude 프로세스·세션의 두 번째 차례
     expect(spawned(w)).toHaveLength(1);
     expect(named(tools, "list_comments")[0]?.args).toEqual({ cardUuid: CARD, workId: "work-1" });
@@ -229,7 +229,7 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect(named(tools, "create_comments")).toHaveLength(1);
     expect(JSON.parse(readFileSync(w.runsPath, "utf8"))).toEqual({ version: 1, runs: [] });
     const prompt = String(named(tools, "send_auto_run_message")[1]?.args.body);
-    expect(prompt).toContain("Do not call finish_work");
+    expect(prompt).toContain("Do not run operation finish_work");
   });
 
   it("★폴더 이름이 없어도 받는다 — 서버가 준 종류 신원(이름 = 종류 id)으로", async () => {

@@ -123,14 +123,16 @@ user's AiNecto permissions on the workspace, project, or document it touches —
 what the user may not do. A refusal is an answer: report it to the user instead of looking for a
 way around it.
 
-Find the project and document for the task with the tools (\`list_projects\`, \`search_documents\`,
-\`get_document\`) — this repository is not bound to one project.
+AiNecto has two kinds of tools: \`search\` finds an operation and its input format, and the
+\`execute_*\` tools run it as \`{operation, args}\` — \`search\` with \`{"operation": "<name>"}\` says
+which \`execute_*\` runs it. Find the project and document for the task with the operations
+\`list_projects\`, \`search_documents\` and \`get_document\` — this repository is not bound to one project.
 
-## When a tool is missing
+## When an operation is missing
 
-If a result names a tool that is not in your tool list, this session started before that tool
-was added. Start a new session, or call it from the repository with
-\`npx -y ainecto@latest tools call <tool> '<json>'\`.
+Operations are listed by \`search\`, so a new one needs no new tool. If an \`execute_*\` tool is not in
+your tool list, this session started before it was added. Start a new session, or run the operation
+from the repository with \`npx -y ainecto@latest tools call <operation> '<json>'\`.
 
 ## Commands
 
