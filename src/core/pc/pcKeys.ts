@@ -107,11 +107,14 @@ const PC_KEYS_LOCK: FileLockOptions = { waitMs: 5_000, pollMs: 50 };
  * 잠금 안에서 읽고 → change → 쓴다. change 가 undefined 를 돌려주면 쓰지 않는다(파일을 새로 만들지 않는다). 쓴 값(또는 읽은 값)을 돌려준다.
  * change 가 던지면 아무것도 쓰지 않고 잠금을 푼다.
  */
-export async function updatePcKeys(path: string, change: (keys: PcKeys) => PcKeys | undefined, lock: FileLockOptions = PC_KEYS_LOCK): Promise<PcKeys> {
-  return await withFileLock(`${path}.lock`, lock, async () => {
+export async function updatePcKeys(path: string, change: (keys: PcKeys) => PcKeys | undefined | Promise<PcKeys | undefined>,
+  lock: FileLockOptions = PC_KEYS_LOCK): Promise<PcKeys> {
+  return await withFileLock(`${path}.lock`, lock, async (held) => {
     const current = await loadPcKeys(path);
-    const next = change(current);
+    const next = await change(current);
     if (next === undefined) return current;
+    // ★쓰기 직전에 잠금이 아직 내 것인지 — 회수가 겹쳐 잠금을 잃었으면 쓰지 않는다(§14-6 2).
+    await held.assertHeld();
     await writePrivateFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
     return next;
   });

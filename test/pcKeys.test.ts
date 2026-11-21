@@ -1,5 +1,5 @@
 import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { FileLockTimeoutError } from "../src/core/fs/fileLock";
+import { FileLockConflictError, FileLockTimeoutError } from "../src/core/fs/fileLock";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -95,6 +95,79 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  describe("죽은 잠금 회수와 새 획득이 겹칠 때(§14-6 2) — 작성자 1명 · 철회 핀 부활 0", () => {
+    const DEAD = 999_999;
+    const opts = (hooks?: { beforeReclaim?: () => Promise<void>; afterReclaimRename?: () => Promise<void> }) =>
+      ({ waitMs: 3_000, pollMs: 10, isAlive: (pid: number) => pid !== DEAD, ...(hooks ? { testHooks: hooks } : {}) });
+
+    async function world() {
+      const dir = await mkdtemp(join(tmpdir(), "pckeys-reclaim-"));
+      const path = join(dir, ".ainecto", "pc-keys.json");
+      const pcKey = await generateSigningJwk();
+      await updatePcKeys(path, () => withBrowser({ accounts: {} }, a, pcKey, { keyId: "gone", publicJwk: publicJwkOf(pcKey), name: "Old", pairedAt: "t" }));
+      await writeFile(`${path}.lock`, JSON.stringify({ pid: DEAD, token: "dead" }));
+      let acquired!: () => void;
+      const bAcquired = new Promise<void>((resolve) => { acquired = resolve; });
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => { open = resolve; });
+      // B = 핀을 지우는 쪽 — 죽은 잠금을 먼저 회수하고 잡은 채 gate 에서 기다린다.
+      const startB = () => updatePcKeys(path, async (keys) => {
+        acquired();
+        await gate;
+        return withoutBrowser(keys, a, "gone").keys;
+      }, opts());
+      return { dir, path, pcKey, startB, bAcquired, open };
+    }
+
+    it("A 가 옮긴 것이 B 의 살아 있는 잠금이면 제자리에 되돌리고 기다린다 → B 쓰기 뒤에 A 가 읽고 쓴다(지운 핀 안 살아남)", async () => {
+      const w = await world();
+      try {
+        let b: Promise<unknown> | undefined;
+        let once = false;
+        const newer = await browser("new", "New");
+        const aDone = updatePcKeys(w.path, (keys) => withBrowser(keys, a, w.pcKey, newer), opts({
+          beforeReclaim: async () => {
+            if (once) return;
+            once = true;
+            b = w.startB();
+            await w.bAcquired;
+          },
+        }));
+        setTimeout(w.open, 150);
+        await aDone;
+        await b;
+        expect((await loadPcKeys(w.path)).accounts[a]?.browsers.map((item) => item.keyId)).toEqual(["new"]);
+        await expect(stat(`${w.path}.lock`)).rejects.toThrow();
+      } finally {
+        await rm(w.dir, { recursive: true, force: true });
+      }
+    });
+
+    it("되돌릴 자리를 C 가 또 잡았으면 A 는 FileLockConflictError · B 는 쓰기 직전 확인에서 FileLockConflictError — 둘 다 쓰지 않는다", async () => {
+      const w = await world();
+      try {
+        let b: Promise<unknown> | undefined;
+        const aDone = updatePcKeys(w.path, (keys) => withBrowser(keys, a, w.pcKey, { keyId: "new", publicJwk: publicJwkOf(w.pcKey), name: "New", pairedAt: "t" }),
+          opts({
+            beforeReclaim: async () => {
+              b = w.startB();
+              await w.bAcquired;
+            },
+            afterReclaimRename: async () => {
+              await writeFile(`${w.path}.lock`, JSON.stringify({ pid: process.pid, token: "C" }));
+            },
+          }));
+        await expect(aDone).rejects.toBeInstanceOf(FileLockConflictError);
+        w.open();
+        await expect(b).rejects.toBeInstanceOf(FileLockConflictError);
+        expect((await loadPcKeys(w.path)).accounts[a]?.browsers.map((item) => item.keyId)).toEqual(["gone"]);
+        expect(JSON.parse(await readFile(`${w.path}.lock`, "utf8"))).toMatchObject({ token: "C" });
+      } finally {
+        await rm(w.dir, { recursive: true, force: true });
+      }
+    });
   });
 
   it("죽은 잠금(pid 없음)은 치우고 잡는다 · 살아 있는 잠금은 기한 뒤 FileLockTimeoutError · 바꾸기가 던지면 쓰지 않고 잠금을 푼다", async () => {
