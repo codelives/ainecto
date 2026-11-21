@@ -31,7 +31,9 @@ export type TermRequestBody =
   /** 보이는 이름 — 데몬 이름(세션 열쇠·AINECTO_TERM_SESSION)은 그대로(KAN-738 결재 «가»). 매니페스트에 남아 restore 가 되살린다. */
   | { op: "label"; name: string; label: string }
   /** 이 연결에 세션 목록 변화(생김·끝·label)를 {@code sessions} 이벤트로 알린다 — 원격 다리가 목록을 올릴 때를 안다. */
-  | { op: "watch-sessions" };
+  | { op: "watch-sessions" }
+  /** Windows 만 — 데몬 증명. 답은 `{proof}`(ipc.ts helloProof). 클라이언트는 이 답을 확인하기 전에 다른 요청을 보내지 않는다. */
+  | { op: "hello"; nonce: string };
 
 export type TermRequest = TermRequestBody & { id: string };
 
@@ -150,6 +152,8 @@ export function parseClientMessage(line: string): TermClientMessage {
       return { id, op, name: stringField(record, "name") };
     case "restore":
       return { id, op, env: stringMapField(record, "env") };
+    case "hello":
+      return { id, op, nonce: stringField(record, "nonce") };
     case "attach":
     case "set-size":
       return { id, op, name: stringField(record, "name"), cols: sizeField(record, "cols"), rows: sizeField(record, "rows") };

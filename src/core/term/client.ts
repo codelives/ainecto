@@ -6,7 +6,9 @@ import { Readable } from "node:stream";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
 import type { DaemonReadiness } from "./daemon";
 import { assertTermRuntime } from "./daemonLock";
+import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
+import { connectAddress, IMPOSTOR_CODE, newNonce, NO_ADDRESS_CODE, proofMatches, type IpcAddress } from "./ipc";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "./limits";
 import type { TermPaths } from "./paths";
 import {
@@ -51,15 +53,41 @@ export class TermClient {
     socket.on("error", () => undefined);
   }
 
-  static connect(paths: TermPaths): Promise<TermClient> {
-    return new Promise((resolve, reject) => {
-      const socket = connect(paths.socket);
+  /**
+   * 주소에 붙는다(ipc.ts). Windows 는 ★증명부터 — hello 의 답이 주소 파일의 비밀값과 맞기 전에는 다른 요청을 보내지 않는다.
+   * 맞지 않거나 답이 없으면 연결을 끊고 {@link IMPOSTOR_CODE}.
+   */
+  static async connect(paths: TermPaths): Promise<TermClient> {
+    const target = await connectAddress(paths);
+    const client = await new Promise<TermClient>((resolve, reject) => {
+      const socket = connect(target.address);
       socket.once("connect", () => {
         socket.off("error", reject);
         resolve(new TermClient(socket, paths));
       });
       socket.once("error", reject);
     });
+    if (target.key) {
+      await client.prove(target);
+    }
+    return client;
+  }
+
+  private async prove(target: IpcAddress): Promise<void> {
+    const nonce = newNonce();
+    let reason: string;
+    try {
+      const data = await this.request({ op: "hello", nonce });
+      const proof = data && typeof data === "object" && "proof" in data ? data.proof : undefined;
+      if (target.key && proofMatches(target.key, target.address, nonce, proof)) {
+        return;
+      }
+      reason = "the answer did not prove it is your term daemon";
+    } catch (error) {
+      reason = error instanceof Error ? error.message : String(error);
+    }
+    this.socket.destroy();
+    throw new TermError(IMPOSTOR_CODE, `Something at ${target.address} is not your term daemon (${reason}); nothing was sent to it.`);
   }
 
   request(body: TermRequestBody): Promise<unknown> {
@@ -139,8 +167,14 @@ export async function openTermClient(paths: TermPaths, options: { start: boolean
     try {
       return await TermClient.connect(paths);
     } catch (error) {
-      if (!isNodeError(error, "ENOENT") && !isNodeError(error, "ECONNREFUSED") && !isNodeError(error, "ECONNRESET")) {
+      const ipcCode = error instanceof TermError ? error.code : undefined;
+      if (ipcCode !== IMPOSTOR_CODE && ipcCode !== NO_ADDRESS_CODE
+        && !isNodeError(error, "ENOENT") && !isNodeError(error, "ECONNREFUSED") && !isNodeError(error, "ECONNRESET")) {
         throw error;
+      }
+      if (ipcCode === IMPOSTOR_CODE && error instanceof Error) {
+        // ★사칭(강제 종료 뒤 옛 이름 재점유 등) — 남기고 «데몬 없음»처럼 띄운다. 잠금을 빼앗지 않는다: 살아 있는 내 데몬이면 새 데몬은 locked.
+        new DaemonLog(paths.log, paths.previousLog).write({ event: "ipc_impostor", pid: process.pid, message: error.message });
       }
       if (!options.start) {
         return undefined;

@@ -109,14 +109,14 @@ jobs:
         with:
           persist-credentials: false
           path: src
-      - name: 표적 시험(test/windows/ 만 — 전수 아님)
+      - name: 표적 시험(test/windows/ + 플랫폼 무관 표적 — 전수 아님)
         working-directory: src
         env:
           AINECTO_WIN_CANDIDATE_DIR: ${{ env.CAND }}
           AINECTO_WIN_EXPECTED_BUILD: ${{ env.BUILD }}
         run: |
           npm ci
-          npx vitest run test/windows/ --passWithNoTests
+          npx vitest run test/windows/ test/termLock.test.ts test/termIpc.test.ts
       - name: 증적
         if: always()
         run: |

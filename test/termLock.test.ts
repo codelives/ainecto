@@ -7,7 +7,7 @@ import { termRuntimeProblem } from "../src/core/term/daemonLock";
 /**
  * 데몬 잠금 실물 시험(설계 2-1 v3) — 별도 프로세스 셋이 진짜 OS 잠금을 다툰다.
  *   A 가 쥔 동안 B 는 못 잡는다 → A 를 SIGKILL 하면 OS 가 풀어 C 가 잡는다 → 그 뒤 D 는 다시 못 잡는다.
- * macOS 는 O_EXLOCK 파일, Linux 는 추상 이름공간 소켓.
+ * macOS 는 O_EXLOCK 파일, Windows 는 libuv 독점 공유 모드 파일(EBUSY), Linux 는 추상 이름공간 소켓.
  */
 const ROOT = resolve(__dirname, "..");
 const TSX = execFileSync(process.execPath, ["--input-type=module", "-e", "console.log(import.meta.resolve('tsx'))"], { cwd: ROOT, encoding: "utf8" }).trim();
@@ -87,12 +87,13 @@ describe("term daemon lock (real processes)", () => {
 });
 
 describe("term runtime floor", () => {
-  it("needs Node 20.8.0 on Linux for the abstract-socket lock, any supported Node on macOS, and refuses other platforms", () => {
+  it("needs Node 20.8.0 on Linux for the abstract-socket lock, any supported Node on macOS and Windows, and refuses other platforms", () => {
     expect(termRuntimeProblem("linux", "18.20.8")).toMatch(/needs Node\.js 20\.8\.0 or newer \(this is 18\.20\.8\)/);
     expect(termRuntimeProblem("linux", "20.7.0")).toMatch(/20\.8\.0/);
     expect(termRuntimeProblem("linux", "20.8.0")).toBeUndefined();
     expect(termRuntimeProblem("linux", "22.20.0")).toBeUndefined();
     expect(termRuntimeProblem("darwin", "18.0.0")).toBeUndefined();
-    expect(termRuntimeProblem("win32", "22.20.0")).toMatch(/not supported on win32/);
+    expect(termRuntimeProblem("win32", "18.0.0")).toBeUndefined();
+    expect(termRuntimeProblem("freebsd", "22.20.0")).toMatch(/not supported on freebsd/);
   });
 });

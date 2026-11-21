@@ -1,10 +1,11 @@
-import { chmod, stat, unlink, writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
 import { acquireDaemonLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
+import { afterListen, helloProof, prepareListen, type IpcAddress } from "./ipc";
 import { readManifest, writeManifest, type ManifestEntry } from "./manifest";
 import type { TermPaths } from "./paths";
 import {
@@ -33,7 +34,7 @@ export interface DaemonOptions {
  * 상주 프로세스 `ainecto term daemon`(설계 2-1). 반환값은 끝날 때의 종료 코드.
  *
  *   시작: ① 잠금을 비차단으로 잡는다 — 못 잡으면 다른 데몬이 살아 있으니 바로 끝낸다
- *         ② 잡은 쪽만 pid 를 daemon.json 에(안내용 — 판정에 쓰지 않는다) ③ 옛 ctl.sock 을 지우고 bind.
+ *         ② 잡은 쪽만 pid 를 daemon.json 에(안내용 — 판정에 쓰지 않는다) ③ 옛 주소를 치우고 bind(ipc.ts — Windows 는 새 pipe 이름·비밀값).
  *         ★②를 bind «전에» 쓴다 — 잠금을 쥔 채 bind 전에 멈춘 데몬이 있으면 클라이언트가 그 pid 를 알려 줄 수 있다.
  *   끝: 세션 0개 + 연결 0개가 되면, 또는 kill-server·SIGTERM 이면. 리스너를 먼저 닫고, 그 뒤에 온 요청에는
  *       RETRY 를 답하고, 처리 중인 요청을 마친 뒤 자기 소켓을 지우고 끝난다. 잠금은 프로세스가 끝날 때 OS 가 푼다.
@@ -69,7 +70,7 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
   }
   const daemon = new TermDaemon(paths, log, manifest);
   await daemon.listen();
-  log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: paths.socket });
+  log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: daemon.address });
   process.on("SIGTERM", () => void daemon.shutdown("SIGTERM"));
   process.on("SIGINT", () => void daemon.shutdown("SIGINT"));
   process.on("uncaughtException", (error) => {
@@ -121,6 +122,8 @@ class TermDaemon {
   private stopping = false;
   private manifestWrite: Promise<void> = Promise.resolve();
   private resolveFinished: (code: number) => void = () => undefined;
+  /** 이번 주소 — listen 뒤에 정해진다(Windows 는 증명 비밀값 포함). */
+  private ipc: IpcAddress | undefined;
   readonly finished = new Promise<number>((resolve) => {
     this.resolveFinished = resolve;
   });
@@ -133,23 +136,23 @@ class TermDaemon {
     this.server = createServer((socket) => this.accept(socket));
   }
 
+  /** 이번 주소(로그용) — 소켓 경로 또는 pipe 이름. 비밀값은 내보내지 않는다. */
+  get address(): string {
+    return this.ipc?.address ?? this.paths.socket;
+  }
+
   async listen(): Promise<void> {
-    // ★잠금을 쥔 프로세스만 여기 온다 — 옛 세대의 소켓을 지워도 살아 있는 데몬의 소켓일 수 없다.
-    try {
-      await unlink(this.paths.socket);
-    } catch (error) {
-      if (!isNodeError(error, "ENOENT")) {
-        throw error;
-      }
-    }
+    // ★잠금을 쥔 프로세스만 여기 온다 — 옛 주소를 치워도 살아 있는 데몬의 주소일 수 없다.
+    const ipc = await prepareListen(this.paths);
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
-      this.server.listen(this.paths.socket, () => {
+      this.server.listen(ipc.address, () => {
         this.server.off("error", reject);
         resolve();
       });
     });
-    await chmod(this.paths.socket, PRIVATE_FILE_MODE);
+    this.ipc = ipc;
+    await afterListen(this.paths);
   }
 
   /** 끝낸다 — 세션·매니페스트는 건드리지 않는다(SIGTERM·세션 0). 세션까지 끝내는 kill-server 는 handle 이 먼저 정리한다. */
@@ -258,6 +261,12 @@ class TermDaemon {
 
   private async handle(connection: Connection, request: TermRequest): Promise<Handled> {
     switch (request.op) {
+      case "hello": {
+        if (!this.ipc?.key) {
+          throw new TermError("TERM_BAD_REQUEST", "hello is only for a named-pipe daemon (Windows).");
+        }
+        return { data: { proof: helloProof(this.ipc.key, this.ipc.address, request.nonce) } };
+      }
       case "new": {
         assertSessionName(request.name);
         const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString(),

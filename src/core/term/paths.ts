@@ -9,9 +9,12 @@ import { TermError } from "./errors";
 export interface TermPaths {
   /** 폴더(0700). */
   dir: string;
-  /** 제어 소켓(0600). 잠금을 쥔 데몬만 지우고 만든다. */
+  /**
+   * 데몬 주소 파일 — macOS·Linux 는 제어 소켓 자체(0600), Windows 는 named pipe 이름과 증명 비밀값을 적은 파일(0600, ipc.ts).
+   * 잠금을 쥔 데몬만 지우고 만든다. 없으면(ENOENT) «데몬 없음»이다 — 두 OS 에서 같은 뜻.
+   */
   socket: string;
-  /** macOS 데몬 잠금 파일(O_EXLOCK). */
+  /** macOS·Windows 데몬 잠금 파일(독점 열기 — daemonLock.ts). */
   lockFile: string;
   /** Linux 데몬 잠금 — 추상 이름공간 소켓 이름(파일 없음). */
   abstractLockName: string;
@@ -61,11 +64,11 @@ export function webSessionFolder(app: string, projectUuid: string | undefined, r
   return join(app, "projects", projectUuid, "sessions", requestId);
 }
 
-export function termPaths(home: string = homedir()): TermPaths {
+export function termPaths(home: string = homedir(), platform: NodeJS.Platform = process.platform): TermPaths {
   const dir = join(home, ".ainecto", "term");
   return {
     dir,
-    socket: join(dir, "ctl.sock"),
+    socket: join(dir, platform === "win32" ? "ctl.pipe" : "ctl.sock"),
     lockFile: join(dir, "daemon.lock"),
     // ★설계는 `\0ainecto-term-<uid>.lock` 이다. 추상 이름은 홈 폴더와 무관하게 기기 전체에 하나라서, 홈이 다른
     //   두 폴더(시험·다른 HOME)가 서로의 잠금을 막는다. 잠금이 지키는 것은 «이 폴더의 소켓»이므로 폴더 경로를 넣는다.

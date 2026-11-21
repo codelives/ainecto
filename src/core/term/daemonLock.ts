@@ -9,8 +9,10 @@ import type { TermPaths } from "./paths";
  * 쥔 프로세스만 소켓을 지우고 만든다. 시간 초과·PID·번호 파일로 판정하지 않는다.
  * 플랫폼마다 수단이 다른 것은 이 함수 하나 안에 가둔다(호출처는 데몬 시작 하나).
  *
- *   macOS : daemon.lock 을 O_EXLOCK|O_NONBLOCK 으로 연다 — 쥔 동안 다른 열기는 EAGAIN.
- *   Linux : 추상 이름공간 Unix 소켓에 bind — 쥔 동안 다른 bind 는 EADDRINUSE. 파일이 남지 않는다.
+ *   macOS   : daemon.lock 을 O_EXLOCK|O_NONBLOCK 으로 연다 — 쥔 동안 다른 열기는 EAGAIN.
+ *   Windows : daemon.lock 을 libuv 독점 공유 모드(UV_FS_O_EXLOCK — 공유 0)로 연다 — 쥔 동안 다른 열기는 EBUSY
+ *             (libuv src/win/fs.c·error.c ERROR_SHARING_VIOLATION). flock 이 아니라 공유 모드 독점이다.
+ *   Linux   : 추상 이름공간 Unix 소켓에 bind — 쥔 동안 다른 bind 는 EADDRINUSE. 파일이 남지 않는다.
  *
  * ★잠금 fd·소켓은 Node(libuv)가 CLOEXEC 로 연다 — PTY 자식이 물려받아 데몬이 죽은 뒤에도 잠금을 쥐는 일이 없다
  *   (시험: 데몬을 SIGKILL 한 뒤 HUP 을 무시하는 자식이 살아 있어도 새 데몬이 뜬다).
@@ -35,7 +37,10 @@ export function termRuntimeProblem(platform: NodeJS.Platform = process.platform,
       : `ainecto term on Linux needs Node.js ${LINUX_ABSTRACT_SOCKET_NODE.join(".")} or newer (this is ${nodeVersion}): its daemon lock is `
         + "an abstract Unix socket, which older Node cannot bind by name. Other ainecto commands work on this Node.";
   }
-  return `ainecto term is not supported on ${platform} yet (macOS and Linux only).`;
+  if (platform === "win32") {
+    return undefined;
+  }
+  return `ainecto term is not supported on ${platform} yet (macOS, Linux and Windows only).`;
 }
 
 /** 데몬을 띄우기 «전에»(클라이언트) 그리고 잠금을 잡기 전에(데몬) 부른다. */
@@ -60,6 +65,14 @@ function versionAtLeast(version: string, minimum: readonly [number, number, numb
 
 /** macOS `sys/fcntl.h` `#define O_EXLOCK 0x00000020` — Node 가 상수를 주지 않는다. */
 const DARWIN_O_EXLOCK = 0x20;
+/** libuv `include/uv/win.h` `#define UV_FS_O_EXLOCK 0x10000000`(공유 모드 0) — Node 가 Windows 에서 상수를 주지 않는다. 결재 2026-11-21. */
+const WIN32_UV_FS_O_EXLOCK = 0x10000000;
+
+/** 파일 잠금 플랫폼 — 여는 플래그와 «다른 쪽이 쥐고 있음»의 오류 코드. */
+const FILE_LOCK: Partial<Record<NodeJS.Platform, { flags: number; busy: readonly string[] }>> = {
+  darwin: { flags: constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | DARWIN_O_EXLOCK, busy: ["EAGAIN", "EWOULDBLOCK"] },
+  win32: { flags: constants.O_RDWR | constants.O_CREAT | WIN32_UV_FS_O_EXLOCK, busy: ["EBUSY"] },
+};
 
 /** 잠금 핸들 — 프로세스가 끝날 때까지 닫지 않는다(닫으면 잠금이 풀린다). */
 let heldFd: number | undefined;
@@ -67,16 +80,13 @@ let heldServer: Server | undefined;
 
 export async function acquireDaemonLock(paths: TermPaths): Promise<DaemonLockResult> {
   assertTermRuntime();
-  if (process.platform === "darwin") {
+  const fileLock = FILE_LOCK[process.platform];
+  if (fileLock) {
     try {
-      heldFd = openSync(
-        paths.lockFile,
-        constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | DARWIN_O_EXLOCK,
-        PRIVATE_FILE_MODE,
-      );
+      heldFd = openSync(paths.lockFile, fileLock.flags, PRIVATE_FILE_MODE);
       return { held: true };
     } catch (error) {
-      if (isNodeError(error, "EAGAIN") || isNodeError(error, "EWOULDBLOCK")) {
+      if (fileLock.busy.some((code) => isNodeError(error, code))) {
         return { held: false };
       }
       throw error;
@@ -100,6 +110,6 @@ export async function acquireDaemonLock(paths: TermPaths): Promise<DaemonLockRes
       });
     });
   }
-  // assertTermRuntime 이 이미 막았다 — 여기 오면 위 두 플랫폼 분기와 그 함수가 어긋난 것이다.
+  // assertTermRuntime 이 이미 막았다 — 여기 오면 위 플랫폼 분기와 그 함수가 어긋난 것이다.
   throw new TermError("TERM_RUNTIME_UNSUPPORTED", `No daemon lock for ${process.platform}.`);
 }

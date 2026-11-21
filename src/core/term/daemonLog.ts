@@ -25,7 +25,9 @@ export type DaemonLogRecord =
   | { event: "session_exit"; name: string; pid: number; exitCode: number; signal: number; kept: boolean }
   | { event: "attach"; conn: number; name: string }
   | { event: "detach"; conn: number; name: string; reason: string }
-  | { event: "manifest_error"; message: string };
+  | { event: "manifest_error"; message: string }
+  /** 클라이언트가 쓴다 — 주소에서 답한 쪽이 이 사용자의 데몬임을 증명하지 못했다(Windows, ipc.ts). 아무 요청도 보내지 않았다. */
+  | { event: "ipc_impostor"; pid: number; message: string };
 
 /**
  * JSON 한 줄 로그 — 레코드 모양만 다르고 쓰기·회전·권한은 한 벌이다(데몬 로그 · 원격 터미널 로그 `remote.log`).
