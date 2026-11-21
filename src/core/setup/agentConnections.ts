@@ -2,6 +2,8 @@ import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promise
 import { dirname, join } from "node:path";
 import {
   entryCarriesRole,
+  entryUrl,
+  fileEntry,
   isOurEntry,
   normalizedServerUrl,
   pinnedBridgeVersion,
@@ -15,7 +17,8 @@ import {
 import { lastLine, type CommandRunner } from "./commandRunner";
 
 /**
- * ★기기 전역의 에이전트 연결 — Claude Code(사용자 범위) · Cursor(전역 {@code ~/.cursor/mcp.json}) · Codex.
+ * ★기기 전역의 에이전트 연결 — Claude Code(사용자 범위) · Cursor(전역 {@code ~/.cursor/mcp.json}) · Codex ·
+ * Antigravity(전역 {@code ~/.gemini/config/mcp_config.json} — 앱·IDE·CLI 공통).
  * setup 이 쓰고(connect/disconnect), status·doctor 가 읽는다(inspect). 셋이 같은 판정을 쓴다.
  *
  * <p>★기본은 서버 주소(원격 MCP)를 직접 등록한다 — 판 고정이 없고 로그인은 에이전트 자신의 OAuth 다.
@@ -25,20 +28,21 @@ import { lastLine, type CommandRunner } from "./commandRunner";
  * (다른 주소·다른 명령)은 건드리지 않고 그대로 보고한다.
  *
  * <p>Claude Code·Codex 는 그 도구의 CLI({@code claude mcp …}·{@code codex mcp …})로만 고친다 — 설정 파일
- * 형식을 우리가 쓰지 않는다. Cursor 는 CLI 가 없어 우리가 JSON 을 병합한다(남의 항목·다른 키 보존).
+ * 형식을 우리가 쓰지 않는다. Cursor·Antigravity 는 등록 명령이 없어 우리가 JSON 을 병합한다(남의 항목·다른 키 보존).
  */
 
 export const AGENT_CLIENT_LABELS: Record<AgentClientId, string> = {
   "claude-code": "Claude Code",
   cursor: "Cursor",
   codex: "Codex",
+  antigravity: "Antigravity",
 };
 
 
 export interface AgentState {
   client: AgentClientId;
   installed: boolean;
-  /** 항목이 있는 범위 — Claude: user·local·project / Cursor·Codex: global. */
+  /** 항목이 있는 범위 — Claude: user·local·project / Cursor·Codex·Antigravity: global. */
   scope?: string;
   entry?: AgentEntry;
   /** 우리 항목인가 — 우리 브리지 또는 우리 서버 주소. */
@@ -78,7 +82,8 @@ export interface AgentContext {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function inspectAgents(context: AgentContext): Promise<AgentState[]> {
-  return [await inspectClaude(context), await inspectCursor(context), await inspectCodex(context)];
+  return [await inspectClaude(context), await inspectCursor(context), await inspectCodex(context),
+    await inspectJsonFile("antigravity", join(context.home, ".gemini", "config"), antigravityConfigPath(context.home), context.endpoint)];
 }
 
 const NOT_FOUND = /No MCP server named/i;
@@ -111,13 +116,21 @@ export async function inspectClaude({ runner, endpoint }: AgentContext): Promise
 }
 
 export async function inspectCursor({ home, endpoint }: AgentContext): Promise<AgentState> {
-  const base = { client: "cursor" as const, ours: false, carriesRole: false, scope: "global" };
-  if (!(await exists(join(home, ".cursor")))) {
+  return inspectJsonFile("cursor", join(home, ".cursor"), cursorConfigPath(home), endpoint);
+}
+
+/**
+ * 설정 파일을 우리가 직접 병합하는 대상(Cursor · Antigravity) — 설치 여부는 그 도구의 폴더({@code ~/.cursor} ·
+ * {@code ~/.gemini/config})가 있나, 항목은 그 JSON 의 {@code mcpServers.ainecto}. 빈 파일(0바이트)은 항목 없음으로 본다.
+ */
+async function inspectJsonFile(client: "cursor" | "antigravity", toolDir: string, path: string, endpoint: string): Promise<AgentState> {
+  const base = { client, ours: false, carriesRole: false, scope: "global" };
+  if (!(await exists(toolDir))) {
     return { ...base, installed: false };
   }
   let content: string | undefined;
   try {
-    content = await readFile(cursorConfigPath(home), "utf8");
+    content = await readFile(path, "utf8");
   } catch (error) {
     if (!isNodeError(error, "ENOENT")) {
       return { ...base, installed: true, problem: error instanceof Error ? error.message : String(error) };
@@ -127,7 +140,7 @@ export async function inspectCursor({ home, endpoint }: AgentContext): Promise<A
     try {
       JSON.parse(content);
     } catch {
-      return { ...base, installed: true, problem: `${cursorConfigPath(home)} is not valid JSON` };
+      return { ...base, installed: true, problem: `${path} is not valid JSON` };
     }
   }
   const raw = readServerEntry(content);
@@ -189,12 +202,12 @@ export async function connectAgent(
   const updating = state.entry !== undefined;
   const commands = writeCommands(state.client, desired, updating);
   if (dryRun) {
-    return outcome(updating ? "updated" : "connected", commands.length > 0 ? `would run: ${commands.map((c) => c.join(" ")).join(" && ")}` : `would write ${cursorConfigPath(context.home)}`);
+    return outcome(updating ? "updated" : "connected", commands.length > 0 ? `would run: ${commands.map((c) => c.join(" ")).join(" && ")}` : `would write ${jsonConfigPath(state.client === "antigravity" ? "antigravity" : "cursor", context.home)}`);
   }
   try {
-    if (state.client === "cursor") {
-      const path = cursorConfigPath(context.home);
-      await writeKeepingMode(path, mergeServerEntry(await readIfExists(path), desired).content);
+    if (state.client === "cursor" || state.client === "antigravity") {
+      const path = jsonConfigPath(state.client, context.home);
+      await writeKeepingMode(path, mergeServerEntry(await readIfExists(path), fileEntry(state.client, desired)).content);
     }
     // ★Codex 원격 add 는 서버의 OAuth 를 감지하면 그 자리에서 로그인을 시작한다(끄는 옵션 없음, 0.163) —
     //   그 출력을 흘려 링크가 보이게 한다. 한도(90초)는 실행기의 것 그대로다.
@@ -237,8 +250,8 @@ export async function disconnectAgent(state: AgentState, context: AgentContext, 
     return outcome("removed");
   }
   try {
-    if (state.client === "cursor") {
-      const path = cursorConfigPath(context.home);
+    if (state.client === "cursor" || state.client === "antigravity") {
+      const path = jsonConfigPath(state.client, context.home);
       const removed = removeServerEntry(await readIfExists(path));
       if (removed.content !== undefined) {
         await writeKeepingMode(path, removed.content);
@@ -258,6 +271,15 @@ export async function disconnectAgent(state: AgentState, context: AgentContext, 
 
 export function cursorConfigPath(home: string): string {
   return join(home, ".cursor", "mcp.json");
+}
+
+/** Antigravity 의 전역 MCP 설정 — 앱·IDE·CLI 가 같이 읽는다(antigravity.google/docs/mcp). */
+export function antigravityConfigPath(home: string): string {
+  return join(home, ".gemini", "config", "mcp_config.json");
+}
+
+function jsonConfigPath(client: "cursor" | "antigravity", home: string): string {
+  return client === "cursor" ? cursorConfigPath(home) : antigravityConfigPath(home);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -282,7 +304,7 @@ function writeCommands(client: AgentClientId, entry: AgentEntry, updating: boole
   return [];
 }
 
-function removeCommand(client: Exclude<AgentClientId, "cursor">): string[] {
+function removeCommand(client: Exclude<AgentClientId, "cursor" | "antigravity">): string[] {
   return client === "claude-code"
     ? ["claude", "mcp", "remove", "-s", "user", SERVER_NAME]
     : ["codex", "mcp", "remove", SERVER_NAME];
@@ -316,8 +338,9 @@ function toEntry(raw: unknown): AgentEntry | undefined {
   if (typeof raw !== "object" || raw === null) {
     return undefined;
   }
-  const { command, args, url } = raw as { command?: unknown; args?: unknown; url?: unknown };
-  if (typeof url === "string" && url) {
+  const { command, args } = raw as { command?: unknown; args?: unknown };
+  const url = entryUrl(raw);   // url 또는 Antigravity 의 serverUrl
+  if (url) {
     return { url };
   }
   if (typeof command === "string") {

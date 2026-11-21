@@ -152,9 +152,9 @@ export async function executeInitCommand(options: InitCommandOptions): Promise<n
       next: [
         `Read ${HARNESS_DOC_PATH} first. Every session sees the same AiNecto tools; your AiNecto permissions decide what they may change.`,
         mcpWritten
-          ? "Claude Code and Cursor pick up the repository's MCP config in a new session."
+          ? "Claude Code, Cursor and Antigravity pick up the repository's MCP config in a new session."
           : "To connect your coding agents on this machine, run `ainecto setup` once"
-            + " (or re-run init with --mcp to also write this repository's .mcp.json and .cursor/mcp.json).",
+            + " (or re-run init with --mcp to also write this repository's .mcp.json, .cursor/mcp.json and .agents/mcp_config.json).",
         // 서버 주소를 썼으면 에이전트가 따로 로그인한다 — setup 과 같은 안내 표 하나.
         ...(mcpWritten && !args.local
           ? [`Each agent signs in to AiNecto by itself the first time: ${AGENT_TARGETS.map((target) => REMOTE_SIGN_IN[target.id]).filter(Boolean).join("; ")}.`]
