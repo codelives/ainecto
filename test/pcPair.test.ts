@@ -53,10 +53,12 @@ async function approve(remoteTerminal = true): Promise<string> {
 /** 진짜 암호로 움직이는 브라우저 + 그 사이의 중계(relay 가 브라우저 키를 바꿔치기할 수 있다). */
 async function fakeBrowser(options: {
   pcId: string; keyId?: string; relaySwapsKey?: boolean; never?: boolean; failDone?: boolean; name?: string;
+  /** 같은 브라우저가 다시 짝짓는다 — 계정의 브라우저 키를 재사용한다. */
+  own?: EcPrivateJwk;
   /** 드러내기를 받은 뒤(코드를 치기 전) 다른 일이 끼어든다. */
   afterReveal?: () => Promise<void>;
 }) {
-  const own: EcPrivateJwk = await generateSigningJwk();
+  const own: EcPrivateJwk = options.own ?? await generateSigningJwk();
   const ownPub = publicRawFromJwk(own);
   const nB = randomBytes(32);
   const state: { commit?: Uint8Array; pcPub?: Uint8Array; transcript?: Uint8Array; codes?: PairCodes; pinnedPc: boolean; done: number;
@@ -461,6 +463,60 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
     expect(retry.out()).toContain("Finished the earlier removal.");
     expect((await account())?.pendingTurnOff).toBeUndefined();
     await expectCli(executePair(deps({}).deps, ["--remove", "k2"]), "PAIR_NOT_FOUND");
+  });
+});
+
+describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 짝짓기(리뷰 impl-4 #1·#2)", () => {
+  const account = async () => (await loadPcKeys(keysPath())).accounts[KEY];
+  const failingTurnOff = () => deps({
+    findPcs: async () => [{ session: "ainecto-pc", pid: 4242, pgid: 4242 }],
+    turnOffPcs: async () => { throw new Error("a process in its group 4242 is still alive"); },
+  });
+  async function pairOnce(pcId: string, own?: EcPrivateJwk) {
+    const browser = await fakeBrowser({ pcId, own });
+    const tty = fakeTty(() => browser.state.codes?.b);
+    const result = executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []);
+    return { browser, result, keyId: await browserKeyIdOf(publicRawFromJwk(browser.own)) };
+  }
+
+  it("철회 실패 중 다른 브라우저가 같은 기본 이름으로 짝지어도 다른 이름을 받고 · 원래 이름으로 재시도해도 새 핀이 남는다 · 실패 안내는 keyId 로", async () => {
+    const pcId = await approve();
+    const old = await pairOnce(pcId);
+    expect(await old.result).toBe(0);
+    const error = await expectCli(executePair(failingTurnOff().deps, ["--remove", "Chrome · macOS"]), "PAIR_REMOVE_STOP_FAILED");
+    expect(error.message).toContain(`Run \`ainecto pair --remove ${old.keyId}\` again to finish.`);
+
+    const fresh = await pairOnce(pcId);
+    expect(await fresh.result).toBe(0);
+    expect((await account())?.browsers.map((item) => [item.keyId, item.name])).toEqual([[fresh.keyId, "Chrome · macOS (2)"]]);
+
+    const retry = deps({});
+    expect(await executePair(retry.deps, ["--remove", "Chrome · macOS"])).toBe(0);
+    expect(retry.out()).toContain("Finished the earlier removal.");
+    expect(await account()).toMatchObject({ browsers: [{ keyId: fresh.keyId, name: "Chrome · macOS (2)" }] });
+    expect((await account())?.pendingTurnOff).toBeUndefined();
+  });
+
+  it("같은 브라우저(같은 keyId)의 철회가 끝나지 않았으면 재짝짓기는 저장하지 않고 PAIR_REMOVE_PENDING · done 안 보냄 · 철회를 마친 뒤엔 짝지어진다", async () => {
+    const pcId = await approve();
+    const first = await pairOnce(pcId);
+    expect(await first.result).toBe(0);
+    await expectCli(executePair(failingTurnOff().deps, ["--remove", first.keyId]), "PAIR_REMOVE_STOP_FAILED");
+    const pending = (await account())?.pendingTurnOff;
+
+    const again = await pairOnce(pcId, first.browser.own);
+    const error = await expectCli(again.result, "PAIR_REMOVE_PENDING");
+    expect(error.message).toContain(`ainecto pair --remove ${first.keyId}`);
+    expect(again.browser.state.done).toBe(0);
+    expect(again.browser.state.aborts).toEqual(["error"]);
+    expect(await account()).toMatchObject({ browsers: [], pendingTurnOff: pending });
+
+    expect(await executePair(deps({}).deps, ["--remove", first.keyId])).toBe(0);
+    expect((await account())?.pendingTurnOff).toBeUndefined();
+    const later = await pairOnce(pcId, first.browser.own);
+    expect(await later.result).toBe(0);
+    expect(later.browser.state.pinnedPc).toBe(true);
+    expect((await account())?.browsers.map((item) => item.keyId)).toEqual([first.keyId]);
   });
 });
 

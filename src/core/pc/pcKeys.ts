@@ -18,7 +18,7 @@ export interface PairedBrowser {
   /** 공개키 지문(e2e.browserKeyIdOf — SHA-256 앞 16바이트 hex) — hello 의 browserKeyId. */
   keyId: string;
   publicJwk: EcPublicJwk;
-  /** 사람이 보는 이름(짝짓기 때 정함) — `pair --list`·`pair --remove`·PC 알림에 쓴다. 이 목록 안에서 겹치지 않는다. */
+  /** 사람이 보는 이름(짝짓기 때 정함) — `pair --list`·`pair --remove`·PC 알림에 쓴다. 이 목록·끝나지 않은 철회의 이름과 겹치지 않는다. */
   name: string;
   /** 짝지은 때(ISO). */
   pairedAt: string;
@@ -169,9 +169,13 @@ export function browserNameOf(raw: string): string {
   return cleaned === "" ? DEFAULT_BROWSER_NAME : cleaned;
 }
 
-/** 목록 안에서 겹치지 않는 이름 — 같은 keyId 는 제 이름을 그대로 쓴다. 겹치면 « (2)», « (3)»…. */
-function uniqueName(browsers: readonly PairedBrowser[], wanted: string, keyId: string): string {
-  const taken = new Set(browsers.filter((item) => item.keyId !== keyId).map((item) => item.name));
+/**
+ * 핀 목록과 끝나지 않은 철회 어디와도 겹치지 않는 이름 — 같은 keyId 는 제 이름을 그대로 쓴다. 겹치면 « (2)», « (3)»….
+ * 철회 이름도 본다: 그 철회를 이름으로 다시 실행해도 새 핀을 지우지 않게(리뷰 impl-4 #1).
+ */
+function uniqueName(account: PcKeyAccount, wanted: string, keyId: string): string {
+  const named = [...account.browsers, ...(account.pendingTurnOff?.removals ?? [])];
+  const taken = new Set(named.filter((item) => item.keyId !== keyId).map((item) => item.name));
   if (!taken.has(wanted)) return wanted;
   for (let n = 2; ; n += 1) {
     const candidate = `${wanted} (${n})`;
@@ -186,7 +190,7 @@ function uniqueName(browsers: readonly PairedBrowser[], wanted: string, keyId: s
 export function withBrowser(keys: PcKeys, account: string, pcKey: EcPrivateJwk, browser: PairedBrowser): PcKeys {
   const current = keys.accounts[account] ?? { pcKey, browsers: [] };
   const others = current.browsers.filter((item) => item.keyId !== browser.keyId);
-  const added: PairedBrowser = { ...browser, name: uniqueName(others, browser.name, browser.keyId) };
+  const added: PairedBrowser = { ...browser, name: uniqueName(current, browser.name, browser.keyId) };
   return { accounts: { ...keys.accounts, [account]: { ...current, browsers: [...others, added] } } };
 }
 

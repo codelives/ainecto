@@ -129,6 +129,16 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     expect(paired.accounts[a]?.browsers.map((item) => item.keyId)).toEqual(["k1", "k2"]);
   });
 
+  it("넣기: 끝나지 않은 철회의 이름도 겹치는 이름으로 본다 — 새 핀은 « (2)»부터(리뷰 impl-4 #1)", async () => {
+    const pcKey = await generateSigningJwk();
+    const removed = withoutBrowser(withBrowser({ accounts: {} }, a, pcKey, await browser("k1", "Chrome · macOS")), a, "k1").keys;
+    const marked = withPendingTurnOff(removed, a, { at: new Date("2026-11-21T09:00:00Z"), groups: [], removal: { keyId: "k1", name: "Chrome · macOS" } });
+    const paired = withBrowser(marked, a, pcKey, await browser("k2", "Chrome · macOS"));
+    expect(paired.accounts[a]?.browsers.map((item) => [item.keyId, item.name])).toEqual([["k2", "Chrome · macOS (2)"]]);
+    const third = withBrowser(paired, a, pcKey, await browser("k3", "Chrome · macOS"));
+    expect(third.accounts[a]?.browsers.map((item) => item.name)).toEqual(["Chrome · macOS (2)", "Chrome · macOS (3)"]);
+  });
+
   it("이름 다듬기: 개행·제어 문자 제거 · 40자 · 비면 «Browser»", () => {
     expect(browserNameOf("Chrome\n\u001b[31m · macOS\u0007")).toBe("Chrome[31m · macOS");
     expect([...browserNameOf("가".repeat(100))].length).toBe(BROWSER_NAME_MAX);

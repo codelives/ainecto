@@ -153,12 +153,18 @@ async function pair(deps: PairDeps): Promise<number> {
 /**
  * 코드 B 가 맞은 뒤의 핀 — 파일을 다시 읽어 넣는다.
  * ★짝짓는 동안 다른 실행이 이 계정의 PC 키를 바꿨으면 저장하지 않는다(브라우저가 받은 키와 어긋난다).
+ * ★이 브라우저(같은 keyId)의 철회가 아직 끝나지 않았으면 저장하지 않는다 — 그 철회의 완료가 이 핀의 나중 철회까지 끝난 것으로
+ *   치우지 않게(리뷰 impl-4 #2). 던지면 done 을 보내지 않으니 브라우저는 PC 핀을 저장하지 않는다.
  */
 async function pin(deps: PairDeps, key: string, pcKey: EcPrivateJwk, browser: MatchedBrowser): Promise<void> {
   await updatePcKeys(deps.keysPath, (latest) => {
     const stored = latest.accounts[key]?.pcKey;
     if (stored && stored.d !== pcKey.d) {
       throw new CliCommandError("PAIR_CONFLICT", "This PC's key changed while pairing (another `ainecto pair`?). Nothing was saved — run `ainecto pair` again.");
+    }
+    if (latest.accounts[key]?.pendingTurnOff?.removals.some((item) => item.keyId === browser.keyId)) {
+      throw new CliCommandError("PAIR_REMOVE_PENDING", `This browser's earlier removal has not finished. Nothing was saved — `
+        + `run \`ainecto pair --remove ${browser.keyId}\` first, then \`ainecto pair\` again.`);
     }
     return withBrowser(latest, key, pcKey, { ...browser, pairedAt: deps.now().toISOString() });
   });
@@ -203,6 +209,7 @@ async function removeBrowser(deps: PairDeps, keyIdOrName: string): Promise<numbe
   if (!target) {
     throw new CliCommandError("PAIR_NOT_FOUND", `No paired browser with key id or name "${keyIdOrName}" — \`ainecto pair --list\` shows them.`);
   }
+  const finished = target.keyId;
   let groups: PcGroup[];
   try {
     const found = await deps.findPcs();
@@ -214,9 +221,8 @@ async function removeBrowser(deps: PairDeps, keyIdOrName: string): Promise<numbe
     await deps.turnOffPcs(groups);
   } catch (error) {
     throw new CliCommandError("PAIR_REMOVE_STOP_FAILED", `${removed ? `Removed "${removed.name}" (${removed.keyId}), but t` : "T"}urning off the PC connection `
-      + `was not confirmed (${error instanceof Error ? error.message : String(error)}). Run \`ainecto pair --remove ${keyIdOrName}\` again to finish.`);
+      + `was not confirmed (${error instanceof Error ? error.message : String(error)}). Run \`ainecto pair --remove ${finished}\` again to finish.`);
   }
-  const finished = target.keyId;
   await updatePcKeys(deps.keysPath, (keys) => {
     const next = withTurnOffConfirmed(keys, key, { groups, removal: finished });
     return next === keys ? undefined : next;
