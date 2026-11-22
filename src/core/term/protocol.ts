@@ -215,6 +215,8 @@ export interface ListedSession {
   project?: string;
   /** 마지막 출력 시각(ISO) — 아직 출력이 없거나 옛 데몬이면 칸 없음. */
   lastOutputAt?: string;
+  /** 세션 인스턴스 id(무작위) — 옛 데몬이면 칸 없음. */
+  instance?: string;
 }
 
 /** `ls` 응답 → 세션 목록 — 모양이 맞지 않는 줄은 뺀다. */

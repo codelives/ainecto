@@ -62,14 +62,15 @@ describe("원격 다리 — 순수 함수", () => {
     expect(remoteStateOf("later")).toBeUndefined();
   });
 
-  it("올릴 목록 — 다리 자기 세션은 뺀다 · label·project·lastOutputAt 은 있을 때만(인스턴스는 싣지 않는다)", () => {
+  it("올릴 목록 — 다리 자기 세션은 뺀다 · label·project·lastOutputAt·instance 는 있을 때만(옛 데몬은 instance 칸 없음)", () => {
+    const instance = randomUUID();
     expect(wireSessions([
-      { name: "ainecto-pc", pid: 1, clients: 0, cols: 80, rows: 24, cwd: "/", command: null },
+      { name: "ainecto-pc", pid: 1, clients: 0, cols: 80, rows: 24, cwd: "/", command: null, instance: randomUUID() },
       { name: "api", pid: 2, clients: 0, cols: 100, rows: 30, cwd: "/", command: null, label: "백엔드", project: PROJECT,
-        lastOutputAt: "2026-11-17T00:00:00Z" },
+        lastOutputAt: "2026-11-17T00:00:00Z", instance },
       { name: "web", pid: 3, clients: 1, cols: 80, rows: 24, cwd: "/", command: ["npm", "start"] },
     ], ["ainecto-pc"])).toEqual([
-      { name: "api", label: "백엔드", project: PROJECT, cols: 100, rows: 30, lastOutputAt: "2026-11-17T00:00:00Z" },
+      { name: "api", label: "백엔드", project: PROJECT, cols: 100, rows: 30, lastOutputAt: "2026-11-17T00:00:00Z", instance },
       { name: "web", cols: 80, rows: 24 },
     ]);
   });
@@ -341,21 +342,26 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     await run.done;
   }, LONG);
 
-  it("r4 조건 4 — 같은 이름으로 다시 만든 세션: 옛 인스턴스의 입력은 데몬이 SESSION_REPLACED 로 거절 · 새 세션에 안 감 · 실행 확인 지점 그대로 · 채널 닫힘 · 옛 인스턴스 끝내기는 답 SESSION_REPLACED", async () => {
+  it("r4 조건 4 — 같은 이름으로 다시 만든 세션: 올린 목록의 instance 가 새 값으로 바뀐다 · 옛 인스턴스의 입력은 데몬이 SESSION_REPLACED 로 거절 · 새 세션에 안 감 · 실행 확인 지점 그대로 · 채널 닫힘 · 옛 목록 인스턴스로 끝내기는 답 SESSION_REPLACED", async () => {
     await ok("term", "new", "a", "--", "cat");
     const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
+    const listedInstance = () => fake.listed.find((s) => s.name === "a")?.instance;
+    const before = listedInstance();
     const channel = await browser.connect();
     const side = await browser.connect();
     channel.watch("a");
     const old = await frameWhere(channel, "a", () => true, "frame of the first a");
+    expect(before, "목록의 인스턴스 = 화면과 같은 세션 객체의 값").toBe(old.instance);
     await ok("term", "kill", "a");
     await ok("term", "new", "a", "--", "cat");
     const replaced = (await sessions()).find((s) => s.name === "a");
     expect(replaced).toBeDefined();
+    await until(() => listedInstance() !== undefined && listedInstance() !== before, "new instance listed");
 
-    const killOld = await side.kill("a", old.instance);
+    // 화면을 연 적 없는 곳(side)이 목록에서 본 옛 인스턴스로 끝내기 → 데몬이 적용하는 자리에서 거절.
+    const killOld = await side.kill("a", before as string);
     await until(async () => (await side.answer(killOld)) !== undefined, "kill answer");
     expect((await side.answer(killOld))?.outer).toMatchObject({ ok: false, code: "SESSION_REPLACED" });
     expect((await sessions()).map((s) => s.name)).toEqual(["a"]);
@@ -374,6 +380,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     fresh.watch("a");
     const now = await frameWhere(fresh, "a", () => true, "frame of the new a");
     expect(now.instance).not.toBe(old.instance);
+    expect(now.instance, "새 목록의 인스턴스 = 새 화면의 값").toBe(listedInstance());
     await fresh.input("a", now.instance, "to-the-new-one\r");
     await frameWhere(fresh, "a", (frame) => lines(frame.text).includes("to-the-new-one"), "new a echoes");
     run.stop.abort();

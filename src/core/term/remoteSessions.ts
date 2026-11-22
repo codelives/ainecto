@@ -12,6 +12,11 @@ export interface WireSession {
   cols: number;
   rows: number;
   lastOutputAt?: string;
+  /**
+   * 세션 인스턴스 id(무작위 — 화면·입력 내용 없음, 설계 terminal-e2e §2). 브라우저가 화면을 안 연 세션도 끝내기·이름 바꾸기에 싣는다.
+   * 맞는지는 데몬이 명령을 적용하는 자리에서 본다(§14-6 4). 옛 데몬이면 칸 없음.
+   */
+  instance?: string;
 }
 
 export function wireSessions(listed: readonly ListedSession[], exclude: readonly string[]): WireSession[] {
@@ -24,6 +29,7 @@ export function wireSessions(listed: readonly ListedSession[], exclude: readonly
       cols: session.cols,
       rows: session.rows,
       ...(session.lastOutputAt !== undefined ? { lastOutputAt: session.lastOutputAt } : {}),
+      ...(session.instance !== undefined ? { instance: session.instance } : {}),
     }));
 }
 
