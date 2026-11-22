@@ -473,6 +473,14 @@ async function fetchJson<T>(url: string, fetchImpl: typeof fetch): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/**
+ * 기본 브라우저로 여는 명령 — ★플랫폼마다 한 곳. 셸(cmd·PowerShell)을 거치지 않아 쿼리의 {@code &} 가 끊기지 않는다(인자 하나로 그대로).
+ *
+ * <p>Windows = {@code rundll32.exe url.dll,FileProtocolHandler <url>} — 받은 줄을 그대로 ShellExecute 로 넘겨 등록된 기본 브라우저가 연다
+ * (GitHub CLI·Go pkg/browser 는 ShellExecute 를 직접 부른다 — Node 는 그 함수를 부를 수 없어 이 길로 같은 API 에 닿는다).
+ * 예전 {@code explorer.exe <url>} 은 Windows 11 실기기(2026-11-22, next.14)에서 로그인 주소(약 330자)를 받고도 브라우저를 띄우지 않았다
+ * — explorer 가 긴 주소를 경로 한도(260자) 근처에서 자른다는 보고와 맞는다.
+ */
 export function getBrowserOpenCommand(
   url: string,
   platform: NodeJS.Platform = process.platform,
@@ -482,7 +490,7 @@ export function getBrowserOpenCommand(
     return { command: "open", args: [url] };
   }
   if (platform === "win32") {
-    return { command: "explorer.exe", args: [url] };
+    return { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler", url] };
   }
   return { command: "xdg-open", args: [url] };
 }
@@ -499,9 +507,8 @@ export interface LaunchBrowserDeps {
  * 브라우저가 없으면({@code xdg-open} 비0 종료) 아무 말 없이 콜백을 영원히 기다렸다
  * (2026-09-29 독립 리뷰 P1-2).
  *
- * <p>⚠<b>Windows 는 종료 코드를 보지 않는다.</b> {@code explorer.exe} 는 성공해도 1 로 끝나는 것으로
- * 알려져 있어, 그 코드로 판정하면 정상 환경을 실패로 만든다 — 명령이 «떴다»는 것만 본다
- * (설계 §8-1, Windows 실측 V14 전까지 추정).
+ * <p>⚠<b>Windows 는 종료 코드를 보지 않는다.</b> 여는 명령은 브라우저에 넘기고 바로 끝나며 그 코드가 «열렸다»를 뜻하지 않는다
+ * — 명령이 «떴다»는 것만 본다(설계 §8-1). 열린 것은 Windows CI 의 기록 핸들러 시험이 본다(test/windows/browserOpen.win.test.ts).
  */
 export function launchBrowser(url: string, deps: LaunchBrowserDeps = {}): Promise<void> {
   const platform = deps.platform ?? process.platform;

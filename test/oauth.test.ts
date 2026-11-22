@@ -144,10 +144,11 @@ describe("OAuth PKCE login", () => {
     });
   });
 
-  it("builds a Windows browser opener without cmd shell mediation", () => {
-    expect(getBrowserOpenCommand("https://auth.example/authorize", "win32")).toEqual({
-      command: "explorer.exe",
-      args: ["https://auth.example/authorize"],
+  it("builds a Windows browser opener without cmd shell mediation — rundll32 url.dll,FileProtocolHandler, the whole URL as one argument", () => {
+    const url = "https://auth.example/authorize?response_type=code&client_id=a&redirect_uri=http%3A%2F%2F127.0.0.1%3A5%2Fcallback&state=s";
+    expect(getBrowserOpenCommand(url, "win32")).toEqual({
+      command: "rundll32.exe",
+      args: ["url.dll,FileProtocolHandler", url],
     });
     expect(() => getBrowserOpenCommand("http://auth.example/authorize", "win32")).toThrow("must use https");
   });
@@ -288,7 +289,7 @@ describe("launchBrowser", () => {
     await expect(launchBrowser(URL_, { platform: "darwin", spawnImpl })).resolves.toBeUndefined();
   });
 
-  it("does not judge Windows by exit code — explorer.exe exits 1 on success", async () => {
+  it("does not judge Windows by exit code — the opener hands off and exits; its code does not mean «opened»", async () => {
     const spawnImpl = fakeSpawn((child) => { child.emit("spawn"); child.emit("exit", 1, null); });
     await expect(launchBrowser(URL_, { platform: "win32", spawnImpl })).resolves.toBeUndefined();
   });
