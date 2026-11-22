@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { notifyTool, runQuiet } from "../os/launch";
 import type { DaemonLog } from "../term/daemonLog";
 import type { RemoteLogRecord } from "../term/remote";
 
@@ -41,29 +41,6 @@ export function notificationText(event: NotifyEvent, more: number): { title: str
     title: "AiNecto",
     body: `${event.browserName} ${WHAT[event.kind]} — ${time}${more > 0 ? ` (+${more} more)` : ""}. Not you? Run \`ainecto remote off\`.`,
   };
-}
-
-/** 이 OS 의 알림 도구(순수) — 없으면 undefined(로그만). */
-export function notifyTool(platform: NodeJS.Platform): { name: string; file: string; args(title: string, body: string): string[] } | undefined {
-  if (platform === "darwin") {
-    return {
-      name: "osascript",
-      file: "osascript",
-      args: (title, body) => ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run",
-        title, body],
-    };
-  }
-  if (platform === "linux") {
-    return { name: "notify-send", file: "notify-send", args: (title, body) => ["--", title, body] };
-  }
-  return undefined;
-}
-
-/** macOS 첫 알림 허용 안내(순수) — `ainecto setup`·`ainecto doctor` 가 한 줄 싣는다. 다른 OS 는 없음. */
-export function notificationHint(platform: NodeJS.Platform): string | undefined {
-  return platform === "darwin"
-    ? "macOS: allow notifications for «Script Editor» (System Settings › Notifications) so this PC can alert you when a browser pairs or opens a terminal here."
-    : undefined;
 }
 
 /** 시계·타이머 — 시험만 바꾼다. */
@@ -138,9 +115,6 @@ export interface PcNotifier {
 /** OS 도구 실행 — 끝난 상태만(출력·stderr 원문은 받지 않는다). 실패하면 이유 코드로 던진다. */
 export type NotifyRun = (file: string, args: string[]) => Promise<void>;
 
-const systemRun: NotifyRun = (file, args) => new Promise((resolve, reject) => {
-  execFile(file, args, { windowsHide: true }, (error) => (error ? reject(error) : resolve()));
-});
 
 /** 실행 실패 → 이유 코드(순수) — 원문 메시지·stderr 는 남기지 않는다. */
 export function notifyFailureReason(error: unknown): string {
@@ -156,8 +130,8 @@ export function notifyFailureReason(error: unknown): string {
 
 /** 운영 알림 — 로그는 remote.log(알림 1줄 + 결과 1줄). */
 export function createPcNotifier(input: { log: DaemonLog<RemoteLogRecord>; platform?: NodeJS.Platform; run?: NotifyRun; clock?: NotifyClock }): PcNotifier {
-  const tool = notifyTool(input.platform ?? process.platform);
-  const run = input.run ?? systemRun;
+  const tool = notifyTool(input.platform);
+  const run = input.run ?? runQuiet;
   const clock = input.clock ?? systemClock;
   let last: Promise<void> = Promise.resolve();
   const show = (event: NotifyEvent, more: number): void => {

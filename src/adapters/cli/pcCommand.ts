@@ -30,10 +30,10 @@ import { listedSessions, readLines, type ListedSession } from "../../core/term/p
 import { waitForMatch } from "../../core/term/wait";
 import { isNodeError } from "../../core/fs/privateFiles";
 import { updatePcKeys, withoutEndpointKeys, type PcGroup } from "../../core/pc/pcKeys";
-import { processGroupAlive, processGroupOf } from "../../core/os/processes";
 import { readFile } from "node:fs/promises";
 import type { CliIO } from "./ainectoCli";
 import { promptLine } from "./destructiveConfirmation";
+import { processGroupAlive, processGroupOf, processGroupUnavailableHint } from "../../core/os/launch";
 import { CliCommandError } from "./errors";
 import { pcResultText, preflightNotes } from "./pcStartText";
 
@@ -320,13 +320,8 @@ export async function runningPcGroups(deps: PcDeps): Promise<PcGroup[]> {
   for (const session of (await listedToTurnOff(deps)).filter((item) => runningPcs([item]).length > 0)) {
     const pgid = await processGroupOf(session.pid);
     if (pgid === undefined) {
-      // Windows 는 프로세스 그룹 조회가 아직 없다(다음 판) — 지운 브라우저의 새 연결은 막혔고, 이미 열린 것은 PC 연결을 다시 켜면 끝난다.
       throw new CliCommandError("PC_STOP_UNCONFIRMED", `Could not read the process group of the PC connection (session ${session.name}, `
-        + `pid ${session.pid}), so its end cannot be confirmed.`
-        + (process.platform === "win32"
-          ? " This check is not available on Windows yet — the removed browser cannot open new terminals, and a terminal it already had open"
-            + " ends when the PC connection restarts (`ainecto remote on`)."
-          : ""));
+        + `pid ${session.pid}), so its end cannot be confirmed.${processGroupUnavailableHint()}`);
     }
     groups.push({ session: session.name, pid: session.pid, pgid });
   }

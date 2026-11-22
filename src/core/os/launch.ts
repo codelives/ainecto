@@ -1,4 +1,5 @@
 import {
+  execFile,
   spawn,
   type ChildProcess,
   type ChildProcessByStdio,
@@ -9,6 +10,7 @@ import { statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { win32 } from "node:path";
 import type { Readable } from "node:stream";
+import { isNodeError } from "../fs/privateFiles";
 
 /**
  * 프로세스 띄우기·끄기의 ★한 곳(설계 windows-pc r3 3-2·3-3). child_process 를 실행하는 곳은 이 파일과 브라우저 열기(oauth.ts)뿐이다
@@ -284,4 +286,78 @@ export function stuckProcessHint(pid: number, platform: NodeJS.Platform = proces
 /** 사용자 로그인 셸 — 환경의 SHELL, 없으면 계정의 셸(macOS·Linux). */
 function loginShell(env: Env): string {
   return env.SHELL || userInfo().shell || "/bin/sh";
+}
+
+/**
+ * 프로세스가 살아 있는지 — 한 곳(잠금의 죽은 pid 판정 · PC 연결 종료 확인이 같이 쓴다).
+ * EPERM = 살아 있지만 남의 것.
+ */
+export function processAlive(pid: number): boolean {
+  return signalZero(pid);
+}
+
+/** 그 프로세스 그룹에 남은 프로세스가 하나라도 있는지 — `kill(-pgid, 0)` 이 ESRCH 면 0개. */
+export function processGroupAlive(pgid: number): boolean {
+  return signalZero(-pgid);
+}
+
+function signalZero(target: number): boolean {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (error) {
+    return isNodeError(error, "EPERM");
+  }
+}
+
+/**
+ * pid 의 프로세스 그룹(pgid) — `ps -o pgid= -p <pid>`(macOS·Linux). 못 읽으면(ps 없음·이미 끝남·다른 플랫폼) undefined.
+ * Node 는 getpgid 를 주지 않는다.
+ */
+export async function processGroupOf(pid: number, platform: NodeJS.Platform = process.platform): Promise<number | undefined> {
+  if (platform !== "darwin" && platform !== "linux") return undefined;
+  return await new Promise((resolve) => {
+    execFile("ps", ["-o", "pgid=", "-p", String(pid)], { timeout: 5_000 }, (error, stdout) => {
+      const pgid = Number.parseInt(String(stdout).trim(), 10);
+      resolve(error || !Number.isSafeInteger(pgid) || pgid <= 0 ? undefined : pgid);
+    });
+  });
+}
+
+/** 프로세스 그룹을 못 읽어 끄기를 확인 못 했을 때 덧붙일 안내 — Windows 는 아직 그룹 조회가 없다(다음 판 · 결재 10c0a5e0). */
+export function processGroupUnavailableHint(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32"
+    ? " This check is not available on Windows yet — the removed browser cannot open new terminals, and a terminal it already had open"
+      + " ends when the PC connection restarts (`ainecto remote on`)."
+    : "";
+}
+
+/** 파일을 인자 배열로 실행하고 끝난 상태만 — 출력·stderr 원문은 받지 않는다(PC 알림 도구). 실패하면 그 오류로 던진다. */
+export function runQuiet(file: string, args: readonly string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(file, [...args], { windowsHide: true }, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+/** 이 OS 의 알림 도구(순수) — 없으면 undefined(로그만). 셸 문자열 조립 없이 인자로만 넘긴다. */
+export function notifyTool(platform: NodeJS.Platform = process.platform): { name: string; file: string; args(title: string, body: string): string[] } | undefined {
+  if (platform === "darwin") {
+    return {
+      name: "osascript",
+      file: "osascript",
+      args: (title, body) => ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run",
+        title, body],
+    };
+  }
+  if (platform === "linux") {
+    return { name: "notify-send", file: "notify-send", args: (title, body) => ["--", title, body] };
+  }
+  return undefined;
+}
+
+/** macOS 첫 알림 허용 안내(순수) — `ainecto setup`·`ainecto doctor` 가 한 줄 싣는다. 다른 OS 는 없음. */
+export function notificationHint(platform: NodeJS.Platform = process.platform): string | undefined {
+  return platform === "darwin"
+    ? "macOS: allow notifications for «Script Editor» (System Settings › Notifications) so this PC can alert you when a browser pairs or opens a terminal here."
+    : undefined;
 }

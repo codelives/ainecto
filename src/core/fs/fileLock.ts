@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { link, open, readFile, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { processAlive } from "../os/processes";
+import { processAlive } from "../os/launch";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "./privateFiles";
 
 /**

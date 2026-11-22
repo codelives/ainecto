@@ -1,4 +1,4 @@
-import { notificationHint } from "../../core/pc/pcNotify";
+import { notificationHint } from "../../core/os/launch";
 import { usableAccessToken } from "../../core/auth/oauth";
 import { profileSettingsUrl } from "../../core/config/endpoints";
 import { renderSuccess } from "../../core/output/render";
@@ -138,7 +138,7 @@ function nextSteps(account: AccountSummary | undefined, agents: ConnectionOutcom
     next.push(`Set your AiNecto role (your job) at ${profileSettingsUrl(endpoint)} — AI uses it to pitch explanations; it does not change permissions.`);
   }
   next.push("To add AiNecto's working rules to a repository, run `ainecto init` from its root.");
-  const notifyHint = notificationHint(process.platform);
+  const notifyHint = notificationHint();
   if (notifyHint) next.push(notifyHint);
   next.push("`ainecto doctor` shows anything still missing.");
   return next;

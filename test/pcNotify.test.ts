@@ -5,15 +5,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createPcNotifier,
-  notificationHint,
   notificationText,
   notifyFailureReason,
-  notifyTool,
   NOTIFY_BATCH_MS,
   NotifyBatcher,
   type NotifyClock,
   type NotifyEvent,
 } from "../src/core/pc/pcNotify";
+import { notificationHint, notifyTool } from "../src/core/os/launch";
 import { DaemonLog } from "../src/core/term/daemonLog";
 import type { RemoteLogRecord } from "../src/core/term/remote";
 

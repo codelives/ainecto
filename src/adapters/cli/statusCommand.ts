@@ -1,4 +1,4 @@
-import { notificationHint } from "../../core/pc/pcNotify";
+import { notificationHint } from "../../core/os/launch";
 import { renderSuccess } from "../../core/output/render";
 import { AGENT_CLIENT_LABELS } from "../../core/setup/agentConnections";
 import { doctorChecks } from "../../core/setup/doctorChecks";
@@ -35,7 +35,7 @@ export async function executeDoctorCommand(options: StatusCommandOptions): Promi
   const checks = doctorChecks(status);
   const failed = checks.filter((check) => check.level === "fail").length;
   const warned = checks.filter((check) => check.level === "warn").length;
-  const notifyHint = notificationHint(process.platform);
+  const notifyHint = notificationHint();
   options.io.stdout.write(renderSuccess({
     summary: failed > 0 ? `${failed} problem(s) to fix` : warned > 0 ? `working — ${warned} suggestion(s)` : "all good",
     checks,
