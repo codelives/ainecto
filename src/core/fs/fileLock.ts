@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { open, readFile, stat, unlink } from "node:fs/promises";
+import { link, open, readFile, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { processAlive } from "../os/processes";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "./privateFiles";
 
 /**
  * 짧은 «읽기 → 바꾸기 → 쓰기»를 프로세스 사이에서 직렬화하는 잠금 파일(O_EXCL) — `pc-keys.json.lock` 이 쓴다(설계 terminal-e2e §13-2·§14-6 2).
- *   잡기: O_CREAT|O_EXCL(0600)로 만들고 {pid, token} 을 쓴다. 있으면 pollMs 마다 다시, waitMs 가 지나면 {@link FileLockTimeoutError}.
- *   죽은 잠금: 적힌 pid 가 살아 있지 않거나, 내용을 읽을 수 없는 채로 waitMs 보다 오래됐으면(만든 직후 죽음) 치우고 다시 잡는다.
+ *   잡기: {pid, token} 을 다 쓰고 fsync 한 임시 파일(0600)을 link 로 잠금 자리에 공개한다(EEXIST = 남이 잡음) — ★경로에 나타나는 잠금은 늘
+ *     소유자 기록을 갖췄다. 있으면 pollMs 마다 다시, waitMs 가 지나면 {@link FileLockTimeoutError}.
+ *   죽은 잠금: 적힌 pid 가 살아 있지 않으면 치우고 다시 잡는다.
+ *   소유자 기록이 없는(비었거나 읽을 수 없는) 잠금: 이 판이 만든 것이 아니다(옛 판이 만드는 중일 수도) — 나이로 회수하지 않고
+ *     {@link FileLockConflictError}(사람이 확인하고 지운다).
  *   풀기: 내 token 이 그대로일 때만 지운다.
  * ★살아 있는 잠금은 누구도 옮기거나 지우지 않는다 — 그래서 잡은 쪽이 최종 교체·풀기까지 유일한 작성자다.
  *   죽은 잠금 치우기는 회수 표지(`<잠금>.reclaim`, O_EXCL)를 잡은 한 명만 한다. 표지를 잡은 동안 잠금 파일을 지울 수 있는 것은 그 한 명뿐이므로
@@ -59,7 +62,11 @@ async function acquire(lockPath: string, options: FileLockOptions): Promise<stri
     const holder = await readLock(lockPath);
     // 그새 풀렸다 — 바로 다시 잡으러 간다.
     if (holder.raw === undefined) continue;
-    if (await isStale(lockPath, holder.content, options)) {
+    if (!holder.content) {
+      throw new FileLockConflictError(lockPath, "it has no owner recorded (it was not made by this version of ainecto), so it cannot be told apart from a "
+        + "lock still being made — check that no other ainecto is running, delete it and try again");
+    }
+    if (isDead(holder.content, options)) {
       await options.testHooks?.beforeReclaim?.();
       if (await reclaim(lockPath, holder.raw, token, options)) continue;
     }
@@ -70,21 +77,28 @@ async function acquire(lockPath: string, options: FileLockOptions): Promise<stri
   }
 }
 
-/** O_CREAT|O_EXCL 로 만들고 {pid, token} 을 쓴다 — 이미 있으면 false. */
+/**
+ * {pid, token} 을 다 쓰고 fsync 한 임시 파일(`<path>.<token>.tmp`, O_EXCL·0600)을 link 로 path 에 공개한다 — 이미 있으면(EEXIST) false.
+ * 임시 파일은 늘 지운다(공개됐으면 path 가 같은 내용을 가리킨다).
+ */
 async function create(path: string, token: string): Promise<boolean> {
-  let handle;
+  const staging = `${path}.${token}.tmp`;
+  const handle = await open(staging, "wx", PRIVATE_FILE_MODE);
   try {
-    handle = await open(path, "wx", PRIVATE_FILE_MODE);
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, token } satisfies LockContent));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await link(staging, path);
+    return true;
   } catch (error) {
     if (isNodeError(error, "EEXIST")) return false;
     throw error;
-  }
-  try {
-    await handle.writeFile(JSON.stringify({ pid: process.pid, token } satisfies LockContent));
   } finally {
-    await handle.close();
+    await unlink(staging);
   }
-  return true;
 }
 
 /** 잠금 파일 원문과 읽은 내용 — 없으면 raw 도 undefined. */
@@ -105,28 +119,19 @@ async function readLock(path: string): Promise<{ raw: string | undefined; conten
   }
 }
 
-async function isStale(path: string, holder: LockContent | undefined, options: FileLockOptions): Promise<boolean> {
-  if (holder) {
-    return !(options.isAlive ?? processAlive)(holder.pid);
-  }
-  try {
-    return Date.now() - (await stat(path)).mtimeMs > options.waitMs;
-  } catch (error) {
-    // 그새 풀렸다 — 죽은 것이 아니다(부른 쪽이 다시 본다).
-    if (isNodeError(error, "ENOENT")) return false;
-    throw error;
-  }
+function isDead(holder: LockContent, options: FileLockOptions): boolean {
+  return !(options.isAlive ?? processAlive)(holder.pid);
 }
 
 /**
  * 죽었다고 본 잠금(observed = 그때 읽은 원문)을 회수 표지를 잡은 채 치운다 — 다시 읽은 원문이 같고 여전히 죽었을 때만 지우고, 다르면(그 사이 남이 치우고 새로
- * 잡았다) 손대지 않는다. true = 바로 다시 잡으러 간다 · false = 남이 치우는 중이라 기다린다. 표지가 죽은 채 남았으면 던진다.
+ * 잡았다) 손대지 않는다. true = 바로 다시 잡으러 간다 · false = 남이 치우는 중이라 기다린다. 표지가 죽은 채(또는 소유자 기록 없이) 남았으면 던진다.
  */
 async function reclaim(lockPath: string, observed: string, token: string, options: FileLockOptions): Promise<boolean> {
   const guard = `${lockPath}.reclaim`;
   if (!(await create(guard, token))) {
     const other = await readLock(guard);
-    if (other.raw !== undefined && await isStale(guard, other.content, options)) {
+    if (other.raw !== undefined && (!other.content || isDead(other.content, options))) {
       throw new FileLockConflictError(lockPath, `${guard} was left by an ainecto that stopped while clearing a stale lock, so the stale lock cannot be `
         + `matched to its owner — check that no other ainecto is running, delete both files and try again`);
     }
@@ -134,9 +139,9 @@ async function reclaim(lockPath: string, observed: string, token: string, option
   }
   try {
     await options.testHooks?.duringReclaim?.();
-    // 원문이 같고 아직 죽은 것 — 내용 없는 잠금은 원문이 같아도 막 만든 남의 잠금일 수 있어 나이를 다시 본다.
+    // 원문이 같고 아직 죽은 것만.
     const now = await readLock(lockPath);
-    if (now.raw === observed && await isStale(lockPath, now.content, options)) {
+    if (now.raw === observed && now.content && isDead(now.content, options)) {
       await unlink(lockPath);
     }
   } finally {

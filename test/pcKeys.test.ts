@@ -265,11 +265,13 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
       await writeFile(`${path}.lock`, JSON.stringify({ pid: process.pid, token: "live" }));
       await expect(updatePcKeys(path, (keys) => keys, quick)).rejects.toBeInstanceOf(FileLockTimeoutError);
       await rm(`${path}.lock`);
-      // 내용 없는 잠금(만든 직후 죽음) — 기한보다 오래됐으면 치운다.
+      // 내용 없는 잠금 — 잠금은 소유자 기록을 다 쓴 뒤에만 경로에 나타나므로 이 판이 만든 것이 아니다. 오래됐어도 치우지 않고 멈춘다.
       await writeFile(`${path}.lock`, "");
       const old = new Date(Date.now() - 10_000);
       await utimes(`${path}.lock`, old, old);
-      await updatePcKeys(path, (keys) => keys, quick);
+      await expect(updatePcKeys(path, (keys) => keys, quick)).rejects.toBeInstanceOf(FileLockConflictError);
+      expect(await readFile(`${path}.lock`, "utf8")).toBe("");
+      await rm(`${path}.lock`);
       await expect(updatePcKeys(path, () => { throw new Error("boom"); })).rejects.toThrow("boom");
       await expect(stat(`${path}.lock`)).rejects.toThrow();
       expect(await loadPcKeys(path)).toEqual({ accounts: {} });
