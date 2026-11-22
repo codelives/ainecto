@@ -68,14 +68,22 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     expect(Object.keys(withoutEndpointKeys(keys, "https://ainecto.com/mcp").accounts)).toEqual([b]);
   });
 
-  it("끄기 미완료 표지(pendingTurnOff): 남기기·지우기 · 정규화가 보존 · 계정이 없으면 그대로", async () => {
+  it("끄기 미완료 표지(pendingTurnOff): 만들기(지운 때) · 그룹 더하기(같은 pid·pgid 는 한 번 · 지운 때 그대로) · 지우기 · 정규화가 보존 · 바뀔 것이 없으면 같은 객체", async () => {
     const pcKey = await generateSigningJwk();
     const keys = withBrowser({ accounts: {} }, a, pcKey, await browser("k1", "Work"));
-    const marked = withPendingTurnOff(keys, a, new Date("2026-11-21T09:00:00Z"));
-    expect(marked.accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z" });
-    expect(normalizePcKeys(JSON.parse(JSON.stringify(marked)))).toEqual(marked);
-    expect(withPendingTurnOff(marked, a, undefined)).toEqual(keys);
-    expect(withPendingTurnOff(keys, b, new Date())).toBe(keys);
+    const g1 = { session: "ainecto-pc", pid: 11, pgid: 11 };
+    const g2 = { session: "ainecto-pc", pid: 22, pgid: 22 };
+    const marked = withPendingTurnOff(keys, a, { at: new Date("2026-11-21T09:00:00Z"), groups: [] });
+    expect(marked.accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [] });
+    const grown = withPendingTurnOff(marked, a, { at: new Date("2026-11-21T10:00:00Z"), groups: [g1, g2] });
+    expect(grown.accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [g1, g2] });
+    expect(withPendingTurnOff(grown, a, { at: new Date(), groups: [g1] })).toBe(grown);
+    expect(normalizePcKeys(JSON.parse(JSON.stringify(grown)))).toEqual(grown);
+    const stored = { accounts: { [a]: { pcKey, browsers: [], pendingTurnOff: { removedAt: "t", groups: [g1, { session: "x", pid: 0, pgid: 1 }] } } } };
+    expect(normalizePcKeys(stored).accounts[a]?.pendingTurnOff).toEqual({ removedAt: "t", groups: [g1] });
+    expect(withPendingTurnOff(grown, a, undefined)).toEqual(keys);
+    expect(withPendingTurnOff(keys, a, undefined)).toBe(keys);
+    expect(withPendingTurnOff(keys, b, { at: new Date(), groups: [g1] })).toBe(keys);
   });
 
   it("이름 다듬기: 개행·제어 문자 제거 · 40자 · 비면 «Browser»", () => {

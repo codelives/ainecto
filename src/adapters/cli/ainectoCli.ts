@@ -16,7 +16,7 @@ import { executeInitCommand } from "./initCommand";
 import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { executeTermCommand, stringEnv, TERM_HELP_LINES } from "./termCommand";
-import { executePcStart, executePcStop, executeRemoteSetting, turnOffPcs, type PcDeps } from "./pcCommand";
+import { executePcStart, executePcStop, executeRemoteSetting, runningPcGroups, turnOffPcs, type PcDeps } from "./pcCommand";
 import { executePair, openDevTty } from "./pairCommand";
 import { PAIR_WAIT_MS } from "../../core/pc/pcPairing";
 import { createPairRelay } from "../../core/pc/pcPairRelay";
@@ -241,7 +241,8 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
           await ensurePrivateDir(paths.dir);
           await createPcNotifier({ log: openRemoteLog(paths) }).notify({ kind: "paired", keyId: browser.keyId, browserName: browser.name });
         },
-        turnOffPc: () => turnOffPcs(pcDeps()),
+        findPcs: () => runningPcGroups(pcDeps()),
+        turnOffPcs: (groups) => turnOffPcs(pcDeps(), groups),
         waitMs: PAIR_WAIT_MS,
         now: () => new Date(),
       }, parsed.positionals.slice(1));

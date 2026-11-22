@@ -28,10 +28,23 @@ export interface PcKeyAccount {
   pcKey: EcPrivateJwk;
   browsers: PairedBrowser[];
   /**
-   * `pair --remove` 가 핀은 지웠는데 PC 연결 끄기를 확인하지 못했을 때만 남는 표지(지운 때 ISO). 다시 실행하면 이름이 없어도
-   * 끄기부터 마치고 지운다(설계 §13-2). 없으면 칸 없음.
+   * `pair --remove` 의 «끄기 미완료» 표지 — 핀 삭제와 같은 쓰기로 남고, 끄기 «전에» 끌 그룹을 더하고, 모두 끝난 것을 확인한 뒤에만 지운다.
+   * 다시 실행하면 이름이 없어도 이 그룹들(데몬 목록에서 이미 빠졌어도)의 소멸부터 확인한다(설계 §13-2·§14-6 3). 없으면 칸 없음.
    */
-  pendingTurnOff?: { removedAt: string };
+  pendingTurnOff?: PendingTurnOff;
+}
+
+export interface PendingTurnOff {
+  /** 핀을 지운 때(ISO). */
+  removedAt: string;
+  groups: PcGroup[];
+}
+
+/** 끌 PC 연결 하나 — 끄기 전에 읽은 그 세션의 pid 와 프로세스 그룹(pgid). */
+export interface PcGroup {
+  session: string;
+  pid: number;
+  pgid: number;
 }
 
 export interface PcKeys {
@@ -60,13 +73,21 @@ export function normalizePcKeys(raw: unknown): PcKeys {
         const browser = asPairedBrowser(item);
         return browser ? [browser] : [];
       }) : [];
-      const pending = value?.pendingTurnOff as { removedAt?: unknown } | undefined;
+      const pending = value?.pendingTurnOff as { removedAt?: unknown; groups?: unknown } | undefined;
       accounts[key] = typeof pending?.removedAt === "string"
-        ? { pcKey, browsers, pendingTurnOff: { removedAt: pending.removedAt } }
+        ? { pcKey, browsers, pendingTurnOff: { removedAt: pending.removedAt, groups: Array.isArray(pending.groups) ? pending.groups.flatMap(asPcGroup) : [] } }
         : { pcKey, browsers };
     }
   }
   return { accounts };
+}
+
+function asPcGroup(raw: unknown): PcGroup[] {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
+  const positive = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) > 0;
+  return value && typeof value.session === "string" && positive(value.pid) && positive(value.pgid)
+    ? [{ session: value.session, pid: value.pid, pgid: value.pgid }]
+    : [];
 }
 
 function asPairedBrowser(raw: unknown): PairedBrowser | undefined {
@@ -159,13 +180,22 @@ export function withoutBrowser(keys: PcKeys, account: string, keyIdOrName: strin
   };
 }
 
-/** 끄기 미완료 표지를 남기거나(at) 지운다(undefined) — 계정이 없으면 그대로. */
-export function withPendingTurnOff(keys: PcKeys, account: string, at: Date | undefined): PcKeys {
+/**
+ * 끄기 미완료 표지에 그룹을 더하거나(표지가 없으면 at 을 지운 때로 만든다 · 같은 pid·pgid 는 한 번) 표지를 지운다(undefined).
+ * 계정이 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
+ */
+export function withPendingTurnOff(keys: PcKeys, account: string, add: { at: Date; groups: readonly PcGroup[] } | undefined): PcKeys {
   const current = keys.accounts[account];
   if (!current) return keys;
-  const { pendingTurnOff: _previous, ...rest } = current;
-  const next: PcKeyAccount = at ? { ...rest, pendingTurnOff: { removedAt: at.toISOString() } } : rest;
-  return { accounts: { ...keys.accounts, [account]: next } };
+  const { pendingTurnOff: previous, ...rest } = current;
+  if (!add) {
+    return previous ? { accounts: { ...keys.accounts, [account]: rest } } : keys;
+  }
+  const known = previous?.groups ?? [];
+  const fresh = add.groups.filter((group) => !known.some((item) => item.pid === group.pid && item.pgid === group.pgid));
+  if (previous && fresh.length === 0) return keys;
+  const pendingTurnOff: PendingTurnOff = { removedAt: previous?.removedAt ?? add.at.toISOString(), groups: [...known, ...fresh] };
+  return { accounts: { ...keys.accounts, [account]: { ...rest, pendingTurnOff } } };
 }
 
 /** 이 서버 주소의 키를 모두 지운다(`ainecto stop --forget`). */

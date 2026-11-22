@@ -1,10 +1,11 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { executePcStart, executePcStop, executeRemoteSetting, turnOffPcs, type PcDeps } from "../src/adapters/cli/pcCommand";
+import { executePair } from "../src/adapters/cli/pairCommand";
+import { executePcStart, executePcStop, executeRemoteSetting, runningPcGroups, turnOffPcs, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { accountKey } from "../src/core/pc/pcSettings";
-import { generateSigningJwk } from "../src/core/term/e2e";
-import { loadPcKeys, updatePcKeys } from "../src/core/pc/pcKeys";
+import { generateSigningJwk, publicJwkOf } from "../src/core/term/e2e";
+import { loadPcKeys, updatePcKeys, withBrowser } from "../src/core/pc/pcKeys";
 import { AGENT_MISSING_LINE, SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
 import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../src/core/term/remote";
 import { systemCommandRunner } from "../src/core/setup/commandRunner";
@@ -232,8 +233,8 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect(after[0]?.pid).not.toBe(before);
   }, LONG);
 
-  it("turnOffPcs(pair --remove 가 쓴다) — 없으면 빈 목록 · 있으면 끈 뒤 세션이 목록에서 빠지고 pid 가 사라진 것까지 확인 · 다시 띄우지 않는다", async () => {
-    expect(await turnOffPcs(harness().deps)).toEqual([]);
+  it("runningPcGroups·turnOffPcs(pair --remove 가 쓴다) — 없으면 빈 목록 · 있으면 그 그룹을 끈 뒤 세션이 목록에서 빠지고 pid 가 사라진 것까지 확인 · 다시 띄우지 않는다", async () => {
+    expect(await runningPcGroups(harness().deps)).toEqual([]);
     const start = harness();
     const done = executePcStart(start.deps);
     await start.answer("Connect this PC?", "y");
@@ -241,7 +242,9 @@ describe("이 PC 연결 — 실 데몬", () => {
     await done;
     const pid = (await pcSessions())[0]?.pid;
     expect(pid).toBeDefined();
-    expect(await turnOffPcs(harness().deps)).toEqual([{ session: "ainecto-pc", checked: "group" }]);
+    const groups = await runningPcGroups(harness().deps);
+    expect(groups).toEqual([{ session: "ainecto-pc", pid, pgid: expect.any(Number) }]);
+    await turnOffPcs(harness().deps, groups);
     expect(await pcSessions()).toEqual([]);
     expect(() => process.kill(pid ?? 0, 0)).toThrow();
   }, LONG);
@@ -252,11 +255,18 @@ describe("이 PC 연결 — 실 데몬", () => {
     await start.answer("Connect this PC?", "y");
     await start.answer("Also allow terminals", "n");
     await done;
-    expect(await turnOffPcs(harness({ stopDeadlineMs: 500 }).deps)).toEqual([{ session: "ainecto-pc", checked: "group" }]);
+    const deps = harness({ stopDeadlineMs: 500 }).deps;
+    await turnOffPcs(deps, await runningPcGroups(deps));
     expect(await pcSessions()).toEqual([]);
   }, LONG);
 
-  it("turnOffPcs — pc 는 끝났어도 같은 프로세스 그룹에 손자(다리)가 남으면 «끝남»으로 보지 않는다(PC_STOP_UNCONFIRMED)", async () => {
+  it("데몬을 못 쓰면(termProblem) «실행 중 PC 없음»이 아니라 PC_STOP_UNCONFIRMED", async () => {
+    const blind = harness({ termProblem: "no pty on this machine" }).deps;
+    await expect(runningPcGroups(blind)).rejects.toMatchObject({ code: "PC_STOP_UNCONFIRMED" });
+    await expect(turnOffPcs(blind, [{ session: "ainecto-pc", pid: 1, pgid: 1 }])).rejects.toMatchObject({ code: "PC_STOP_UNCONFIRMED" });
+  });
+
+  it("pair --remove — pc 는 끝났어도 같은 그룹에 손자(다리)가 남으면 실패 · 데몬 목록에서 빠진 뒤의 재시도도 그 그룹이 살아 있으면 실패 · 그룹이 비어야 성공", async () => {
     // pc 가 SIGINT·SIGHUP 을 무시하는 손자를 같은 그룹에 남기고 Ctrl+C 에 혼자 끝난다 — npx 아래 다리가 남는 경우.
     const ORPHAN = "if (process.argv.includes('--version')) process.exit(0);"
       + " const { spawn } = require('node:child_process');"
@@ -268,9 +278,37 @@ describe("이 PC 연결 — 실 데몬", () => {
     await start.answer("Connect this PC?", "y");
     await start.answer("Also allow terminals", "n");
     await done;
+    const keysPath = start.deps.keysPath;
+    const pcKey = await generateSigningJwk();
+    await updatePcKeys(keysPath, (keys) => withBrowser(keys, KEY, pcKey,
+      { keyId: "k1", publicJwk: publicJwkOf(pcKey), name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
     const pid = (await pcSessions())[0]?.pid ?? 0;
+    const remove = () => {
+      const pc = harness({ stopDeadlineMs: 1_000 });
+      return executePair({
+        io: pc.deps.io, json: false, interactive: false, insideTermSession: false,
+        openTty: () => { throw new Error("no tty"); },
+        settingsPath: pc.deps.settingsPath, keysPath, hostName: "test-host", endpoint: ENDPOINT,
+        account: async () => ({ userId: "u1" }),
+        transport: () => { throw new Error("no transport"); },
+        notifyPaired: async () => undefined,
+        findPcs: () => runningPcGroups(pc.deps),
+        turnOffPcs: (groups) => turnOffPcs(pc.deps, groups),
+        waitMs: 1_000,
+        now: () => new Date("2026-11-21T09:00:00Z"),
+      }, ["--remove", "k1"]);
+    };
     try {
-      await expect(turnOffPcs(harness({ stopDeadlineMs: 1_000 }).deps)).rejects.toMatchObject({ code: "PC_STOP_UNCONFIRMED" });
+      await expect(remove()).rejects.toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED" });
+      const pending = (await loadPcKeys(keysPath)).accounts[KEY]?.pendingTurnOff;
+      expect(pending?.groups).toEqual([{ session: "ainecto-pc", pid, pgid: expect.any(Number) }]);
+      const pgid = pending?.groups[0]?.pgid ?? 0;
+      // 세션은 데몬 목록에서 빠졌다 — 그래도 표지의 그룹으로 손자를 본다.
+      expect(await pcSessions()).toEqual([]);
+      await expect(remove()).rejects.toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED", message: expect.stringContaining(`group ${pgid} is still alive`) });
+      process.kill(-pgid, "SIGKILL");
+      expect(await remove()).toBe(0);
+      expect((await loadPcKeys(keysPath)).accounts[KEY]?.pendingTurnOff).toBeUndefined();
     } finally {
       try {
         process.kill(-pid, "SIGKILL");

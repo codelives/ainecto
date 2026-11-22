@@ -29,8 +29,8 @@ import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { isNodeError } from "../../core/fs/privateFiles";
-import { updatePcKeys, withoutEndpointKeys } from "../../core/pc/pcKeys";
-import { processAlive, processGroupAlive, processGroupOf } from "../../core/os/processes";
+import { updatePcKeys, withoutEndpointKeys, type PcGroup } from "../../core/pc/pcKeys";
+import { processGroupAlive, processGroupOf } from "../../core/os/processes";
 import { readFile } from "node:fs/promises";
 import type { CliIO } from "./ainectoCli";
 import { promptLine } from "./destructiveConfirmation";
@@ -313,47 +313,57 @@ export async function executeRemoteSetting(deps: PcDeps, argv: string[]): Promis
   return await launchPc(deps);
 }
 
-/** 끈 PC 연결 하나 — 종료를 무엇으로 확인했나(group = 그 세션의 프로세스 그룹 전체 · pid = 그룹을 못 읽어 직계 pid 만). */
-export interface TurnedOffPc {
-  session: string;
-  checked: "group" | "pid";
+/** 지금 떠 있는 PC 연결과 그 프로세스 그룹(`pair --remove` — 설계 terminal-e2e §13-2·§14-6 3). 데몬을 못 쓰거나 그룹을 못 읽으면 던진다. */
+export async function runningPcGroups(deps: PcDeps): Promise<PcGroup[]> {
+  assertQueryable(deps);
+  const groups: PcGroup[] = [];
+  for (const session of (await listed(deps)).filter((item) => runningPcs([item]).length > 0)) {
+    const pgid = await processGroupOf(session.pid);
+    if (pgid === undefined) {
+      throw new CliCommandError("PC_STOP_UNCONFIRMED", `Could not read the process group of the PC connection (session ${session.name}, `
+        + `pid ${session.pid}), so its end cannot be confirmed.`);
+    }
+    groups.push({ session: session.name, pid: session.pid, pgid });
+  }
+  return groups;
 }
 
 /**
- * 이 PC 연결을 «완전히» 끈다(`pair --remove` — 설계 terminal-e2e §13-2). {@link stopPc} 다음에 그 pc 가 실제로 끝났는지 — 데몬 목록에서
- * 그 세션(같은 pid)이 빠지고, 그 세션의 프로세스 그룹(pgid)에 남은 프로세스가 0 인지 — 를 stopDeadlineMs 안에 확인한다.
- * npx 아래 손자(다리)가 남는 경우도 그룹으로 잡는다. 그룹을 못 읽으면 직계 pid 로 보고 checked = "pid" 로 알린다.
- * IPC 끊김·kill 응답만으로는 끝났다고 보지 않는다. 확인하지 못하면 PC_STOP_UNCONFIRMED. 다시 띄우지 않는다.
+ * 그 그룹들을 «완전히» 끈다 — 데몬 목록에 그 세션(같은 pid)이 있으면 {@link stopPc}, 그다음 목록에서 빠지고 그 프로세스 그룹에 남은
+ * 프로세스가 0 인지를 stopDeadlineMs 안에 확인한다. 이미 목록에 없는 그룹(지난 실행이 끈 것)도 그룹의 소멸까지 확인한다.
+ * npx 아래 손자(다리)가 남는 경우도 그룹으로 잡는다. IPC 끊김·kill 응답만으로는 끝났다고 보지 않는다. 확인하지 못하면 PC_STOP_UNCONFIRMED.
+ * 다시 띄우지 않는다.
  */
-export async function turnOffPcs(deps: PcDeps): Promise<TurnedOffPc[]> {
-  if (deps.termProblem !== undefined) return [];
-  const sessions = (await listed(deps)).filter((session) => runningPcs([session]).length > 0);
-  const turnedOff: TurnedOffPc[] = [];
-  for (const session of sessions) {
-    // 끄기 «전에» 읽는다 — 끝난 뒤에는 ps 가 그룹을 보여 주지 않는다.
-    const pgid = await processGroupOf(session.pid);
-    const [pc] = runningPcs([session]);
+export async function turnOffPcs(deps: PcDeps, groups: readonly PcGroup[]): Promise<void> {
+  assertQueryable(deps);
+  for (const group of groups) {
+    const session = (await listed(deps)).find((item) => item.name === group.session && item.pid === group.pid);
+    const [pc] = session ? runningPcs([session]) : [];
     if (pc) await stopPc(deps, pc);
-    await confirmEnded(deps, session.name, session.pid, pgid);
-    turnedOff.push({ session: session.name, checked: pgid === undefined ? "pid" : "group" });
+    await confirmEnded(deps, group);
   }
-  return turnedOff;
+}
+
+/** termProblem 을 «떠 있는 PC 없음»으로 보지 않는다 — 조회 불가는 실패다(§14-6 3). */
+function assertQueryable(deps: PcDeps): void {
+  if (deps.termProblem !== undefined) {
+    throw new CliCommandError("PC_STOP_UNCONFIRMED", `Could not check the PC connection (ainecto term: ${deps.termProblem}).`);
+  }
 }
 
 /** 종료 확인 간격 100 ms — 사용자 결재 2026-11-21 «이 값으로 승인 (추천)»(설계 §14-7 C-E10). */
 const STOP_CONFIRM_POLL_MS = 100;
 
-async function confirmEnded(deps: PcDeps, name: string, pid: number, pgid: number | undefined): Promise<void> {
+async function confirmEnded(deps: PcDeps, group: PcGroup): Promise<void> {
   const deadline = Date.now() + deps.stopDeadlineMs;
   for (;;) {
-    const stillListed = (await listed(deps)).some((session) => session.name === name && session.pid === pid);
-    const alive = pgid === undefined ? processAlive(pid) : processGroupAlive(pgid);
+    const stillListed = (await listed(deps)).some((session) => session.name === group.session && session.pid === group.pid);
+    const alive = processGroupAlive(group.pgid);
     if (!stillListed && !alive) return;
     if (Date.now() >= deadline) {
-      const what = stillListed ? "the session is still running"
-        : pgid === undefined ? "the process is still alive" : `a process in its group ${pgid} is still alive`;
-      throw new CliCommandError("PC_STOP_UNCONFIRMED", `Could not confirm that the PC connection (session ${name}, pid ${pid}) ended within `
-        + `${deps.stopDeadlineMs / 1000} s (${what}). See ${deps.agentLog}.`);
+      const what = stillListed ? "the session is still running" : `a process in its group ${group.pgid} is still alive`;
+      throw new CliCommandError("PC_STOP_UNCONFIRMED", `Could not confirm that the PC connection (session ${group.session}, pid ${group.pid}) ended `
+        + `within ${deps.stopDeadlineMs / 1000} s (${what}). See ${deps.agentLog}.`);
     }
     await new Promise((resolve) => setTimeout(resolve, STOP_CONFIRM_POLL_MS));
   }

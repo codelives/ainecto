@@ -5,8 +5,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executePair, type PairDeps, type TtyIO } from "../src/adapters/cli/pairCommand";
 import { CliCommandError } from "../src/adapters/cli/errors";
-import type { TurnedOffPc } from "../src/adapters/cli/pcCommand";
-import { loadPcKeys, updatePcKeys, withBrowser } from "../src/core/pc/pcKeys";
+import { loadPcKeys, updatePcKeys, withBrowser, type PcGroup } from "../src/core/pc/pcKeys";
 import { PAIR_WAIT_MS, type BrowserOffer, type PairTransport } from "../src/core/pc/pcPairing";
 import { accountKey, normalizePcSettings, savePcSettings, withConsent } from "../src/core/pc/pcSettings";
 import {
@@ -145,7 +144,8 @@ function deps(overrides: Partial<PairDeps>) {
     account: async () => ({ userId: USER_ID }),
     transport: () => { throw new Error("no transport in this test"); },
     notifyPaired: async (browser) => { notified.push(browser); },
-    turnOffPc: async () => [],
+    findPcs: async () => [],
+    turnOffPcs: async () => undefined,
     waitMs: 10_000,
     now: () => new Date("2026-11-21T09:00:00Z"),
     ...overrides,
@@ -293,60 +293,88 @@ describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
   });
 });
 
-describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(확인) · 다시 띄우지 않음(§13-2)", () => {
+describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(그룹 소멸 확인) · 다시 띄우지 않음(§13-2·§14-6 3)", () => {
   async function seed(): Promise<void> {
     const pub = publicJwkOf(await generateSigningJwk());
     const pcKey = await generateSigningJwk();
     await updatePcKeys(keysPath(), (keys) => withBrowser(keys, KEY, pcKey, { keyId: "k1", publicJwk: pub, name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
   }
-  const turnedOff = async (): Promise<TurnedOffPc[]> => [{ session: "ainecto-pc", checked: "group" }];
+  const GROUP: PcGroup = { session: "ainecto-pc", pid: 4242, pgid: 4242 };
+  const account = async () => (await loadPcKeys(keysPath())).accounts[KEY];
 
-  it("떠 있으면: 파일에서 먼저 지우고 → 끄기 확인 뒤 성공 «다시 켜려면 ainecto» · 없으면 파일만", async () => {
+  it("핀 삭제와 표지를 한 번에 쓴 «뒤에» 그룹을 읽고 → 끄기 «전에» 그룹을 표지에 → 소멸 확인 뒤 표지를 지우고 성공 · 떠 있는 것이 없으면 파일만", async () => {
     await seed();
-    const seen: number[] = [];
-    const turnOffPc = async (): Promise<TurnedOffPc[]> => {
-      seen.push((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length ?? -1);
-      return await turnedOff();
-    };
-    const running = deps({ turnOffPc });
+    const seen: unknown[] = [];
+    const running = deps({
+      findPcs: async () => {
+        seen.push(await account());
+        return [GROUP];
+      },
+      turnOffPcs: async (groups) => {
+        seen.push(groups, (await account())?.pendingTurnOff?.groups);
+      },
+    });
     expect(await executePair(running.deps, ["--remove", "k1"])).toBe(0);
-    expect(seen).toEqual([0]);
+    expect(seen[0]).toMatchObject({ browsers: [], pendingTurnOff: { removedAt: "2026-11-21T09:00:00.000Z", groups: [] } });
+    expect(seen.slice(1)).toEqual([[GROUP], [GROUP]]);
     expect(running.out()).toContain("Turned off the PC connection. Run `ainecto` to turn it back on.");
-    expect(running.out()).not.toContain("Could not read the process group");
+    expect((await account())?.pendingTurnOff).toBeUndefined();
 
     await seed();
     const idle = deps({ json: true });
     expect(await executePair(idle.deps, ["--remove", "Work"])).toBe(0);
     expect(JSON.parse(idle.out())).toMatchObject({ data: { removed: { keyId: "k1", name: "Work" }, turnedOff: [] } });
-
-    await seed();
-    const pidOnly = deps({ turnOffPc: async () => [{ session: "ainecto-pc", checked: "pid" }] });
-    expect(await executePair(pidOnly.deps, ["--remove", "k1"])).toBe(0);
-    expect(pidOnly.out()).toContain("Could not read the process group here");
+    expect((await account())?.pendingTurnOff).toBeUndefined();
   });
 
-  it("끄기 확인 실패 → pendingTurnOff(지운 때) 표지 · 다시 실행하면 이름이 없어도 끄기부터 마치고 표지를 지움 · 표지·이름 둘 다 없으면 끄지 않고 PAIR_NOT_FOUND", async () => {
+  it("데몬 조회 불가·그룹 불명(findPcs 가 던짐)은 «실행 중 아님»이 아니라 실패 — 핀은 지워지고 표지가 남으며 아무것도 끄지 않는다", async () => {
     await seed();
-    const failing = deps({ turnOffPc: async () => { throw new Error("Could not confirm that the PC connection ended"); } });
+    let turnOffCalls = 0;
+    const blind = deps({
+      findPcs: async () => { throw new CliCommandError("PC_STOP_UNCONFIRMED", "Could not check the PC connection (ainecto term: no pty)."); },
+      turnOffPcs: async () => { turnOffCalls += 1; },
+    });
+    const error = await expectCli(executePair(blind.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
+    expect(error.message).toContain("Could not check the PC connection");
+    expect(turnOffCalls).toBe(0);
+    expect(await account()).toMatchObject({ browsers: [], pendingTurnOff: { removedAt: "2026-11-21T09:00:00.000Z", groups: [] } });
+  });
+
+  it("끄기 확인 실패 → 표지에 그 그룹 · 다시 실행하면 데몬 목록에서 빠졌어도 원래 그룹의 소멸부터 확인 · 표지·이름 둘 다 없으면 끄지 않고 PAIR_NOT_FOUND", async () => {
+    await seed();
+    const failing = deps({
+      findPcs: async () => [GROUP],
+      turnOffPcs: async () => { throw new Error("Could not confirm that the PC connection ended"); },
+    });
     const error = await expectCli(executePair(failing.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
     expect(error.message).toContain("Could not confirm");
     expect(error.message).toContain("ainecto pair --remove k1");
-    expect((await loadPcKeys(keysPath())).accounts[KEY]).toMatchObject({ browsers: [], pendingTurnOff: { removedAt: "2026-11-21T09:00:00.000Z" } });
+    expect(await account()).toMatchObject({ browsers: [], pendingTurnOff: { removedAt: "2026-11-21T09:00:00.000Z", groups: [GROUP] } });
 
-    // 재시도도 실패하면 표지는 그대로.
-    await expectCli(executePair(failing.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
-    expect((await loadPcKeys(keysPath())).accounts[KEY]?.pendingTurnOff).toBeDefined();
+    // 세션은 데몬 목록에서 빠졌지만 그룹(손자)이 아직 산다 — 재시도도 실패하고 표지는 그대로.
+    const stillAlive = deps({
+      findPcs: async () => [],
+      turnOffPcs: async (groups) => { if (groups.length > 0) throw new Error("a process in its group 4242 is still alive"); },
+      now: () => new Date("2026-11-21T10:00:00Z"),
+    });
+    await expectCli(executePair(stillAlive.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
+    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [GROUP] });
 
-    let calls = 0;
-    const retry = deps({ turnOffPc: async () => { calls += 1; return await turnedOff(); } });
+    const confirmed: Array<readonly PcGroup[]> = [];
+    let finds = 0;
+    const retry = deps({
+      findPcs: async () => { finds += 1; return []; },
+      turnOffPcs: async (groups) => { confirmed.push(groups); },
+    });
     expect(await executePair(retry.deps, ["--remove", "k1"])).toBe(0);
+    expect(confirmed).toEqual([[GROUP]]);
     expect(retry.out()).toContain("Finished the earlier removal.");
     expect(retry.out()).toContain("Turned off the PC connection.");
-    expect((await loadPcKeys(keysPath())).accounts[KEY]?.pendingTurnOff).toBeUndefined();
+    expect((await account())?.pendingTurnOff).toBeUndefined();
 
     // 오타: 표지도 이름도 없으면 끄지 않는다.
     await expectCli(executePair(retry.deps, ["--remove", "Wrok"]), "PAIR_NOT_FOUND");
-    expect(calls).toBe(1);
+    expect(finds).toBe(1);
   });
 });
 
