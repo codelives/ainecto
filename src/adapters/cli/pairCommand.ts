@@ -1,7 +1,7 @@
 import { closeSync, openSync } from "node:fs";
 import { ReadStream, WriteStream } from "node:tty";
 import { renderSuccess } from "../../core/output/render";
-import { loadPcKeys, updatePcKeys, withBrowser, withoutBrowser, withPendingTurnOff, type PairedBrowser, type PcGroup } from "../../core/pc/pcKeys";
+import { loadPcKeys, updatePcKeys, withBrowser, withoutBrowser, withPendingTurnOff, withTurnOffConfirmed, type PairedBrowser, type PcGroup } from "../../core/pc/pcKeys";
 import { runPairing, type MatchedBrowser, type PairTransport } from "../../core/pc/pcPairing";
 import { PairRelayError } from "../../core/pc/pcPairRelay";
 import { PcCallError } from "../../core/http/pcHttp";
@@ -169,7 +169,8 @@ async function listBrowsers(deps: PairDeps): Promise<number> {
  *   ② 핀을 지운 «뒤에» 떠 있는 PC 연결과 그 프로세스 그룹을 읽는다(그 전에 뜬 다리 — 옛 핀을 읽었을 수 있다 — 는 모두 목록에 있다).
  *      못 읽으면(데몬 조회 불가·그룹 불명) 실패.
  *   ③ 끄기 «전에» 그 그룹들을 표지에 더한다 — 끈 뒤에는 데몬 목록에서 빠져 다시 찾을 수 없다.
- *   ④ 표지의 그룹을 모두 끄고 소멸까지 확인한 뒤에만 표지를 지우고 성공.
+ *   ④ 표지의 그룹을 모두 끄고 소멸까지 확인한 뒤에만 성공 — 잠금 아래 최신 표지에서 «이 실행이 끝난 것을 확인한 그룹»만 뺀다.
+ *      그사이 다른 철회가 더한 그룹은 남아 그 철회(또는 재시도)가 확인한다. 남은 그룹이 없을 때만 표지가 없어진다.
  * 다시 실행하면 이름이 없어도 표지가 있으니 ②부터 — 지난 실행의 그룹(목록에서 이미 빠졌어도)의 소멸까지 확인한다.
  * 이름도 표지도 없으면 아무것도 끄지 않고 PAIR_NOT_FOUND(오타가 연결을 끄지 않게).
  */
@@ -200,7 +201,7 @@ async function removeBrowser(deps: PairDeps, keyIdOrName: string): Promise<numbe
       + `was not confirmed (${error instanceof Error ? error.message : String(error)}). Run \`ainecto pair --remove ${keyIdOrName}\` again to finish.`);
   }
   await updatePcKeys(deps.keysPath, (keys) => {
-    const next = withPendingTurnOff(keys, key, undefined);
+    const next = withTurnOffConfirmed(keys, key, groups);
     return next === keys ? undefined : next;
   });
   const lines = [removed

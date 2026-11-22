@@ -266,8 +266,8 @@ describe("이 PC 연결 — 실 데몬", () => {
     await expect(turnOffPcs(blind, [{ session: "ainecto-pc", pid: 1, pgid: 1 }])).rejects.toMatchObject({ code: "PC_STOP_UNCONFIRMED" });
   });
 
-  it("pair --remove — pc 는 끝났어도 같은 그룹에 손자(다리)가 남으면 실패 · 데몬 목록에서 빠진 뒤의 재시도도 그 그룹이 살아 있으면 실패 · 그룹이 비어야 성공", async () => {
-    // pc 가 SIGINT·SIGHUP 을 무시하는 손자를 같은 그룹에 남기고 Ctrl+C 에 혼자 끝난다 — npx 아래 다리가 남는 경우.
+  /** pc 가 SIGINT·SIGHUP 을 무시하는 손자를 같은 그룹에 남기고 Ctrl+C 에 혼자 끝난다 — npx 아래 다리가 남는 경우. 핀 k1 을 넣고 pc pid 를 돌려준다. */
+  async function orphanPc(): Promise<{ keysPath: string; pid: number }> {
     const ORPHAN = "if (process.argv.includes('--version')) process.exit(0);"
       + " const { spawn } = require('node:child_process');"
       + " const child = spawn(process.execPath, ['-e', \"process.on('SIGINT',()=>{});process.on('SIGHUP',()=>{});process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"], { stdio: 'ignore' });"
@@ -282,39 +282,75 @@ describe("이 PC 연결 — 실 데몬", () => {
     const pcKey = await generateSigningJwk();
     await updatePcKeys(keysPath, (keys) => withBrowser(keys, KEY, pcKey,
       { keyId: "k1", publicJwk: publicJwkOf(pcKey), name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
-    const pid = (await pcSessions())[0]?.pid ?? 0;
-    const remove = () => {
-      const pc = harness({ stopDeadlineMs: 1_000 });
-      return executePair({
-        io: pc.deps.io, json: false, interactive: false, insideTermSession: false,
-        openTty: () => { throw new Error("no tty"); },
-        settingsPath: pc.deps.settingsPath, keysPath, hostName: "test-host", endpoint: ENDPOINT,
-        account: async () => ({ userId: "u1" }),
-        transport: () => { throw new Error("no transport"); },
-        notifyPaired: async () => undefined,
-        findPcs: () => runningPcGroups(pc.deps),
-        turnOffPcs: (groups) => turnOffPcs(pc.deps, groups),
-        waitMs: 1_000,
-        now: () => new Date("2026-11-21T09:00:00Z"),
-      }, ["--remove", "k1"]);
-    };
+    return { keysPath, pid: (await pcSessions())[0]?.pid ?? 0 };
+  }
+
+  /** 실제 데몬·실제 그룹 확인으로 `pair --remove <name>`. */
+  function removePair(keysPath: string, name: string): Promise<number> {
+    const pc = harness({ stopDeadlineMs: 1_000 });
+    return executePair({
+      io: pc.deps.io, json: false, interactive: false, insideTermSession: false,
+      openTty: () => { throw new Error("no tty"); },
+      settingsPath: pc.deps.settingsPath, keysPath, hostName: "test-host", endpoint: ENDPOINT,
+      account: async () => ({ userId: "u1" }),
+      transport: () => { throw new Error("no transport"); },
+      notifyPaired: async () => undefined,
+      findPcs: () => runningPcGroups(pc.deps),
+      turnOffPcs: (groups) => turnOffPcs(pc.deps, groups),
+      waitMs: 1_000,
+      now: () => new Date("2026-11-21T09:00:00Z"),
+    }, ["--remove", name]);
+  }
+
+  function killGroup(pgid: number): void {
     try {
-      await expect(remove()).rejects.toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED" });
+      process.kill(-pgid, "SIGKILL");
+    } catch {
+      // 이미 비었다.
+    }
+  }
+
+  it("pair --remove — pc 는 끝났어도 같은 그룹에 손자(다리)가 남으면 실패 · 데몬 목록에서 빠진 뒤의 재시도도 그 그룹이 살아 있으면 실패 · 그룹이 비어야 성공", async () => {
+    const { keysPath, pid } = await orphanPc();
+    try {
+      await expect(removePair(keysPath, "k1")).rejects.toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED" });
       const pending = (await loadPcKeys(keysPath)).accounts[KEY]?.pendingTurnOff;
       expect(pending?.groups).toEqual([{ session: "ainecto-pc", pid, pgid: expect.any(Number) }]);
       const pgid = pending?.groups[0]?.pgid ?? 0;
       // 세션은 데몬 목록에서 빠졌다 — 그래도 표지의 그룹으로 손자를 본다.
       expect(await pcSessions()).toEqual([]);
-      await expect(remove()).rejects.toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED", message: expect.stringContaining(`group ${pgid} is still alive`) });
+      await expect(removePair(keysPath, "k1")).rejects.toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED", message: expect.stringContaining(`group ${pgid} is still alive`) });
       process.kill(-pgid, "SIGKILL");
-      expect(await remove()).toBe(0);
+      expect(await removePair(keysPath, "k1")).toBe(0);
       expect((await loadPcKeys(keysPath)).accounts[KEY]?.pendingTurnOff).toBeUndefined();
     } finally {
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        // 이미 비었다.
-      }
+      killGroup(pid);
+    }
+  }, LONG);
+
+  it("pair --remove — 첫 철회가 손자 때문에 실패한 뒤 다른 브라우저를 짝지어 저장해도 «끄기 미완료» 표지가 남아, 옛 핀의 재시도가 원래 그룹의 소멸까지 확인한다", async () => {
+    const { keysPath, pid } = await orphanPc();
+    try {
+      await expect(removePair(keysPath, "k1")).rejects.toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED" });
+      const pending = (await loadPcKeys(keysPath)).accounts[KEY]?.pendingTurnOff;
+      const pgid = pending?.groups[0]?.pgid ?? 0;
+      expect(pgid).toBeGreaterThan(0);
+      // 다른 브라우저 짝짓기의 저장 — pair 의 핀 저장과 같은 바꾸기(계정의 pcKey 로 withBrowser).
+      await updatePcKeys(keysPath, async (keys) => {
+        const stored = keys.accounts[KEY];
+        if (!stored) throw new Error("the account was not saved");
+        return withBrowser(keys, KEY, stored.pcKey,
+          { keyId: "k2", publicJwk: publicJwkOf(await generateSigningJwk()), name: "Home", pairedAt: "2026-11-21T10:00:00.000Z" });
+      });
+      expect((await loadPcKeys(keysPath)).accounts[KEY]?.pendingTurnOff).toEqual(pending);
+      await expect(removePair(keysPath, "k1")).rejects.toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED", message: expect.stringContaining(`group ${pgid} is still alive`) });
+      process.kill(-pgid, "SIGKILL");
+      expect(await removePair(keysPath, "k1")).toBe(0);
+      const account = (await loadPcKeys(keysPath)).accounts[KEY];
+      expect(account?.pendingTurnOff).toBeUndefined();
+      expect(account?.browsers.map((item) => item.keyId)).toEqual(["k2"]);
+    } finally {
+      killGroup(pid);
     }
   }, LONG);
 

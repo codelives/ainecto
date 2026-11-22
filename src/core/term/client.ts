@@ -162,8 +162,15 @@ export class TermClient {
  *   잠금을 못 잡으면(다른 데몬이 살아 있거나 뜨는 중) 다시 붙어 본다. 하나만 뜨는 것은 잠금이 보장한다.
  *   띄우기는 {@link DAEMON_START_ATTEMPTS} 번까지 — 잠금을 쥔 데몬이 bind 전에 멈춰 있으면 그 pid 를 알려 주고 끝난다.
  * `start` 가 false 면(ls·read 등) 데몬이 없을 때 undefined — 세션이 없다는 뜻이다.
+ *   `resetFails` 면 붙다가 끊긴 연결(ECONNRESET)은 «없음»으로 보지 않고 던진다 — «없음»이 곧 «다 꺼졌다»가 되는 끄기 확인(`pair --remove`)이 쓴다.
+ *   데몬이 있는지 모르는 채 끝나기 때문이다. ENOENT·ECONNREFUSED 는 그대로 «없음».
  */
-export async function openTermClient(paths: TermPaths, options: { start: boolean }): Promise<TermClient | undefined> {
+export interface TermConnectOptions {
+  start: boolean;
+  resetFails?: true;
+}
+
+export async function openTermClient(paths: TermPaths, options: TermConnectOptions): Promise<TermClient | undefined> {
   for (let started = 0; ; started += 1) {
     try {
       return await TermClient.connect(paths);
@@ -178,6 +185,7 @@ export async function openTermClient(paths: TermPaths, options: { start: boolean
         new DaemonLog(paths.log, paths.previousLog).write({ event: "ipc_impostor", pid: process.pid, message: error.message });
       }
       if (!options.start) {
+        if (options.resetFails && isNodeError(error, "ECONNRESET")) throw error;
         return undefined;
       }
     }
@@ -198,7 +206,7 @@ export async function openTermClient(paths: TermPaths, options: { start: boolean
 export async function termRequest(
   paths: TermPaths,
   body: TermRequestBody,
-  options: { start: boolean },
+  options: TermConnectOptions,
 ): Promise<{ daemon: true; data: unknown } | { daemon: false }> {
   for (;;) {
     const client = await openTermClient(paths, options);

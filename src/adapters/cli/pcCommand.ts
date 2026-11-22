@@ -23,7 +23,7 @@ import type { AccountSummary } from "../../core/setup/accountSummary";
 import { lastLine, type CommandRunner } from "../../core/setup/commandRunner";
 import { doctorChecks } from "../../core/setup/doctorChecks";
 import type { MachineStatus } from "../../core/setup/machineStatus";
-import { openTermClient, termRequest } from "../../core/term/client";
+import { openTermClient, termRequest, type TermConnectOptions } from "../../core/term/client";
 import { TermError } from "../../core/term/errors";
 import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
@@ -317,7 +317,7 @@ export async function executeRemoteSetting(deps: PcDeps, argv: string[]): Promis
 export async function runningPcGroups(deps: PcDeps): Promise<PcGroup[]> {
   assertQueryable(deps);
   const groups: PcGroup[] = [];
-  for (const session of (await listed(deps)).filter((item) => runningPcs([item]).length > 0)) {
+  for (const session of (await listedToTurnOff(deps)).filter((item) => runningPcs([item]).length > 0)) {
     const pgid = await processGroupOf(session.pid);
     if (pgid === undefined) {
       throw new CliCommandError("PC_STOP_UNCONFIRMED", `Could not read the process group of the PC connection (session ${session.name}, `
@@ -337,7 +337,7 @@ export async function runningPcGroups(deps: PcDeps): Promise<PcGroup[]> {
 export async function turnOffPcs(deps: PcDeps, groups: readonly PcGroup[]): Promise<void> {
   assertQueryable(deps);
   for (const group of groups) {
-    const session = (await listed(deps)).find((item) => item.name === group.session && item.pid === group.pid);
+    const session = (await listedToTurnOff(deps)).find((item) => item.name === group.session && item.pid === group.pid);
     const [pc] = session ? runningPcs([session]) : [];
     if (pc) await stopPc(deps, pc);
     await confirmEnded(deps, group);
@@ -357,7 +357,7 @@ const STOP_CONFIRM_POLL_MS = 100;
 async function confirmEnded(deps: PcDeps, group: PcGroup): Promise<void> {
   const deadline = Date.now() + deps.stopDeadlineMs;
   for (;;) {
-    const stillListed = (await listed(deps)).some((session) => session.name === group.session && session.pid === group.pid);
+    const stillListed = (await listedToTurnOff(deps)).some((session) => session.name === group.session && session.pid === group.pid);
     const alive = processGroupAlive(group.pgid);
     if (!stillListed && !alive) return;
     if (Date.now() >= deadline) {
@@ -439,9 +439,14 @@ async function prepare(deps: PcDeps): Promise<void> {
   }
 }
 
-export async function listed(deps: PcDeps): Promise<ListedSession[]> {
-  const result = await termRequest(deps.paths, { op: "ls" }, { start: false });
+export async function listed(deps: PcDeps, connect: TermConnectOptions = { start: false }): Promise<ListedSession[]> {
+  const result = await termRequest(deps.paths, { op: "ls" }, connect);
   return listedSessions(result.daemon ? result.data : undefined);
+}
+
+/** 끄기 확인용 목록(`pair --remove`) — 빈 목록이 곧 «다 꺼졌다»라, 붙다가 끊긴 연결(ECONNRESET)은 «데몬 없음»으로 보지 않고 던진다(§14-6 3). */
+async function listedToTurnOff(deps: PcDeps): Promise<ListedSession[]> {
+  return await listed(deps, { start: false, resetFails: true });
 }
 
 function assertTerm(deps: PcDeps): void {

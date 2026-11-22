@@ -28,7 +28,8 @@ export interface PcKeyAccount {
   pcKey: EcPrivateJwk;
   browsers: PairedBrowser[];
   /**
-   * `pair --remove` 의 «끄기 미완료» 표지 — 핀 삭제와 같은 쓰기로 남고, 끄기 «전에» 끌 그룹을 더하고, 모두 끝난 것을 확인한 뒤에만 지운다.
+   * `pair --remove` 의 «끄기 미완료» 표지 — 핀 삭제와 같은 쓰기로 남고, 끄기 «전에» 끌 그룹을 더하고, 끝난 것을 확인한 그룹만 뺀다(남은 그룹이 없을 때만
+   * 표지가 없어진다). 짝짓기 저장은 이 칸을 그대로 둔다.
    * 다시 실행하면 이름이 없어도 이 그룹들(데몬 목록에서 이미 빠졌어도)의 소멸부터 확인한다(설계 §13-2·§14-6 3). 없으면 칸 없음.
    */
   pendingTurnOff?: PendingTurnOff;
@@ -158,13 +159,13 @@ function uniqueName(browsers: readonly PairedBrowser[], wanted: string, keyId: s
 
 /**
  * 짝지은 브라우저를 넣는다(같은 keyId 는 바꿔 넣는다) — 계정이 없으면 pcKey 와 함께 만든다.
- * 계정이 있으면 그 pcKey 를 쓴다(부른 쪽이 그 키로 짝지었다).
+ * 계정이 있으면 그 pcKey 를 쓴다(부른 쪽이 그 키로 짝지었다). 그 계정의 다른 칸(끄기 미완료 표지)은 그대로 둔다.
  */
 export function withBrowser(keys: PcKeys, account: string, pcKey: EcPrivateJwk, browser: PairedBrowser): PcKeys {
   const current = keys.accounts[account] ?? { pcKey, browsers: [] };
   const others = current.browsers.filter((item) => item.keyId !== browser.keyId);
   const added: PairedBrowser = { ...browser, name: uniqueName(others, browser.name, browser.keyId) };
-  return { accounts: { ...keys.accounts, [account]: { pcKey: current.pcKey, browsers: [...others, added] } } };
+  return { accounts: { ...keys.accounts, [account]: { ...current, browsers: [...others, added] } } };
 }
 
 /** keyId 또는 이름으로 지운다(keyId 가 먼저) — 없으면 removed 가 undefined(목록 그대로). */
@@ -181,21 +182,36 @@ export function withoutBrowser(keys: PcKeys, account: string, keyIdOrName: strin
 }
 
 /**
- * 끄기 미완료 표지에 그룹을 더하거나(표지가 없으면 at 을 지운 때로 만든다 · 같은 pid·pgid 는 한 번) 표지를 지운다(undefined).
+ * 끄기 미완료 표지에 그룹을 더한다(표지가 없으면 at 을 지운 때로 만든다 · 같은 pid·pgid 는 한 번).
  * 계정이 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
  */
-export function withPendingTurnOff(keys: PcKeys, account: string, add: { at: Date; groups: readonly PcGroup[] } | undefined): PcKeys {
+export function withPendingTurnOff(keys: PcKeys, account: string, add: { at: Date; groups: readonly PcGroup[] }): PcKeys {
   const current = keys.accounts[account];
   if (!current) return keys;
   const { pendingTurnOff: previous, ...rest } = current;
-  if (!add) {
-    return previous ? { accounts: { ...keys.accounts, [account]: rest } } : keys;
-  }
   const known = previous?.groups ?? [];
-  const fresh = add.groups.filter((group) => !known.some((item) => item.pid === group.pid && item.pgid === group.pgid));
+  const fresh = add.groups.filter((group) => !known.some((item) => sameGroup(item, group)));
   if (previous && fresh.length === 0) return keys;
   const pendingTurnOff: PendingTurnOff = { removedAt: previous?.removedAt ?? add.at.toISOString(), groups: [...known, ...fresh] };
   return { accounts: { ...keys.accounts, [account]: { ...rest, pendingTurnOff } } };
+}
+
+/**
+ * 끝난 것을 확인한 그룹만 표지에서 뺀다 — 그사이 다른 철회가 더한 그룹은 남긴다. 남은 그룹이 없을 때만 표지를 없앤다.
+ * 계정·표지가 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
+ */
+export function withTurnOffConfirmed(keys: PcKeys, account: string, confirmed: readonly PcGroup[]): PcKeys {
+  const current = keys.accounts[account];
+  if (!current?.pendingTurnOff) return keys;
+  const { pendingTurnOff: previous, ...rest } = current;
+  const left = previous.groups.filter((group) => !confirmed.some((item) => sameGroup(item, group)));
+  if (left.length > 0 && left.length === previous.groups.length) return keys;
+  return { accounts: { ...keys.accounts, [account]: left.length === 0 ? rest : { ...rest, pendingTurnOff: { ...previous, groups: left } } } };
+}
+
+/** 같은 PC 연결 — pid·pgid 가 같다(세션 이름은 다시 쓰인다). */
+function sameGroup(a: PcGroup, b: PcGroup): boolean {
+  return a.pid === b.pid && a.pgid === b.pgid;
 }
 
 /** 이 서버 주소의 키를 모두 지운다(`ainecto stop --forget`). */

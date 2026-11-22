@@ -376,6 +376,49 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
     await expectCli(executePair(retry.deps, ["--remove", "Wrok"]), "PAIR_NOT_FOUND");
     expect(finds).toBe(1);
   });
+
+  it("겹친 두 철회 — 먼저 끝난 쪽은 자기가 끝난 것을 확인한 그룹만 표지에서 뺀다 · 상대가 더한 그룹은 남아 그 철회의 재시도가 확인한다", async () => {
+    await seed();
+    await updatePcKeys(keysPath(), async (keys) => {
+      const stored = keys.accounts[KEY];
+      if (!stored) throw new Error("seed() did not save the account");
+      return withBrowser(keys, KEY, stored.pcKey,
+        { keyId: "k2", publicJwk: publicJwkOf(await generateSigningJwk()), name: "Home", pairedAt: "2026-11-21T00:00:00.000Z" });
+    });
+    const OTHER: PcGroup = { session: "ainecto-pc", pid: 5353, pgid: 5353 };
+    let firstIn!: () => void;
+    const firstInTurnOff = new Promise<void>((resolve) => { firstIn = resolve; });
+    let finishFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { finishFirst = resolve; });
+    const first = executePair(deps({
+      findPcs: async () => [GROUP],
+      turnOffPcs: async () => { firstIn(); await firstGate; },
+    }).deps, ["--remove", "k1"]);
+    await firstInTurnOff;
+    // 그 사이 다시 뜬 PC 연결(OTHER) — 둘째 철회가 표지에 더하고 끄는 중이다.
+    let secondIn!: () => void;
+    const secondInTurnOff = new Promise<void>((resolve) => { secondIn = resolve; });
+    let failSecond!: () => void;
+    const secondGate = new Promise<void>((resolve) => { failSecond = resolve; });
+    const second = executePair(deps({
+      findPcs: async () => [OTHER],
+      turnOffPcs: async () => { secondIn(); await secondGate; throw new Error("a process in its group 5353 is still alive"); },
+    }).deps, ["--remove", "k2"]);
+    await secondInTurnOff;
+    expect((await account())?.pendingTurnOff?.groups).toEqual([GROUP, OTHER]);
+
+    finishFirst();
+    expect(await first).toBe(0);
+    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [OTHER] });
+    failSecond();
+    await expectCli(second, "PAIR_REMOVE_STOP_FAILED");
+    expect((await account())?.pendingTurnOff?.groups).toEqual([OTHER]);
+
+    const confirmed: Array<readonly PcGroup[]> = [];
+    expect(await executePair(deps({ turnOffPcs: async (groups) => { confirmed.push(groups); } }).deps, ["--remove", "k2"])).toBe(0);
+    expect(confirmed).toEqual([[OTHER]]);
+    expect((await account())?.pendingTurnOff).toBeUndefined();
+  });
 });
 
 describe("ainecto pair --list · --remove", () => {

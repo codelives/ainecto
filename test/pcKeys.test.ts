@@ -14,6 +14,7 @@ import {
   withoutBrowser,
   withoutEndpointKeys,
   withPendingTurnOff,
+  withTurnOffConfirmed,
   type PairedBrowser,
 } from "../src/core/pc/pcKeys";
 import { accountKey } from "../src/core/pc/pcSettings";
@@ -68,7 +69,7 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     expect(Object.keys(withoutEndpointKeys(keys, "https://ainecto.com/mcp").accounts)).toEqual([b]);
   });
 
-  it("끄기 미완료 표지(pendingTurnOff): 만들기(지운 때) · 그룹 더하기(같은 pid·pgid 는 한 번 · 지운 때 그대로) · 지우기 · 정규화가 보존 · 바뀔 것이 없으면 같은 객체", async () => {
+  it("끄기 미완료 표지(pendingTurnOff): 만들기(지운 때) · 그룹 더하기(같은 pid·pgid 는 한 번 · 지운 때 그대로) · 확인한 그룹만 빼기(남은 것이 없을 때만 표지 없앰) · 정규화가 보존 · 바뀔 것이 없으면 같은 객체", async () => {
     const pcKey = await generateSigningJwk();
     const keys = withBrowser({ accounts: {} }, a, pcKey, await browser("k1", "Work"));
     const g1 = { session: "ainecto-pc", pid: 11, pgid: 11 };
@@ -81,9 +82,23 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     expect(normalizePcKeys(JSON.parse(JSON.stringify(grown)))).toEqual(grown);
     const stored = { accounts: { [a]: { pcKey, browsers: [], pendingTurnOff: { removedAt: "t", groups: [g1, { session: "x", pid: 0, pgid: 1 }] } } } };
     expect(normalizePcKeys(stored).accounts[a]?.pendingTurnOff).toEqual({ removedAt: "t", groups: [g1] });
-    expect(withPendingTurnOff(grown, a, undefined)).toEqual(keys);
-    expect(withPendingTurnOff(keys, a, undefined)).toBe(keys);
+    // 확인한 g1 만 뺀다 — 다른 철회가 더한 g2 는 남는다. 다 빠지면 표지가 없어진다.
+    expect(withTurnOffConfirmed(grown, a, [g1]).accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [g2] });
+    expect(withTurnOffConfirmed(grown, a, [{ ...g1, session: "renamed" }, g2])).toEqual(keys);
+    expect(withTurnOffConfirmed(marked, a, [])).toEqual(keys);
+    expect(withTurnOffConfirmed(grown, a, [{ session: "ainecto-pc", pid: 11, pgid: 99 }])).toBe(grown);
+    expect(withTurnOffConfirmed(keys, a, [g1])).toBe(keys);
     expect(withPendingTurnOff(keys, b, { at: new Date(), groups: [g1] })).toBe(keys);
+  });
+
+  it("짝짓기 저장(withBrowser)은 그 계정의 «끄기 미완료» 표지를 그대로 둔다", async () => {
+    const pcKey = await generateSigningJwk();
+    const pending = { at: new Date("2026-11-21T09:00:00Z"), groups: [{ session: "ainecto-pc", pid: 11, pgid: 11 }] };
+    const marked = withPendingTurnOff(withBrowser({ accounts: {} }, a, pcKey, await browser("k1", "Work")), a, pending);
+    const paired = withBrowser(marked, a, await generateSigningJwk(), await browser("k2", "Home"));
+    expect(paired.accounts[a]?.pendingTurnOff).toEqual(marked.accounts[a]?.pendingTurnOff);
+    expect(paired.accounts[a]?.pcKey).toEqual(pcKey);
+    expect(paired.accounts[a]?.browsers.map((item) => item.keyId)).toEqual(["k1", "k2"]);
   });
 
   it("이름 다듬기: 개행·제어 문자 제거 · 40자 · 비면 «Browser»", () => {
