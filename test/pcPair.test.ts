@@ -299,6 +299,15 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
     const pcKey = await generateSigningJwk();
     await updatePcKeys(keysPath(), (keys) => withBrowser(keys, KEY, pcKey, { keyId: "k1", publicJwk: pub, name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
   }
+  /** seed() 뒤에 둘째 브라우저 k2(Home). */
+  async function seedHome(): Promise<void> {
+    await updatePcKeys(keysPath(), async (keys) => {
+      const stored = keys.accounts[KEY];
+      if (!stored) throw new Error("seed() did not save the account");
+      return withBrowser(keys, KEY, stored.pcKey,
+        { keyId: "k2", publicJwk: publicJwkOf(await generateSigningJwk()), name: "Home", pairedAt: "2026-11-21T00:00:00.000Z" });
+    });
+  }
   const GROUP: PcGroup = { session: "ainecto-pc", pid: 4242, pgid: 4242 };
   const account = async () => (await loadPcKeys(keysPath())).accounts[KEY];
 
@@ -358,7 +367,7 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
       now: () => new Date("2026-11-21T10:00:00Z"),
     });
     await expectCli(executePair(stillAlive.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
-    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [GROUP] });
+    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [GROUP], removals: [{ keyId: "k1", name: "Work" }] });
 
     const confirmed: Array<readonly PcGroup[]> = [];
     let finds = 0;
@@ -379,12 +388,7 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
 
   it("겹친 두 철회 — 먼저 끝난 쪽은 자기가 끝난 것을 확인한 그룹만 표지에서 뺀다 · 상대가 더한 그룹은 남아 그 철회의 재시도가 확인한다", async () => {
     await seed();
-    await updatePcKeys(keysPath(), async (keys) => {
-      const stored = keys.accounts[KEY];
-      if (!stored) throw new Error("seed() did not save the account");
-      return withBrowser(keys, KEY, stored.pcKey,
-        { keyId: "k2", publicJwk: publicJwkOf(await generateSigningJwk()), name: "Home", pairedAt: "2026-11-21T00:00:00.000Z" });
-    });
+    await seedHome();
     const OTHER: PcGroup = { session: "ainecto-pc", pid: 5353, pgid: 5353 };
     let firstIn!: () => void;
     const firstInTurnOff = new Promise<void>((resolve) => { firstIn = resolve; });
@@ -409,7 +413,7 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
 
     finishFirst();
     expect(await first).toBe(0);
-    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [OTHER] });
+    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [OTHER], removals: [{ keyId: "k2", name: "Home" }] });
     failSecond();
     await expectCli(second, "PAIR_REMOVE_STOP_FAILED");
     expect((await account())?.pendingTurnOff?.groups).toEqual([OTHER]);
@@ -418,6 +422,45 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
     expect(await executePair(deps({ turnOffPcs: async (groups) => { confirmed.push(groups); } }).deps, ["--remove", "k2"])).toBe(0);
     expect(confirmed).toEqual([[OTHER]]);
     expect((await account())?.pendingTurnOff).toBeUndefined();
+  });
+
+  it("나중 철회가 핀만 지우고 그룹 조회 전에 멈춤(죽음) → 먼저 철회가 끝나도 그 철회는 표지에 남아 같은 명령이 조회·종료로 다시 들어간다 · 끝난 뒤에만 PAIR_NOT_FOUND", async () => {
+    await seed();
+    await seedHome();
+    let firstIn!: () => void;
+    const firstInTurnOff = new Promise<void>((resolve) => { firstIn = resolve; });
+    let finishFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { finishFirst = resolve; });
+    const first = executePair(deps({
+      findPcs: async () => [GROUP],
+      turnOffPcs: async () => { firstIn(); await firstGate; },
+    }).deps, ["--remove", "k1"]);
+    await firstInTurnOff;
+    // 둘째는 핀을 지운 뒤 조회에서 영영 돌아오지 않는다 — 디스크에 남는 것은 그 자리에서 죽은 프로세스와 같다.
+    let secondAtLookup!: () => void;
+    const secondLooking = new Promise<void>((resolve) => { secondAtLookup = resolve; });
+    void executePair(deps({ findPcs: () => { secondAtLookup(); return new Promise<never>(() => undefined); } }).deps, ["--remove", "k2"]);
+    await secondLooking;
+
+    finishFirst();
+    expect(await first).toBe(0);
+    // 그 사이 뜬 PC 연결(OTHER)이 아직 산다 — 다시 실행하면 조회·끄기로 들어가고 계속 실패한다(이름으로도 찾는다).
+    const OTHER: PcGroup = { session: "ainecto-pc", pid: 5353, pgid: 5353 };
+    let finds = 0;
+    await expectCli(executePair(deps({
+      findPcs: async () => { finds += 1; return [OTHER]; },
+      turnOffPcs: async () => { throw new Error("a process in its group 5353 is still alive"); },
+    }).deps, ["--remove", "Home"]), "PAIR_REMOVE_STOP_FAILED");
+    expect(finds).toBe(1);
+    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [OTHER], removals: [{ keyId: "k2", name: "Home" }] });
+
+    const confirmed: Array<readonly PcGroup[]> = [];
+    const retry = deps({ turnOffPcs: async (groups) => { confirmed.push(groups); } });
+    expect(await executePair(retry.deps, ["--remove", "k2"])).toBe(0);
+    expect(confirmed).toEqual([[OTHER]]);
+    expect(retry.out()).toContain("Finished the earlier removal.");
+    expect((await account())?.pendingTurnOff).toBeUndefined();
+    await expectCli(executePair(deps({}).deps, ["--remove", "k2"]), "PAIR_NOT_FOUND");
   });
 });
 

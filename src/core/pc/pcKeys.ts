@@ -28,9 +28,9 @@ export interface PcKeyAccount {
   pcKey: EcPrivateJwk;
   browsers: PairedBrowser[];
   /**
-   * `pair --remove` 의 «끄기 미완료» 표지 — 핀 삭제와 같은 쓰기로 남고, 끄기 «전에» 끌 그룹을 더하고, 끝난 것을 확인한 그룹만 뺀다(남은 그룹이 없을 때만
-   * 표지가 없어진다). 짝짓기 저장은 이 칸을 그대로 둔다.
-   * 다시 실행하면 이름이 없어도 이 그룹들(데몬 목록에서 이미 빠졌어도)의 소멸부터 확인한다(설계 §13-2·§14-6 3). 없으면 칸 없음.
+   * `pair --remove` 의 «끄기 미완료» 표지 — 핀 삭제와 같은 쓰기로 그 철회(지운 브라우저)를 남기고, 끄기 «전에» 끌 그룹을 더하고,
+   * 끝나면 확인한 그룹과 자기 철회만 뺀다(그룹도 철회도 남지 않을 때만 표지가 없어진다). 짝짓기 저장은 이 칸을 그대로 둔다.
+   * 다시 실행하면 핀이 없어도 그 철회가 남아 있으면 이 그룹들(데몬 목록에서 이미 빠졌어도)의 조회·소멸 확인부터 한다(설계 §13-2·§14-6 3). 없으면 칸 없음.
    */
   pendingTurnOff?: PendingTurnOff;
 }
@@ -39,6 +39,17 @@ export interface PendingTurnOff {
   /** 핀을 지운 때(ISO). */
   removedAt: string;
   groups: PcGroup[];
+  /**
+   * 핀은 지웠지만 그룹 조회·끄기 확인을 아직 마치지 못한 철회 — 먼저 끝난 다른 철회가 표지를 지워도 이 철회의 재시도가 조회·종료로 다시 들어간다
+   * (리뷰 impl-3 #1). 옛 표지(이 칸 없음)는 빈 목록으로 읽는다.
+   */
+  removals: PendingRemoval[];
+}
+
+/** 끝나지 않은 철회 하나 — 지운 핀의 keyId·이름(다시 실행할 때 이것으로 찾는다). */
+export interface PendingRemoval {
+  keyId: string;
+  name: string;
 }
 
 /** 끌 PC 연결 하나 — 끄기 전에 읽은 그 세션의 pid 와 프로세스 그룹(pgid). */
@@ -74,9 +85,13 @@ export function normalizePcKeys(raw: unknown): PcKeys {
         const browser = asPairedBrowser(item);
         return browser ? [browser] : [];
       }) : [];
-      const pending = value?.pendingTurnOff as { removedAt?: unknown; groups?: unknown } | undefined;
+      const pending = value?.pendingTurnOff as { removedAt?: unknown; groups?: unknown; removals?: unknown } | undefined;
       accounts[key] = typeof pending?.removedAt === "string"
-        ? { pcKey, browsers, pendingTurnOff: { removedAt: pending.removedAt, groups: Array.isArray(pending.groups) ? pending.groups.flatMap(asPcGroup) : [] } }
+        ? { pcKey, browsers, pendingTurnOff: {
+          removedAt: pending.removedAt,
+          groups: Array.isArray(pending.groups) ? pending.groups.flatMap(asPcGroup) : [],
+          removals: Array.isArray(pending.removals) ? pending.removals.flatMap(asPendingRemoval) : [],
+        } }
         : { pcKey, browsers };
     }
   }
@@ -88,6 +103,13 @@ function asPcGroup(raw: unknown): PcGroup[] {
   const positive = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) > 0;
   return value && typeof value.session === "string" && positive(value.pid) && positive(value.pgid)
     ? [{ session: value.session, pid: value.pid, pgid: value.pgid }]
+    : [];
+}
+
+function asPendingRemoval(raw: unknown): PendingRemoval[] {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
+  return value && typeof value.keyId === "string" && value.keyId !== "" && typeof value.name === "string"
+    ? [{ keyId: value.keyId, name: value.name }]
     : [];
 }
 
@@ -182,31 +204,44 @@ export function withoutBrowser(keys: PcKeys, account: string, keyIdOrName: strin
 }
 
 /**
- * 끄기 미완료 표지에 그룹을 더한다(표지가 없으면 at 을 지운 때로 만든다 · 같은 pid·pgid 는 한 번).
+ * 끄기 미완료 표지에 그룹과 (핀을 지운 그 쓰기에서) 철회를 더한다(표지가 없으면 at 을 지운 때로 만든다 · 같은 pid·pgid·keyId 는 한 번).
  * 계정이 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
  */
-export function withPendingTurnOff(keys: PcKeys, account: string, add: { at: Date; groups: readonly PcGroup[] }): PcKeys {
+export function withPendingTurnOff(keys: PcKeys, account: string,
+  add: { at: Date; groups: readonly PcGroup[]; removal?: PendingRemoval }): PcKeys {
   const current = keys.accounts[account];
   if (!current) return keys;
   const { pendingTurnOff: previous, ...rest } = current;
   const known = previous?.groups ?? [];
   const fresh = add.groups.filter((group) => !known.some((item) => sameGroup(item, group)));
-  if (previous && fresh.length === 0) return keys;
-  const pendingTurnOff: PendingTurnOff = { removedAt: previous?.removedAt ?? add.at.toISOString(), groups: [...known, ...fresh] };
+  const removals = previous?.removals ?? [];
+  const removal = add.removal && !removals.some((item) => item.keyId === add.removal?.keyId) ? [add.removal] : [];
+  if (previous && fresh.length === 0 && removal.length === 0) return keys;
+  const pendingTurnOff: PendingTurnOff = {
+    removedAt: previous?.removedAt ?? add.at.toISOString(), groups: [...known, ...fresh], removals: [...removals, ...removal],
+  };
   return { accounts: { ...keys.accounts, [account]: { ...rest, pendingTurnOff } } };
 }
 
+/** 표지에 남은 «끝나지 않은 철회» 중 keyId 또는 이름이 맞는 것(keyId 가 먼저) — 핀이 없을 때 다시 실행할 대상. */
+export function pendingRemovalOf(account: PcKeyAccount | undefined, keyIdOrName: string): PendingRemoval | undefined {
+  const removals = account?.pendingTurnOff?.removals ?? [];
+  return removals.find((item) => item.keyId === keyIdOrName) ?? removals.find((item) => item.name === keyIdOrName);
+}
+
 /**
- * 끝난 것을 확인한 그룹만 표지에서 뺀다 — 그사이 다른 철회가 더한 그룹은 남긴다. 남은 그룹이 없을 때만 표지를 없앤다.
- * 계정·표지가 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
+ * 한 철회가 조회·끄기 확인을 마쳤다 — 확인한 그룹과 그 철회(keyId)만 표지에서 뺀다. 그사이 다른 철회가 더한 그룹·아직 끝나지 않은 다른 철회는 남긴다.
+ * 그룹도 철회도 남지 않을 때만 표지를 없앤다. 계정·표지가 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
  */
-export function withTurnOffConfirmed(keys: PcKeys, account: string, confirmed: readonly PcGroup[]): PcKeys {
+export function withTurnOffConfirmed(keys: PcKeys, account: string, done: { groups: readonly PcGroup[]; removal: string }): PcKeys {
   const current = keys.accounts[account];
   if (!current?.pendingTurnOff) return keys;
   const { pendingTurnOff: previous, ...rest } = current;
-  const left = previous.groups.filter((group) => !confirmed.some((item) => sameGroup(item, group)));
-  if (left.length > 0 && left.length === previous.groups.length) return keys;
-  return { accounts: { ...keys.accounts, [account]: left.length === 0 ? rest : { ...rest, pendingTurnOff: { ...previous, groups: left } } } };
+  const groups = previous.groups.filter((group) => !done.groups.some((item) => sameGroup(item, group)));
+  const removals = previous.removals.filter((item) => item.keyId !== done.removal);
+  if (groups.length === previous.groups.length && removals.length === previous.removals.length) return keys;
+  const left = groups.length > 0 || removals.length > 0;
+  return { accounts: { ...keys.accounts, [account]: left ? { ...rest, pendingTurnOff: { ...previous, groups, removals } } : rest } };
 }
 
 /** 같은 PC 연결 — pid·pgid 가 같다(세션 이름은 다시 쓰인다). */
