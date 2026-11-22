@@ -244,9 +244,10 @@ ainecto term restore                              # after a reboot: start again 
     command stops with an error and removes nothing.
   - Starting the background process waits up to 10 seconds per try for it to report ready, at most 3 tries.
   - `wait` itself waits until `--timeout` (without it, until the pattern appears or the session ends).
-- Platforms: macOS, and Linux with glibc on Node.js 20.8.0 or newer (the rest of the CLI runs on Node 18).
-  Not Windows yet. It uses the optional dependency `node-pty`, which ships prebuilt binaries — no compiler
-  needed. If it could not be installed, `ainecto term` says so and the other commands keep working.
+- Platforms: macOS; Linux with glibc on Node.js 20.8.0 or newer; Windows 10 version 1809 or later on x64
+  and arm64 (the rest of the CLI runs on Node 18). It uses the optional dependency `node-pty`, which ships
+  prebuilt binaries — no compiler needed. If it could not be installed, `ainecto term` says so and the other
+  commands keep working.
 
 ## Connector Mode
 
@@ -267,7 +268,7 @@ This is the entry `setup --local` and `init --mcp --local` write — you normall
   "mcpServers": {
     "ainecto": {
       "command": "npx",
-      "args": ["-y", "@ainecto/mcp@0.13.1"]
+      "args": ["-y", "@ainecto/mcp@0.14.0"]
     }
   }
 }
