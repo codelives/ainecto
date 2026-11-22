@@ -109,12 +109,11 @@ const PC_KEYS_LOCK: FileLockOptions = { waitMs: 5_000, pollMs: 50 };
  */
 export async function updatePcKeys(path: string, change: (keys: PcKeys) => PcKeys | undefined | Promise<PcKeys | undefined>,
   lock: FileLockOptions = PC_KEYS_LOCK): Promise<PcKeys> {
-  return await withFileLock(`${path}.lock`, lock, async (held) => {
+  return await withFileLock(`${path}.lock`, lock, async () => {
     const current = await loadPcKeys(path);
     const next = await change(current);
     if (next === undefined) return current;
-    // ★쓰기 직전에 잠금이 아직 내 것인지 — 회수가 겹쳐 잠금을 잃었으면 쓰지 않는다(§14-6 2).
-    await held.assertHeld();
+    // 잠금은 풀 때까지 내 것이다 — 살아 있는 잠금은 누구도 치우지 않는다(fileLock · §14-6 2).
     await writePrivateFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
     return next;
   });

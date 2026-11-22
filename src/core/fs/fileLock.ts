@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { link, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { open, readFile, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { processAlive } from "../os/processes";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "./privateFiles";
@@ -8,19 +8,19 @@ import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "./privateFiles
  * 짧은 «읽기 → 바꾸기 → 쓰기»를 프로세스 사이에서 직렬화하는 잠금 파일(O_EXCL) — `pc-keys.json.lock` 이 쓴다(설계 terminal-e2e §13-2·§14-6 2).
  *   잡기: O_CREAT|O_EXCL(0600)로 만들고 {pid, token} 을 쓴다. 있으면 pollMs 마다 다시, waitMs 가 지나면 {@link FileLockTimeoutError}.
  *   죽은 잠금: 적힌 pid 가 살아 있지 않거나, 내용을 읽을 수 없는 채로 waitMs 보다 오래됐으면(만든 직후 죽음) 치우고 다시 잡는다.
- *   쓰기 직전: {@link LockHandle.assertHeld} — 잠금 파일이 아직 내 token 이 아니면 쓰지 않고 던진다.
  *   풀기: 내 token 이 그대로일 때만 지운다.
- * ★회수는 «확인한 그 소유자»와 원자적으로 맞을 때만 한다: 고유 이름으로 rename → 옮긴 파일의 내용이 내가 죽었다고 본 내용과 같은지 다시 본다.
- *   다르면(그 사이 남이 회수하고 새로 잡았다) link 로 제자리에 되돌린다. 되돌릴 수 없으면(그 자리를 또 남이 잡았다) {@link FileLockConflictError}
- *   로 이 쓰기를 멈춘다 — 옮겨진 잠금의 주인은 쓰기 직전 확인에서 멈추므로, 남는 작성자는 그 자리의 새 주인 하나다.
+ * ★살아 있는 잠금은 누구도 옮기거나 지우지 않는다 — 그래서 잡은 쪽이 최종 교체·풀기까지 유일한 작성자다.
+ *   죽은 잠금 치우기는 회수 표지(`<잠금>.reclaim`, O_EXCL)를 잡은 한 명만 한다. 표지를 잡은 동안 잠금 파일을 지울 수 있는 것은 그 한 명뿐이므로
+ *   (죽은 주인은 풀지 못하고, 새로 잡기는 파일이 없을 때만 된다) «다시 읽은 원문이 죽었다고 본 원문과 같으면 지운다»가 그 소유자와 원자적으로 맞는다.
+ *   다르면 손대지 않는다. 표지가 죽은 채 남았으면(치우던 실행이 그 사이 죽음) 일치시킬 수 없으므로 {@link FileLockConflictError} 로 쓰기를 멈춘다.
  */
 export interface FileLockOptions {
   waitMs: number;
   pollMs: number;
   /** 시험만 바꾼다. */
   isAlive?: (pid: number) => boolean;
-  /** 시험만 — 회수의 틈(죽었다고 본 뒤 rename 전 · rename 뒤 확인 전)에 다른 획득을 끼워 넣는다. */
-  testHooks?: { beforeReclaim?: () => Promise<void>; afterReclaimRename?: () => Promise<void> };
+  /** 시험만 — 회수의 틈(죽었다고 본 뒤 회수 표지 전 · 표지를 잡고 다시 읽기 전)에 다른 획득을 끼워 넣는다. */
+  testHooks?: { beforeReclaim?: () => Promise<void>; duringReclaim?: () => Promise<void> };
 }
 
 export class FileLockTimeoutError extends Error {
@@ -29,16 +29,11 @@ export class FileLockTimeoutError extends Error {
   }
 }
 
-/** 잠금을 잃었다(회수가 겹쳐 제자리에 되돌릴 수 없었음 · 쓰기 직전에 내 잠금이 아님) — 이번 쓰기는 하지 않았다. */
+/** 죽은 잠금을 그 소유자와 원자적으로 맞춰 치울 수 없다 — 이번 쓰기는 하지 않았다. */
 export class FileLockConflictError extends Error {
   constructor(readonly lockPath: string, reason: string) {
-    super(`${lockPath}: ${reason} — nothing was written; try again.`);
+    super(`${lockPath}: ${reason} — nothing was written.`);
   }
-}
-
-export interface LockHandle {
-  /** 쓰기 직전 — 잠금 파일이 아직 내 것인지. 아니면 {@link FileLockConflictError}. */
-  assertHeld(): Promise<void>;
 }
 
 interface LockContent {
@@ -46,16 +41,10 @@ interface LockContent {
   token: string;
 }
 
-export async function withFileLock<T>(lockPath: string, options: FileLockOptions, run: (lock: LockHandle) => Promise<T>): Promise<T> {
+export async function withFileLock<T>(lockPath: string, options: FileLockOptions, run: () => Promise<T>): Promise<T> {
   const token = await acquire(lockPath, options);
   try {
-    return await run({
-      assertHeld: async () => {
-        if ((await readLock(lockPath)).content?.token !== token) {
-          throw new FileLockConflictError(lockPath, "the lock was taken over while this command held it");
-        }
-      },
-    });
+    return await run();
   } finally {
     await release(lockPath, token);
   }
@@ -66,28 +55,36 @@ async function acquire(lockPath: string, options: FileLockOptions): Promise<stri
   const token = randomUUID();
   const deadline = Date.now() + options.waitMs;
   for (;;) {
-    try {
-      const handle = await open(lockPath, "wx", PRIVATE_FILE_MODE);
-      try {
-        await handle.writeFile(JSON.stringify({ pid: process.pid, token } satisfies LockContent));
-      } finally {
-        await handle.close();
-      }
-      return token;
-    } catch (error) {
-      if (!isNodeError(error, "EEXIST")) throw error;
-    }
+    if (await create(lockPath, token)) return token;
     const holder = await readLock(lockPath);
+    // 그새 풀렸다 — 바로 다시 잡으러 간다.
+    if (holder.raw === undefined) continue;
     if (await isStale(lockPath, holder.content, options)) {
       await options.testHooks?.beforeReclaim?.();
-      await reclaim(lockPath, holder.raw, options);
-      continue;
+      if (await reclaim(lockPath, holder.raw, token, options)) continue;
     }
     if (Date.now() >= deadline) {
       throw new FileLockTimeoutError(lockPath, holder.content?.pid);
     }
     await new Promise((resolve) => setTimeout(resolve, options.pollMs));
   }
+}
+
+/** O_CREAT|O_EXCL 로 만들고 {pid, token} 을 쓴다 — 이미 있으면 false. */
+async function create(path: string, token: string): Promise<boolean> {
+  let handle;
+  try {
+    handle = await open(path, "wx", PRIVATE_FILE_MODE);
+  } catch (error) {
+    if (isNodeError(error, "EEXIST")) return false;
+    throw error;
+  }
+  try {
+    await handle.writeFile(JSON.stringify({ pid: process.pid, token } satisfies LockContent));
+  } finally {
+    await handle.close();
+  }
+  return true;
 }
 
 /** 잠금 파일 원문과 읽은 내용 — 없으면 raw 도 undefined. */
@@ -108,48 +105,44 @@ async function readLock(path: string): Promise<{ raw: string | undefined; conten
   }
 }
 
-async function isStale(lockPath: string, holder: LockContent | undefined, options: FileLockOptions): Promise<boolean> {
+async function isStale(path: string, holder: LockContent | undefined, options: FileLockOptions): Promise<boolean> {
   if (holder) {
     return !(options.isAlive ?? processAlive)(holder.pid);
   }
   try {
-    return Date.now() - (await stat(lockPath)).mtimeMs > options.waitMs;
+    return Date.now() - (await stat(path)).mtimeMs > options.waitMs;
   } catch (error) {
-    // 그새 풀렸다 — 다시 잡으러 간다.
-    if (isNodeError(error, "ENOENT")) return true;
+    // 그새 풀렸다 — 죽은 것이 아니다(부른 쪽이 다시 본다).
+    if (isNodeError(error, "ENOENT")) return false;
     throw error;
   }
 }
 
 /**
- * 죽었다고 본 잠금(observed = 그때 읽은 원문)을 치운다 — 옮긴 뒤 원문이 같을 때만 지운다. 다르면 제자리로(link — 그 자리가 비었을 때만) 되돌리고,
- * 되돌릴 수 없으면 던진다.
+ * 죽었다고 본 잠금(observed = 그때 읽은 원문)을 회수 표지를 잡은 채 치운다 — 다시 읽은 원문이 같고 여전히 죽었을 때만 지우고, 다르면(그 사이 남이 치우고 새로
+ * 잡았다) 손대지 않는다. true = 바로 다시 잡으러 간다 · false = 남이 치우는 중이라 기다린다. 표지가 죽은 채 남았으면 던진다.
  */
-async function reclaim(lockPath: string, observed: string | undefined, options: FileLockOptions): Promise<void> {
-  const aside = `${lockPath}.reclaim-${process.pid}-${randomUUID()}`;
-  try {
-    await rename(lockPath, aside);
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) return;
-    throw error;
-  }
-  await options.testHooks?.afterReclaimRename?.();
-  const moved = (await readLock(aside)).raw;
-  if (moved === observed) {
-    await unlink(aside);
-    return;
-  }
-  try {
-    await link(aside, lockPath);
-  } catch (error) {
-    if (isNodeError(error, "EEXIST")) {
-      // 옮긴 것은 남의 살아 있는 잠금인데 그 자리를 또 남이 잡았다 — 되돌릴 수 없다. 옮긴 잠금의 주인은 쓰기 직전 확인에서 멈춘다.
-      await unlink(aside);
-      throw new FileLockConflictError(lockPath, "another command took the lock while a stale lock was being cleared");
+async function reclaim(lockPath: string, observed: string, token: string, options: FileLockOptions): Promise<boolean> {
+  const guard = `${lockPath}.reclaim`;
+  if (!(await create(guard, token))) {
+    const other = await readLock(guard);
+    if (other.raw !== undefined && await isStale(guard, other.content, options)) {
+      throw new FileLockConflictError(lockPath, `${guard} was left by an ainecto that stopped while clearing a stale lock, so the stale lock cannot be `
+        + `matched to its owner — check that no other ainecto is running, delete both files and try again`);
     }
-    throw error;
+    return other.raw === undefined;
   }
-  await unlink(aside);
+  try {
+    await options.testHooks?.duringReclaim?.();
+    // 원문이 같고 아직 죽은 것 — 내용 없는 잠금은 원문이 같아도 막 만든 남의 잠금일 수 있어 나이를 다시 본다.
+    const now = await readLock(lockPath);
+    if (now.raw === observed && await isStale(lockPath, now.content, options)) {
+      await unlink(lockPath);
+    }
+  } finally {
+    await unlink(guard);
+  }
+  return true;
 }
 
 async function release(lockPath: string, token: string): Promise<void> {
