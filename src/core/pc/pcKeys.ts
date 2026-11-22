@@ -98,7 +98,7 @@ export async function loadPcKeys(path: string): Promise<PcKeys> {
 }
 
 /**
- * 잠금 대기 5 s · 다시 보기 50 ms — ★결재 대기(새 시간 값 — 루트가 올림). 쓰기 하나는 수 ms 라, 이만큼 못 잡으면 다른 실행이 멈춰 있는 것이다.
+ * 잠금 대기 5 s · 다시 보기 50 ms — 사용자 결재 2026-11-21 «이 값으로 승인 (추천)»(설계 §14-7 C-E10). 쓰기 하나는 수 ms 라, 이만큼 못 잡으면 다른 실행이 멈춰 있는 것이다.
  * 죽은 잠금(pid 가 없음)은 기다리지 않고 바로 치운다.
  */
 const PC_KEYS_LOCK: FileLockOptions = { waitMs: 5_000, pollMs: 50 };

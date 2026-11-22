@@ -340,7 +340,7 @@ export async function turnOffPcs(deps: PcDeps): Promise<TurnedOffPc[]> {
   return turnedOff;
 }
 
-/** 종료 확인 간격 100 ms — ★결재 대기(새 시간 값 — 루트가 올림). */
+/** 종료 확인 간격 100 ms — 사용자 결재 2026-11-21 «이 값으로 승인 (추천)»(설계 §14-7 C-E10). */
 const STOP_CONFIRM_POLL_MS = 100;
 
 async function confirmEnded(deps: PcDeps, name: string, pid: number, pgid: number | undefined): Promise<void> {
