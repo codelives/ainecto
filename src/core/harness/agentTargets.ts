@@ -18,10 +18,10 @@ import { AGENT_NAME_HEADER } from "../mcp/rpcClient";
 /** 설정에 쓰는 서버 이름. ⛔env 에 따라 바꾸지 않는다 — 도구 접두사가 흔들리고 --undo 가 못 찾는다. */
 export const SERVER_NAME = "ainecto";
 
-export type AgentClientId = "claude-code" | "cursor" | "codex";
+export type AgentClientId = "claude-code" | "cursor" | "codex" | "antigravity";
 
 export interface AgentTarget {
-  id: Extract<AgentClientId, "claude-code" | "cursor">;
+  id: Extract<AgentClientId, "claude-code" | "cursor" | "antigravity">;
   label: string;
   /** 저장소 루트 기준 상대 경로. */
   path: string;
@@ -30,6 +30,8 @@ export interface AgentTarget {
 export const AGENT_TARGETS: readonly AgentTarget[] = [
   { id: "claude-code", label: "Claude Code", path: ".mcp.json" },
   { id: "cursor", label: "Cursor", path: ".cursor/mcp.json" },
+  // Antigravity 의 작업 폴더 설정(앱·IDE·CLI 공통) — 다른 키·남의 항목을 보존하고 ainecto 항목만 병합한다.
+  { id: "antigravity", label: "Antigravity", path: ".agents/mcp_config.json" },
 ];
 
 export interface ServerEntryInput {
@@ -75,13 +77,37 @@ export type AgentEntry = McpServerEntry | RemoteServerEntry;
  *   <li>Codex 0.163.0 — {@code codex mcp add <name> --url <url>} (streamable HTTP). ★add 가 서버의 OAuth 를
  *       감지하면 그 자리에서 브라우저 로그인을 시작한다(«Detected OAuth support. Starting OAuth flow»).
  *       못 마치면 {@code codex mcp login <name>}. 같은 이름은 stdio↔url 어느 쪽으로든 덮어쓴다.</li>
+ *   <li>Antigravity(앱·IDE·CLI {@code agy} 1.5.8) — 등록 명령이 없어 설정 파일에 쓴다: 전역 {@code ~/.gemini/config/mcp_config.json} ·
+ *       작업 폴더 {@code .agents/mcp_config.json} 의 {@code {"serverUrl": …}}(Streamable HTTP · {@code httpUrl} 은 받지 않는다 —
+ *       antigravity.google/docs/mcp «MCP configuration properties»). OAuth 는 서버가 동적 등록(DCR)을 지원하면 clientId 없이 되고,
+ *       앱의 Customizations › Installed › MCP Servers › Authenticate 로 로그인한다. 파일 모양은 {@link fileEntry} 가 바꾼다.</li>
  * </ul>
  */
 export const REMOTE_SIGN_IN: Partial<Record<AgentClientId, string>> = {
   "claude-code": `Claude Code — in a session, run /mcp, pick "${SERVER_NAME}" and sign in`,
   cursor: `Cursor — sign in when "${SERVER_NAME}" asks for it in Cursor's MCP settings`,
   codex: `Codex — signs in while setup connects it (its sign-in link is printed above); if that did not finish, run \`codex mcp login ${SERVER_NAME}\``,
+  antigravity: `Antigravity — open Customizations › Installed › MCP Servers, choose Authenticate for "${SERVER_NAME}" and sign in`,
 };
+
+/**
+ * ★설정 파일에 실제로 적는 모양 — 안에서는 원격 주소를 {@code url} 하나로 다루고(소유 판정·비교가 한 모양), 파일 형식이 다른
+ * 대상만 여기서 바꾼다. Antigravity 는 {@code serverUrl}(문서의 원격 키). 읽을 때는 {@link entryUrl} 이 두 이름을 같이 본다.
+ */
+export function fileEntry(client: AgentClientId, entry: AgentEntry): Record<string, unknown> {
+  if (client === "antigravity" && "url" in entry) {
+    const { url, headers } = entry;
+    return { serverUrl: url, ...(headers === undefined ? {} : { headers }) };
+  }
+  return { ...entry };
+}
+
+/** 설정 항목의 원격 주소 — {@code url}(Claude Code·Cursor·Codex) 또는 {@code serverUrl}(Antigravity). 없으면 undefined. */
+export function entryUrl(entry: unknown): string | undefined {
+  if (!isRecord(entry)) return undefined;
+  if (typeof entry.url === "string") return entry.url;
+  return typeof entry.serverUrl === "string" ? entry.serverUrl : undefined;
+}
 
 /** {@code ainecto} 항목의 모양 — 명령형(로컬 중계, stdio) 또는 주소형(원격). 지금 있는 것과 쓸 것이 같은 모양이다. */
 /**
@@ -136,8 +162,9 @@ export function renderCodexConfig(entry: AgentEntry): string {
  * {@code endpoint}). 다른 주소·다른 명령은 남의 것이다. setup·init·status·doctor 가 이것 하나를 쓴다.
  */
 export function isOurEntry(entry: unknown, endpoint: string): boolean {
-  if (isRecord(entry) && typeof entry.url === "string") {
-    const url = normalizedServerUrl(entry.url);
+  const remote = entryUrl(entry);
+  if (remote !== undefined) {
+    const url = normalizedServerUrl(remote);
     return url !== undefined && (url === endpoint || isDefaultEndpoint(url));
   }
   return isOurBridge(entry);
@@ -243,7 +270,7 @@ export function isOurBridge(entry: unknown): boolean {
  */
 const OUR_BINS: readonly string[] = ["ainecto"];
 
-export function mergeServerEntry(existing: string | undefined, entry: McpServerEntry | RemoteServerEntry): MergeResult {
+export function mergeServerEntry(existing: string | undefined, entry: Record<string, unknown> | AgentEntry): MergeResult {
   const root = parseConfigObject(existing);
   const servers = readServers(root);
   const replaced = Object.prototype.hasOwnProperty.call(servers, SERVER_NAME);

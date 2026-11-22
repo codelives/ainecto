@@ -3,7 +3,7 @@
 Published as `ainecto`, `@ainecto/mcp` and `@ainecto/cli` — the same code. Command: `ainecto`.
 
 **Once per machine:** `npx -y ainecto@latest setup` — signs you in through the browser (once), checks the
-connection, and connects Claude Code, Cursor, and Codex to the AiNecto server address
+connection, and connects Claude Code, Cursor, Codex, and Antigravity to the AiNecto server address
 (`https://ainecto.com/mcp`). Each agent then signs in to AiNecto by itself the first time it connects.
 
 Every AI session sees the same AiNecto tools. What a tool may change is decided by your AiNecto
@@ -18,7 +18,8 @@ to 5 minutes for the user). Then run `npx -y ainecto@latest doctor` and do what 
 - `setup` registers the server address, so each agent signs in on its own the first time: Claude Code —
   run `/mcp` in a session and sign in to `ainecto`; Cursor — sign in when `ainecto` asks in its MCP
   settings; Codex — signs in while `setup` connects it (a browser tab opens and the sign-in link is
-  printed to stderr; if it did not finish, run `codex mcp login ainecto`).
+  printed to stderr; if it did not finish, run `codex mcp login ainecto`); Antigravity — open
+  Customizations › Installed › MCP Servers and choose Authenticate for `ainecto`.
 - To add AiNecto's working rules to a repository, run `npx -y ainecto@latest init` from its root. It
   does not ask for a role or a project.
 - **A server added during a session is not available in that session.** Keep working through the CLI:
@@ -33,7 +34,7 @@ to 5 minutes for the user). Then run `npx -y ainecto@latest doctor` and do what 
 ## Set up this machine
 
 ```bash
-npx -y ainecto@latest setup              # sign in, check, connect Claude Code · Cursor · Codex
+npx -y ainecto@latest setup              # sign in, check, connect Claude Code · Cursor · Codex · Antigravity
 npx -y ainecto@latest setup --dry-run    # show what it would do — no sign-in, no changes
 npx -y ainecto@latest setup --local      # connect through the local relay instead (see below)
 npx -y ainecto@latest setup --undo       # remove the connections setup made (sign-in stays)
@@ -53,6 +54,10 @@ exits 1:
   (a browser tab opens; `setup` passes Codex's output, with the sign-in link, through to stderr). If that
   did not finish within 90 seconds, Codex shows as `failed` but stays connected — run
   `codex mcp login ainecto` (re-running `setup` says the same).
+- Antigravity — merges `"ainecto": { "serverUrl": "https://ainecto.com/mcp" }` into
+  `~/.gemini/config/mcp_config.json` (shared by the Antigravity app, IDE and `agy` CLI), keeping your other servers.
+  Sign in from Customizations › Installed › MCP Servers › Authenticate. Antigravity asks before each AiNecto tool
+  call unless you allow it.
 
 With `--env dev` (or `--endpoint`) the address is that environment's. The server address has no version
 to pin: a server update reaches every agent at once. Entries an older `setup` wrote
@@ -71,7 +76,7 @@ it to pitch explanations — it does not change permissions.
 
 ```bash
 npx -y ainecto@latest init               # .ainecto/HARNESS.md, an AGENTS.md block (and CLAUDE.md if present), .ainecto/config.json
-npx -y ainecto@latest init --mcp         # also .mcp.json (Claude Code) and .cursor/mcp.json (Cursor), with the server address
+npx -y ainecto@latest init --mcp         # also .mcp.json (Claude Code), .cursor/mcp.json (Cursor) and .agents/mcp_config.json (Antigravity), with the server address
 npx -y ainecto@latest init --mcp --local # the same files with the local relay instead
 npx -y ainecto@latest init --dry-run     # the same plan, nothing written
 npx -y ainecto@latest init --undo        # remove what init wrote
@@ -79,8 +84,8 @@ npx -y ainecto@latest init --agent tester  # name the agent working in this fold
 ```
 
 - `--agent <name>` names the agent that works in this folder. It writes the name to
-  `.ainecto/agent.local` (keep it out of git) and puts it in `.mcp.json`, `.cursor/mcp.json` and
-  `.codex/config.toml` — the server address entries get the header `X-AiNecto-Agent-Name`, the local relay
+  `.ainecto/agent.local` (keep it out of git) and puts it in `.mcp.json`, `.cursor/mcp.json`,
+  `.agents/mcp_config.json` and `.codex/config.toml` — the server address entries get the header `X-AiNecto-Agent-Name`, the local relay
   gets `--agent <name>`. Re-running `init` keeps the name. `ainecto tools call …` run in this folder sends
   the same name. The server checks the name; a name it refuses stops `init` before any file is written.
   `.codex/config.toml` is written only when it does not exist yet (or init wrote it); Codex reads it only in
@@ -93,7 +98,8 @@ npx -y ainecto@latest init --agent tester  # name the agent working in this fold
 - It stops when run from a sub-folder of a git repository, and tells you the root.
 - `--mcp` writes the server address, like `setup`: `.mcp.json` gets
   `"ainecto": { "type": "http", "url": "https://ainecto.com/mcp" }` (Claude Code needs the `type`) and
-  `.cursor/mcp.json` gets `"ainecto": { "url": "https://ainecto.com/mcp" }`. Each agent signs in by
+  `.cursor/mcp.json` gets `"ainecto": { "url": "https://ainecto.com/mcp" }` and `.agents/mcp_config.json` gets
+  `"ainecto": { "serverUrl": "https://ainecto.com/mcp" }` (merged — your other servers stay). Each agent signs in by
   itself the first time. `--local` writes the pinned local relay instead (see Connector Mode).
 - **Repositories set up earlier** (`.mcp.json` with `npx -y @ainecto/mcp…`, with or without `--role`):
   re-run `npx -y ainecto@latest init`. It rewrites the existing `ainecto` entry to the server address

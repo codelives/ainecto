@@ -411,7 +411,7 @@ describe("ainecto init (files on disk)", () => {
     // 조각을 소유한 파일은 «정확히» 그 둘이다 — 더도 덜도 아니다.
     expect(Object.entries(record.files)
       .filter(([, contract]) => contract.scope === "entry").map(([path]) => path).sort())
-      .toEqual([".cursor/mcp.json", ".mcp.json"]);
+      .toEqual([".agents/mcp_config.json", ".cursor/mcp.json", ".mcp.json"]);
 
     // 블록 «바깥»에만 쓴 글은 보존하면서 우리 블록은 정상적으로 걷어낸다.
     const agentsPath = join(root, "AGENTS.md");

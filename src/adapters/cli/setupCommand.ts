@@ -32,7 +32,7 @@ export interface SetupCommandOptions {
  * {@code ainecto setup} — ★기기 1회(설계 §4-1). 로그인 → 연결 확인(읽기) → 에이전트 연결.
  *
  * <ul>
- *   <li>Claude Code(사용자 범위)·Cursor(전역)·Codex 에 ★서버 주소(원격 MCP)를 각각 따로 등록하고, 결과를 클라이언트마다
+ *   <li>Claude Code(사용자 범위)·Cursor(전역)·Codex·Antigravity(전역)에 ★서버 주소(원격 MCP)를 각각 따로 등록하고, 결과를 클라이언트마다
  *       {@code connected / updated / kept / not installed / failed} 로 말한다. 하나라도 실패하면 «부분 완료», 종료 1.</li>
  *   <li>우리 옛 항목(로컬 중계 {@code npx -y @ainecto/mcp@판})은 원격으로 바꿔 쓴다(updated). 남의 {@code ainecto}
  *       항목은 건드리지 않는다. 소유 판정은 {@code agentConnections} 하나.</li>

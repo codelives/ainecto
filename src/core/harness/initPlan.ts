@@ -4,6 +4,7 @@ import {
   readServerEntry,
   renderCodexConfig,
   desiredServerEntry,
+  fileEntry,
   isOurEntry,
   mergeServerEntry,
   removeServerEntry,
@@ -370,7 +371,7 @@ export function planInit(input: PlanInitInput): InitPlan {
       client: target.id, env: input.env ?? "prod", endpoint: input.endpoint, local: input.local, packageSpec: input.packageSpec,
       agentName,
     });
-    const merged = mergeServerEntry(existing, entry);
+    const merged = mergeServerEntry(existing, fileEntry(target.id, entry));
     if (existing === merged.content) {
       continue;
     }
