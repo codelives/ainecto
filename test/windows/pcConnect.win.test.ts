@@ -38,6 +38,7 @@ function harness(script: string, managedCommand?: PcDeps["managedCommand"]) {
     interactive: true,
     paths: rig.paths,
     settingsPath: join(rig.home, ".ainecto", "pc.json"),
+    keysPath: join(rig.home, ".ainecto", "pc-keys.json"),
     hostName: "test-host",
     endpoint: ENDPOINT,
     cwd: rig.home,
