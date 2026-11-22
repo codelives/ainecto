@@ -33,6 +33,7 @@ import { readFile } from "node:fs/promises";
 import type { CliIO } from "./ainectoCli";
 import { promptLine } from "./destructiveConfirmation";
 import { CliCommandError } from "./errors";
+import { pcResultText, preflightNotes } from "./pcStartText";
 
 /**
  * «이 PC 연결» 입구 — `ainecto`(인자 없음·터미널)·`start`·`stop [--forget]`·`remote on|off`(KAN-738, root REQ d37a6dc2·b1f76f76).
@@ -79,9 +80,8 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
   };
   note("Checking sign-in and connections…");
   let status = await deps.machine();
-  for (const check of doctorChecks(status).filter((item) => item.level !== "ok")) {
-    note(`  ${check.level === "fail" ? "✗" : "!"} ${check.item}: ${check.detail}${check.fix ? ` — fix: ${check.fix}` : ""}`);
-  }
+  // ★알릴 것은 결과 «뒤»에 — 결과(연결됐다·무엇에 쓰나·끄는 법)를 먼저 보인다(pcStartText).
+  let later = preflightNotes(doctorChecks(status));
   const signedIn = status.token.state === "env" || status.token.state === "signed-in";
   if (!signedIn) {
     if (!deps.interactive) {
@@ -96,6 +96,7 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
       return code;
     }
     status = await deps.machine();
+    later = preflightNotes(doctorChecks(status));
   }
   const userId = status.account?.userId;
   if (!userId) {
@@ -126,12 +127,12 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
   if (action.kind === "already") {
     // ★웹 «원격 터미널 끊기» 뒤 원격은 그 pc 프로세스가 사는 동안 꺼진 채다 — 같은 판이어도 다시 띄워야 원격이 켜진다(R3).
     if (!remoteOffByWeb(await screenLines(deps, action.pc.session))) {
-      return print(deps, { connected: true, already: true, ...pcView(deps, action.pc) },
-        `Already connected (session ${action.pc.session}, folder ${action.pc.cwd}, version ${pcVersionLabel(action.pc)}). Log: ${deps.agentLog}`);
+      return withNotes(deps, later, print(deps, { connected: true, already: true, ...pcView(deps, action.pc) },
+        pcResultText({ kind: "already", folder: action.pc.cwd, version: pcVersionLabel(action.pc), log: deps.agentLog })));
     }
     note("The remote terminal was turned off from the web — reconnecting this PC to turn it back on…");
     await stopPc(deps, action.pc);
-    return await launchPc(deps);
+    return withNotes(deps, later, await launchPc(deps));
   }
   await prepare(deps);
   if (action.kind === "replace") {
@@ -140,7 +141,13 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
       await stopPc(deps, pc);
     }
   }
-  return await launchPc(deps);
+  return withNotes(deps, later, await launchPc(deps));
+}
+
+/** 결과를 찍은 «뒤» 알릴 것(stderr) — 종료 코드는 그대로. */
+function withNotes(deps: PcDeps, notes: readonly string[], code: number): number {
+  for (const line of notes) deps.io.stderr.write(`${line}\n`);
+  return code;
 }
 
 /** pc 세션을 띄우고 «연결됨»을 기다린다 — start·갈아끼우기·원격 설정 반영이 같은 길. */
@@ -209,16 +216,14 @@ async function screenLines(deps: PcDeps, session: string): Promise<string[]> {
 function reportOutcome(deps: PcDeps, outcome: PcStartOutcome): number {
   const base = { session: PC_SESSION_NAME, folder: deps.cwd, log: deps.agentLog };
   if (outcome.kind === "connecting") {
-    return print(deps, { ...base, connected: false, connecting: true },
-      `Still connecting this PC (session ${PC_SESSION_NAME}) — \`ainecto status\` shows when it is up. Log: ${deps.agentLog}`);
+    return print(deps, { ...base, connected: false, connecting: true }, pcResultText({ kind: "connecting", log: deps.agentLog }));
   }
   if (outcome.agentMissing) {
     return print(deps, { ...base, connected: true, already: false, agent: false, remote: true },
-      `Connected this PC to AiNecto (session ${PC_SESSION_NAME}): terminals from the web only — no PC agent `
-        + `(install Claude Code or Codex, then \`ainecto\` again). It keeps running after you close this window. Log: ${deps.agentLog}`);
+      pcResultText({ kind: "connected", agentMissing: true, log: deps.agentLog }));
   }
   return print(deps, { ...base, connected: true, already: false },
-    `Connected this PC to AiNecto (session ${PC_SESSION_NAME}). It keeps running after you close this window. Log: ${deps.agentLog}`);
+    pcResultText({ kind: "connected", agentMissing: false, log: deps.agentLog }));
 }
 
 /** agent.log 의 마지막 줄 — 이번 시작 뒤에 쓴 것만(옛 실행의 줄로 사유를 꾸미지 않는다). */
