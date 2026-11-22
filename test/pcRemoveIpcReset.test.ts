@@ -123,7 +123,7 @@ describe("pair --remove — 철회 경로의 IPC ECONNRESET 은 «데몬 없음�
     await expect(executePair(removeDeps(deps).value, ["--remove", "k2"])).rejects
       .toMatchObject({ code: "PAIR_REMOVE_STOP_FAILED", message: expect.stringContaining("ECONNRESET") });
     expect((await loadPcKeys(deps.keysPath)).accounts[KEY]?.pendingTurnOff)
-      .toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [], removals: [{ keyId: "k2", name: "Home" }] });
+      .toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [], removals: [{ removalId: expect.any(String), keyId: "k2", name: "Home" }] });
 
     // 연결이 풀리면(데몬 소켓 없음 = 떠 있는 PC 연결 없음) 같은 명령이 조회·끄기 확인을 마치고 표지를 지운다.
     const actualNet = await vi.importActual<typeof import("node:net")>("node:net");

@@ -70,13 +70,13 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     expect(Object.keys(withoutEndpointKeys(keys, "https://ainecto.com/mcp").accounts)).toEqual([b]);
   });
 
-  it("끄기 미완료 표지(pendingTurnOff): 만들기(지운 때 · 그 철회) · 그룹·철회 더하기(같은 pid·pgid·keyId 는 한 번 · 지운 때 그대로) · 끝난 철회는 확인한 그룹과 자기만 빼기(그룹도 철회도 없을 때만 표지 없앰) · 정규화가 보존 · 바뀔 것이 없으면 같은 객체", async () => {
+  it("끄기 미완료 표지(pendingTurnOff): 만들기(지운 때 · 그 철회) · 그룹·철회 더하기(같은 pid·pgid·removalId 는 한 번 · 지운 때 그대로) · 끝난 철회는 확인한 그룹과 자기만 빼기(그룹도 철회도 없을 때만 표지 없앰) · 정규화가 보존 · 바뀔 것이 없으면 같은 객체", async () => {
     const pcKey = await generateSigningJwk();
     const keys = withBrowser({ accounts: {} }, a, pcKey, await browser("k1", "Work"));
     const g1 = { session: "ainecto-pc", pid: 11, pgid: 11 };
     const g2 = { session: "ainecto-pc", pid: 22, pgid: 22 };
-    const work = { keyId: "k1", name: "Work" };
-    const home = { keyId: "k2", name: "Home" };
+    const work = { removalId: "r1", keyId: "k1", name: "Work" };
+    const home = { removalId: "r2", keyId: "k2", name: "Home" };
     const marked = withPendingTurnOff(keys, a, { at: new Date("2026-11-21T09:00:00Z"), groups: [], removal: work });
     expect(marked.accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [], removals: [work] });
     const grown = withPendingTurnOff(marked, a, { at: new Date("2026-11-21T10:00:00Z"), groups: [g1, g2] });
@@ -96,15 +96,15 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     expect(pendingRemovalOf(both.accounts[a], "Wrok")).toBeUndefined();
     expect(pendingRemovalOf(keys.accounts[a], "k1")).toBeUndefined();
     // k1 이 g1 만 확인하고 끝났다 — g2 와 아직 조회하지 못한 k2 는 남는다.
-    expect(withTurnOffConfirmed(both, a, { groups: [g1], removal: "k1" }).accounts[a]?.pendingTurnOff)
+    expect(withTurnOffConfirmed(both, a, { groups: [g1], removalId: "r1" }).accounts[a]?.pendingTurnOff)
       .toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [g2], removals: [home] });
     // 그룹을 모두 확인해도 다른 철회가 남으면 표지는 남는다(리뷰 impl-3 #1).
-    expect(withTurnOffConfirmed(both, a, { groups: [g1, g2], removal: "k1" }).accounts[a]?.pendingTurnOff)
+    expect(withTurnOffConfirmed(both, a, { groups: [g1, g2], removalId: "r1" }).accounts[a]?.pendingTurnOff)
       .toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [], removals: [home] });
-    expect(withTurnOffConfirmed(grown, a, { groups: [{ ...g1, session: "renamed" }, g2], removal: "k1" })).toEqual(keys);
-    expect(withTurnOffConfirmed(marked, a, { groups: [], removal: "k1" })).toEqual(keys);
-    expect(withTurnOffConfirmed(grown, a, { groups: [{ session: "ainecto-pc", pid: 11, pgid: 99 }], removal: "k9" })).toBe(grown);
-    expect(withTurnOffConfirmed(keys, a, { groups: [g1], removal: "k1" })).toBe(keys);
+    expect(withTurnOffConfirmed(grown, a, { groups: [{ ...g1, session: "renamed" }, g2], removalId: "r1" })).toEqual(keys);
+    expect(withTurnOffConfirmed(marked, a, { groups: [], removalId: "r1" })).toEqual(keys);
+    expect(withTurnOffConfirmed(grown, a, { groups: [{ session: "ainecto-pc", pid: 11, pgid: 99 }], removalId: "r9" })).toBe(grown);
+    expect(withTurnOffConfirmed(keys, a, { groups: [g1], removalId: "r1" })).toBe(keys);
     expect(withPendingTurnOff(keys, b, { at: new Date(), groups: [g1], removal: work })).toBe(keys);
   });
 
@@ -114,9 +114,28 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
     const old = normalizePcKeys({ accounts: { [a]: { pcKey, browsers: [], pendingTurnOff: { removedAt: "2026-11-21T09:00:00.000Z", groups: [g1] } } } });
     expect(old.accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [g1], removals: [] });
     expect(pendingRemovalOf(old.accounts[a], "k1")).toBeUndefined();
-    const added = withPendingTurnOff(old, a, { at: new Date(), groups: [], removal: { keyId: "k2", name: "Home" } });
-    expect(added.accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [g1], removals: [{ keyId: "k2", name: "Home" }] });
-    expect(withTurnOffConfirmed(added, a, { groups: [g1], removal: "k2" }).accounts[a]).toEqual({ pcKey, browsers: [] });
+    const home = { removalId: "r2", keyId: "k2", name: "Home" };
+    const added = withPendingTurnOff(old, a, { at: new Date(), groups: [], removal: home });
+    expect(added.accounts[a]?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [g1], removals: [home] });
+    expect(withTurnOffConfirmed(added, a, { groups: [g1], removalId: "r2" }).accounts[a]).toEqual({ pcKey, browsers: [] });
+  });
+
+  it("옛 철회 항목({keyId, name} — removalId 없음)은 keyId 를 식별자로 읽는다 · 같은 keyId 의 새 철회는 따로 남고 그 완료는 자기만 뺀다(리뷰 impl-5)", async () => {
+    const pcKey = await generateSigningJwk();
+    const old = normalizePcKeys({ accounts: { [a]: { pcKey, browsers: [], pendingTurnOff: {
+      removedAt: "2026-11-21T09:00:00.000Z", groups: [], removals: [{ keyId: "k1", name: "Work" }, { removalId: "", keyId: "k2", name: "Home" }],
+    } } } });
+    const legacy = { removalId: "k1", keyId: "k1", name: "Work" };
+    expect(old.accounts[a]?.pendingTurnOff?.removals).toEqual([legacy, { removalId: "k2", keyId: "k2", name: "Home" }]);
+    expect(normalizePcKeys(JSON.parse(JSON.stringify(old)))).toEqual(old);
+    expect(pendingRemovalOf(old.accounts[a], "k1")).toEqual(legacy);
+    // 같은 keyId 를 다시 짝지어 새로 철회했다 — 그 철회는 따로 더해지고, 옛 철회의 완료(식별자 k1)는 그것을 지우지 않는다.
+    const again = { removalId: "6f1c2a9e-0000-4000-8000-000000000001", keyId: "k1", name: "Work" };
+    const both = withPendingTurnOff(old, a, { at: new Date(), groups: [], removal: again });
+    expect(both.accounts[a]?.pendingTurnOff?.removals.map((item) => item.removalId)).toEqual(["k1", "k2", again.removalId]);
+    const afterLegacy = withTurnOffConfirmed(both, a, { groups: [], removalId: "k1" });
+    expect(afterLegacy.accounts[a]?.pendingTurnOff?.removals).toEqual([{ removalId: "k2", keyId: "k2", name: "Home" }, again]);
+    expect(withTurnOffConfirmed(afterLegacy, a, { groups: [], removalId: "k1" })).toBe(afterLegacy);
   });
 
   it("짝짓기 저장(withBrowser)은 그 계정의 «끄기 미완료» 표지를 그대로 둔다", async () => {
@@ -132,7 +151,7 @@ describe("~/.ainecto/pc-keys.json — 짝지은 키 한 곳", () => {
   it("넣기: 끝나지 않은 철회의 이름도 겹치는 이름으로 본다 — 새 핀은 « (2)»부터(리뷰 impl-4 #1)", async () => {
     const pcKey = await generateSigningJwk();
     const removed = withoutBrowser(withBrowser({ accounts: {} }, a, pcKey, await browser("k1", "Chrome · macOS")), a, "k1").keys;
-    const marked = withPendingTurnOff(removed, a, { at: new Date("2026-11-21T09:00:00Z"), groups: [], removal: { keyId: "k1", name: "Chrome · macOS" } });
+    const marked = withPendingTurnOff(removed, a, { at: new Date("2026-11-21T09:00:00Z"), groups: [], removal: { removalId: "r1", keyId: "k1", name: "Chrome · macOS" } });
     const paired = withBrowser(marked, a, pcKey, await browser("k2", "Chrome · macOS"));
     expect(paired.accounts[a]?.browsers.map((item) => [item.keyId, item.name])).toEqual([["k2", "Chrome · macOS (2)"]]);
     const third = withBrowser(paired, a, pcKey, await browser("k3", "Chrome · macOS"));

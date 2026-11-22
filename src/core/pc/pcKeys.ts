@@ -46,8 +46,13 @@ export interface PendingTurnOff {
   removals: PendingRemoval[];
 }
 
-/** 끝나지 않은 철회 하나 — 지운 핀의 keyId·이름(다시 실행할 때 이것으로 찾는다). */
+/**
+ * 끝나지 않은 철회 하나 — 지운 핀의 keyId·이름(다시 실행할 때 이것으로 찾는다)과 그 철회의 식별자.
+ * removalId 는 핀을 지운 쓰기에서 새로 정하고, 재시도는 표지의 것을 이어받는다 — 끝날 때 이 값이 같은 항목만 뺀다.
+ * 그래서 같은 keyId 를 다시 짝지어 새로 철회한 항목은 앞선 철회(의 늦은 재시도)가 끝나도 지워지지 않는다(리뷰 impl-5).
+ */
 export interface PendingRemoval {
+  removalId: string;
   keyId: string;
   name: string;
 }
@@ -106,11 +111,15 @@ function asPcGroup(raw: unknown): PcGroup[] {
     : [];
 }
 
+/**
+ * 옛 항목(removalId 없음 — 2954f8d 모양)의 식별자는 그 keyId 로 읽는다: 읽는 쪽 모두가 같은 값을 얻으니 처음 쓰는 쪽이 굳혀도 겨룰 것이 없다.
+ * 옛 표지는 keyId 마다 한 항목뿐이고, 새 식별자(randomUUID — 하이픈이 든다)는 keyId(16진수)와 겹치지 않는다.
+ */
 function asPendingRemoval(raw: unknown): PendingRemoval[] {
   const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined;
-  return value && typeof value.keyId === "string" && value.keyId !== "" && typeof value.name === "string"
-    ? [{ keyId: value.keyId, name: value.name }]
-    : [];
+  if (!value || typeof value.keyId !== "string" || value.keyId === "" || typeof value.name !== "string") return [];
+  const removalId = typeof value.removalId === "string" && value.removalId !== "" ? value.removalId : value.keyId;
+  return [{ removalId, keyId: value.keyId, name: value.name }];
 }
 
 function asPairedBrowser(raw: unknown): PairedBrowser | undefined {
@@ -208,7 +217,7 @@ export function withoutBrowser(keys: PcKeys, account: string, keyIdOrName: strin
 }
 
 /**
- * 끄기 미완료 표지에 그룹과 (핀을 지운 그 쓰기에서) 철회를 더한다(표지가 없으면 at 을 지운 때로 만든다 · 같은 pid·pgid·keyId 는 한 번).
+ * 끄기 미완료 표지에 그룹과 (핀을 지운 그 쓰기에서) 철회를 더한다(표지가 없으면 at 을 지운 때로 만든다 · 같은 pid·pgid·removalId 는 한 번).
  * 계정이 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
  */
 export function withPendingTurnOff(keys: PcKeys, account: string,
@@ -219,7 +228,7 @@ export function withPendingTurnOff(keys: PcKeys, account: string,
   const known = previous?.groups ?? [];
   const fresh = add.groups.filter((group) => !known.some((item) => sameGroup(item, group)));
   const removals = previous?.removals ?? [];
-  const removal = add.removal && !removals.some((item) => item.keyId === add.removal?.keyId) ? [add.removal] : [];
+  const removal = add.removal && !removals.some((item) => item.removalId === add.removal?.removalId) ? [add.removal] : [];
   if (previous && fresh.length === 0 && removal.length === 0) return keys;
   const pendingTurnOff: PendingTurnOff = {
     removedAt: previous?.removedAt ?? add.at.toISOString(), groups: [...known, ...fresh], removals: [...removals, ...removal],
@@ -227,22 +236,23 @@ export function withPendingTurnOff(keys: PcKeys, account: string,
   return { accounts: { ...keys.accounts, [account]: { ...rest, pendingTurnOff } } };
 }
 
-/** 표지에 남은 «끝나지 않은 철회» 중 keyId 또는 이름이 맞는 것(keyId 가 먼저) — 핀이 없을 때 다시 실행할 대상. */
+/** 표지에 남은 «끝나지 않은 철회» 중 keyId 또는 이름이 맞는 것(keyId 가 먼저) — 핀이 없을 때 다시 실행할 대상(그 removalId 를 이어받는다). */
 export function pendingRemovalOf(account: PcKeyAccount | undefined, keyIdOrName: string): PendingRemoval | undefined {
   const removals = account?.pendingTurnOff?.removals ?? [];
   return removals.find((item) => item.keyId === keyIdOrName) ?? removals.find((item) => item.name === keyIdOrName);
 }
 
 /**
- * 한 철회가 조회·끄기 확인을 마쳤다 — 확인한 그룹과 그 철회(keyId)만 표지에서 뺀다. 그사이 다른 철회가 더한 그룹·아직 끝나지 않은 다른 철회는 남긴다.
- * 그룹도 철회도 남지 않을 때만 표지를 없앤다. 계정·표지가 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
+ * 한 철회가 조회·끄기 확인을 마쳤다 — 확인한 그룹과 그 철회(removalId 가 같은 항목)만 표지에서 뺀다. 그사이 다른 철회가 더한 그룹·아직 끝나지 않은
+ * 다른 철회(같은 keyId 를 다시 짝지어 새로 철회한 것 포함)는 남긴다. 그룹도 철회도 남지 않을 때만 표지를 없앤다.
+ * 계정·표지가 없거나 바뀔 것이 없으면 받은 값 그대로(같은 객체).
  */
-export function withTurnOffConfirmed(keys: PcKeys, account: string, done: { groups: readonly PcGroup[]; removal: string }): PcKeys {
+export function withTurnOffConfirmed(keys: PcKeys, account: string, done: { groups: readonly PcGroup[]; removalId: string }): PcKeys {
   const current = keys.accounts[account];
   if (!current?.pendingTurnOff) return keys;
   const { pendingTurnOff: previous, ...rest } = current;
   const groups = previous.groups.filter((group) => !done.groups.some((item) => sameGroup(item, group)));
-  const removals = previous.removals.filter((item) => item.keyId !== done.removal);
+  const removals = previous.removals.filter((item) => item.removalId !== done.removalId);
   if (groups.length === previous.groups.length && removals.length === previous.removals.length) return keys;
   const left = groups.length > 0 || removals.length > 0;
   return { accounts: { ...keys.accounts, [account]: left ? { ...rest, pendingTurnOff: { ...previous, groups, removals } } : rest } };

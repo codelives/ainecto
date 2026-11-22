@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -369,7 +369,7 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
       now: () => new Date("2026-11-21T10:00:00Z"),
     });
     await expectCli(executePair(stillAlive.deps, ["--remove", "k1"]), "PAIR_REMOVE_STOP_FAILED");
-    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [GROUP], removals: [{ keyId: "k1", name: "Work" }] });
+    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [GROUP], removals: [{ removalId: expect.any(String), keyId: "k1", name: "Work" }] });
 
     const confirmed: Array<readonly PcGroup[]> = [];
     let finds = 0;
@@ -415,7 +415,7 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
 
     finishFirst();
     expect(await first).toBe(0);
-    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [OTHER], removals: [{ keyId: "k2", name: "Home" }] });
+    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [OTHER], removals: [{ removalId: expect.any(String), keyId: "k2", name: "Home" }] });
     failSecond();
     await expectCli(second, "PAIR_REMOVE_STOP_FAILED");
     expect((await account())?.pendingTurnOff?.groups).toEqual([OTHER]);
@@ -454,7 +454,7 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
       turnOffPcs: async () => { throw new Error("a process in its group 5353 is still alive"); },
     }).deps, ["--remove", "Home"]), "PAIR_REMOVE_STOP_FAILED");
     expect(finds).toBe(1);
-    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [OTHER], removals: [{ keyId: "k2", name: "Home" }] });
+    expect((await account())?.pendingTurnOff).toEqual({ removedAt: "2026-11-21T09:00:00.000Z", groups: [OTHER], removals: [{ removalId: expect.any(String), keyId: "k2", name: "Home" }] });
 
     const confirmed: Array<readonly PcGroup[]> = [];
     const retry = deps({ turnOffPcs: async (groups) => { confirmed.push(groups); } });
@@ -517,6 +517,68 @@ describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 짝짓기
     expect(await later.result).toBe(0);
     expect(later.browser.state.pinnedPc).toBe(true);
     expect((await account())?.browsers.map((item) => item.keyId)).toEqual([first.keyId]);
+  });
+
+  it("같은 철회를 두 호출(A·B)이 처리하다 B 가 먼저 끝나 재짝짓기 → 새 철회 C 의 조회 실패 → A 의 늦은 완료는 C 의 표지를 지우지 않는다 · 재짝짓기는 계속 PAIR_REMOVE_PENDING · 같은 명령이 조회·종료로 들어가 끝낸다(리뷰 impl-5)", async () => {
+    const pcId = await approve();
+    const first = await pairOnce(pcId);
+    expect(await first.result).toBe(0);
+    await expectCli(executePair(failingTurnOff().deps, ["--remove", first.keyId]), "PAIR_REMOVE_STOP_FAILED");
+
+    // A — 같은 철회의 재시도. 끄기 확인 중에 멈춰 있다.
+    let aIn!: () => void;
+    const aInTurnOff = new Promise<void>((resolve) => { aIn = resolve; });
+    let finishA!: () => void;
+    const aGate = new Promise<void>((resolve) => { finishA = resolve; });
+    const a = deps({ turnOffPcs: async () => { aIn(); await aGate; } });
+    const late = executePair(a.deps, ["--remove", first.keyId]);
+    await aInTurnOff;
+    // B — 같은 철회의 다른 재시도가 먼저 끝나 표지를 치운다.
+    expect(await executePair(deps({}).deps, ["--remove", first.keyId])).toBe(0);
+    expect((await account())?.pendingTurnOff).toBeUndefined();
+
+    // 같은 브라우저를 다시 짝짓고 → 새 핀을 철회(C)했는데 PC 연결 조회가 실패했다.
+    const again = await pairOnce(pcId, first.browser.own);
+    expect(await again.result).toBe(0);
+    const reset = deps({ findPcs: async () => { throw Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" }); } });
+    const error = await expectCli(executePair(reset.deps, ["--remove", first.keyId]), "PAIR_REMOVE_STOP_FAILED");
+    expect(error.message).toContain(`Run \`ainecto pair --remove ${first.keyId}\` again to finish.`);
+    const pendingC = (await account())?.pendingTurnOff;
+    expect(pendingC?.removals.map((item) => item.keyId)).toEqual([first.keyId]);
+
+    // A 의 늦은 완료 — 자기 철회만 뺀다. C 는 남는다.
+    finishA();
+    expect(await late).toBe(0);
+    expect(a.out()).toContain("Finished the earlier removal.");
+    expect((await account())?.pendingTurnOff).toEqual(pendingC);
+
+    const blocked = await pairOnce(pcId, first.browser.own);
+    await expectCli(blocked.result, "PAIR_REMOVE_PENDING");
+    expect(blocked.browser.state.done).toBe(0);
+
+    let finds = 0;
+    const retry = deps({ findPcs: async () => { finds += 1; return []; } });
+    expect(await executePair(retry.deps, ["--remove", first.keyId])).toBe(0);
+    expect(finds).toBe(1);
+    expect(retry.out()).toContain("Finished the earlier removal.");
+    expect(await account()).toMatchObject({ browsers: [] });
+    expect((await account())?.pendingTurnOff).toBeUndefined();
+  });
+
+  it("옛 표지 항목(철회 식별자 없음)도 같은 명령으로 끝낸다 — 그 철회의 식별자는 keyId 로 읽는다", async () => {
+    const pcId = await approve();
+    const first = await pairOnce(pcId);
+    expect(await first.result).toBe(0);
+    const stored = await account();
+    if (!stored) throw new Error("pairing did not save the account");
+    await writeFile(keysPath(), JSON.stringify({ accounts: { [KEY]: { pcKey: stored.pcKey, browsers: [],
+      pendingTurnOff: { removedAt: "2026-11-21T09:00:00.000Z", groups: [], removals: [{ keyId: first.keyId, name: "Chrome · macOS" }] } } } }));
+    expect((await account())?.pendingTurnOff?.removals).toEqual([{ removalId: first.keyId, keyId: first.keyId, name: "Chrome · macOS" }]);
+    await expectCli((await pairOnce(pcId, first.browser.own)).result, "PAIR_REMOVE_PENDING");
+    const retry = deps({});
+    expect(await executePair(retry.deps, ["--remove", first.keyId])).toBe(0);
+    expect(retry.out()).toContain("Finished the earlier removal.");
+    expect((await account())?.pendingTurnOff).toBeUndefined();
   });
 });
 
