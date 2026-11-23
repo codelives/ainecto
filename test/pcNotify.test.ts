@@ -63,7 +63,7 @@ describe("PC 알림(설계 §4-6 · §11-7 · C-E3)", () => {
     });
     expect(notificationText(event("command"), 2).body).toBe(
       "Chrome · macOS started a command in a new terminal on this PC — 09:05 (+2 more). Not you? Run `ainecto remote off`.");
-    expect(notificationText(event("paired"), 0).body).toContain("was paired with this PC");
+    expect(notificationText(event("paired"), 0).body).toContain("was registered with this PC");
     expect(notificationText(event("shell"), 0).body).not.toContain("k1");
   });
 

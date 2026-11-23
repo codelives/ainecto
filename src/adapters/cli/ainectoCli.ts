@@ -243,6 +243,8 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         },
         findPcs: () => runningPcGroups(pcDeps()),
         turnOffPcs: (groups) => turnOffPcs(pcDeps(), groups),
+        // 연결 승인 전 대화형 — `ainecto`(인자 없음)와 같은 흐름 그대로(KAN-1348).
+        connectPc: () => executePcStart(pcDeps()),
         waitMs: PAIR_WAIT_MS,
         now: () => new Date(),
       }, parsed.positionals.slice(1));

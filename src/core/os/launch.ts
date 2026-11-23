@@ -403,6 +403,6 @@ export function windowsToastScript(title: string, body: string): string {
 /** macOS 첫 알림 허용 안내(순수) — `ainecto setup`·`ainecto doctor` 가 한 줄 싣는다. 다른 OS 는 없음. */
 export function notificationHint(platform: NodeJS.Platform = process.platform): string | undefined {
   return platform === "darwin"
-    ? "macOS: allow notifications for «Script Editor» (System Settings › Notifications) so this PC can alert you when a browser pairs or opens a terminal here."
+    ? "macOS: allow notifications for «Script Editor» (System Settings › Notifications) so this PC can alert you when a browser is registered or opens a terminal here."
     : undefined;
 }

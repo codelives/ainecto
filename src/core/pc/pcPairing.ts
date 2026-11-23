@@ -109,20 +109,20 @@ export async function runPairing(input: {
     const nP = (input.random ?? (() => randomBytes(NONCE_SEED_BYTES)))();
     const commit = await pairCommitment(pcPublicRaw, nP);
     input.prompt.show(`Waiting up to ${Math.round(input.waitMs / 60_000)} min for a browser — in AiNecto on the web, open Terminal, `
-      + "pick this PC and choose «Pair with this PC».");
+      + "pick this PC and start the browser registration there.");
     const offer = await relayed(() => input.transport.offer(commit, signal));
     if (offer === "timeout") return { kind: "timeout" };
     // ★중계된 값 — 모양을 먼저 본다(곡선 위 점 · keyId = 공개키 지문, §13-3). 이름은 화면에 찍기 전에 다듬는다(개행·제어 문자 제거).
     const publicJwk = publicJwkFromRaw(offer.publicRaw);
     await assertSigningPublicKey(publicJwk);
     if (offer.keyId !== await browserKeyIdOf(offer.publicRaw)) {
-      throw new E2eError("E2E_BAD_INPUT", "The browser's key id is not the fingerprint of its key — pairing aborted.");
+      throw new E2eError("E2E_BAD_INPUT", "The browser's key id is not the fingerprint of its key — browser registration aborted.");
     }
     const name = browserNameOf(offer.name);
     if ((await relayed(() => input.transport.reveal(pcPublicRaw, nP, signal))) === "timeout") return { kind: "timeout" };
     const transcript = await pairTranscript({ userId: input.userId, pcId: input.pcId, pcPublicRaw, browserPublicRaw: offer.publicRaw, nP, nB: offer.nB });
     const codes = await pairCodes(transcript);
-    input.prompt.show(`A browser asked to pair: ${name}`);
+    input.prompt.show(`A browser asked to be registered: ${name}`);
     input.prompt.show(`Type this code in the browser: ${codes.a}`);
     const answer = await input.prompt.ask("Then type the code the browser shows (one try): ", signal);
     if (signal.aborted) return { kind: "timeout" };

@@ -169,7 +169,7 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect(await executePcStop(forget.deps, ["--forget"])).toBe(0);
     expect(forget.out()).toContain("This PC is not connected.");
     expect(forget.out()).toContain("Removed your approval for https://example.test/mcp on this PC");
-    expect(forget.out()).toContain("Also removed this PC's terminal key and paired browsers for that server");
+    expect(forget.out()).toContain("Also removed this PC's terminal key and registered browsers for that server");
     expect((await settings()).accounts).toEqual({});
     expect(Object.keys((await loadPcKeys(keysPath)).accounts)).toEqual([otherServer]);
   }, LONG);
@@ -187,7 +187,7 @@ describe("이 PC 연결 — 실 데몬", () => {
   }, LONG);
 
   it("비대화형 + 동의 없음 — 띄우지 않고 이유 한 줄 · 로그인 전 비대화형도 같다 · 첫 물음 N 이면 아무것도 쓰지 않는다", async () => {
-    await expect(executePcStart(harness({ interactive: false }).deps)).rejects.toThrow("This PC is not connected yet — run `ainecto` in a terminal once to approve.");
+    await expect(executePcStart(harness({ interactive: false }).deps)).rejects.toThrow("This PC (test-host) is not connected to AiNecto yet. Run `npx -y ainecto@latest` in a terminal on this PC first and approve the connection.");
     await expect(executePcStart(harness({ interactive: false, machine: async () => ({ ...signedIn, token: { state: "not-signed-in" }, account: undefined }) }).deps))
       .rejects.toThrow("Not signed in to AiNecto");
     const no = harness();
@@ -200,7 +200,7 @@ describe("이 PC 연결 — 실 데몬", () => {
   }, LONG);
 
   it("remote on|off — 동의 전엔 거절 · 동의 뒤 계정별로 바뀐다 · term 못 쓰는 기기는 start 거절", async () => {
-    await expect(executeRemoteSetting(harness().deps, ["off"])).rejects.toThrow("This PC is not connected yet");
+    await expect(executeRemoteSetting(harness().deps, ["off"])).rejects.toThrow("This PC (test-host) is not connected to AiNecto yet");
     const start = harness();
     const done = executePcStart(start.deps);
     await start.answer("Connect this PC?", "y");
@@ -297,6 +297,7 @@ describe("이 PC 연결 — 실 데몬", () => {
       notifyPaired: async () => undefined,
       findPcs: () => runningPcGroups(pc.deps),
       turnOffPcs: (groups) => turnOffPcs(pc.deps, groups),
+      connectPc: () => { throw new Error("no connect"); },
       waitMs: 1_000,
       now: () => new Date("2026-11-21T09:00:00Z"),
     }, ["--remove", name]);

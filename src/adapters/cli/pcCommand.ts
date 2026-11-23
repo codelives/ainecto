@@ -35,7 +35,7 @@ import type { CliIO } from "./ainectoCli";
 import { promptLine } from "./destructiveConfirmation";
 import { processGroupAlive, processGroupOf, processGroupUnavailableHint } from "../../core/os/launch";
 import { CliCommandError } from "./errors";
-import { pcResultText, preflightNotes } from "./pcStartText";
+import { pcNotApprovedText, pcResultText, preflightNotes } from "./pcStartText";
 
 /**
  * «이 PC 연결» 입구 — `ainecto`(인자 없음·터미널)·`start`·`stop [--forget]`·`remote on|off`(KAN-738, root REQ d37a6dc2·b1f76f76).
@@ -111,7 +111,7 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
   let settings = await loadPcSettings(deps.settingsPath, deps.hostName);
   if (!settings.accounts[key]) {
     if (!deps.interactive) {
-      throw new CliCommandError("PC_NOT_APPROVED", "This PC is not connected yet — run `ainecto` in a terminal once to approve.");
+      throw new CliCommandError("PC_NOT_APPROVED", pcNotApprovedText(deps.hostName));
     }
     note("");
     note(`This connects this PC to AiNecto as ${status.account?.displayName ?? "your account"} (${deps.endpoint}).`);
@@ -276,7 +276,7 @@ export async function executePcStop(deps: PcDeps, argv: string[]): Promise<numbe
       return removedKeys ? kept : undefined;
     });
     if (removedKeys) {
-      lines.push("Also removed this PC's terminal key and paired browsers for that server — pair again with `ainecto pair`.");
+      lines.push("Also removed this PC's terminal key and registered browsers for that server — register them again with `ainecto pair`.");
     }
   }
   return print(deps, { stopped: running.map((pc) => pc.session), forgot: forget }, lines.join("\n"));
@@ -294,7 +294,7 @@ export async function executeRemoteSetting(deps: PcDeps, argv: string[]): Promis
   }
   const next = withRemoteTerminal(await loadPcSettings(deps.settingsPath, deps.hostName), accountKey(deps.endpoint, userId), value === "on");
   if (!next) {
-    throw new CliCommandError("PC_NOT_APPROVED", "This PC is not connected yet — run `ainecto` in a terminal once to approve.");
+    throw new CliCommandError("PC_NOT_APPROVED", pcNotApprovedText(deps.hostName));
   }
   await savePcSettings(deps.settingsPath, next);
   const said = value === "on"

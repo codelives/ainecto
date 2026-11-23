@@ -69,6 +69,7 @@ function removeDeps(deps: PcDeps, overrides: Partial<PairDeps> = {}): { value: P
     notifyPaired: async () => undefined,
     findPcs: () => runningPcGroups(deps),
     turnOffPcs: (groups) => turnOffPcs(deps, groups),
+    connectPc: () => { throw new Error("no connect"); },
     waitMs: 1_000,
     now: () => new Date("2026-11-21T09:00:00Z"),
     ...overrides,

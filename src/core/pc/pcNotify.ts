@@ -29,7 +29,7 @@ export interface NotifyEvent {
 }
 
 const WHAT: Record<NotifyKind, string> = {
-  paired: "was paired with this PC",
+  paired: "was registered with this PC",
   session: "opened a terminal connection to this PC",
   shell: "started a new shell on this PC",
   command: "started a command in a new terminal on this PC",

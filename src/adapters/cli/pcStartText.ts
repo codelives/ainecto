@@ -58,6 +58,15 @@ export function pcResultText(result: PcResult): string {
   return `This PC is now connected to AiNecto. ${use} It keeps running after you close this window. ${STOP} Log: ${result.log}`;
 }
 
+/**
+ * 이 PC 의 연결 승인이 아직 없다(PC_NOT_APPROVED) — `ainecto`·`start`(비대화형)·`remote on|off`·`pair` 가 모두 이 문장(KAN-1348).
+ * 어느 PC 인지(호스트 이름)와 그 PC 에서 칠 명령 한 줄을 넣는다 — 웹 안내와 같은 `npx -y ainecto@latest`. then = 승인 뒤에 칠 명령.
+ */
+export function pcNotApprovedText(hostName: string, then?: string): string {
+  return `This PC (${hostName}) is not connected to AiNecto yet. Run \`npx -y ainecto@latest\` in a terminal on this PC first `
+    + `and approve the connection${then ? `, then ${then}` : ""}.`;
+}
+
 function listed(labels: readonly string[]): string {
   if (labels.length <= 2) return labels.join(" and ");
   return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;

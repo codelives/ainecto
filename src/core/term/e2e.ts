@@ -310,7 +310,7 @@ export async function pairCommitment(pcPublicRaw: Uint8Array, nP: Uint8Array): P
 /** 3단계(브라우저) — 드러낸 pcPub·nP 가 1단계 약속값과 같지 않으면 E2E_COMMITMENT_MISMATCH. */
 export async function assertCommitment(commit: Uint8Array, pcPublicRaw: Uint8Array, nP: Uint8Array): Promise<void> {
   if (!sameBytes(commit, await pairCommitment(pcPublicRaw, nP))) {
-    throw new E2eError("E2E_COMMITMENT_MISMATCH", "The PC's revealed key does not match its commitment — pairing aborted.");
+    throw new E2eError("E2E_COMMITMENT_MISMATCH", "The PC's revealed key does not match its commitment — browser registration aborted.");
   }
 }
 
@@ -361,7 +361,7 @@ export async function pairCodes(transcript: Uint8Array): Promise<PairCodes> {
     const block = new Uint8Array(await subtle.sign("HMAC", prk, concatBytes(utf8(info), Uint8Array.of(0x01))));
     const value = pairCodeFromBlock(block);
     if (value === undefined) {
-      throw new E2eError("E2E_PAIR_CODE_UNAVAILABLE", "No usable pairing code in this attempt — run `ainecto pair` again.");
+      throw new E2eError("E2E_PAIR_CODE_UNAVAILABLE", "No usable registration code in this attempt — run `ainecto pair` again.");
     }
     return value;
   };

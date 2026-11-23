@@ -148,6 +148,7 @@ function deps(overrides: Partial<PairDeps>) {
     notifyPaired: async (browser) => { notified.push(browser); },
     findPcs: async () => [],
     turnOffPcs: async () => undefined,
+    connectPc: async () => { throw new Error("connectPc not expected in this test"); },
     waitMs: 10_000,
     now: () => new Date("2026-11-21T09:00:00Z"),
     ...overrides,
@@ -174,7 +175,7 @@ describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
     const run = deps({ transport: () => browser.transport, openTty: () => tty.tty });
     expect(await executePair(run.deps, [])).toBe(0);
     expect(tty.text()).toContain(`Type this code in the browser: ${browser.state.codes?.a}`);
-    expect(tty.text()).toContain("A browser asked to pair: Chrome[2J · macOS");
+    expect(tty.text()).toContain("A browser asked to be registered: Chrome[2J · macOS");
     expect(tty.closed()).toBe(true);
     expect(browser.state.pinnedPc).toBe(true);
     const keys = await loadPcKeys(keysPath());
@@ -182,7 +183,7 @@ describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
       keyId: await browserKeyIdOf(publicRawFromJwk(browser.own)), publicJwk: publicJwkOf(browser.own), name: "Chrome[2J · macOS", pairedAt: "2026-11-21T09:00:00.000Z",
     }]);
     expect((await stat(keysPath())).mode & 0o777).toBe(0o600);
-    expect(run.out()).toContain('Paired "Chrome[2J · macOS" with this PC.');
+    expect(run.out()).toContain('Registered the browser "Chrome[2J · macOS" with this PC.');
     // PC 알림 — done 을 보낸 뒤 한 번(§11-7).
     expect(run.notified).toEqual([{ keyId: await browserKeyIdOf(publicRawFromJwk(browser.own)), name: "Chrome[2J · macOS" }]);
     // ★코드는 /dev/tty 에만 — stdout(파이프로 갈 수 있는 곳)에는 없다.
@@ -284,14 +285,67 @@ describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
     expect(browser.state.done).toBe(0);
   });
 
-  it("대화형만 · 터미널 세션 안 거절 · 동의 전 거절 — 중계·터미널을 열기 전에", async () => {
+  it("대화형만 · 터미널 세션 안 거절 · 동의 전 승인을 거절하면 PC_NOT_APPROVED — 중계·터미널을 열기 전에", async () => {
     const never = (): never => { throw new Error("must not open"); };
-    await expectCli(executePair(deps({ json: true, transport: never, openTty: never }).deps, []), "PAIR_INTERACTIVE_ONLY");
-    await expectCli(executePair(deps({ interactive: false, transport: never, openTty: never }).deps, []), "PAIR_INTERACTIVE_ONLY");
-    await expectCli(executePair(deps({ insideTermSession: true, transport: never, openTty: never }).deps, []), "PAIR_IN_TERM_SESSION");
-    await expectCli(executePair(deps({ transport: never, openTty: never }).deps, []), "PC_NOT_APPROVED");
+    await expectCli(executePair(deps({ insideTermSession: true, transport: never, openTty: never, connectPc: never }).deps, []), "PAIR_IN_TERM_SESSION");
+    // 승인을 묻는 흐름을 탔지만 승인하지 않았다(«Connect this PC? [y/N]» 에 N) — 지금처럼 PC_NOT_APPROVED.
+    let asked = 0;
+    const declined = await expectCli(executePair(deps({ transport: never, openTty: never, connectPc: async () => { asked += 1; return 0; } }).deps, []),
+      "PC_NOT_APPROVED");
+    expect(asked).toBe(1);
+    expect(declined.message).toContain("This PC (test-host) is not connected to AiNecto yet");
+    expect(declined.message).toContain("`npx -y ainecto@latest`");
+    await approve();
+    await expectCli(executePair(deps({ json: true, transport: never, openTty: never, connectPc: never }).deps, []), "PAIR_INTERACTIVE_ONLY");
+    await expectCli(executePair(deps({ interactive: false, transport: never, openTty: never, connectPc: never }).deps, []), "PAIR_INTERACTIVE_ONLY");
     await expectCli(executePair(deps({}).deps, ["--bogus"]), "USAGE");
     await expectCli(executePair(deps({}).deps, ["--remove"]), "USAGE");
+  });
+
+  it("KAN-1348 연결 승인 전 대화형 — `ainecto` 와 같은 흐름(connectPc)을 한 번 탄 뒤 그 승인으로 이어서 브라우저 등록", async () => {
+    let browser: Awaited<ReturnType<typeof fakeBrowser>> | undefined;
+    let asked = 0;
+    const tty = fakeTty(() => browser?.state.codes?.b);
+    let stderr = "";
+    const run = deps({
+      connectPc: async () => {
+        asked += 1;
+        await approve();
+        return 0;
+      },
+      transport: async (pcId) => {
+        browser = await fakeBrowser({ pcId });
+        return browser.transport;
+      },
+      openTty: () => tty.tty,
+    });
+    run.deps.io.stderr.write = ((text: string) => { stderr += text; return true; }) as NodeJS.WriteStream["write"];
+    expect(await executePair(run.deps, [])).toBe(0);
+    expect(asked).toBe(1);
+    expect(stderr).toContain("Next: register this browser");
+    expect(browser?.state.pinnedPc).toBe(true);
+    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length).toBe(1);
+    // 이미 승인한 PC 면 묻지 않는다.
+    const again = fakeTty(() => browser?.state.codes?.b);
+    expect(await executePair(deps({
+      connectPc: () => { throw new Error("must not ask again"); },
+      transport: async (pcId) => { browser = await fakeBrowser({ pcId }); return browser.transport; },
+      openTty: () => again.tty,
+    }).deps, [])).toBe(0);
+  });
+
+  it("KAN-1348 연결 승인 흐름이 실패 코드로 끝나면 그 코드 그대로 · 등록으로 가지 않는다", async () => {
+    const never = (): never => { throw new Error("must not open"); };
+    expect(await executePair(deps({ transport: never, openTty: never, connectPc: async () => 3 }).deps, [])).toBe(3);
+  });
+
+  it("KAN-1348 비대화형(--json·파이프) · 승인 전 — 묻지 않고 PC 이름이 든 PC_NOT_APPROVED", async () => {
+    const never = (): never => { throw new Error("must not open"); };
+    for (const shape of [{ json: true }, { interactive: false }]) {
+      const error = await expectCli(executePair(deps({ ...shape, transport: never, openTty: never, connectPc: never }).deps, []), "PC_NOT_APPROVED");
+      expect(error.message).toBe("This PC (test-host) is not connected to AiNecto yet. Run `npx -y ainecto@latest` in a terminal on this PC first "
+        + "and approve the connection, then run `npx -y ainecto@latest pair` to register this browser.");
+    }
   });
 });
 
@@ -592,7 +646,7 @@ describe("ainecto pair --list · --remove", () => {
 
     const human = deps({ interactive: false });
     expect(await executePair(human.deps, ["--list"])).toBe(0);
-    expect(human.out()).toContain("  k1  Work  (paired 2026-11-21T00:00:00.000Z)");
+    expect(human.out()).toContain("  k1  Work  (registered 2026-11-21T00:00:00.000Z)");
     const json = deps({ json: true });
     expect(await executePair(json.deps, ["--list"])).toBe(0);
     expect(JSON.parse(json.out())).toMatchObject({ data: { browsers: [{ keyId: "k1", name: "Work" }, { keyId: "k2", name: "Home" }] } });
@@ -606,6 +660,6 @@ describe("ainecto pair --list · --remove", () => {
 
     const empty = deps({});
     expect(await executePair(empty.deps, ["--list"])).toBe(0);
-    expect(empty.out()).toContain("No browsers are paired with this PC.");
+    expect(empty.out()).toContain("No browsers are registered with this PC.");
   });
 });

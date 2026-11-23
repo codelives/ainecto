@@ -18,16 +18,19 @@ import {
 import { runPairing, type MatchedBrowser, type PairTransport } from "../../core/pc/pcPairing";
 import { PairRelayError } from "../../core/pc/pcPairRelay";
 import { PcCallError } from "../../core/http/pcHttp";
-import { accountKey, loadPcSettings } from "../../core/pc/pcSettings";
+import { accountKey, loadPcSettings, type PcSettings } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
 import { generateSigningJwk, transcriptUserId, type EcPrivateJwk } from "../../core/term/e2e";
 import type { CliIO } from "./ainectoCli";
 import { promptLine, type ConfirmationIO } from "./destructiveConfirmation";
 import { CliCommandError } from "./errors";
+import { pcNotApprovedText } from "./pcStartText";
 
 /**
  * `ainecto pair` — 웹 브라우저와 이 PC 를 PC 앞에서 코드로 짝짓는다(설계 terminal-e2e r2 §11-1·§11-4).
+ *   ★사람에게 보이는 말은 «브라우저 등록»(register this browser) — «짝짓기»(pair)는 명령·옵션·코드 이름에만 남긴다(KAN-1348, Ryan).
  *   `pair`                  대화형만 — 코드 A 를 보이고 코드 B 를 한 번 받는다. 맞으면 그 브라우저 공개키를 pc-keys.json 에 넣는다.
+ *                           이 PC 의 연결 승인이 아직 없으면 그 자리에서 `ainecto`(인자 없음)와 같은 흐름을 탄 뒤 이어서 등록한다(KAN-1348).
  *   `pair --list`           짝지은 브라우저 목록.
  *   `pair --remove <id|이름>` 그 브라우저를 지우고(keyId 가 먼저), 떠 있는 PC 연결을 완전히 끈 것을 확인한 뒤에만 성공(§13-2) — 다시 띄우지 않는다.
  * ★코드는 제어 터미널(/dev/tty · Windows 콘솔)에만 쓰고 거기서만 읽는다 — 파이프·리다이렉트로 흘러가지 않게. AiNecto 터미널 세션(웹 원격 화면에 실릴 수 있음)
@@ -56,6 +59,11 @@ export interface PairDeps {
   findPcs: () => Promise<PcGroup[]>;
   /** 그 그룹들을 완전히 끄고 모두 끝난 것을 확인한다(못 하면 던진다). 운영은 pcCommand.turnOffPcs. */
   turnOffPcs: (groups: readonly PcGroup[]) => Promise<void>;
+  /**
+   * 이 PC 의 연결 승인이 아직 없을 때(대화형만) — `ainecto`(인자 없음)와 같은 흐름: 로그인 확인 → 한 번 묻기(승인) → PC 연결 시작.
+   * 운영은 pcCommand.executePcStart. 0 이 아니면 그 코드로 끝낸다. 0 인데 승인이 없으면(거절) PC_NOT_APPROVED.
+   */
+  connectPc: () => Promise<number>;
   /** 짝짓기 기한 — 운영은 PAIR_WAIT_MS. */
   waitMs: number;
   now: () => Date;
@@ -98,20 +106,29 @@ export async function executePair(deps: PairDeps, argv: string[]): Promise<numbe
 }
 
 async function pair(deps: PairDeps): Promise<number> {
-  if (deps.json || !deps.interactive) {
-    throw new CliCommandError("PAIR_INTERACTIVE_ONLY",
-      "`ainecto pair` shows a code and asks you to type the code the browser shows — run it yourself in a terminal (not with --json or a pipe).");
-  }
-  if (deps.insideTermSession) {
+  const interactive = deps.interactive && !deps.json;
+  if (interactive && deps.insideTermSession) {
     throw new CliCommandError("PAIR_IN_TERM_SESSION",
       "`ainecto pair` does not run inside an AiNecto terminal session (its screen can be shown on the web). Run it in a regular terminal on this PC.");
   }
-  const { key, userId } = await account(deps);
-  const settings = await loadPcSettings(deps.settingsPath, deps.hostName);
-  if (!settings.accounts[key]) {
-    // pcId 는 동의할 때 pc.json 에 처음 쓰인다 — 그 전에 짝지으면 다음 실행의 pcId 와 다르다.
-    throw new CliCommandError("PC_NOT_APPROVED", "This PC is not connected yet — run `ainecto` in a terminal once to approve, then `ainecto pair`.");
+  // pcId 는 동의할 때 pc.json 에 처음 쓰인다 — 그 전에 등록하면 다음 실행의 pcId 와 다르다.
+  let approved = await approvedAccount(deps, { strict: !interactive });
+  if (!approved && interactive) {
+    // ★연결 승인 전 — 사람이 보는 터미널이면 `ainecto` 와 같은 흐름을 그 자리에서 타고 이어서 등록한다(KAN-1348:
+    //   첫 기기에서 `npx -y ainecto@latest pair` 하나로 «연결 승인 → 연결 → 브라우저 등록»).
+    const code = await deps.connectPc();
+    if (code !== 0) return code;
+    approved = await approvedAccount(deps, { strict: false });
+    if (approved) deps.io.stderr.write("\nNext: register this browser with this PC.\n");
   }
+  if (!approved) {
+    throw new CliCommandError("PC_NOT_APPROVED", pcNotApprovedText(deps.hostName, "run `npx -y ainecto@latest pair` to register this browser"));
+  }
+  if (!interactive) {
+    throw new CliCommandError("PAIR_INTERACTIVE_ONLY",
+      "`ainecto pair` shows a code and asks you to type the code the browser shows — run it yourself in a terminal (not with --json or a pipe).");
+  }
+  const { key, userId, settings } = approved;
   const pcKey = (await loadPcKeys(deps.keysPath)).accounts[key]?.pcKey ?? await generateSigningJwk();
   const transport = await deps.transport(settings.pcId);
   const tty = deps.openTty();
@@ -130,10 +147,10 @@ async function pair(deps: PairDeps): Promise<number> {
     tty.close();
   }
   if (outcome.kind === "timeout") {
-    throw new CliCommandError("PAIR_TIMEOUT", "No pairing finished in time. Nothing was saved — run `ainecto pair` again.");
+    throw new CliCommandError("PAIR_TIMEOUT", "Browser registration did not finish in time. Nothing was saved — run `ainecto pair` again.");
   }
   if (outcome.kind === "cancelled") {
-    throw new CliCommandError("PAIR_CANCELLED", "Pairing cancelled. Nothing was saved — run `ainecto pair` again.");
+    throw new CliCommandError("PAIR_CANCELLED", "Browser registration cancelled. Nothing was saved — run `ainecto pair` again.");
   }
   if (outcome.kind === "code-mismatch") {
     throw new CliCommandError("PAIR_CODE_MISMATCH",
@@ -145,7 +162,7 @@ async function pair(deps: PairDeps): Promise<number> {
       + `so it will not trust this PC yet. Remove it with \`ainecto pair --remove ${browser.keyId}\` and run \`ainecto pair\` again.`);
   }
   await deps.notifyPaired({ keyId: browser.keyId, name: browser.name });
-  const lines = [`Paired "${browser.name}" with this PC. Remove it later with \`ainecto pair --remove ${browser.keyId}\`.`];
+  const lines = [`Registered the browser "${browser.name}" with this PC. Remove it later with \`ainecto pair --remove ${browser.keyId}\`.`];
   if (settings.accounts[key]?.remoteTerminal !== true) {
     lines.push("Terminals from the web are blocked on this PC — `ainecto remote on` allows them.");
   }
@@ -163,7 +180,7 @@ async function pin(deps: PairDeps, key: string, pcKey: EcPrivateJwk, browser: Ma
   await updatePcKeys(deps.keysPath, (latest) => {
     const stored = latest.accounts[key]?.pcKey;
     if (stored && stored.d !== pcKey.d) {
-      throw new CliCommandError("PAIR_CONFLICT", "This PC's key changed while pairing (another `ainecto pair`?). Nothing was saved — run `ainecto pair` again.");
+      throw new CliCommandError("PAIR_CONFLICT", "This PC's key changed during browser registration (another `ainecto pair`?). Nothing was saved — run `ainecto pair` again.");
     }
     if (latest.accounts[key]?.pendingTurnOff?.removals.some((item) => item.keyId === browser.keyId)) {
       throw new CliCommandError("PAIR_REMOVE_PENDING", `This browser's earlier removal has not finished. Nothing was saved — `
@@ -177,8 +194,8 @@ async function listBrowsers(deps: PairDeps): Promise<number> {
   const browsers = (await loadPcKeys(deps.keysPath)).accounts[(await account(deps)).key]?.browsers ?? [];
   const data = { browsers: browsers.map((item) => ({ keyId: item.keyId, name: item.name, pairedAt: item.pairedAt })) };
   const human = browsers.length === 0
-    ? "No browsers are paired with this PC. Run `ainecto pair` to pair one."
-    : ["Browsers paired with this PC:", ...browsers.map((item) => `  ${item.keyId}  ${item.name}  (paired ${item.pairedAt})`)].join("\n");
+    ? "No browsers are registered with this PC. Run `ainecto pair` to register one."
+    : ["Browsers registered with this PC:", ...browsers.map((item) => `  ${item.keyId}  ${item.name}  (registered ${item.pairedAt})`)].join("\n");
   deps.io.stdout.write(deps.json ? renderSuccess(data, { json: true }) : `${human}\n`);
   return 0;
 }
@@ -211,7 +228,7 @@ async function removeBrowser(deps: PairDeps, keyIdOrName: string): Promise<numbe
     return withPendingTurnOff(result.keys, key, { at: deps.now(), groups: [], removal: target });
   });
   if (!target) {
-    throw new CliCommandError("PAIR_NOT_FOUND", `No paired browser with key id or name "${keyIdOrName}" — \`ainecto pair --list\` shows them.`);
+    throw new CliCommandError("PAIR_NOT_FOUND", `No registered browser with key id or name "${keyIdOrName}" — \`ainecto pair --list\` shows them.`);
   }
   const { keyId: finished, removalId } = target;
   let groups: PcGroup[];
@@ -252,18 +269,35 @@ async function relayErrors<T>(run: () => Promise<T>): Promise<T> {
       throw new CliCommandError(error.code, `${error.message} Nothing was saved — run \`ainecto pair\` again.`);
     }
     if (error instanceof PcCallError) {
-      throw new CliCommandError("PAIR_RELAY_FAILED", `Could not reach AiNecto to pair (${error.op}: ${error.status ?? "-"} ${error.code ?? ""} `
+      throw new CliCommandError("PAIR_RELAY_FAILED", `Could not reach AiNecto for browser registration (${error.op}: ${error.status ?? "-"} ${error.code ?? ""} `
         + `${error.message}`.replace(/\s+/g, " ").trim() + "). Nothing was saved — run `ainecto pair` again.");
     }
     throw error;
   }
 }
 
+/**
+ * 이 계정의 연결 승인 — 없으면 undefined. 계정을 못 읽으면 strict 면 PC_ACCOUNT_UNKNOWN, 아니면 undefined
+ * (대화형은 `ainecto` 흐름이 로그인부터 다시 본다).
+ */
+async function approvedAccount(deps: PairDeps, options: { strict: boolean }): Promise<{ key: string; userId: string; settings: PcSettings } | undefined> {
+  const userId = (await deps.account()).userId;
+  if (!userId) {
+    if (options.strict) throw accountUnknown();
+    return undefined;
+  }
+  const key = accountKey(deps.endpoint, userId);
+  const settings = await loadPcSettings(deps.settingsPath, deps.hostName);
+  return settings.accounts[key] ? { key, userId, settings } : undefined;
+}
+
 /** 계정 — 저장 열쇠(`서버#userId` — pc.json 과 같은 값)와 그 userId(대화 기록에는 {@link transcriptUserId} 로 바꿔 넣는다). */
 async function account(deps: PairDeps): Promise<{ key: string; userId: string }> {
   const userId = (await deps.account()).userId;
-  if (!userId) {
-    throw new CliCommandError("PC_ACCOUNT_UNKNOWN", "Could not read your AiNecto account — run `ainecto doctor` to see why.");
-  }
+  if (!userId) throw accountUnknown();
   return { key: accountKey(deps.endpoint, userId), userId };
+}
+
+function accountUnknown(): CliCommandError {
+  return new CliCommandError("PC_ACCOUNT_UNKNOWN", "Could not read your AiNecto account — run `ainecto doctor` to see why.");
 }

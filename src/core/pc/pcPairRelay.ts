@@ -59,7 +59,7 @@ export function createPairRelay(input: {
   let attemptId: string | undefined;
   let finished = false;
   const send = async (msg: Record<string, unknown>, signal?: AbortSignal): Promise<void> => {
-    if (!attemptId) throw new PairRelayError("PAIR_RELAY_BAD_RESPONSE", "The pairing was not opened.");
+    if (!attemptId) throw new PairRelayError("PAIR_RELAY_BAD_RESPONSE", "The browser registration was not opened.");
     await http.call("pair/send", { attemptId, msg }, signal ? { signal } : undefined);
   };
   return {
@@ -74,12 +74,12 @@ export function createPairRelay(input: {
         const answer = await http.call("pair/poll", { attemptId }, { holdMs: input.holdMs, signal });
         if (answer.closed === true) {
           finished = true;
-          throw new PairRelayError("PAIR_CLOSED", "The pairing ended on AiNecto (the browser cancelled it, or it expired).");
+          throw new PairRelayError("PAIR_CLOSED", "The browser registration ended on AiNecto (the browser cancelled it, or it expired).");
         }
         const offer = offerOf(Array.isArray(answer.msgs) ? answer.msgs : []);
         if (offer === "abort") {
           finished = true;
-          throw new PairRelayError("PAIR_CLOSED", "The browser cancelled the pairing.");
+          throw new PairRelayError("PAIR_CLOSED", "The browser cancelled the registration.");
         }
         if (offer) return offer;
       }
@@ -112,13 +112,13 @@ export function offerOf(msgs: readonly unknown[]): BrowserOffer | "abort" | unde
   const items = msgs.map((msg) => (msg && typeof msg === "object" ? msg as Record<string, unknown> : {}));
   if (items.some((item) => item.type === "abort")) return "abort";
   if (items.length > 1) {
-    throw new PairRelayError("PAIR_DUPLICATE", "More than one pairing request arrived — this try was ended. Run `ainecto pair` again.");
+    throw new PairRelayError("PAIR_DUPLICATE", "More than one browser registration request arrived — this try was ended. Run `ainecto pair` again.");
   }
   const [item] = items;
   const publicRaw = fromB64u(item?.publicKey, PUBLIC_KEY_BYTES);
   const nB = fromB64u(item?.nB, NONCE_SEED_BYTES);
   if (item?.type !== "offer" || !publicRaw || !nB || typeof item.keyId !== "string" || typeof item.name !== "string") {
-    throw new PairRelayError("PAIR_BAD_MESSAGE", "AiNecto relayed a pairing message this CLI does not understand — this try was ended.");
+    throw new PairRelayError("PAIR_BAD_MESSAGE", "AiNecto relayed a browser registration message this CLI does not understand — this try was ended.");
   }
   return { keyId: item.keyId, publicRaw, nB, name: item.name };
 }
