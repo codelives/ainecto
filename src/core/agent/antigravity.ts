@@ -223,7 +223,7 @@ class AntigravitySession implements AgentSession {
     if (typeof step.step_index !== "number" || turn.counted.has(step.step_index)) return;
     if (tool.error !== undefined || typeof tool.output !== "string" || !this.deps.toolNames.has(name)) return;
     turn.counted.add(step.step_index);
-    turn.facts.add(tool.output, this.deps.writeTools.has(name));
+    turn.facts.add(agyContentParts(tool.output), this.deps.writeTools.has(name));
   }
 
   private onResult(turn: Turn, result: Record<string, unknown>): void {
@@ -253,6 +253,19 @@ class AntigravitySession implements AgentSession {
         numTurns: typeof result.num_turns === "number" ? result.num_turns : undefined,
       },
     });
+  }
+}
+
+/**
+ * agy 의 {@code output} = MCP content 의 글 조각을 줄바꿈으로 이은 글 하나(실측 1.5.14 — create_documents = JSON 한 줄 + 📄 줄 + 알림 줄).
+ * 통째로 JSON 이면 그대로, 아니면 줄마다 한 조각으로 되돌린다(그래야 JSON 조각의 created·카드가 읽힌다 — 게이트 ① 에서 잡음).
+ */
+export function agyContentParts(output: string): Array<{ type: "text"; text: string }> {
+  try {
+    JSON.parse(output);
+    return [{ type: "text", text: output }];
+  } catch {
+    return output.split("\n").map((text) => ({ type: "text" as const, text }));
   }
 }
 
