@@ -298,16 +298,31 @@ function parseReadiness(line: string): DaemonReadiness {
   return { status: "error", message: `unexpected readiness line: ${line}` };
 }
 
-/** daemon.json 의 pid — 안내용. 없거나 못 읽으면 undefined. */
-function daemonPid(paths: TermPaths): number | undefined {
+/** daemon.json — 데몬이 시작할 때 쓴 pid·판. 없거나 못 읽으면 undefined. */
+export function readDaemonInfo(paths: TermPaths): { pid: number; version?: string } | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(paths.daemonInfo, "utf8"));
     const pid = value && typeof value === "object" && "pid" in value ? value.pid : undefined;
-    return typeof pid === "number" ? pid : undefined;
+    const version = value && typeof value === "object" && "version" in value ? value.version : undefined;
+    return typeof pid === "number" ? { pid, ...(typeof version === "string" ? { version } : {}) } : undefined;
   } catch {
-    // 안내 문장에 pid 를 못 넣을 뿐이다 — 오류 자체는 호출한 쪽이 낸다.
+    // 판정 재료가 없을 뿐이다 — 안내·판 비교를 건너뛴다. 오류 자체는 호출한 쪽이 낸다.
     return undefined;
   }
+}
+
+function daemonPid(paths: TermPaths): number | undefined {
+  return readDaemonInfo(paths)?.pid;
+}
+
+/** 그 pid 가 끝날 때까지 기다린다(최대 ms) — 끝났으면 true. */
+export async function waitForPidGone(pid: number, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (isAlive(pid)) {
+    if (Date.now() >= until) return false;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return true;
 }
 
 function notListening(paths: TermPaths): string {

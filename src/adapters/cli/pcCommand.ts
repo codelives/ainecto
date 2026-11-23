@@ -10,6 +10,7 @@ import {
 import {
   PC_OUTCOME_PATTERN,
   PC_SESSION_NAME,
+  daemonUpgrade,
   pcAction,
   remoteOffByWeb,
   pcOutcome,
@@ -23,7 +24,7 @@ import type { AccountSummary } from "../../core/setup/accountSummary";
 import { lastLine, type CommandRunner } from "../../core/setup/commandRunner";
 import { doctorChecks } from "../../core/setup/doctorChecks";
 import type { MachineStatus } from "../../core/setup/machineStatus";
-import { openTermClient, termRequest, type TermConnectOptions } from "../../core/term/client";
+import { openTermClient, readDaemonInfo, termRequest, waitForPidGone, type TermConnectOptions } from "../../core/term/client";
 import { TermError } from "../../core/term/errors";
 import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
@@ -160,6 +161,7 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
     await savePcSettings(deps.settingsPath, settings);
   }
 
+  await upgradeDaemon(deps, note);
   const action = pcAction(runningPcs(await listed(deps)), deps.cliVersion);
   if (action.kind === "already") {
     // ★웹 «원격 터미널 끊기» 뒤 원격은 그 pc 프로세스가 사는 동안 꺼진 채다 — 같은 판이어도 다시 띄워야 원격이 켜진다(R3).
@@ -179,6 +181,28 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
     }
   }
   return await withRegistration(deps, key, userId, withNotes(deps, later, await launchPc(deps)));
+}
+
+/**
+ * 옛 판 term 데몬을 이 판으로 바꾼다({@link daemonUpgrade}) — 끄면 PC 연결 세션도 같이 끝나고, 뒤의 pcAction 이 start 로 새 데몬에서 다시 띄운다.
+ * 사용자 세션이 있으면 사람에게 한 번 묻는다(기본 N — 그 세션들이 끝난다). 비대화면 묻지 않고 그대로 둔다.
+ */
+export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void): Promise<void> {
+  const info = readDaemonInfo(deps.paths);
+  if (!info) return;
+  const plan = daemonUpgrade(info.version, deps.cliVersion, await listed(deps), deps.register?.insideTermSession ?? false);
+  if (plan.kind === "keep") return;
+  if (plan.kind === "ask") {
+    if (!deps.interactive) return;
+    note(`This PC's terminal service is from an older AiNecto (${info.version}). Updating it to ${deps.cliVersion} closes `
+      + `${plan.sessions.length} open terminal session(s): ${plan.sessions.join(", ")}.`);
+    if (!yes(await promptLine(deps.io, "Update it now? [y/N]: "), false)) return;
+  }
+  note("Updating the AiNecto terminal service on this PC…");
+  await termRequest(deps.paths, { op: "kill-server" }, { start: false });
+  if (!(await waitForPidGone(info.pid, deps.stopDeadlineMs))) {
+    throw new CliCommandError("PC_START_FAILED", `The old terminal service (pid ${info.pid}) did not stop. Restart this PC, then run \`npx -y ainecto@latest\` again.`);
+  }
 }
 
 /** 연결 결과를 찍은 «뒤» 브라우저 자동 등록 — 종료 코드는 그대로(등록이 안 돼도 연결은 이미 됐다). */

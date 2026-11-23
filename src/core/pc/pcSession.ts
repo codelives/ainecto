@@ -88,7 +88,7 @@ export type PcAction =
 
 /**
  * 시작 판정 — 없으면 start · 이 판과 같은 판 하나면 already · 그 밖(옛 판·여러 개)은 replace(끄고 이 판으로 다시).
- * term 데몬 자체는 판이 달라도 그대로 둔다(내리면 사용자 세션이 죽는다) — 여기서 보지 않는다.
+ * term 데몬의 판은 여기서 보지 않는다 — {@link daemonUpgrade} 가 먼저 정한다.
  */
 export function pcAction(running: readonly RunningPc[], cliVersion: string): PcAction {
   const [only] = running;
@@ -99,6 +99,27 @@ export function pcAction(running: readonly RunningPc[], cliVersion: string): PcA
     return { kind: "already", pc: only };
   }
   return { kind: "replace", pcs: [...running] };
+}
+
+export type DaemonUpgrade = { kind: "keep" } | { kind: "restart" } | { kind: "ask"; sessions: string[] };
+
+/**
+ * term 데몬 판 판정(KAN-1348 · 11-23 Ryan 운영 시험) — 옛 판 데몬은 새 요청 칸(프로젝트 묶음 등)을 모르고 버린다.
+ * 데몬은 세션이 하나라도 있으면 끝나지 않아, PC 연결 세션만 갈아끼우면 11-17 데몬이 계속 남았다.
+ * 같은 판·판 모름·이 CLI 가 터미널 세션 안에서 돌고 있음(내리면 자기 셸이 죽는다) → keep.
+ * 사용자 세션(PC 연결 세션 말고)이 0 → restart(잃을 것 없음). 있으면 ask(내리면 그 세션들이 끝난다).
+ */
+export function daemonUpgrade(
+  daemonVersion: string | undefined,
+  cliVersion: string,
+  sessions: ReadonlyArray<Pick<ListedSession, "name" | "command">>,
+  insideTermSession: boolean,
+): DaemonUpgrade {
+  if (daemonVersion === undefined || daemonVersion === cliVersion || insideTermSession) {
+    return { kind: "keep" };
+  }
+  const user = sessions.filter((session) => !isPcCommand(session.command)).map((session) => session.name);
+  return user.length === 0 ? { kind: "restart" } : { kind: "ask", sessions: user };
 }
 
 /**

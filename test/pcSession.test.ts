@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
 import {
+  daemonUpgrade,
   npxCliCommand,
   pcAction,
   pcOutcome,
@@ -179,5 +180,28 @@ describe("CLI 입구 — 인자 없음·start·agent serve", () => {
     const result = await run(["start", "now"], false);
     expect(result.code).toBe(1);
     expect(result.err).toContain("Usage: ainecto start");
+  });
+});
+
+describe("daemonUpgrade — 옛 판 term 데몬 교체 판정(KAN-1348 · 11-23 Ryan 운영 시험)", () => {
+  const pc = { name: "ainecto-pc", command: ["npx", "-y", "--package", "@ainecto/mcp@0.15.3", "ainecto", "pc", "run"] };
+  const shell = { name: "work", command: ["/bin/zsh"] };
+
+  it("같은 판 · 판 모름 → keep", () => {
+    expect(daemonUpgrade("0.15.4", "0.15.4", [pc, shell], false)).toEqual({ kind: "keep" });
+    expect(daemonUpgrade(undefined, "0.15.4", [pc], false)).toEqual({ kind: "keep" });
+  });
+
+  it("옛 판 + PC 연결 세션뿐 → restart(잃을 사용자 세션 없음)", () => {
+    expect(daemonUpgrade("0.14.0-next.9.1", "0.15.4", [pc], false)).toEqual({ kind: "restart" });
+    expect(daemonUpgrade("0.14.0-next.9.1", "0.15.4", [], false)).toEqual({ kind: "restart" });
+  });
+
+  it("옛 판 + 사용자 세션 → ask(그 이름들)", () => {
+    expect(daemonUpgrade("0.14.0-next.9.1", "0.15.4", [pc, shell], false)).toEqual({ kind: "ask", sessions: ["work"] });
+  });
+
+  it("터미널 세션 안에서 실행 → keep(내리면 자기 셸이 죽는다)", () => {
+    expect(daemonUpgrade("0.14.0-next.9.1", "0.15.4", [pc], true)).toEqual({ kind: "keep" });
   });
 });
