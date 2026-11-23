@@ -33,6 +33,8 @@ export function replyForOutcome(
     case "exited":
       return failed("AGENT_EXITED", `${agentName} 가 끝났어요(code ${outcome.code ?? "-"}${outcome.signal ? `, ${outcome.signal}` : ""}).`
         + (outcome.stderrTail ? `\n${outcome.stderrTail}` : ""));
+    case "refused":
+      return failed(outcome.errorCode, `${agentName} 설정을 다 확인하지 못해 이 PC 에서 실행하지 않았어요(${outcome.reason}).`);
     case "result": {
       const { result } = outcome;
       if (result.isError) {

@@ -114,10 +114,10 @@ const TODO_NOTES: Readonly<Record<TodoOutcome, string>> = {
 /** 연결됨 표시 — serve 가 open 성공 뒤 찍는 줄의 앞머리. ★`ainecto start` 가 pc 세션 화면에서 이것을 기다린다(한 곳). */
 export const SERVE_CONNECTED_PREFIX = "Connected to AiNecto as ";
 /**
- * Agent 없음 — 이 PC 에 Claude Code·Codex 가 둘 다 없어 Agent 부분을 시작하지 않았다(원격이 허용이면 다리만 돈다). ★한 곳 —
+ * Agent 없음 — 이 PC 에 Claude Code·Codex·Antigravity 가 모두 없어 Agent 부분을 시작하지 않았다(원격이 허용이면 다리만 돈다). ★한 곳 —
  * pc 화면·`ainecto status`·start 의 출력이 이 문장을 쓴다.
  */
-export const AGENT_MISSING_LINE = "Agent: no Claude Code or Codex on this PC — install one, then `ainecto` again.";
+export const AGENT_MISSING_LINE = "Agent: no supported agent CLI on this PC — install one, then `ainecto` again.";
 /** 다시 붙음 표시 — 서버가 link 를 잊어 다시 열었을 때. `ainecto stop` 은 이것도 «준비됨»으로 본다. */
 export const SERVE_RECONNECTED_LINE = "AiNecto lost this connection (it may have restarted); connected again.";
 
@@ -344,11 +344,11 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         await session.interrupt();
         await session.close();
       }
-      if (outcome.kind !== "result") {
+      if (outcome.kind === "timeout" || outcome.kind === "exited") {
         if (live.get(adapter.id) === session) live.delete(adapter.id);
         // 이어 붙인 세션으로 떴다가 끝났다 — 다음 요청은 새 세션으로(같은 실패를 되풀이하지 않게).
         if (session.resumed) await deps.sessions.forget(offer.conversationUuid, adapter.id);
-      } else if (session.sessionRef) {
+      } else if (outcome.kind === "result" && session.sessionRef) {   // «refused»(돌리지 않음)는 세션·재개 값을 그대로 둔다
         await deps.sessions.set(offer.conversationUuid, adapter.id, session.sessionRef);
       }
       // 멈춘 차례 — 세션은 살아 있고(재개 값도 위에서 저장) 다음 요청은 같은 세션으로 «이어서» 간다.

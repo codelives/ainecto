@@ -150,7 +150,7 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
     }
     note("");
     note(`This connects this PC to AiNecto as ${status.account?.displayName ?? "your account"} (${deps.endpoint}).`);
-    note("  · Your AiNecto agent will run work on this PC (Claude Code / Codex).");
+    note("  · Your AiNecto agent will run work on this PC (Claude Code / Codex / Antigravity).");
     note("  · From AiNecto on the web, you can open terminals on this PC and run commands in them.");
     note("  · It keeps itself up to date — new AiNecto releases built and signed on AiNecto's GitHub are installed when this PC is idle.");
     if (!yes(await promptLine(deps.io, "Connect this PC? [y/N]: "), false)) {

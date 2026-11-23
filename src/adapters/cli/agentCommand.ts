@@ -1,10 +1,14 @@
-import { hostname } from "node:os";
+import { createHash } from "node:crypto";
+import { homedir, hostname } from "node:os";
+import { join } from "node:path";
 import { onStopSignals } from "../../core/async/stopSignals";
 import type { TokenProvider } from "../../core/auth/oauth";
 import { ensurePrivateDir } from "../../core/fs/privateFiles";
 import { McpRpcClient } from "../../core/mcp/rpcClient";
 import { AGENT_MCP_CLIENT_NAMES, agentEnv, agentReplySchema, ainectoBridge, type AgentAdapter, type AgentId } from "../../core/agent/agents";
 import type { AinectoEnv } from "../../core/config/endpoints";
+import { antigravityAdapter } from "../../core/agent/antigravity";
+import { antigravityMcpConfig } from "../../core/agent/antigravityArgs";
 import { spawnAgent } from "../../core/agent/child";
 import { claudeAgentArgs, claudeMcpConfig } from "../../core/agent/claudeArgs";
 import { claudeCodeAdapter } from "../../core/agent/claudeCode";
@@ -44,7 +48,7 @@ export function isPcRunCommand(domain: string | undefined, action: string | unde
  * 설치·로그인은 시작할 때 한 번 본다(모델 호출 0) — 나중에 로그인했으면 serve 를 다시 띄운다.
  */
 /** serve 시작 안내 — Agent 마다 과금 주체. */
-const BILLED_TO: Readonly<Record<AgentId, string>> = { "claude-code": "Anthropic", codex: "OpenAI" };
+const BILLED_TO: Readonly<Record<AgentId, string>> = { "claude-code": "Anthropic", codex: "OpenAI", antigravity: "Google" };
 
 /**
  * @param agentName 이 폴더의 에이전트 이름({@code .ainecto/agent.local}, 선택) — 있으면 할 일을 돌리는 한 종류의 신원 이름으로 open 에 싣는다.
@@ -81,7 +85,8 @@ export async function executeAgentServe(input: {
     },
     log,
   });
-  const writeTools = writeToolNames((await tools.list()) as Array<{ name: string; annotations?: { readOnlyHint?: boolean } }>);
+  const serverTools = (await tools.list()) as Array<{ name: string; annotations?: { readOnlyHint?: boolean } }>;
+  const writeTools = writeToolNames(serverTools);
 
   // 브리지 = 지금 돌고 있는 이 CLI 그대로(같은 node · 같은 스크립트 · 같은 서버 주소).
   const cliScript = process.argv[1];
@@ -93,6 +98,13 @@ export async function executeAgentServe(input: {
     claudeCodeAdapter({ ...shared, args: ({ textMaxCharacters, documentsMax, resumeSessionId, agentName }) =>
       claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters, documentsMax), mcpConfig: claudeMcpConfig(bridge(agentName)), resumeSessionId }) }),
     codexAdapter({ ...shared, appServerArgs: (agentName) => codexAppServerArgs(bridge(agentName), writeTools), clientVersion: CLI_VERSION }),
+    antigravityAdapter({ spawnImpl: spawnAgent, env: shared.env, home: homedir(), log, writeTools,
+      toolNames: new Set(serverTools.map((tool) => tool.name)),
+      // 연결 이름마다 한 폴더 — 이름 글자를 폴더 이름에 쓰지 않는다(해시).
+      workDir: (agentName) => join(paths.antigravity,
+        agentName ? `agent-${createHash("sha256").update(agentName).digest("hex").slice(0, 16)}` : "chat"),
+      mcpConfig: (agentName) => antigravityMcpConfig(bridge(agentName)),
+      schema: agentReplySchema }),
   ];
   const checks = await checkAgents(all, log);
   log.write({ event: "serve_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: input.endpoint, host,
@@ -103,7 +115,7 @@ export async function executeAgentServe(input: {
   const remote = await pcRemoteSetup({ endpoint: input.endpoint, auth: input.auth, account: () => readAccount(client()), io: input.io });
   const plan = pcPlan({ agents: agents.length, remoteEnabled: remote.remoteEnabled });
   if (plan === "nothing") {
-    throw new Error("Neither Claude Code (`claude`) nor Codex (`codex`) is on PATH, and terminals from the web are off on this PC. "
+    throw new Error("None of Claude Code (`claude`), Codex (`codex`) or Antigravity (`agy`) is on PATH, and terminals from the web are off on this PC. "
       + "Install one and sign in, or allow terminals from the web with `ainecto remote on`, then run `ainecto` again.");
   }
   // ★자동 업그레이드(KAN-738 next.10) — 다리의 서버 응답마다 목표·한가를 보고, 한가할 때 도우미를 띄운다. 로컬 빌드는 절대 안 함.

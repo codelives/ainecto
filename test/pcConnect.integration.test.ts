@@ -365,7 +365,7 @@ describe("이 PC 연결 — 실 데몬", () => {
     await start.answer("Connect this PC?", "y");
     await start.answer("Also allow terminals", "y");
     expect(await done).toBe(0);
-    expect(start.out()).toContain("No Claude Code or Codex was found");
+    expect(start.out()).toContain("No Claude Code, Codex or Antigravity was found");
     expect(start.out()).toContain("install one, then run `ainecto` again");
   }, LONG);
 

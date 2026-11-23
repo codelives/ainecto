@@ -51,10 +51,10 @@ export function pcResultText(result: PcResult): string {
     return `This PC is already connected to AiNecto (folder ${result.folder}, version ${result.version}). ${STOP} Log: ${result.log}`;
   }
   const use = result.agentMissing
-    ? "From AiNecto on the web you can open a terminal on this PC and run commands. No Claude Code or Codex was found, "
+    ? "From AiNecto on the web you can open a terminal on this PC and run commands. No Claude Code, Codex or Antigravity was found, "
       + "so AiNecto agent work cannot run here yet — install one, then run `ainecto` again."
     : "From AiNecto on the web you can open a terminal on this PC and run commands, and your AiNecto agent can run work here "
-      + "(Claude Code or Codex).";
+      + "(Claude Code, Codex or Antigravity).";
   return `This PC is now connected to AiNecto. ${use} It keeps running after you close this window. ${STOP} Log: ${result.log}`;
 }
 

@@ -36,6 +36,14 @@ export type AgentLogRecord =
   | { event: "agent_mcp_servers_off"; pid: number; agent: string; names: string[] }
   /** Claude: 이 프로세스가 실제로 무엇으로 도는지(init 의 출처 이름 — 구독이면 none). 키 값은 남기지 않는다. */
   | { event: "agent_auth_source"; pid: number; agent: string; apiKeySource: string }
+  /** Antigravity: 차례를 돌리지 않았다 — 이 PC 의 agy 설정을 다 확인하지 못했다(설계 r3 §2-2). 설정 내용은 싣지 않는다(이유·경로만). */
+  | { event: "agent_policy_unverified"; agent: string; conversationUuid: string; reason: string; path?: string }
+  /** Antigravity: 거절했어야 할 브리지 밖 서버의 도구가 실제로 돌았다(사후 대조) — 그 차례는 실패. 서버·도구 이름만. */
+  | { event: "agent_policy_violation"; pid: number; agent: string; conversationUuid: string; server: string; tool: string }
+  /** 설치된 판이 검증한 판과 다르다 — 막지 않고 알린다. */
+  | { event: "agent_version_unverified"; agent: string; version: string; verified: string }
+  /** Antigravity: 한 차례의 토큰 수(비용 칸이 없다 — 로그로만). */
+  | { event: "agent_usage"; pid: number; agent: string; conversationUuid: string; inputTokens?: number; outputTokens?: number }
   /** Agent 한 차례 — Chat 요청은 {@code turnUuid}, 에이전트 할 일(자동 실행)은 {@code todoId}. */
   | { event: "agent_request"; turnUuid?: string; todoId?: string; agent: string; conversationUuid: string; pid: number; textLength: number }
   | { event: "agent_response"; turnUuid?: string; todoId?: string; agent: string; ms: number; outcome: string; status: string; errorCode?: string; subtype?: string;
