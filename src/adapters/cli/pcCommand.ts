@@ -264,7 +264,7 @@ export async function registerBrowserOnStart(
       pcId: settings.pcId,
       pcKey,
       transport: await register.transport(settings.pcId),
-      secret,
+      confirm: { kind: "secret", secret },
       pin: (browser) => pinBrowser({ keysPath: deps.keysPath, key: account.key, pcKey, browser, now: register.now() }),
       waitMs: register.waitMs,
       cancel: interrupt.signal,

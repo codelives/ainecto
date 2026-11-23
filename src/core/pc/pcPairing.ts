@@ -6,6 +6,7 @@ import {
   importSigningKey,
   macEquals,
   NONCE_SEED_BYTES,
+  pairCodes,
   pairCommitment,
   pairDoneInput,
   pairTranscript,
@@ -21,10 +22,12 @@ import {
 } from "../term/e2e";
 
 /**
- * PC 쪽 브라우저 등록 한 번(설계 terminal-e2e §11-1 · §12 · auto-register-0.15.2 §1) — 약속값 → 브라우저 제안(macB 검증) → 핀 →
- * 드러내기(macP) → done 서명. 서버 중계는 {@link PairTransport} 로 주입한다(운영 = pcPairRelay.createPairRelay).
- * ★시도는 한 번: 난수 한 쌍. 틀리거나 기한이 지나면 끝 — 다시 하려면 사람이 `npx -y ainecto@latest` 를 다시 실행한다.
- * 확인은 주소로 넘긴 일회용 비밀 S 로 키를 건 macB·macP 하나다(코드 비교 등록은 0.15.3 에서 지웠다 — KAN-1348 반려).
+ * PC 쪽 브라우저 등록 한 번(설계 terminal-e2e §11-1 · §12 · auto-register-0.15.2 §1 · approve-new-device §3-2) — 약속값 → 브라우저 제안 →
+ * 확인 → 핀 → done 서명. 서버 중계는 {@link PairTransport} 로 주입한다(운영 = pcPairRelay.createPairRelay).
+ * ★시도는 한 번: 난수 한 쌍. 틀리거나 기한이 지나면 끝.
+ * ★확인 방식은 시도를 연 원인이 정한다({@link PairConfirm}) — 실패한 방식에서 다른 방식으로 넘어가지 않는다.
+ *   secret   로컬 `npx` 자동 등록 — 주소로 넘긴 일회용 비밀 S 로 키를 건 macB 검증 → 핀 → 드러내기(macP) → done
+ *   approval 새 기기 허용 — 드러내기 → T → 이미 믿는 브라우저가 그 T 를 허용(숫자 6자리 비교) → 핀 → done
  */
 
 /** 짝짓기 한 번의 기한 — 브라우저 요청을 기다리고 코드를 치는 것까지(설계 §9 C-E1 승인: 5분). */
@@ -64,6 +67,27 @@ export interface MatchedBrowser {
   name: string;
 }
 
+/** 확인 방식 — 시도를 연 원인이 정한다. */
+export type PairConfirm =
+  | { kind: "secret"; secret: Uint8Array }
+  | {
+    kind: "approval";
+    /**
+     * 이미 믿는 브라우저의 허용을 기다린다 — 그 T 에 허용이 오면 true · 거절이면 false. 기한·중단은 signal 로(끝나면 거절 · reject).
+     * 숫자는 {@link pairCodes}(T).a — 새 기기도 같은 T 로 같은 숫자를 계산해 보인다.
+     */
+    approve(request: ApprovalRequest, signal: AbortSignal): Promise<boolean>;
+  };
+
+/** 허용을 물을 것 — T 전체가 허용을 묶는다(approve-new-device §3-3). */
+export interface ApprovalRequest {
+  transcript: Uint8Array;
+  /** 두 화면에 뜨는 숫자 6자리. */
+  code: string;
+  /** 다듬은 기기 이름(핀에 저장될 이름과 같다) — 신원 증거가 아니다. */
+  name: string;
+}
+
 export type PairOutcome =
   /** doneError 가 있으면 PC 에는 핀했지만 reveal·done 을 못 보냈다(브라우저는 PC 핀을 저장하지 않는다) — 그 사유. */
   | { kind: "paired"; browser: MatchedBrowser; doneError: string | undefined }
@@ -78,8 +102,7 @@ export async function runPairing(input: {
   pcId: string;
   pcKey: EcPrivateJwk;
   transport: PairTransport;
-  /** 주소로 넘긴 일회용 비밀 S(32바이트) — macB 를 검증하고 macP 를 단다. */
-  secret: Uint8Array;
+  confirm: PairConfirm;
   /** 확인이 맞았을 때 — 브라우저 키를 핀한다(pc-keys.json). 던지면 reveal·done 을 보내지 않는다. */
   pin: (browser: MatchedBrowser) => Promise<void>;
   /** 기한 — 운영은 {@link PAIR_WAIT_MS}. */
@@ -133,8 +156,21 @@ export async function runPairing(input: {
     const browser: MatchedBrowser = { keyId: offer.keyId, publicJwk, name: browserNameOf(offer.name) };
     const transcript = (): Promise<Uint8Array> =>
       pairTranscript({ userId: input.userId, pcId: input.pcId, pcPublicRaw, browserPublicRaw: offer.publicRaw, nP, nB: offer.nB });
+    const confirm = input.confirm;
+    if (confirm.kind === "approval") {
+      // ★허용 전에 드러낸다(공개값) — 새 기기가 약속값과 대조하고 같은 T·숫자를 계산한다. 핀은 그 T 의 허용 뒤에만.
+      const revealed = await relayed(() => input.transport.reveal(pcPublicRaw, nP, signal));
+      if (revealed === "timeout") return { kind: "timeout" };
+      const t = await transcript();
+      const request: ApprovalRequest = { transcript: t, code: (await pairCodes(t)).a, name: browser.name };
+      const accepted = await relayed(() => confirm.approve(request, signal));
+      if (accepted === "timeout") return { kind: "timeout" };
+      if (!accepted) return { kind: "code-mismatch" };
+      await input.pin(browser);
+      return await finish(browser, t, async () => {});
+    }
     // ★S 를 아는 브라우저가 이 시도(attemptId·commit)에 이 키·이름을 냈는가 — 맞을 때만 핀하고 드러낸다(macB 없는 브라우저는 거절).
-    const keys = await registerKeys(input.secret);
+    const keys = await registerKeys(confirm.secret);
     const expected = await registerOfferMac(keys.browser, { userId: input.userId, pcId: input.pcId, attemptId: offer.attemptId, commit,
       browserPublicRaw: offer.publicRaw, keyId: offer.keyId, nB: offer.nB, name: offer.name });
     if (!offer.macB || !macEquals(offer.macB, expected)) return { kind: "code-mismatch" };

@@ -102,7 +102,7 @@ async function registerOnce(own?: EcPrivateJwk) {
   const browser = await fakeBrowser({ own });
   const pcKey = await pcKeyOf();
   const result = runPairing({
-    userId: USER_ID.toLowerCase(), pcId: PC_ID, pcKey, transport: browser.transport, secret: browser.secret, waitMs: 10_000,
+    userId: USER_ID.toLowerCase(), pcId: PC_ID, pcKey, transport: browser.transport, confirm: { kind: "secret", secret: browser.secret }, waitMs: 10_000,
     pin: (matched) => pinBrowser({ keysPath: keysPath(), key: KEY, pcKey, browser: matched, now: NOW }),
   });
   return { browser, result, keyId: browser.keyId };

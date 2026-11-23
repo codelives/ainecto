@@ -179,7 +179,7 @@ describe("짝짓기 중계 — pair/open·send·poll 왕복(A5)", () => {
     const pinned: MatchedBrowser[] = [];
     const outcome = await runPairing({
       userId: USER_ID, pcId: PC_ID, pcKey: await generateSigningJwk(), transport: relay(), waitMs: 10_000,
-      secret,
+      confirm: { kind: "secret", secret },
       pin: async (browserKey) => { pinned.push(browserKey); },
     });
     return { outcome, pinned };
