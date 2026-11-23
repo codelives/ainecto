@@ -1,4 +1,5 @@
 import { FileTokenStore } from "../../core/auth/tokenStore";
+import { onStopSignals } from "../../core/async/stopSignals";
 import { launchBrowser, OAuthClient, usableAccessToken } from "../../core/auth/oauth";
 import { resolveEndpoint, assertEnv, type AinectoEnv } from "../../core/config/endpoints";
 import { parsePayloadSource } from "../../core/input/payloadSource";
@@ -225,9 +226,9 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         waitMs: PAIR_WAIT_MS,
         interrupt: () => {
           const controller = new AbortController();
-          const skip = (): void => controller.abort();
-          process.once("SIGINT", skip);
-          return { signal: controller.signal, dispose: () => { process.off("SIGINT", skip); } };
+          // 멈춤 신호는 onStopSignals 한 곳(once 면 npx 아래 두 번째 Ctrl+C 에 처리기가 없어 기본 동작으로 죽는다).
+          const off = onStopSignals(() => controller.abort());
+          return { signal: controller.signal, dispose: off };
         },
         now: () => new Date(),
       },
