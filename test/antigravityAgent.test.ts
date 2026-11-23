@@ -127,18 +127,19 @@ describe("Antigravity 고정 인자·인증(모델 호출 0)", () => {
   });
 });
 
-function world(env: Record<string, string> = {}) {
+function world(env: Record<string, string> = {}, options: { workDir?: string } = {}) {
   const t = tempRoot();
   const argsLog = join(t.root, "agy-args.jsonl");
+  const lifeLog = join(t.root, "agy-life.log");
   const logPath = join(t.root, "agent.log");
   const spawnImpl: AgentSpawn = (command, args, opts) => spawn(command === "agy" ? process.execPath : command,
     command === "agy" ? [FAKE_AGY, ...args] : args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
   const adapter = antigravityAdapter({
     spawnImpl, home: t.home, log: new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`),
-    env: { ...process.env, FAKE_AGY_ARGS_LOG: argsLog, ...env },
+    env: { ...process.env, FAKE_AGY_ARGS_LOG: argsLog, FAKE_AGY_LIFE_LOG: lifeLog, ...env },
     writeTools: new Set(["create_documents", "update_documents"]),
     toolNames: new Set(["search", "create_documents", "update_documents"]),
-    workDir: (name) => join(t.root, "app", "antigravity", name ? `agent-${name}` : "chat"),
+    workDir: (name) => options.workDir ?? join(t.root, "app", "antigravity", name ? `agent-${name}` : "chat"),
     mcpConfig: () => OURS,
     schema: agentReplySchema,
   });
@@ -146,7 +147,8 @@ function world(env: Record<string, string> = {}) {
   const logs = () => readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
   const open = (resumeRef?: string): AgentSession =>
     adapter.open({ conversationUuid: "conv-uuid", textMaxCharacters: 1000, documentsMax: 10, ...(resumeRef ? { resumeRef } : {}) });
-  return { t, adapter, runs, logs, open };
+  const life = () => (existsSync(lifeLog) ? readFileSync(lifeLog, "utf8").trim().split("\n") : []);
+  return { t, adapter, runs, logs, open, life };
 }
 
 const alive = (pid: number): boolean => {
@@ -243,4 +245,80 @@ describe("Antigravity 세션 — 이벤트 → 결과 계약(r2 표)", () => {
     expect(w.logs().find((r) => r.event === "agent_version_unverified")).toMatchObject({ version: "1.6.0", verified: "1.5.14" });
     expect(await w.adapter.authStatus()).toMatchObject({ ready: false });
   });
+});
+
+describe("Antigravity 차례 수명 — 사전 점검부터 프로세스 종료까지(구현 리뷰 1차 P0-1·P0-2)", () => {
+  async function heldPreflight(stop: (session: AgentSession) => Promise<void>) {
+    const hold = join(mkdtempSync(join(tmpdir(), "agy-hold-")), "release");
+    const w = world({ FAKE_AGY_PLUGINS_HOLD: hold });
+    const session = w.open("conv-keep");
+    const turn = session.send("hello", 10_000);
+    await untilTrue(() => existsSync(`${hold}.started`));   // 사전 점검의 agy plugin list 가 붙잡혀 있다
+    await stop(session);
+    const outcome = await turn;
+    writeFileSync(hold, "go");                                // 붙잡은 답을 놓아도
+    await new Promise((r) => setTimeout(r, 600));
+    return { w, session, outcome };
+  }
+
+  it("P0-1 사전 점검 중 interrupt → 바로 interrupted · 재개 값 그대로 · 답을 놓아도 agy -p 0", async () => {
+    const { w, session, outcome } = await heldPreflight(async (s) => await s.interrupt());
+    expect(outcome).toMatchObject({ kind: "result", result: { isError: true, subtype: "interrupted" } });
+    expect(session.sessionRef).toBe("conv-keep");
+    expect(w.runs()).toEqual([]);
+    expect(session.alive).toBe(true);
+  });
+
+  it("P0-1 사전 점검 중 close → interrupted · agy -p 0", async () => {
+    const { w, session, outcome } = await heldPreflight(async (s) => await s.close());
+    expect(outcome).toMatchObject({ kind: "result", result: { subtype: "interrupted" } });
+    expect(w.runs()).toEqual([]);
+    expect(session.alive).toBe(false);
+  });
+
+  it("P0-1 사전 점검 중 기한 → timeout · 늦게 끝난 점검이 agy -p 를 띄우지 않는다", async () => {
+    const hold = join(mkdtempSync(join(tmpdir(), "agy-hold-")), "release");
+    const w = world({ FAKE_AGY_PLUGINS_HOLD: hold });
+    const session = w.open();
+    expect(await session.send("hello", 300)).toEqual({ kind: "timeout" });
+    writeFileSync(hold, "go");
+    await new Promise((r) => setTimeout(r, 600));
+    expect(w.runs()).toEqual([]);
+  });
+
+  it("작업 폴더를 못 쓰면 → refused(모델 실행 0)", async () => {
+    const blocker = join(mkdtempSync(join(tmpdir(), "agy-file-")), "not-a-dir");
+    writeFileSync(blocker, "x");
+    const w = world({}, { workDir: join(blocker, "chat") });
+    const outcome = await w.open().send("hello", 10_000);
+    expect(outcome).toMatchObject({ kind: "refused", errorCode: "AGENT_POLICY_UNVERIFIED" });
+    expect((outcome as { reason: string }).reason).toMatch(/^could not prepare the work folder/);
+    expect(w.runs()).toEqual([]);
+  });
+
+  it("멈춤과 결과가 겹치면(끄는 중에 result) → interrupted(성공으로 바꾸지 않는다)", async () => {
+    const w = world();
+    const session = w.open();
+    const turn = session.send("result-on-term", 10_000);
+    await untilTrue(() => w.runs().length === 1 && session.pid > 0);
+    await new Promise((r) => setTimeout(r, 300));
+    await session.interrupt();
+    expect(await turn).toMatchObject({ kind: "result", result: { isError: true, subtype: "interrupted" } });
+    expect(w.logs().some((r) => r.event === "agent_usage")).toBe(true);   // result 줄은 실제로 읽혔다(그래도 멈춤)
+  });
+
+  it("P0-2 result 뒤 남은 프로세스 → 다음 차례는 그것이 끝난 뒤에만 띄운다(B6 기다린 뒤 끔) · 그 늦은 단계는 다음 차례에 안 섞인다", async () => {
+    const w = world();
+    const session = w.open();
+    expect(await session.send("linger", 10_000)).toMatchObject({ kind: "result", result: { structuredOutput: { reply: "lingering" } } });
+    const first = session.pid;
+    expect(alive(first)).toBe(true);   // 결과를 냈어도 아직 떠 있다
+    const second = await session.send("write-doc", 20_000);
+    expect(second).toMatchObject({ kind: "result", result: { structuredOutput: { reply: "wrote" } } });
+    const life = w.life();
+    expect(life.indexOf(`end ${first}`)).toBeGreaterThanOrEqual(0);
+    expect(life.indexOf(`end ${first}`)).toBeLessThan(life.indexOf(`start ${session.pid}`));   // 앞 것이 끝난 뒤에야 다음 -p
+    expect((second as Extract<TurnOutcome, { kind: "result" }>).facts.seen).not.toContain("z".repeat(32));
+    expect(w.logs().find((r) => r.event === "process_exit" && r.pid === first)).toBeDefined();   // 그 세대 pid 로 남긴다
+  }, 30_000);
 });
