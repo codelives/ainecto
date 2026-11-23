@@ -6,7 +6,8 @@ import type { RemoteLogRecord } from "../term/remote";
  * PC 알림 — 서버가 침해됐을 때의 사후 경보(설계 terminal-e2e §4-6 · §11-7 · Ryan 11-21 «PC 알림 주는 정도로만 하자»). 새 의존성 0.
  *   macOS   osascript — 고정 스크립트(`on run argv`)에 제목·본문을 «데이터 인자»로만 넘긴다(셸 문자열 조립 없음)
  *   Linux   notify-send — 인자 배열(`--` 뒤)
- *   그 밖    알림 없음 — 로그 한 줄(Windows 는 이번에 로그만)
+ *   Windows PowerShell 5.1 기본 WinRT 알림 — 제목·본문은 base64 로만 스크립트에 싣는다(launch.windowsToastScript)
+ *   그 밖    알림 없음 — 로그 한 줄
  * ★알리는 것은 PC 가 로컬에서 확인한 사건뿐(§11-7): 짝짓기 완료(done 송신 뒤) · 새 채널 키 소유 확인(confirm 복호 뒤) ·
  *   데몬이 실제로 셸을 만든 뒤 · 첫 명령이 시작된 뒤. hello 수신만으로는 알리지 않는다. 서버 메시지를 믿지 않는다.
  * ★문구에 명령 원문·폴더·화면·코드·키를 넣지 않는다. 실패(도구 없음·권한·헤드리스)는 이유 코드 한 줄만 남기고 동작을 막지 않는다(stderr 원문 없음).

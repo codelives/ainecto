@@ -2,6 +2,7 @@ import { stat, writeFile } from "node:fs/promises";
 import { unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
+import { endedFromOutside } from "../os/launch";
 import { acquireDaemonLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
@@ -395,12 +396,13 @@ class TermDaemon {
   }
 
   /**
-   * 세션이 스스로 끝났다. ★매니페스트에서 지우는 것은 «신호 없이» 끝났을 때만이다 — 신호로 끝난 세션(재부팅·로그아웃 때
-   * 시스템이 보낸 SIGTERM·SIGHUP 포함)은 `restore` 가 다시 띄울 수 있게 남긴다. kill 로 지운 세션은 이미 표에 없다.
+   * 세션이 스스로 끝났다. ★매니페스트에서 지우는 것은 «바깥 사정 없이» 끝났을 때만이다 — 신호로 끝난 세션(재부팅·로그아웃 때
+   * 시스템이 보낸 SIGTERM·SIGHUP 포함 · Windows 는 콘솔 닫힘 끝 코드 — launch.endedFromOutside)은 `restore` 가 다시 띄울 수 있게
+   * 남긴다. kill 로 지운 세션은 이미 표에 없다.
    */
   private sessionEnded(session: TermSession, exitCode: number, signal: number): void {
     const current = this.sessions.get(session.name) === session;
-    const kept = current && signal !== 0;
+    const kept = current && endedFromOutside(exitCode, signal);
     if (current) {
       this.sessions.delete(session.name);
       if (!kept) {
