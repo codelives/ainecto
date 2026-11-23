@@ -209,9 +209,9 @@ describe("ainecto agent serve", () => {
     expect(JSON.parse(readFileSync(w.sessionsPath, "utf8")).byAgent.antigravity["conv-a"].sessionId).toBe("conv-keep");
   });
 
-  it("Antigravity 앞 프로세스를 끄지 못하면 → 이번·다음(다른 대화 포함) 요청 모두 AGENT_PREVIOUS_RUNNING · agy -p 0 → 그것이 실제로 끝난 뒤 같은 재개 값으로 다시 된다(구현 리뷰 2차 P1)", async () => {
+  it.each(["silent", "eperm"] as const)("Antigravity 앞 프로세스를 끄지 못하면(kill %s) → 이번·다음(다른 대화 포함) 요청 모두 AGENT_PREVIOUS_RUNNING · agy -p 0 → 그것이 실제로 끝난 뒤 같은 재개 값으로 다시 된다(구현 리뷰 2차 P1 · 3차 kill error)", async (mode) => {
     const life = join(mkdtempSync(join(tmpdir(), "agy-life-")), "life.log");
-    const w = startServe({ installed: ["antigravity"], unkillableAgy: true, env: { FAKE_AGY_LIFE_LOG: life } });
+    const w = startServe({ installed: ["antigravity"], unkillableAgy: mode, env: { FAKE_AGY_LIFE_LOG: life } });
     const runs = () => (existsSync(w.agyArgsLog) ? readFileSync(w.agyArgsLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[] }) : []);
     w.server.offer("t1", "conv-a", "linger", undefined, "antigravity");
     expect(await until(() => w.server.replies()[0])).toMatchObject({ turnUuid: "t1", status: "DONE" });
