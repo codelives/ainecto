@@ -209,6 +209,32 @@ describe("ainecto agent serve", () => {
     expect(JSON.parse(readFileSync(w.sessionsPath, "utf8")).byAgent.antigravity["conv-a"].sessionId).toBe("conv-keep");
   });
 
+  it("Antigravity 앞 프로세스를 끄지 못하면 → 이번·다음(다른 대화 포함) 요청 모두 AGENT_PREVIOUS_RUNNING · agy -p 0 → 그것이 실제로 끝난 뒤 같은 재개 값으로 다시 된다(구현 리뷰 2차 P1)", async () => {
+    const life = join(mkdtempSync(join(tmpdir(), "agy-life-")), "life.log");
+    const w = startServe({ installed: ["antigravity"], unkillableAgy: true, env: { FAKE_AGY_LIFE_LOG: life } });
+    const runs = () => (existsSync(w.agyArgsLog) ? readFileSync(w.agyArgsLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[] }) : []);
+    w.server.offer("t1", "conv-a", "linger", undefined, "antigravity");
+    expect(await until(() => w.server.replies()[0])).toMatchObject({ turnUuid: "t1", status: "DONE" });
+    const first = Number(/start (\d+)/.exec(readFileSync(life, "utf8"))?.[1]);
+    w.server.offer("t2", "conv-a", "next", undefined, "antigravity");
+    const second = await until(() => w.server.replies()[1], 40_000);   // B6 기다림 + 강제 종료 두 단계(못 끔)
+    w.server.offer("t3", "conv-b", "next", undefined, "antigravity");   // 다른 대화 — 세션이 바뀌어도
+    const third = await until(() => w.server.replies()[2], 40_000);
+    expect(second).toMatchObject({ turnUuid: "t2", status: "FAILED", errorCode: "AGENT_PREVIOUS_RUNNING" });
+    expect(third).toMatchObject({ turnUuid: "t3", status: "FAILED", errorCode: "AGENT_PREVIOUS_RUNNING" });
+    expect(runs()).toHaveLength(1);                                    // 막힌 동안 새 -p 0
+    process.kill(first, "SIGTERM");                                    // 실제로 끝남
+    await until(() => (readFileSync(life, "utf8").includes(`end ${first}`) ? true : undefined));
+    await new Promise((r) => setTimeout(r, 200));
+    w.server.offer("t4", "conv-a", "again", undefined, "antigravity");
+    const fourth = await until(() => w.server.replies()[3], 20_000);
+    await finish(w);
+    expect(fourth).toMatchObject({ turnUuid: "t4", status: "DONE" });
+    expect(runs()).toHaveLength(2);
+    expect(runs()[1]!.args.slice(-2)).toEqual(["--conversation", `conv-${first}`]);   // 재개 값은 버려지지 않았다
+    expect(logRecords(w).filter((r) => r.event === "agent_previous_running").length).toBeGreaterThanOrEqual(2);
+  }, 120_000);
+
   it("시작 전에 멈춘 차례는 Agent 에 넣지 않고 STOPPED", async () => {
     const w = startServe();
     w.server.push({ state: "OPEN", offers: [{ turnUuid: "t1", conversationUuid: "conv-a", text: "hang" }], stops: ["t1"] });

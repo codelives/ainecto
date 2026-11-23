@@ -55,7 +55,8 @@ const reply = (text) => out({ event: "result", result: { conversation_id: conver
   structured_output: { reply: text, openDocumentUuids: [], openCardUuids: [] }, usage: { input_tokens: 10, output_tokens: 2 } } });
 
 createInterface({ input: process.stdin }).once("line", (line) => {
-  const text = JSON.parse(line).message.content;
+  // serve 가 앞에 붙이는 «열기» 규칙 줄([AiNecto rule] …)은 떼고 본다(가짜 claude 와 같다).
+  const text = JSON.parse(line).message.content.replace(/^\[AiNecto rule\][^\n]*\n\n?/, "");
   out({ event: "init", conversation_id: conversationId, init: { model: "fake", cwd: process.cwd(), tools: ["call_mcp_tool"] } });
   if (text === "crash") process.exit(3);
   if (text === "hang") {
