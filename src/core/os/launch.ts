@@ -340,6 +340,18 @@ export function runQuiet(file: string, args: readonly string[]): Promise<void> {
 }
 
 /**
+ * 세션이 «바깥 사정»으로 끝났나(순수) — 그렇다면 `term restore` 가 다시 띄울 수 있게 목록에 남긴다.
+ * Unix = 신호로 끝남(재부팅·로그아웃의 SIGTERM·SIGHUP 포함 — 지금 그대로).
+ * Windows 의 node-pty 는 신호를 주지 않는다(늘 0). 재부팅·로그오프로 끝난 콘솔 프로그램의 끝 코드는 끝내는 길마다 다르다
+ * (콘솔 닫힘 기본 처리 STATUS_CONTROL_C_EXIT · 강제 종료 1 …) — 그래서 «0 이 아닌 끝»을 모두 남긴다. 사용자가 `exit` 로 끝낸 셸(0)만 지운다.
+ * 한계: 스스로 실패하고 끝난 명령(0 아닌 끝)도 남아 `restore` 가 다시 띄운다(Unix 는 지운다).
+ */
+export function endedFromOutside(exitCode: number, signal: number, platform: NodeJS.Platform = process.platform): boolean {
+  if (signal !== 0) return true;
+  return platform === "win32" && exitCode !== 0;
+}
+
+/**
  * 이 프로세스의 제어 터미널을 여는 자리(순수) — 표준 입출력이 파이프·리다이렉트여도 그 창의 터미널이다(`ainecto pair` 의 코드 주고받기).
  * Unix = `/dev/tty`. Windows 에는 `/dev/tty` 가 없다(Node 는 `C:\dev\tty` 로 풀어 ENOENT) — 콘솔 장치 `CONIN$`·`CONOUT$` 를 쓴다.
  * 콘솔 장치는 있는 것을 여는 것이라 `r+`(OPEN_EXISTING) — `w` 는 CREATE_ALWAYS 로 연다. 콘솔이 없는 프로세스면 열기가 실패한다(/dev/tty 와 같다).
@@ -363,7 +375,29 @@ export function notifyTool(platform: NodeJS.Platform = process.platform): { name
   if (platform === "linux") {
     return { name: "notify-send", file: "notify-send", args: (title, body) => ["--", title, body] };
   }
+  if (platform === "win32") {
+    // Windows 기본 PowerShell 5.1 의 WinRT 알림(새 프로그램·모듈 없음). 제목·본문은 base64 로만 실어 스크립트 글자에 섞이지 않는다.
+    return { name: "powershell", file: "powershell.exe", args: (title, body) => ["-NoProfile", "-NonInteractive", "-EncodedCommand", windowsToastScript(title, body)] };
+  }
   return undefined;
+}
+
+/** Windows 알림 띄우기 PowerShell 스크립트 → `-EncodedCommand` 값(UTF-16LE base64 · 순수). 알림의 보낸 이름은 Windows PowerShell(AppUserModelID). */
+export function windowsToastScript(title: string, body: string): string {
+  const b64 = (text: string): string => Buffer.from(text, "utf8").toString("base64");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$t = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(title)}'))`,
+    `$b = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64(body)}'))`,
+    "[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]",
+    "$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)",
+    "$n = $x.GetElementsByTagName('text')",
+    "[void]$n.Item(0).AppendChild($x.CreateTextNode($t))",
+    "[void]$n.Item(1).AppendChild($x.CreateTextNode($b))",
+    "$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'",
+    "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($x))",
+  ].join("\n");
+  return Buffer.from(script, "utf16le").toString("base64");
 }
 
 /** macOS 첫 알림 허용 안내(순수) — `ainecto setup`·`ainecto doctor` 가 한 줄 싣는다. 다른 OS 는 없음. */

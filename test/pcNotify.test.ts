@@ -12,7 +12,7 @@ import {
   type NotifyClock,
   type NotifyEvent,
 } from "../src/core/pc/pcNotify";
-import { notificationHint, notifyTool } from "../src/core/os/launch";
+import { notificationHint, notifyTool, windowsToastScript } from "../src/core/os/launch";
 import { DaemonLog } from "../src/core/term/daemonLog";
 import type { RemoteLogRecord } from "../src/core/term/remote";
 
@@ -67,13 +67,22 @@ describe("PC 알림(설계 §4-6 · §11-7 · C-E3)", () => {
     expect(notificationText(event("shell"), 0).body).not.toContain("k1");
   });
 
-  it("도구 — macOS 는 고정 스크립트(on run argv)에 제목·본문을 인자로만 · Linux 는 notify-send -- 인자 · 그 밖은 없음 · 안내 한 줄은 macOS 만", () => {
+  it("도구 — macOS 는 고정 스크립트(on run argv)에 제목·본문을 인자로만 · Linux 는 notify-send -- 인자 · Windows 는 PowerShell 알림(제목·본문은 base64 로만) · 그 밖은 없음 · 안내 한 줄은 macOS 만", () => {
     const quote = 'x" & do shell script "touch /tmp/pwned" & "';
     expect(notifyTool("darwin")?.args("AiNecto", quote)).toEqual(["-e", "on run argv", "-e",
       "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "AiNecto", quote]);
     expect(notifyTool("linux")?.args("AiNecto", "-x body")).toEqual(["--", "AiNecto", "-x body"]);
     expect(notifyTool("linux")?.file).toBe("notify-send");
-    expect(notifyTool("win32")).toBeUndefined();
+    const win = notifyTool("win32");
+    expect(win?.file).toBe("powershell.exe");
+    const winArgs = win?.args("AiNecto", quote) ?? [];
+    expect(winArgs.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    const script = Buffer.from(winArgs[3] ?? "", "base64").toString("utf16le");
+    expect(script).not.toContain("touch /tmp/pwned");
+    expect(script).toContain(Buffer.from(quote, "utf8").toString("base64"));
+    expect(script).toContain("ToastNotificationManager");
+    expect(Buffer.from(windowsToastScript("한글 제목", "b"), "base64").toString("utf16le")).toContain(Buffer.from("한글 제목", "utf8").toString("base64"));
+    expect(notifyTool("freebsd")).toBeUndefined();
     expect(notificationHint("darwin")).toContain("Script Editor");
     expect(notificationHint("linux")).toBeUndefined();
     expect(notificationHint("win32")).toBeUndefined();
@@ -114,7 +123,7 @@ describe("PC 알림(설계 §4-6 · §11-7 · C-E3)", () => {
     await createPcNotifier({ log, platform: "darwin", run: async () => { throw missing; } }).notify({ kind: "session", keyId: "k1", browserName: "B" });
     await createPcNotifier({ log, platform: "linux", run: async () => { throw Object.assign(new Error("x"), { code: 1 }); } })
       .notify({ kind: "shell", keyId: "k1", browserName: "B" });
-    await createPcNotifier({ log, platform: "win32" }).notify({ kind: "command", keyId: "k1", browserName: "B" });
+    await createPcNotifier({ log, platform: "freebsd" }).notify({ kind: "command", keyId: "k1", browserName: "B" });
     const records = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(records.map(({ ts: _ts, ...rest }) => rest)).toEqual([
       { event: "pc_notify", kind: "session", browserKeyId: "k1", more: 0, tool: "osascript" },

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { runToEnd, spawnAgent } from "../src/core/agent/child";
-import { CMD_LINE_MAX, controllingTerminal, findExecutable, killTree, LaunchError, planLaunch, quoteArgument, stuckProcessHint } from "../src/core/os/launch";
+import { CMD_LINE_MAX, controllingTerminal, endedFromOutside, findExecutable, killTree, LaunchError, planLaunch, quoteArgument, stuckProcessHint } from "../src/core/os/launch";
 
 /**
  * 실행 계획·강제 종료(설계 windows-pc r3 3-2·3-3) — 이 맥에서 돌릴 수 있는 부분(순수 계획 · Unix 실물 · Windows 분기의 실패 경로).
@@ -108,6 +108,20 @@ describe("planLaunch — Windows", () => {
   it("멈춘 프로세스 안내 문구는 플랫폼마다 한 곳", () => {
     expect(stuckProcessHint(42, "win32")).toBe("If it hangs: taskkill /PID 42 /F.");
     expect(stuckProcessHint(42, "darwin")).toBe("If it is stopped: kill -CONT 42. If it hangs: kill 42.");
+  });
+});
+
+describe("endedFromOutside — 세션이 끝났을 때 restore 목록에 남기나", () => {
+  it("Unix 는 신호로 끝났을 때만(지금 그대로) · Windows 는 신호가 없어 끝 코드 0 이 아니면 남긴다(재부팅·로그오프·강제 종료) · exit 0 은 지운다", () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      expect(endedFromOutside(0, 15, platform)).toBe(true);
+      expect(endedFromOutside(1, 0, platform)).toBe(false);
+      expect(endedFromOutside(0, 0, platform)).toBe(false);
+    }
+    expect(endedFromOutside(0, 0, "win32")).toBe(false);
+    expect(endedFromOutside(1, 0, "win32")).toBe(true);
+    expect(endedFromOutside(0xc000013a, 0, "win32")).toBe(true);
+    expect(endedFromOutside(-1073741510, 0, "win32")).toBe(true);
   });
 });
 
