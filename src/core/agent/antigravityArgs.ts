@@ -8,8 +8,8 @@ import type { AinectoBridge } from "./agents";
 /** 실행 파일 이름 — Windows 공식 설치는 {@code %LOCALAPPDATA%\agy\bin\agy.exe}(Path 로 찾는다 · planLaunch). */
 export const AGY = "agy";
 
-/** 검증한 agy 판 — ★상수(루트 승인 11-23 · 로그만 · 막지 않음). agy 는 스스로 갱신되므로 다르면 {@code agent_version_unverified} 한 줄. */
-export const VERIFIED_AGY_VERSION = "1.5.14";
+/** 검증한 agy 판 — ★상수(루트 승인 11-23 · 1.5.14 → 1.5.15 루트 결재 11-23 19:4x — dev 실측이 1.5.15 · 로그만 · 막지 않음). agy 는 스스로 갱신되므로 다르면 {@code agent_version_unverified} 한 줄. */
+export const VERIFIED_AGY_VERSION = "1.5.15";
 
 /**
  * Antigravity 에 붙이는 AiNecto 브리지의 서버 이름 — Claude·Codex 의 {@code ainecto} 와 다르다.

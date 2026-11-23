@@ -16,7 +16,7 @@ import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 if (args[0] === "--version") {
-  process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? "1.5.14"}\n`);
+  process.stdout.write(`${process.env.FAKE_AGY_VERSION ?? "1.5.15"}\n`);
   process.exit(0);
 }
 if (args[0] === "models") {
