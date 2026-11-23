@@ -87,15 +87,26 @@ export class AgentChild {
     return true;
   }
 
+  /** stdin 만 닫는다(입력 끝 알림) — 프로세스는 그대로 돈다. 한 차례에 프로세스 하나인 Agent(agy -p)가 쓴다. */
+  endInput(): void {
+    if (this.alive) this.child.stdin.end();
+  }
+
+  /** 기다리지 않고 바로 끈다(SIGTERM → B6 → SIGKILL · Windows 는 taskkill /T /F). 결과는 hooks.killed 에도. */
+  async forceStop(): Promise<KillResult | undefined> {
+    if (!this.alive) return undefined;
+    const first = await killTree(this.child, AGENT_STOP_WAIT_MS, "SIGTERM");
+    const result = first.directExited ? first : await killTree(this.child, AGENT_STOP_WAIT_MS, "SIGKILL");
+    this.onKilled?.(result);
+    return result;
+  }
+
   /** stdin 을 닫아 스스로 끝나게 하고, 안 끝나면 강제로. 강제로 껐으면 그 결과(직계·트리)를 돌려주고 hooks.killed 에도 알린다. */
   async stop(): Promise<KillResult | undefined> {
     if (!this.alive) return undefined;
     this.child.stdin.end();
     if (await this.waitExit(AGENT_STOP_WAIT_MS)) return undefined;
-    const first = await killTree(this.child, AGENT_STOP_WAIT_MS, "SIGTERM");
-    const result = first.directExited ? first : await killTree(this.child, AGENT_STOP_WAIT_MS, "SIGKILL");
-    this.onKilled?.(result);
-    return result;
+    return await this.forceStop();
   }
 
   private async waitExit(ms: number): Promise<boolean> {

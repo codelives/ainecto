@@ -15,14 +15,16 @@ import type { TurnFacts } from "./documents";
  *   <li>중단 — {@link AgentSession.interrupt}(그 차례만), 내리기는 {@link AgentSession.close}.</li>
  * </ol>
  */
-export const AGENT_IDS = ["claude-code", "codex"] as const;
+export const AGENT_IDS = ["claude-code", "codex", "antigravity"] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
 
 /**
  * 그 Agent 가 MCP {@code initialize} 에 싣는 {@code clientInfo.name} — 서버 {@code AgentTypeResolver} 표와 같은 글(선 위의 계약).
  * serve 가 그 Agent 를 대신해 부르는 도구(실행 대화 글)에 {@code X-AiNecto-Agent} 헤더로 싣는다(실제로 도는 Agent 종류를 서버가 안다).
  */
-export const AGENT_MCP_CLIENT_NAMES: Readonly<Record<AgentId, string>> = { "claude-code": "claude-code", codex: "codex-mcp-client" };
+export const AGENT_MCP_CLIENT_NAMES: Readonly<Record<AgentId, string>> = {
+  "claude-code": "claude-code", codex: "codex-mcp-client", antigravity: "antigravity-client",
+};
 
 /** 서버가 Agent 를 밝히지 않은 요청(옛 서버·옛 웹)은 이것 — 서버 {@code AgentKind.LEGACY_DEFAULT} 와 같다. */
 export const DEFAULT_AGENT: AgentId = "claude-code";
@@ -45,7 +47,9 @@ export interface AgentTurnResult {
 export type TurnOutcome =
   | { kind: "result"; result: AgentTurnResult; facts: TurnFacts }
   | { kind: "timeout" }
-  | { kind: "exited"; code: number | null; signal: string | null; stderrTail: string };
+  | { kind: "exited"; code: number | null; signal: string | null; stderrTail: string }
+  /** 돌리지 않았다 — 이 PC 의 Agent 설정을 다 확인하지 못했다(Antigravity 서버 이름 모으기 실패 · 설계 r3). 세션·재개 값은 그대로 둔다. */
+  | { kind: "refused"; errorCode: "AGENT_POLICY_UNVERIFIED"; reason: string };
 
 /** Agent 가 무엇으로 인증해 도는가 — 과금 주체. 서버 연결 계약의 {@code auth} 칸과 같은 글이다. */
 export type AgentAuthMode = "apiKey" | "subscription";
