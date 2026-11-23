@@ -4,13 +4,15 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createPairRelay, offerOf, PairRelayError } from "../src/core/pc/pcPairRelay";
+import { consentOf, createPairRelay, offerOf, PairRelayError } from "../src/core/pc/pcPairRelay";
 import { E2eError } from "../src/core/term/e2e";
 import { runPairing, type MatchedBrowser } from "../src/core/pc/pcPairing";
 import {
   assertCommitment,
   browserKeyIdOf,
   generateSigningJwk,
+  importSigningKey,
+  pairApproveInput,
   pairDoneInput,
   pairTranscript,
   publicJwkFromRaw,
@@ -20,6 +22,7 @@ import {
   registerRevealMac,
   publicRawFromJwk,
   randomBytes,
+  signBytes,
   verifyBytes,
 } from "../src/core/term/e2e";
 import { DaemonLog } from "../src/core/term/daemonLog";
@@ -262,5 +265,83 @@ describe("짝짓기 중계 — pair/open·send·poll 왕복(A5)", () => {
     const closed = await register(secret).then(() => undefined, (error: unknown) => error);
     expect((closed as PairRelayError).code).toBe("PAIR_CLOSED");
     expect(fake.toBrowser.some((msg) => msg.type === "reveal")).toBe(false);
+  });
+
+  it("새 기기 동의 해석(순수) — 비면 다시 · abort · confirm 서명 64바이트 · 둘이면 PAIR_DUPLICATE · 모양 틀림 PAIR_BAD_MESSAGE", () => {
+    const sig = Buffer.from(randomBytes(64)).toString("base64url");
+    expect(consentOf([])).toBeUndefined();
+    expect(consentOf([{ type: "abort", reason: "cancelled" }])).toBe("abort");
+    expect(consentOf([{ type: "confirm", sig }])).toHaveLength(64);
+    expect(() => consentOf([{ type: "confirm", sig }, { type: "confirm", sig }])).toThrow(PairRelayError);
+    expect(() => consentOf([{ type: "confirm", sig: "AA" }])).toThrow(PairRelayError);
+    expect(() => consentOf([{ type: "offer" }])).toThrow(PairRelayError);
+  });
+
+  /** 새 기기(approve-new-device §3-2) — macB 없이 제안 · reveal 을 약속값과 대조 · [같아요]면 자기 키로 T 서명(confirm) · 아니면 abort. */
+  async function approvalDevice(click: "same" | "cancel") {
+    const own = await generateSigningJwk();
+    const ownPub = publicRawFromJwk(own);
+    const nB = randomBytes(32);
+    const state: { commit?: Uint8Array; transcript?: Uint8Array; pcPub?: Uint8Array; doneVerified: boolean } = { doneVerified: false };
+    fake.onPcMessage = async (msg) => {
+      if (msg.type === "commit") {
+        state.commit = new Uint8Array(Buffer.from(String(msg.commit), "base64url"));
+        fake.fromBrowser({ type: "offer", publicKey: Buffer.from(ownPub).toString("base64url"), keyId: await browserKeyIdOf(ownPub),
+          nB: Buffer.from(nB).toString("base64url"), name: "Safari · iPhone" });
+      } else if (msg.type === "reveal") {
+        expect(msg).not.toHaveProperty("macP");
+        const pcPub = new Uint8Array(Buffer.from(String(msg.publicKey), "base64url"));
+        const nP = new Uint8Array(Buffer.from(String(msg.nP), "base64url"));
+        await assertCommitment(state.commit!, pcPub, nP);
+        state.pcPub = pcPub;
+        state.transcript = await pairTranscript({ userId: USER_ID, pcId: PC_ID, pcPublicRaw: pcPub, browserPublicRaw: ownPub, nP, nB });
+        const transcript = state.transcript;
+        setTimeout(() => void (async () => {
+          fake.fromBrowser(click === "same"
+            ? { type: "confirm", sig: Buffer.from(await signBytes(await importSigningKey(own), pairApproveInput(transcript))).toString("base64url") }
+            : { type: "abort", reason: "cancelled" });
+        })(), 20);
+      } else if (msg.type === "done") {
+        state.doneVerified = await verifyBytes(publicJwkFromRaw(state.pcPub!), new Uint8Array(Buffer.from(String(msg.signature), "base64url")),
+          pairDoneInput(state.transcript!));
+      }
+    };
+    return state;
+  }
+
+  const approvalRelay = () => createPairRelay({
+    endpoint: fake.endpoint,
+    tokenProvider: { getAccessToken: async () => "t", refreshAfterUnauthorized: async () => "t" },
+    log: new DaemonLog<RemoteLogRecord>(logPath(), `${logPath()}.1`),
+    pcId: PC_ID,
+    requestId: "request-1",
+    holdMs: 1_000,
+  });
+
+  it("새 기기 허용 — open 에 requestId · B1 허용 + 새 기기 confirm 서명 → 핀 · done 을 새 기기가 검증", async () => {
+    const device = await approvalDevice("same");
+    const pinned: MatchedBrowser[] = [];
+    const outcome = await runPairing({
+      userId: USER_ID, pcId: PC_ID, pcKey: await generateSigningJwk(), transport: approvalRelay(), waitMs: 10_000,
+      confirm: { kind: "approval", approve: async () => ({ accepted: true, approverKeyId: "b1" }) },
+      pin: async (browser) => { pinned.push(browser); },
+    });
+    expect(outcome.kind).toBe("paired");
+    expect(pinned).toHaveLength(1);
+    expect(device.doneVerified).toBe(true);
+    expect(fake.calls.find((call) => call.op === "pair/open")?.body).toEqual({ pcId: PC_ID, requestId: "request-1" });
+  });
+
+  it("새 기기 허용 — 새 기기가 취소(abort)하면 B1 이 허용해도 핀 0", async () => {
+    await approvalDevice("cancel");
+    const pinned: MatchedBrowser[] = [];
+    const outcome = await runPairing({
+      userId: USER_ID, pcId: PC_ID, pcKey: await generateSigningJwk(), transport: approvalRelay(), waitMs: 10_000,
+      confirm: { kind: "approval", approve: async () => ({ accepted: true, approverKeyId: "b1" }) },
+      pin: async (browser) => { pinned.push(browser); },
+    });
+    expect(outcome.kind).toBe("code-mismatch");
+    expect(pinned).toEqual([]);
+    expect(fake.toBrowser.some((msg) => msg.type === "done")).toBe(false);
   });
 });
