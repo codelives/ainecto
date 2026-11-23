@@ -33,7 +33,7 @@ export interface AgyToolDefinition {
 /**
  * 차례 입력 앞에 싣는 도구 정의 — 서버 tools/list 한 벌 그대로(손으로 복제하지 않는다 · 구현 리뷰 1차 P1 대안 ①).
  * agy 는 MCP 정의를 파일(~/.gemini/antigravity-cli/mcp/…)로 두고 read_file 로 읽게 하는데, 우리는 read_file 을 막는다(헤드리스는 allow 를 무시해
- * 그 폴더만 열 수 없다). 정의가 없으면 모델이 인자를 추측해 오류를 거듭했다(실측: 9~15번 · 정의를 실으면 0~1번 · 시간 절반 이하).
+ * 그 폴더만 열 수 없다). 정의가 없으면 모델이 인자를 추측해 오류를 거듭한다(실측 기록: ecobit/agy-evidence/definition-passing-counts.json).
  */
 export function antigravityToolPreamble(tools: ReadonlyArray<AgyToolDefinition>): string {
   const definitions = tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
