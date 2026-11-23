@@ -175,6 +175,7 @@ describe("Antigravity 세션 — 이벤트 → 결과 계약(r2 표)", () => {
     const result = first as Extract<TurnOutcome, { kind: "result" }>;
     expect(result.result).toMatchObject({ isError: false, subtype: "SUCCESS", structuredOutput: { reply: "wrote" } });
     expect(result.facts.documents).toEqual(["a".repeat(32)]);
+    expect(result.facts.createdDocuments).toEqual(["a".repeat(32)]);   // 이은 글에서도 JSON 조각의 created 가 읽힌다
     expect(result.facts.seen).toEqual(["a".repeat(32), "d".repeat(32)]);
     const ref = session.sessionRef;
     expect(ref).toMatch(/^conv-\d+$/);

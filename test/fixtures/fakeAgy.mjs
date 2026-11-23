@@ -58,8 +58,10 @@ createInterface({ input: process.stdin }).once("line", (line) => {
   }
   if (text === "write-doc") {
     step(2, "ACTIVE", mcp("ainecto-pc", "create_documents"));
-    step(2, "DONE", mcp("ainecto-pc", "create_documents", { output: doc("a") }));
-    step(2, "DONE", mcp("ainecto-pc", "create_documents", { output: doc("a") }));
+    // 실측 모양: MCP content 조각(JSON · 📄 줄 · 알림 줄)을 줄바꿈으로 이은 글 하나
+    const created = `${JSON.stringify({ created: [{ uuid: "a".repeat(32), title: "t" }], count: 1 })}\n${doc("a")}\n${"a".repeat(32)} marked as being written.`;
+    step(2, "DONE", mcp("ainecto-pc", "create_documents", { output: created }));
+    step(2, "DONE", mcp("ainecto-pc", "create_documents", { output: created }));
     step(3, "ERROR", mcp("ainecto-pc", "update_documents", { output: doc("b"), error: { type: "TOOL_ERROR", message: "x" } }));
     step(4, "DONE", mcp("ainecto-pc", "not_a_public_tool", { output: doc("c") }));
     step(5, "DONE", mcp("ainecto-pc", "search", { output: doc("d") }));
