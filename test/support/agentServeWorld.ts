@@ -30,6 +30,13 @@ export const fakeSpawn: AgentSpawn = (command, args, opts) => {
     : spawn(command, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
 };
 
+/** agy -p 만 «끌 수 없게» — kill() 이 신호를 보내지 않는다(강제 종료 실패 흉내). */
+const unkillableAgySpawn: AgentSpawn = (command, args, opts) => {
+  const child = fakeSpawn(command, args, opts);
+  if (command === "agy" && args[0] === "-p") child.kill = () => false;
+  return child;
+};
+
 /** 메모리 서버 — poll 은 넣어 둔 응답을 하나씩 주고, 없으면 붙잡는다(멈춤 신호까지). */
 export class FakeServer implements AgentHttp {
   readonly calls: Array<{ op: AgentOp; body: Record<string, unknown> }> = [];
@@ -156,6 +163,8 @@ export interface WorldOptions {
   rejectBuild?: boolean;
   /** 이 Agent 종류를 모르는 서버(open agents[].id 닫힌 목록). */
   unknownAgentIds?: string[];
+  /** 가짜 agy -p 를 «끌 수 없는» 프로세스로(child.kill 이 아무것도 안 함 — OS 종료 실패 흉내 · 시험이 직접 pid 로 끝낸다). */
+  unkillableAgy?: boolean;
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -188,7 +197,7 @@ export function startServe(options: WorldOptions = {}): World {
     claudeCodeAdapter({ ...shared, args: ({ resumeSessionId, agentName }) =>
       [...(agentName ? ["--agent", agentName] : []), ...(resumeSessionId ? ["--resume", resumeSessionId] : [])] }),
     codexAdapter({ ...shared, appServerArgs: (agentName) => ["app-server", ...(agentName ? ["--agent", agentName] : [])], clientVersion: "0.0.0" }),
-    antigravityAdapter({ spawnImpl: fakeSpawn, env: shared.env, home: join(dir, "home"), log, writeTools: WRITE_TOOLS,
+    antigravityAdapter({ spawnImpl: options.unkillableAgy ? unkillableAgySpawn : fakeSpawn, env: shared.env, home: join(dir, "home"), log, writeTools: WRITE_TOOLS,
       toolNames: new Set([...WRITE_TOOLS, "search"]), workDir: (name) => join(dir, "app", "antigravity", name ?? "chat"),
       mcpConfig: () => ({ mcpServers: { "ainecto-pc": { command: "node", args: [] } } }), schema: agentReplySchema }),
   ];

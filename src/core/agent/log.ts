@@ -40,6 +40,8 @@ export type AgentLogRecord =
   | { event: "agent_policy_unverified"; agent: string; conversationUuid: string; reason: string; path?: string }
   /** Antigravity: 거절했어야 할 브리지 밖 서버의 도구가 실제로 돌았다(사후 대조) — 그 차례는 실패. 서버·도구 이름만. */
   | { event: "agent_policy_violation"; pid: number; agent: string; conversationUuid: string; server: string; tool: string }
+  /** Antigravity: 앞 차례 agy -p 를 끄지 못해 이번 차례를 돌리지 않았다(그 pid 들). */
+  | { event: "agent_previous_running"; agent: string; conversationUuid: string; pids: number[] }
   /** 설치된 판이 검증한 판과 다르다 — 막지 않고 알린다. */
   | { event: "agent_version_unverified"; agent: string; version: string; verified: string }
   /** Antigravity: 한 차례의 토큰 수(비용 칸이 없다 — 로그로만). */

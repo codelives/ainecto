@@ -31,6 +31,9 @@ export interface AntigravityDeps {
  * 인증은 {@code agy models} 의 끝 코드(모델 호출 0).
  */
 export function antigravityAdapter(deps: AntigravityDeps): AgentAdapter {
+  // ★이 PC 의 agy -p 프로세스 전부 — 세션이 아니라 어댑터가 쥔다. serve 가 세션을 바꾸거나 버려도(대화 전환 · exited) 끝나지 않은 프로세스는
+  //   여기 남아 다음 차례를 막는다(구현 리뷰 2차 P1).
+  const processes = new AgyProcesses();
   return {
     id: "antigravity",
     displayName: "Antigravity",
@@ -47,7 +50,7 @@ export function antigravityAdapter(deps: AntigravityDeps): AgentAdapter {
       return antigravityAuth(run.code, deps.env, await modelProvider(deps.home));
     },
     open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName }) =>
-      new AntigravitySession(conversationUuid, resumeRef, agentName, deps.schema(textMaxCharacters, documentsMax), deps),
+      new AntigravitySession(conversationUuid, resumeRef, agentName, deps.schema(textMaxCharacters, documentsMax), deps, processes),
   };
 }
 
@@ -72,6 +75,43 @@ async function modelProvider(home: string): Promise<string | undefined> {
   }
 }
 
+/**
+ * 끝나지 않은 agy -p 프로세스(어댑터 하나에 한 벌). {@code stuck} = 강제로 꺼도 살아 있던 것 — 다시 기다리지 않고 바로 막는다(그것이 실제로 끝나
+ * exit 이 오면 둘 다에서 빠지고 다음 차례가 열린다).
+ */
+class AgyProcesses {
+  readonly children = new Set<AgentChild>();
+  readonly stuck = new Set<AgentChild>();
+
+  add(child: AgentChild): void {
+    this.children.add(child);
+  }
+
+  exited(child: AgentChild): void {
+    this.children.delete(child);
+    this.stuck.delete(child);
+  }
+
+  /** 모두 끝났나 — 안 끝난 것은 B6 기다리고 강제로 끈다(이미 못 끈 것은 기다리지 않는다). 하나라도 살아 있으면 그 pid 들. */
+  async settle(): Promise<number[]> {
+    for (const child of [...this.children]) {
+      if (!child.alive || this.stuck.has(child)) continue;
+      if (await child.waitForExit(AGENT_STOP_WAIT_MS)) continue;
+      await child.forceStop();
+      if (child.alive) this.stuck.add(child);
+    }
+    return [...this.children].filter((child) => child.alive).map((child) => child.pid);
+  }
+
+  /** close — 아직 못 끈 것으로 표시되지 않은 것만 끈다(못 끈 것은 settle 이 계속 막는다). */
+  async stopAll(): Promise<void> {
+    await Promise.all([...this.children].filter((child) => !this.stuck.has(child)).map(async (child) => {
+      await child.forceStop();
+      if (child.alive) this.stuck.add(child);
+    }));
+  }
+}
+
 interface Turn {
   generation: number;
   resolve(outcome: TurnOutcome): void;
@@ -91,8 +131,9 @@ interface Turn {
 /**
  * ★논리 세션 하나 · 차례마다 프로세스 하나(r2). {@code alive} = close 전. {@code sessionRef} 는 init 의 conversation_id 를 받는 즉시.
  * ★차례의 수명 = 사전 점검(앞 프로세스 정리 · 설정 쓰기 · 이름 모으기)부터 그 프로세스 종료까지(구현 리뷰 1차 P0-1·P0-2):
- *   멈춤·close·기한은 사전 점검 중이어도 그 차례를 끝내고 agy -p 를 띄우지 않는다. 결과를 낸 뒤에도 그 프로세스는 {@link children} 이 쥐고 있고,
- *   다음 차례는 앞 프로세스가 끝났는지(B6 기다린 뒤 강제로) 확인한 뒤에만 띄운다. 사용자 멈춤은 result(isError · interrupted) — 성공으로 위장하지 않는다.
+ *   멈춤·close·기한은 사전 점검 중이어도 그 차례를 끝내고 agy -p 를 띄우지 않는다. 결과를 낸 뒤에도 그 프로세스는 어댑터의 {@link AgyProcesses} 가
+ *   쥐고 있고, 다음 차례는 앞 프로세스가 끝났는지(B6 기다린 뒤 강제로) 확인한 뒤에만 띄운다. 끝내 못 끄면 «refused AGENT_PREVIOUS_RUNNING»
+ *   (exited 가 아니다 — serve 가 세션·재개 값을 버리지 않고, 그 프로세스가 실제로 끝날 때까지 어느 세션의 차례든 막힌다). 사용자 멈춤은 result(isError · interrupted) — 성공으로 위장하지 않는다.
  */
 class AntigravitySession implements AgentSession {
   readonly agent = "antigravity" as const;
@@ -102,12 +143,11 @@ class AntigravitySession implements AgentSession {
   private generation = 0;
   private lastPid = -1;
   private turn: Turn | undefined;
-  /** 아직 끝나지 않은 차례 프로세스 전부(세대 무관) — 끝날 때(exit) 빠진다. */
-  private readonly children = new Set<AgentChild>();
   private readonly cwd: string;
 
   constructor(readonly conversationUuid: string, resumeRef: string | undefined, readonly agentName: string | undefined,
-    private readonly schema: Record<string, unknown>, private readonly deps: AntigravityDeps) {
+    private readonly schema: Record<string, unknown>, private readonly deps: AntigravityDeps,
+    private readonly processes: AgyProcesses) {
     this.resumed = resumeRef !== undefined;
     this.sessionRef = resumeRef;
     this.cwd = deps.workDir(agentName);
@@ -157,14 +197,16 @@ class AntigravitySession implements AgentSession {
     this.closed = true;
     const turn = this.turn;
     if (turn) turn.interrupted = true;
-    await Promise.all([...this.children].map(async (child) => await child.forceStop()));
+    await this.processes.stopAll();
     if (turn) this.finishInterrupted(turn);
   }
 
   /** 한 차례 — 앞 프로세스 정리 → 사전 점검 → 띄우기. await 마다 멈춤을 다시 본다. */
   private async run(turn: Turn, text: string): Promise<void> {
-    if (!(await this.settlePrevious())) {
-      this.finish(turn, { kind: "exited", code: null, signal: null, stderrTail: "the previous Antigravity process did not stop" });
+    const running = await this.processes.settle();
+    if (running.length > 0) {
+      this.deps.log.write({ event: "agent_previous_running", agent: this.agent, conversationUuid: this.conversationUuid, pids: running });
+      this.finish(turn, { kind: "refused", errorCode: "AGENT_PREVIOUS_RUNNING", reason: `the previous Antigravity process did not stop (pid ${running.join(", ")})` });
       return;
     }
     if (this.stopped(turn)) return this.finishInterrupted(turn);
@@ -189,22 +231,13 @@ class AntigravitySession implements AgentSession {
       exit: (exit) => this.onExit(turn, child, exit),
       killed: (result) => this.deps.log.write({ event: "process_kill", pid: child.pid, agent: this.agent, ...result }),
     });
-    this.children.add(child);
+    this.processes.add(child);
     turn.child = child;
     this.lastPid = child.pid;
     this.deps.log.write({ event: "process_start", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
       resume: this.sessionRef !== undefined });
     child.writeLine({ event: "user", message: { content: text } });
     child.endInput();
-  }
-
-  /** 앞 차례 프로세스가 모두 끝났는가 — 안 끝났으면 B6 기다리고, 그래도면 강제로 끈다. 끝내 못 끄면 false(새 차례를 띄우지 않는다). */
-  private async settlePrevious(): Promise<boolean> {
-    for (const child of [...this.children]) {
-      if (await child.waitForExit(AGENT_STOP_WAIT_MS)) continue;
-      await child.forceStop();
-    }
-    return [...this.children].every((child) => !child.alive);
   }
 
   private stopped(turn: Turn): boolean {
@@ -235,7 +268,7 @@ class AntigravitySession implements AgentSession {
 
   /** 프로세스 종료 — 소유를 놓고(로그는 그 세대 pid), 결과가 아직이면 마지막 줄까지 읽힌 뒤에 정한다(exit 이 result 줄보다 먼저 올 수 있다). */
   private onExit(turn: Turn, child: AgentChild, exit: ChildExit): void {
-    this.children.delete(child);
+    this.processes.exited(child);
     this.deps.log.write({ event: "process_exit", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
       code: exit.code, signal: exit.signal });
     void child.waitForOutput(AGENT_STOP_WAIT_MS).then(() => {
