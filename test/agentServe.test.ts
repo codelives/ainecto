@@ -236,4 +236,22 @@ describe("ainecto agent serve", () => {
     await finish(none);
     expect(none.server.calls[0]?.body.cliBuild).toBeUndefined();
   });
+
+  it("Antigravity 를 모르는 서버(open agents[].id 닫힌 목록 · 0.15.2 때 운영) — 거절되면 그 종류만 빼고 다시 연다 · 나머지 칸은 그대로", async () => {
+    const w = startServe({ cliBuild: "abc1234", installed: ["claude-code", "antigravity"], unknownAgentIds: ["antigravity"] });
+    await until(() => w.server.calls.find((c) => c.op === "poll"));
+    await finish(w);
+    const opens = w.server.calls.filter((c) => c.op === "open");
+    expect(opens).toHaveLength(2);
+    expect((opens[0]?.body.agents as Array<{ id: string }>).map((a) => a.id)).toEqual(["claude-code", "antigravity"]);
+    expect(opens[1]?.body).toMatchObject({ cliBuild: "abc1234", features: ["stop"], agents: [{ id: "claude-code", ready: true }] });
+    expect((opens[1]?.body.agents as unknown[])).toHaveLength(1);
+    expect(logRecords(w).some((r) => r.event === "open_without_features"
+      && JSON.stringify(r.features) === JSON.stringify(["agents.newer"]))).toBe(true);
+
+    const knows = startServe({ installed: ["claude-code", "antigravity"] });
+    await until(() => knows.server.calls.find((c) => c.op === "poll"));
+    await finish(knows);
+    expect(knows.server.calls.filter((c) => c.op === "open")).toHaveLength(1);
+  });
 });

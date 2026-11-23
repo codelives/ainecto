@@ -43,6 +43,8 @@ export class FakeServer implements AgentHttp {
   rejectTodos = false;
   /** open 의 cliBuild 를 모르는 서버(KAN-1113 #1890 D 전). */
   rejectBuild = false;
+  /** open 의 agents[].id 를 닫힌 목록으로 거르는 서버 — 이 id 들을 모른다(400 INVALID · 서버 AgentKind 스키마). */
+  unknownAgentIds: string[] = [];
 
   /** @param oldServer 옛 서버 — open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다. */
   constructor(private readonly oldServer = false, private readonly pollHoldSeconds = 20) {}
@@ -76,6 +78,7 @@ export class FakeServer implements AgentHttp {
       if (this.rejectBuild && body.cliBuild !== undefined) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       if (this.oldServer && body.features !== undefined) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       const sent = (Array.isArray(body.agents) ? body.agents : []) as Array<Record<string, unknown>>;
+      if (sent.some((a) => this.unknownAgentIds.includes(String(a.id)))) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       if (this.rejectNames && sent.some((a) => a.name !== undefined)) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       if (this.rejectTodos && Array.isArray(body.features) && body.features.includes("todos")) {
         throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
@@ -146,6 +149,8 @@ export interface WorldOptions {
   cliBuild?: string;
   /** cliBuild 를 모르는 서버. */
   rejectBuild?: boolean;
+  /** 이 Agent 종류를 모르는 서버(open agents[].id 닫힌 목록). */
+  unknownAgentIds?: string[];
 }
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
@@ -165,6 +170,7 @@ export function startServe(options: WorldOptions = {}): World {
   server.rejectNames = options.rejectNames ?? false;
   server.rejectTodos = options.rejectTodos ?? false;
   server.rejectBuild = options.rejectBuild ?? false;
+  server.unknownAgentIds = options.unknownAgentIds ?? [];
   const stop = new AbortController();
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
   const shared = { spawnImpl: fakeSpawn, cwd: dir,
