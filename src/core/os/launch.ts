@@ -339,6 +339,17 @@ export function runQuiet(file: string, args: readonly string[]): Promise<void> {
   });
 }
 
+/**
+ * 이 프로세스의 제어 터미널을 여는 자리(순수) — 표준 입출력이 파이프·리다이렉트여도 그 창의 터미널이다(`ainecto pair` 의 코드 주고받기).
+ * Unix = `/dev/tty`. Windows 에는 `/dev/tty` 가 없다(Node 는 `C:\dev\tty` 로 풀어 ENOENT) — 콘솔 장치 `CONIN$`·`CONOUT$` 를 쓴다.
+ * 콘솔 장치는 있는 것을 여는 것이라 `r+`(OPEN_EXISTING) — `w` 는 CREATE_ALWAYS 로 연다. 콘솔이 없는 프로세스면 열기가 실패한다(/dev/tty 와 같다).
+ */
+export function controllingTerminal(platform: NodeJS.Platform = process.platform): { input: string; inputFlags: string; output: string; outputFlags: string } {
+  return platform === "win32"
+    ? { input: "\\\\.\\CONIN$", inputFlags: "r+", output: "\\\\.\\CONOUT$", outputFlags: "r+" }
+    : { input: "/dev/tty", inputFlags: "r", output: "/dev/tty", outputFlags: "w" };
+}
+
 /** 이 OS 의 알림 도구(순수) — 없으면 undefined(로그만). 셸 문자열 조립 없이 인자로만 넘긴다. */
 export function notifyTool(platform: NodeJS.Platform = process.platform): { name: string; file: string; args(title: string, body: string): string[] } | undefined {
   if (platform === "darwin") {
