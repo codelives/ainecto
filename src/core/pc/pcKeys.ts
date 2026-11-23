@@ -146,7 +146,7 @@ export async function loadPcKeys(path: string): Promise<PcKeys> {
   try {
     return normalizePcKeys(JSON.parse(raw));
   } catch (error) {
-    throw new Error(`${path} is not valid JSON (${error instanceof Error ? error.message : String(error)}). Delete it and register your browsers again with \`ainecto pair\`.`);
+    throw new Error(`${path} is not valid JSON (${error instanceof Error ? error.message : String(error)}). Delete it and register your browsers again by running \`npx -y ainecto@latest\`.`);
   }
 }
 

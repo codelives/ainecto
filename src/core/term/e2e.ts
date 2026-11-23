@@ -378,7 +378,7 @@ export async function pairCodes(transcript: Uint8Array): Promise<PairCodes> {
     const block = new Uint8Array(await subtle.sign("HMAC", prk, concatBytes(utf8(info), Uint8Array.of(0x01))));
     const value = pairCodeFromBlock(block);
     if (value === undefined) {
-      throw new E2eError("E2E_PAIR_CODE_UNAVAILABLE", "No usable registration code in this attempt — run `ainecto pair` again.");
+      throw new E2eError("E2E_PAIR_CODE_UNAVAILABLE", "No usable registration code in this attempt — run `npx -y ainecto@latest` again.");
     }
     return value;
   };

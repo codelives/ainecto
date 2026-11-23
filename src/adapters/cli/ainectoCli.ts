@@ -18,7 +18,7 @@ import { executeSetupCommand } from "./setupCommand";
 import { executeDoctorCommand, executeStatusCommand } from "./statusCommand";
 import { executeTermCommand, stringEnv, TERM_HELP_LINES } from "./termCommand";
 import { executePcStart, executePcStop, executeRemoteSetting, runningPcGroups, turnOffPcs, type PcDeps } from "./pcCommand";
-import { executePair, openDevTty } from "./pairCommand";
+import { executePair } from "./pairCommand";
 import { PAIR_WAIT_MS } from "../../core/pc/pcPairing";
 import { createPairRelay } from "../../core/pc/pcPairRelay";
 import { createPcNotifier } from "../../core/pc/pcNotify";
@@ -250,21 +250,13 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       return await executePair({
         io,
         json: parsed.json,
-        interactive,
-        insideTermSession,
-        openTty: openDevTty,
         settingsPath: pcSettingsPath(),
         keysPath: pcKeysPath(),
         hostName: hostname(),
         endpoint: resolved.endpoint,
         account: () => readAccount(connect().client),
-        transport: pairTransport,
-        notifyPaired,
         findPcs: () => runningPcGroups(pcDeps()),
         turnOffPcs: (groups) => turnOffPcs(pcDeps(), groups),
-        // 연결 승인 전 대화형 — `ainecto`(인자 없음)와 같은 흐름 그대로(KAN-1348). 자동 등록은 빼고 이어서 코드로 등록한다.
-        connectPc: () => executePcStart({ ...pcDeps(), register: undefined }),
-        waitMs: PAIR_WAIT_MS,
         now: () => new Date(),
       }, parsed.positionals.slice(1));
     }

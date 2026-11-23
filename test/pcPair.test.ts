@@ -3,35 +3,40 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { executePair, type PairDeps, type TtyIO } from "../src/adapters/cli/pairCommand";
+import { executePair, PAIR_RETIRED, pinBrowser, type PairDeps } from "../src/adapters/cli/pairCommand";
 import { CliCommandError } from "../src/adapters/cli/errors";
 import { loadPcKeys, updatePcKeys, withBrowser, type PcGroup } from "../src/core/pc/pcKeys";
-import { PAIR_WAIT_MS, type BrowserOffer, type PairTransport } from "../src/core/pc/pcPairing";
-import { accountKey, normalizePcSettings, savePcSettings, withConsent } from "../src/core/pc/pcSettings";
+import { PAIR_WAIT_MS, runPairing, type BrowserOffer, type PairTransport } from "../src/core/pc/pcPairing";
+import { accountKey } from "../src/core/pc/pcSettings";
 import {
   assertCommitment,
   browserKeyIdOf,
   generateSigningJwk,
-  pairCodes,
+  macEquals,
   pairDoneInput,
   pairTranscript,
   publicJwkFromRaw,
   publicJwkOf,
   publicRawFromJwk,
   randomBytes,
+  registerKeys,
+  registerOfferMac,
+  registerRevealMac,
   verifyBytes,
-  E2eError,
   type EcPrivateJwk,
-  type PairCodes,
 } from "../src/core/term/e2e";
 
 /**
- * `ainecto pair` 의 PC 쪽 순서 — 서버 중계는 가짜(transport)지만 그 뒤의 브라우저는 진짜 암호(e2e.ts)로 행동한다:
- * 약속값 대조 · 같은 T 로 코드 계산 · done 서명 검증. 파일은 임시 HOME 의 실제 pc.json·pc-keys.json.
+ * `ainecto pair` — 맨 `pair` 는 등록하지 않고 한 줄(0.15.3) · `--list` · `--remove`. 등록(핀)은 자동 등록의 runPairing(secret) + pinBrowser 로:
+ * 서버 중계는 가짜(transport)지만 그 뒤의 브라우저는 진짜 암호(e2e.ts)로 행동한다 — macB · 약속값 대조 · macP · done 서명 검증.
+ * 파일은 임시 HOME 의 실제 pc-keys.json.
  */
 const ENDPOINT = "https://example.test/mcp";
 const USER_ID = "5B1F2C9E-0A7D-4E63-8F41-9C2D7B6A3E10";
 const KEY = accountKey(ENDPOINT, USER_ID);
+const PC_ID = "6f2c1d3e-0000-4000-8000-000000000004";
+const ATTEMPT_ID = "attempt-1";
+const NOW = new Date("2026-11-21T09:00:00Z");
 
 let home: string;
 beforeEach(async () => {
@@ -44,55 +49,39 @@ afterEach(async () => {
 const settingsPath = (): string => join(home, ".ainecto", "pc.json");
 const keysPath = (): string => join(home, ".ainecto", "pc-keys.json");
 
-async function approve(remoteTerminal = true): Promise<string> {
-  const settings = withConsent(normalizePcSettings(undefined, "test-host"), KEY, remoteTerminal, new Date("2026-11-21T00:00:00Z"));
-  await savePcSettings(settingsPath(), settings);
-  return settings.pcId;
-}
-
-/** 진짜 암호로 움직이는 브라우저 + 그 사이의 중계(relay 가 브라우저 키를 바꿔치기할 수 있다). */
+/** 진짜 암호로 움직이는 자동 등록 브라우저(주소로 받은 S 로 macB 를 달고 macP·done 을 검증) + 그 사이의 중계. */
 async function fakeBrowser(options: {
-  pcId: string; keyId?: string; relaySwapsKey?: boolean; never?: boolean; failDone?: boolean; name?: string;
-  /** 같은 브라우저가 다시 짝짓는다 — 계정의 브라우저 키를 재사용한다. */
+  /** 같은 브라우저가 다시 등록한다 — 브라우저 키를 재사용한다. */
   own?: EcPrivateJwk;
-  /** 드러내기를 받은 뒤(코드를 치기 전) 다른 일이 끼어든다. */
-  afterReveal?: () => Promise<void>;
-}) {
+} = {}) {
   const own: EcPrivateJwk = options.own ?? await generateSigningJwk();
   const ownPub = publicRawFromJwk(own);
   const nB = randomBytes(32);
-  const state: { commit?: Uint8Array; pcPub?: Uint8Array; transcript?: Uint8Array; codes?: PairCodes; pinnedPc: boolean; done: number;
-    aborts: string[] } = {
+  const secret = randomBytes(32);
+  const keys = await registerKeys(secret);
+  const keyId = await browserKeyIdOf(ownPub);
+  const name = "Chrome · macOS";
+  const state: { commit?: Uint8Array; pcPub?: Uint8Array; transcript?: Uint8Array; pinnedPc: boolean; done: number; aborts: string[] } = {
     pinnedPc: false, done: 0, aborts: [],
   };
   const transport: PairTransport = {
-    async offer(commit, signal) {
-      if (options.never) {
-        await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
-      }
+    async offer(commit) {
       state.commit = commit;
-      // 바꿔치기하는 중계는 키 id 도 제 키의 지문으로 맞춰 보낸다(지문 검사를 지나는 가장 센 경우).
-      const publicRaw = options.relaySwapsKey ? publicRawFromJwk(await generateSigningJwk()) : ownPub;
-      const relayed: BrowserOffer = {
-        keyId: options.keyId ?? await browserKeyIdOf(publicRaw),
-        publicRaw,
-        nB,
-        name: options.name ?? "Chrome · macOS",
-        attemptId: "attempt-1",
-      };
+      const macB = await registerOfferMac(keys.browser, { userId: USER_ID.toLowerCase(), pcId: PC_ID, attemptId: ATTEMPT_ID, commit,
+        browserPublicRaw: ownPub, keyId, nB, name });
+      const relayed: BrowserOffer = { keyId, publicRaw: ownPub, nB, name, macB, attemptId: ATTEMPT_ID };
       return relayed;
     },
-    async reveal(pcPub, nP) {
+    async reveal(pcPub, nP, _signal, macP) {
       if (!state.commit) throw new Error("reveal before offer");
       await assertCommitment(state.commit, pcPub, nP);
+      const transcript = await pairTranscript({ userId: USER_ID.toLowerCase(), pcId: PC_ID, pcPublicRaw: pcPub, browserPublicRaw: ownPub, nP, nB });
+      if (!macP || !macEquals(macP, await registerRevealMac(keys.pc, { transcript, attemptId: ATTEMPT_ID }))) throw new Error("bad macP");
       state.pcPub = pcPub;
-      state.transcript = await pairTranscript({ userId: USER_ID.toLowerCase(), pcId: options.pcId, pcPublicRaw: pcPub, browserPublicRaw: ownPub, nP, nB });
-      state.codes = await pairCodes(state.transcript);
-      await options.afterReveal?.();
+      state.transcript = transcript;
     },
     async done(signature) {
       state.done += 1;
-      if (options.failDone) throw new Error("relay closed");
       if (!state.pcPub || !state.transcript) throw new Error("done before reveal");
       state.pinnedPc = await verifyBytes(publicJwkFromRaw(state.pcPub), signature, pairDoneInput(state.transcript));
     },
@@ -100,36 +89,27 @@ async function fakeBrowser(options: {
       state.aborts.push(reason);
     },
   };
-  return { own, transport, state };
+  return { own, keyId, secret, transport, state };
 }
 
-/** /dev/tty 대역 — 물음이 나오면 answer() 가 준 줄을 친다. */
-function fakeTty(answer: () => string | undefined) {
-  const stdin = new PassThrough();
-  let text = "";
-  let closed = false;
-  const tty: TtyIO = {
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    stderr: {
-      write: (chunk: string) => {
-        text += chunk;
-        if (chunk.startsWith("Then type the code")) {
-          const line = answer();
-          if (line !== undefined) setImmediate(() => stdin.write(`${line}\n`));
-        }
-        return true;
-      },
-    } as unknown as NodeJS.WriteStream,
-    close: () => {
-      closed = true;
-    },
-  };
-  return { tty, text: () => text, closed: () => closed };
+/** 이 PC 키 — 저장된 것이 있으면 그것(이미 등록한 브라우저가 계속 믿는다), 없으면 새로. */
+async function pcKeyOf(): Promise<EcPrivateJwk> {
+  return (await loadPcKeys(keysPath())).accounts[KEY]?.pcKey ?? await generateSigningJwk();
+}
+
+/** 자동 등록 한 번 — runPairing(secret) 이 맞으면 pinBrowser 로 핀(pcCommand 의 자동 등록과 같은 조립). */
+async function registerOnce(own?: EcPrivateJwk) {
+  const browser = await fakeBrowser({ own });
+  const pcKey = await pcKeyOf();
+  const result = runPairing({
+    userId: USER_ID.toLowerCase(), pcId: PC_ID, pcKey, transport: browser.transport, secret: browser.secret, waitMs: 10_000,
+    pin: (matched) => pinBrowser({ keysPath: keysPath(), key: KEY, pcKey, browser: matched, now: NOW }),
+  });
+  return { browser, result, keyId: browser.keyId };
 }
 
 function deps(overrides: Partial<PairDeps>) {
   let out = "";
-  const notified: Array<{ keyId: string; name: string }> = [];
   const value: PairDeps = {
     io: {
       stdin: new PassThrough() as unknown as NodeJS.ReadStream,
@@ -137,24 +117,17 @@ function deps(overrides: Partial<PairDeps>) {
       stderr: { write: () => true } as unknown as NodeJS.WriteStream,
     },
     json: false,
-    interactive: true,
-    insideTermSession: false,
-    openTty: () => { throw new Error("no tty in this test"); },
     settingsPath: settingsPath(),
     keysPath: keysPath(),
     hostName: "test-host",
     endpoint: ENDPOINT,
     account: async () => ({ userId: USER_ID }),
-    transport: () => { throw new Error("no transport in this test"); },
-    notifyPaired: async (browser) => { notified.push(browser); },
     findPcs: async () => [],
     turnOffPcs: async () => undefined,
-    connectPc: async () => { throw new Error("connectPc not expected in this test"); },
-    waitMs: 10_000,
-    now: () => new Date("2026-11-21T09:00:00Z"),
+    now: () => NOW,
     ...overrides,
   };
-  return { deps: value, out: () => out, notified };
+  return { deps: value, out: () => out };
 }
 
 async function expectCli(promise: Promise<unknown>, code: string): Promise<CliCommandError> {
@@ -164,189 +137,31 @@ async function expectCli(promise: Promise<unknown>, code: string): Promise<CliCo
   return error as CliCommandError;
 }
 
-describe("ainecto pair — PC 앞 짝짓기(설계 §11-1·§13-3)", () => {
+describe("ainecto pair — 맨 `pair` 는 등록하지 않는다(0.15.3 · KAN-1348)", () => {
   it("기한 상수는 결재한 5분", () => {
     expect(PAIR_WAIT_MS).toBe(5 * 60_000);
   });
 
-  it("맞는 코드: 약속값 대조 → 코드 A 는 브라우저와 같음 → 코드 B 입력 → 브라우저 키 핀(0600) → done 서명을 브라우저가 검증", async () => {
-    const pcId = await approve();
-    const browser = await fakeBrowser({ pcId, name: "Chrome\n\u001b[2J · macOS" });
-    const tty = fakeTty(() => browser.state.codes?.b);
-    const run = deps({ transport: () => browser.transport, openTty: () => tty.tty });
+  it("맨 `pair` → PAIR_RETIRED 한 줄 · 0 · 계정·중계·파일을 건드리지 않는다 · 모르는 인자는 USAGE", async () => {
+    const never = (): never => { throw new Error("must not be called"); };
+    const run = deps({ account: never, findPcs: never, turnOffPcs: never });
     expect(await executePair(run.deps, [])).toBe(0);
-    expect(tty.text()).toContain(`Type this code in the browser: ${browser.state.codes?.a}`);
-    expect(tty.text()).toContain("A browser asked to be registered: Chrome[2J · macOS");
-    expect(tty.closed()).toBe(true);
-    expect(browser.state.pinnedPc).toBe(true);
-    const keys = await loadPcKeys(keysPath());
-    expect(keys.accounts[KEY]?.browsers).toEqual([{
-      keyId: await browserKeyIdOf(publicRawFromJwk(browser.own)), publicJwk: publicJwkOf(browser.own), name: "Chrome[2J · macOS", pairedAt: "2026-11-21T09:00:00.000Z",
-    }]);
-    expect((await stat(keysPath())).mode & 0o777).toBe(0o600);
-    expect(run.out()).toContain('Registered the browser "Chrome[2J · macOS" with this PC.');
-    // PC 알림 — done 을 보낸 뒤 한 번(§11-7).
-    expect(run.notified).toEqual([{ keyId: await browserKeyIdOf(publicRawFromJwk(browser.own)), name: "Chrome[2J · macOS" }]);
-    // ★코드는 /dev/tty 에만 — stdout(파이프로 갈 수 있는 곳)에는 없다.
-    expect(run.out()).not.toContain(browser.state.codes?.a ?? "x");
-    expect(run.out()).not.toContain(browser.state.codes?.b ?? "x");
-
-    // 두 번째 짝짓기는 같은 PC 키를 쓴다(이미 짝지은 브라우저가 계속 믿는다).
-    const pcKey = keys.accounts[KEY]?.pcKey;
-    const second = await fakeBrowser({ pcId });
-    const tty2 = fakeTty(() => second.state.codes?.b);
-    expect(await executePair(deps({ transport: () => second.transport, openTty: () => tty2.tty }).deps, [])).toBe(0);
-    const after = await loadPcKeys(keysPath());
-    expect(after.accounts[KEY]?.pcKey).toEqual(pcKey);
-    expect(after.accounts[KEY]?.browsers.length).toBe(2);
-  });
-
-  it("틀린 코드(한 번뿐) → PAIR_CODE_MISMATCH · 아무것도 저장 안 함 · done 안 보냄", async () => {
-    const pcId = await approve();
-    const browser = await fakeBrowser({ pcId });
-    const tty = fakeTty(() => (browser.state.codes?.b === "000000" ? "000001" : "000000"));
-    await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []), "PAIR_CODE_MISMATCH");
+    expect(run.out()).toBe(`${PAIR_RETIRED}\n`);
     await expect(stat(keysPath())).rejects.toThrow();
-    expect(browser.state.done).toBe(0);
-    expect(tty.closed()).toBe(true);
-    // 짝짓지 못하고 끝나면 브라우저에 abort 를 알린다.
-    expect(browser.state.aborts).toEqual(["code-mismatch"]);
-  });
-
-  it("코드 입력 경계: 앞뒤 공백은 지우고 맞으면 핀 · 하이픈·가운데 공백이 든 맞는 숫자는 불일치(한 번 소모)", async () => {
-    const pcId = await approve();
-    const padded = await fakeBrowser({ pcId });
-    expect(await executePair(deps({ transport: () => padded.transport, openTty: () => fakeTty(() => `  ${padded.state.codes?.b}\t`).tty }).deps, [])).toBe(0);
-    for (const shape of [(b: string) => `${b.slice(0, 3)}-${b.slice(3)}`, (b: string) => `${b.slice(0, 3)} ${b.slice(3)}`]) {
-      const browser = await fakeBrowser({ pcId });
-      const tty = fakeTty(() => (browser.state.codes ? shape(browser.state.codes.b) : undefined));
-      await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []), "PAIR_CODE_MISMATCH");
-      expect(browser.state.done).toBe(0);
-    }
-    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length).toBe(1);
-  });
-
-  it("받은 키 id 가 공개키 지문과 다르면 거절 — 코드를 보이지 않고 저장 안 함", async () => {
-    const pcId = await approve();
-    const browser = await fakeBrowser({ pcId, keyId: "9d2b7e4a-61c3-4f0e-8a5d-3b1c7e9f2a64" });
-    const tty = fakeTty(() => browser.state.codes?.b);
-    const error = await executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []).then(() => undefined, (caught: unknown) => caught);
-    expect(error instanceof E2eError ? error.code : error).toBe("E2E_BAD_INPUT");
-    expect(tty.text()).not.toContain("Type this code");
-    await expect(stat(keysPath())).rejects.toThrow();
-  });
-
-  it("중계가 브라우저 키를 바꿔치기하면 — 사람이 진짜 브라우저의 코드 B 를 쳐도 맞지 않는다 · 저장 안 함", async () => {
-    const pcId = await approve();
-    const browser = await fakeBrowser({ pcId, relaySwapsKey: true });
-    const tty = fakeTty(() => browser.state.codes?.b);
-    await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []), "PAIR_CODE_MISMATCH");
-    await expect(stat(keysPath())).rejects.toThrow();
-  });
-
-  it("기한 안에 브라우저가 안 오면 PAIR_TIMEOUT · 저장 안 함", async () => {
-    const pcId = await approve();
-    const browser = await fakeBrowser({ pcId, never: true });
-    const tty = fakeTty(() => undefined);
-    await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty, waitMs: 50 }).deps, []), "PAIR_TIMEOUT");
-    await expect(stat(keysPath())).rejects.toThrow();
-  });
-
-  it("코드를 치는 동안 기한이 지나면 PAIR_TIMEOUT · 빈 줄이면 PAIR_CANCELLED — 둘 다 저장 안 함", async () => {
-    const pcId = await approve();
-    const slow = await fakeBrowser({ pcId });
-    await expectCli(executePair(deps({ transport: () => slow.transport, openTty: () => fakeTty(() => undefined).tty, waitMs: 100 }).deps, []), "PAIR_TIMEOUT");
-    const empty = await fakeBrowser({ pcId });
-    await expectCli(executePair(deps({ transport: () => empty.transport, openTty: () => fakeTty(() => "").tty }).deps, []), "PAIR_CANCELLED");
-    await expect(stat(keysPath())).rejects.toThrow();
-    expect(slow.state.aborts).toEqual(["timeout"]);
-    expect(empty.state.aborts).toEqual(["cancelled"]);
-  });
-
-  it("done 을 못 보내면 PAIR_DONE_FAILED — PC 에는 핀했다고 사유와 지우는 명령을 알린다", async () => {
-    const pcId = await approve();
-    const browser = await fakeBrowser({ pcId, failDone: true });
-    const tty = fakeTty(() => browser.state.codes?.b);
-    const run = deps({ transport: () => browser.transport, openTty: () => tty.tty });
-    const error = await expectCli(executePair(run.deps, []), "PAIR_DONE_FAILED");
-    expect(error.message).toContain("relay closed");
-    // 양쪽 완료가 아니다 — 알리지 않는다.
-    expect(run.notified).toEqual([]);
-    expect(error.message).toContain(`ainecto pair --remove ${await browserKeyIdOf(publicRawFromJwk(browser.own))}`);
-    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length).toBe(1);
-  });
-
-  it("짝짓는 동안 PC 키가 바뀌면 PAIR_CONFLICT · 브라우저 핀을 넣지 않는다", async () => {
-    const pcId = await approve();
-    const other = await generateSigningJwk();
-    const browser = await fakeBrowser({ pcId, afterReveal: async () => { await updatePcKeys(keysPath(), () => ({ accounts: { [KEY]: { pcKey: other, browsers: [] } } })); } });
-    const tty = fakeTty(() => browser.state.codes?.b);
-    await expectCli(executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []), "PAIR_CONFLICT");
-    expect((await loadPcKeys(keysPath())).accounts[KEY]).toEqual({ pcKey: other, browsers: [] });
-    expect(browser.state.done).toBe(0);
-  });
-
-  it("대화형만 · 터미널 세션 안 거절 · 동의 전 승인을 거절하면 PC_NOT_APPROVED — 중계·터미널을 열기 전에", async () => {
-    const never = (): never => { throw new Error("must not open"); };
-    await expectCli(executePair(deps({ insideTermSession: true, transport: never, openTty: never, connectPc: never }).deps, []), "PAIR_IN_TERM_SESSION");
-    // 승인을 묻는 흐름을 탔지만 승인하지 않았다(«Connect this PC? [y/N]» 에 N) — 지금처럼 PC_NOT_APPROVED.
-    let asked = 0;
-    const declined = await expectCli(executePair(deps({ transport: never, openTty: never, connectPc: async () => { asked += 1; return 0; } }).deps, []),
-      "PC_NOT_APPROVED");
-    expect(asked).toBe(1);
-    expect(declined.message).toContain("This PC (test-host) is not connected to AiNecto yet");
-    expect(declined.message).toContain("`npx -y ainecto@latest`");
-    await approve();
-    await expectCli(executePair(deps({ json: true, transport: never, openTty: never, connectPc: never }).deps, []), "PAIR_INTERACTIVE_ONLY");
-    await expectCli(executePair(deps({ interactive: false, transport: never, openTty: never, connectPc: never }).deps, []), "PAIR_INTERACTIVE_ONLY");
+    await expect(stat(settingsPath())).rejects.toThrow();
     await expectCli(executePair(deps({}).deps, ["--bogus"]), "USAGE");
     await expectCli(executePair(deps({}).deps, ["--remove"]), "USAGE");
   });
 
-  it("KAN-1348 연결 승인 전 대화형 — `ainecto` 와 같은 흐름(connectPc)을 한 번 탄 뒤 그 승인으로 이어서 브라우저 등록", async () => {
-    let browser: Awaited<ReturnType<typeof fakeBrowser>> | undefined;
-    let asked = 0;
-    const tty = fakeTty(() => browser?.state.codes?.b);
-    let stderr = "";
-    const run = deps({
-      connectPc: async () => {
-        asked += 1;
-        await approve();
-        return 0;
-      },
-      transport: async (pcId) => {
-        browser = await fakeBrowser({ pcId });
-        return browser.transport;
-      },
-      openTty: () => tty.tty,
-    });
-    run.deps.io.stderr.write = ((text: string) => { stderr += text; return true; }) as NodeJS.WriteStream["write"];
-    expect(await executePair(run.deps, [])).toBe(0);
-    expect(asked).toBe(1);
-    expect(stderr).toContain("Next: register this browser");
-    expect(browser?.state.pinnedPc).toBe(true);
-    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.length).toBe(1);
-    // 이미 승인한 PC 면 묻지 않는다.
-    const again = fakeTty(() => browser?.state.codes?.b);
-    expect(await executePair(deps({
-      connectPc: () => { throw new Error("must not ask again"); },
-      transport: async (pcId) => { browser = await fakeBrowser({ pcId }); return browser.transport; },
-      openTty: () => again.tty,
-    }).deps, [])).toBe(0);
-  });
-
-  it("KAN-1348 연결 승인 흐름이 실패 코드로 끝나면 그 코드 그대로 · 등록으로 가지 않는다", async () => {
-    const never = (): never => { throw new Error("must not open"); };
-    expect(await executePair(deps({ transport: never, openTty: never, connectPc: async () => 3 }).deps, [])).toBe(3);
-  });
-
-  it("KAN-1348 비대화형(--json·파이프) · 승인 전 — 묻지 않고 PC 이름이 든 PC_NOT_APPROVED", async () => {
-    const never = (): never => { throw new Error("must not open"); };
-    for (const shape of [{ json: true }, { interactive: false }]) {
-      const error = await expectCli(executePair(deps({ ...shape, transport: never, openTty: never, connectPc: never }).deps, []), "PC_NOT_APPROVED");
-      expect(error.message).toBe("This PC (test-host) is not connected to AiNecto yet. Run `npx -y ainecto@latest` in a terminal on this PC first "
-        + "and approve the connection, then run `npx -y ainecto@latest pair` to register this browser.");
-    }
+  it("등록하는 동안 PC 키가 바뀌면 pinBrowser 는 PAIR_CONFLICT · 브라우저 핀을 넣지 않는다", async () => {
+    const pcKey = await generateSigningJwk();
+    const work = publicJwkOf(await generateSigningJwk());
+    await updatePcKeys(keysPath(), (keys) => withBrowser(keys, KEY, pcKey, { keyId: "k1", publicJwk: work, name: "Work", pairedAt: "2026-11-21T00:00:00.000Z" }));
+    const before = (await loadPcKeys(keysPath())).accounts[KEY];
+    const error = await expectCli(pinBrowser({ keysPath: keysPath(), key: KEY, pcKey: await generateSigningJwk(), now: NOW,
+      browser: { keyId: "k2", publicJwk: publicJwkOf(await generateSigningJwk()), name: "Home" } }), "PAIR_CONFLICT");
+    expect(error.message).toContain("`npx -y ainecto@latest`");
+    expect((await loadPcKeys(keysPath())).accounts[KEY]).toEqual(before);
   });
 });
 
@@ -521,28 +336,22 @@ describe("ainecto pair --remove — 핀 삭제 → PC 연결을 완전히 끔(�
   });
 });
 
-describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 짝짓기(리뷰 impl-4 #1·#2)", () => {
+describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 등록(리뷰 impl-4 #1·#2)", () => {
+  const PAIRED = { kind: "paired", doneError: undefined };
   const account = async () => (await loadPcKeys(keysPath())).accounts[KEY];
   const failingTurnOff = () => deps({
     findPcs: async () => [{ session: "ainecto-pc", pid: 4242, pgid: 4242 }],
     turnOffPcs: async () => { throw new Error("a process in its group 4242 is still alive"); },
   });
-  async function pairOnce(pcId: string, own?: EcPrivateJwk) {
-    const browser = await fakeBrowser({ pcId, own });
-    const tty = fakeTty(() => browser.state.codes?.b);
-    const result = executePair(deps({ transport: () => browser.transport, openTty: () => tty.tty }).deps, []);
-    return { browser, result, keyId: await browserKeyIdOf(publicRawFromJwk(browser.own)) };
-  }
 
   it("철회 실패 중 다른 브라우저가 같은 기본 이름으로 짝지어도 다른 이름을 받고 · 원래 이름으로 재시도해도 새 핀이 남는다 · 실패 안내는 keyId 로", async () => {
-    const pcId = await approve();
-    const old = await pairOnce(pcId);
-    expect(await old.result).toBe(0);
+    const old = await registerOnce();
+    expect(await old.result).toMatchObject(PAIRED);
     const error = await expectCli(executePair(failingTurnOff().deps, ["--remove", "Chrome · macOS"]), "PAIR_REMOVE_STOP_FAILED");
     expect(error.message).toContain(`Run \`ainecto pair --remove ${old.keyId}\` again to finish.`);
 
-    const fresh = await pairOnce(pcId);
-    expect(await fresh.result).toBe(0);
+    const fresh = await registerOnce();
+    expect(await fresh.result).toMatchObject(PAIRED);
     expect((await account())?.browsers.map((item) => [item.keyId, item.name])).toEqual([[fresh.keyId, "Chrome · macOS (2)"]]);
 
     const retry = deps({});
@@ -553,13 +362,12 @@ describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 짝짓기
   });
 
   it("같은 브라우저(같은 keyId)의 철회가 끝나지 않았으면 재짝짓기는 저장하지 않고 PAIR_REMOVE_PENDING · done 안 보냄 · 철회를 마친 뒤엔 짝지어진다", async () => {
-    const pcId = await approve();
-    const first = await pairOnce(pcId);
-    expect(await first.result).toBe(0);
+    const first = await registerOnce();
+    expect(await first.result).toMatchObject(PAIRED);
     await expectCli(executePair(failingTurnOff().deps, ["--remove", first.keyId]), "PAIR_REMOVE_STOP_FAILED");
     const pending = (await account())?.pendingTurnOff;
 
-    const again = await pairOnce(pcId, first.browser.own);
+    const again = await registerOnce(first.browser.own);
     const error = await expectCli(again.result, "PAIR_REMOVE_PENDING");
     expect(error.message).toContain(`ainecto pair --remove ${first.keyId}`);
     expect(again.browser.state.done).toBe(0);
@@ -568,16 +376,15 @@ describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 짝짓기
 
     expect(await executePair(deps({}).deps, ["--remove", first.keyId])).toBe(0);
     expect((await account())?.pendingTurnOff).toBeUndefined();
-    const later = await pairOnce(pcId, first.browser.own);
-    expect(await later.result).toBe(0);
+    const later = await registerOnce(first.browser.own);
+    expect(await later.result).toMatchObject(PAIRED);
     expect(later.browser.state.pinnedPc).toBe(true);
     expect((await account())?.browsers.map((item) => item.keyId)).toEqual([first.keyId]);
   });
 
   it("같은 철회를 두 호출(A·B)이 처리하다 B 가 먼저 끝나 재짝짓기 → 새 철회 C 의 조회 실패 → A 의 늦은 완료는 C 의 표지를 지우지 않는다 · 재짝짓기는 계속 PAIR_REMOVE_PENDING · 같은 명령이 조회·종료로 들어가 끝낸다(리뷰 impl-5)", async () => {
-    const pcId = await approve();
-    const first = await pairOnce(pcId);
-    expect(await first.result).toBe(0);
+    const first = await registerOnce();
+    expect(await first.result).toMatchObject(PAIRED);
     await expectCli(executePair(failingTurnOff().deps, ["--remove", first.keyId]), "PAIR_REMOVE_STOP_FAILED");
 
     // A — 같은 철회의 재시도. 끄기 확인 중에 멈춰 있다.
@@ -593,8 +400,8 @@ describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 짝짓기
     expect((await account())?.pendingTurnOff).toBeUndefined();
 
     // 같은 브라우저를 다시 짝짓고 → 새 핀을 철회(C)했는데 PC 연결 조회가 실패했다.
-    const again = await pairOnce(pcId, first.browser.own);
-    expect(await again.result).toBe(0);
+    const again = await registerOnce(first.browser.own);
+    expect(await again.result).toMatchObject(PAIRED);
     const reset = deps({ findPcs: async () => { throw Object.assign(new Error("connect ECONNRESET"), { code: "ECONNRESET" }); } });
     const error = await expectCli(executePair(reset.deps, ["--remove", first.keyId]), "PAIR_REMOVE_STOP_FAILED");
     expect(error.message).toContain(`Run \`ainecto pair --remove ${first.keyId}\` again to finish.`);
@@ -607,7 +414,7 @@ describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 짝짓기
     expect(a.out()).toContain("Finished the earlier removal.");
     expect((await account())?.pendingTurnOff).toEqual(pendingC);
 
-    const blocked = await pairOnce(pcId, first.browser.own);
+    const blocked = await registerOnce(first.browser.own);
     await expectCli(blocked.result, "PAIR_REMOVE_PENDING");
     expect(blocked.browser.state.done).toBe(0);
 
@@ -621,15 +428,14 @@ describe("ainecto pair — 끝나지 않은 철회가 있는 동안의 짝짓기
   });
 
   it("옛 표지 항목(철회 식별자 없음)도 같은 명령으로 끝낸다 — 그 철회의 식별자는 keyId 로 읽는다", async () => {
-    const pcId = await approve();
-    const first = await pairOnce(pcId);
-    expect(await first.result).toBe(0);
+    const first = await registerOnce();
+    expect(await first.result).toMatchObject(PAIRED);
     const stored = await account();
     if (!stored) throw new Error("pairing did not save the account");
     await writeFile(keysPath(), JSON.stringify({ accounts: { [KEY]: { pcKey: stored.pcKey, browsers: [],
       pendingTurnOff: { removedAt: "2026-11-21T09:00:00.000Z", groups: [], removals: [{ keyId: first.keyId, name: "Chrome · macOS" }] } } } }));
     expect((await account())?.pendingTurnOff?.removals).toEqual([{ removalId: first.keyId, keyId: first.keyId, name: "Chrome · macOS" }]);
-    await expectCli((await pairOnce(pcId, first.browser.own)).result, "PAIR_REMOVE_PENDING");
+    await expectCli((await registerOnce(first.browser.own)).result, "PAIR_REMOVE_PENDING");
     const retry = deps({});
     expect(await executePair(retry.deps, ["--remove", first.keyId])).toBe(0);
     expect(retry.out()).toContain("Finished the earlier removal.");
@@ -645,15 +451,15 @@ describe("ainecto pair --list · --remove", () => {
     keys = withBrowser(keys, KEY, pcKey, { keyId: "k2", publicJwk: pub, name: "Home", pairedAt: "2026-11-21T01:00:00.000Z" });
     await updatePcKeys(keysPath(), () => keys);
 
-    const human = deps({ interactive: false });
+    const human = deps({});
     expect(await executePair(human.deps, ["--list"])).toBe(0);
     expect(human.out()).toContain("  k1  Work  (registered 2026-11-21T00:00:00.000Z)");
     const json = deps({ json: true });
     expect(await executePair(json.deps, ["--list"])).toBe(0);
     expect(JSON.parse(json.out())).toMatchObject({ data: { browsers: [{ keyId: "k1", name: "Work" }, { keyId: "k2", name: "Home" }] } });
 
-    expect(await executePair(deps({ interactive: false }).deps, ["--remove", "k1"])).toBe(0);
-    const byName = deps({ interactive: false });
+    expect(await executePair(deps({}).deps, ["--remove", "k1"])).toBe(0);
+    const byName = deps({});
     expect(await executePair(byName.deps, ["--remove", "Home"])).toBe(0);
     expect(byName.out()).toContain('Removed "Home" (k2).');
     expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers).toEqual([]);

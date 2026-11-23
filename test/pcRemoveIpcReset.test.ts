@@ -61,16 +61,11 @@ function removeDeps(deps: PcDeps, overrides: Partial<PairDeps> = {}): { value: P
   let out = "";
   const value: PairDeps = {
     io: { ...deps.io, stdout: { write: (text: string) => { out += text; return true; } } as unknown as NodeJS.WriteStream },
-    json: false, interactive: false, insideTermSession: false,
-    openTty: () => { throw new Error("no tty"); },
+    json: false,
     settingsPath: deps.settingsPath, keysPath: deps.keysPath, hostName: "test-host", endpoint: ENDPOINT,
     account: async () => ({ userId: "u1" }),
-    transport: () => { throw new Error("no transport"); },
-    notifyPaired: async () => undefined,
     findPcs: () => runningPcGroups(deps),
     turnOffPcs: (groups) => turnOffPcs(deps, groups),
-    connectPc: () => { throw new Error("no connect"); },
-    waitMs: 1_000,
     now: () => new Date("2026-11-21T09:00:00Z"),
     ...overrides,
   };

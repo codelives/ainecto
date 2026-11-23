@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { runToEnd, spawnAgent } from "../src/core/agent/child";
-import { CMD_LINE_MAX, controllingTerminal, endedFromOutside, findExecutable, killTree, LaunchError, planLaunch, quoteArgument, stuckProcessHint } from "../src/core/os/launch";
+import { CMD_LINE_MAX, endedFromOutside, findExecutable, killTree, LaunchError, planLaunch, quoteArgument, stuckProcessHint } from "../src/core/os/launch";
 
 /**
  * 실행 계획·강제 종료(설계 windows-pc r3 3-2·3-3) — 이 맥에서 돌릴 수 있는 부분(순수 계획 · Unix 실물 · Windows 분기의 실패 경로).
@@ -122,15 +122,6 @@ describe("endedFromOutside — 세션이 끝났을 때 restore 목록에 남기�
     expect(endedFromOutside(1, 0, "win32")).toBe(true);
     expect(endedFromOutside(0xc000013a, 0, "win32")).toBe(true);
     expect(endedFromOutside(-1073741510, 0, "win32")).toBe(true);
-  });
-});
-
-describe("controllingTerminal — ainecto pair 가 코드를 주고받는 터미널", () => {
-  it("Unix = /dev/tty 그대로(읽기 r · 쓰기 w) · Windows = 콘솔 장치 CONIN$·CONOUT$(있는 장치를 r+ 로 — /dev/tty 는 C:\\dev\\tty 로 풀려 없다)", () => {
-    for (const platform of ["darwin", "linux"] as const) {
-      expect(controllingTerminal(platform)).toEqual({ input: "/dev/tty", inputFlags: "r", output: "/dev/tty", outputFlags: "w" });
-    }
-    expect(controllingTerminal("win32")).toEqual({ input: "\\\\.\\CONIN$", inputFlags: "r+", output: "\\\\.\\CONOUT$", outputFlags: "r+" });
   });
 });
 

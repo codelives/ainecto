@@ -289,16 +289,11 @@ describe("이 PC 연결 — 실 데몬", () => {
   function removePair(keysPath: string, name: string): Promise<number> {
     const pc = harness({ stopDeadlineMs: 1_000 });
     return executePair({
-      io: pc.deps.io, json: false, interactive: false, insideTermSession: false,
-      openTty: () => { throw new Error("no tty"); },
+      io: pc.deps.io, json: false,
       settingsPath: pc.deps.settingsPath, keysPath, hostName: "test-host", endpoint: ENDPOINT,
       account: async () => ({ userId: "u1" }),
-      transport: () => { throw new Error("no transport"); },
-      notifyPaired: async () => undefined,
       findPcs: () => runningPcGroups(pc.deps),
       turnOffPcs: (groups) => turnOffPcs(pc.deps, groups),
-      connectPc: () => { throw new Error("no connect"); },
-      waitMs: 1_000,
       now: () => new Date("2026-11-21T09:00:00Z"),
     }, ["--remove", name]);
   }

@@ -86,7 +86,7 @@ export interface PcDeps {
   account: () => Promise<AccountSummary>;
   /** `ainecto setup` 그대로. */
   setup: () => Promise<number>;
-  /** 브라우저 자동 등록(설계 auto-register-0.15.2) — 없으면 하지 않는다(`ainecto pair` 가 연결 승인부터 탈 때). */
+  /** 브라우저 자동 등록(설계 auto-register-0.15.2) — 없으면 하지 않는다(시험). */
   register?: BrowserRegisterDeps;
 }
 
@@ -183,18 +183,20 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
 
 /** 연결 결과를 찍은 «뒤» 브라우저 자동 등록 — 종료 코드는 그대로(등록이 안 돼도 연결은 이미 됐다). */
 async function withRegistration(deps: PcDeps, key: string, userId: string, code: number): Promise<number> {
-  if (code === 0) await registerBrowserIfNone(deps, { key, userId });
+  if (code === 0) await registerBrowserOnStart(deps, { key, userId });
   return code;
 }
 
 /**
- * 브라우저 자동 등록(설계 auto-register-0.15.2 §1·§1-1·§2·§4) — 조건 넷(대화형 · 터미널 세션 밖 · 원격 허용 · 등록 브라우저 0)이 모두 맞을 때만.
+ * 브라우저 자동 등록(설계 auto-register-0.15.2 §1·§1-1·§2·§4·§11) — 대화형 · 터미널 세션 밖 · 원격 허용일 때. 이 PC 에 등록한 브라우저가 0 이면
+ * 묻지 않고, 이미 있으면 «지금 열리는 브라우저도 등록할까요? [y/N]»(기본 N — 0.15.3 · Ryan 결재 c8558683)에 y 일 때만.
+ * ssh 처럼 브라우저를 못 여는 곳에서는 등록한 브라우저가 0 일 때만 안내 한 줄(이미 있으면 조용히 끝낸다).
  * 일회용 비밀 S(32바이트)를 만들어 `https://<엔드포인트 origin>/api/v1/public/term-register#1.<pcId>.<tag>.<S>` 를 기본 브라우저로 열고
  * (분석 도구 없는 api 페이지 — S 를 앱 주소에 싣지 않는다), 같은 S 로
  * macB 를 검증 → 핀 → reveal(macP) → done. ★S 는 메모리에만 — 주소는 여는 명령의 인자로만 넘기고 stdout·stderr·로그·파일에 쓰지 않는다.
  * ★origin 은 CLI 엔드포인트에서만 정한다(서버가 준 주소를 열지 않는다). 실패·시간 초과·건너뛰기는 안내 한 줄만 — 던지지 않는다.
  */
-export async function registerBrowserIfNone(
+export async function registerBrowserOnStart(
   deps: Pick<PcDeps, "io" | "json" | "interactive" | "settingsPath" | "hostName" | "keysPath" | "endpoint" | "register">,
   account: { key: string; userId: string },
 ): Promise<void> {
@@ -203,15 +205,19 @@ export async function registerBrowserIfNone(
   const settings = await loadPcSettings(deps.settingsPath, deps.hostName);
   if (settings.accounts[account.key]?.remoteTerminal !== true) return;
   const stored = (await loadPcKeys(deps.keysPath)).accounts[account.key];
-  if ((stored?.browsers.length ?? 0) > 0) return;
+  const registered = stored?.browsers.length ?? 0;
   const note = (line: string): void => {
     deps.io.stderr.write(`${line}\n`);
   };
   // ★웹에는 코드 비교(수동) 등록이 없다(KAN-1348 반려 — 수동 탭이 자동 등록 시도를 가로챘다). PC 화면의 터미널에서 다시 실행하는 길 하나.
   const noBrowser = "This PC can't open a browser here (for example over ssh). Run `npx -y ainecto@latest` in a terminal on this PC's own screen to register your browser.";
   if (register.overSsh) {
-    note(noBrowser);
+    if (registered === 0) note(noBrowser);
     return;
+  }
+  if (registered > 0) {
+    const question = `This PC already has ${registered} registered browser${registered === 1 ? "" : "s"}. Register the browser that opens now too? [y/N]: `;
+    if (!yes(await promptLine(deps.io, question), false)) return;
   }
   const userId = transcriptUserId(account.userId);
   const secret = randomBytes(NONCE_SEED_BYTES);
@@ -234,7 +240,7 @@ export async function registerBrowserIfNone(
       pcId: settings.pcId,
       pcKey,
       transport: await register.transport(settings.pcId),
-      check: { kind: "secret", secret },
+      secret,
       pin: (browser) => pinBrowser({ keysPath: deps.keysPath, key: account.key, pcKey, browser, now: register.now() }),
       waitMs: register.waitMs,
       cancel: interrupt.signal,
@@ -262,7 +268,7 @@ export async function registerBrowserIfNone(
     return;
   }
   await register.notifyPaired({ keyId: browser.keyId, name: browser.name });
-  deps.io.stdout.write(`Registered "${browser.name}" with this PC. Remove it later with \`ainecto pair --remove ${browser.keyId}\`.\n`);
+  deps.io.stdout.write(`Registered "${browser.name}" with this PC.\n`);
 }
 
 /** 자동 등록이 끝나지 않았을 때 덧붙이는 안내(§1-1). */
@@ -396,7 +402,7 @@ export async function executePcStop(deps: PcDeps, argv: string[]): Promise<numbe
       return removedKeys ? kept : undefined;
     });
     if (removedKeys) {
-      lines.push("Also removed this PC's terminal key and registered browsers for that server — register them again with `ainecto pair`.");
+      lines.push("Also removed this PC's terminal key and registered browsers for that server — register them again by running `npx -y ainecto@latest`.");
     }
   }
   return print(deps, { stopped: running.map((pc) => pc.session), forgot: forget }, lines.join("\n"));

@@ -18,7 +18,7 @@ import type { BrowserOffer, PairTransport } from "./pcPairing";
 
 type PairOp = "pair/open" | "pair/send" | "pair/poll";
 
-/** 중계가 시도를 끝냈다 — code 는 `ainecto pair` 가 그대로 오류 코드로 쓴다. */
+/** 중계가 시도를 끝냈다 — code 는 오류 코드로 그대로 쓴다. */
 export class PairRelayError extends Error {
   constructor(
     readonly code: "PAIR_CLOSED" | "PAIR_DUPLICATE" | "PAIR_BAD_MESSAGE" | "PAIR_RELAY_BAD_RESPONSE",
@@ -113,7 +113,7 @@ export function offerOf(msgs: readonly unknown[]): Omit<BrowserOffer, "attemptId
   const items = msgs.map((msg) => (msg && typeof msg === "object" ? msg as Record<string, unknown> : {}));
   if (items.some((item) => item.type === "abort")) return "abort";
   if (items.length > 1) {
-    throw new PairRelayError("PAIR_DUPLICATE", "More than one browser registration request arrived — this try was ended. Run `ainecto pair` again.");
+    throw new PairRelayError("PAIR_DUPLICATE", "More than one browser registration request arrived — this try was ended. Run `npx -y ainecto@latest` again.");
   }
   const [item] = items;
   const publicRaw = fromB64u(item?.publicKey, PUBLIC_KEY_BYTES);

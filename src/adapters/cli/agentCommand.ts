@@ -31,7 +31,6 @@ export const AGENT_HELP_LINES: readonly string[] = [
   "  ainecto start [--env prod|dev]   connect this PC in the background — keeps running after you close the window (log: ~/.ainecto/agent/agent.log)",
   "  ainecto stop [--forget]          disconnect this PC now (--forget also removes your approval and registered browsers on this PC)",
   "  ainecto remote on|off            allow or block terminals from AiNecto on the web on this PC",
-  "  ainecto pair [--list | --remove <keyId|name>]   register a web browser with this PC by typing codes shown on both (once per browser)",
 ];
 
 /** 내부 명령 `ainecto pc run` — «이 PC 연결» 세션(ainecto-pc)이 돌린다. 사람은 `ainecto start` 를 친다. */
