@@ -77,6 +77,8 @@ export function createPcHttp<Op extends string, R extends { event: string }, O e
       (options.holdMs ?? 0) + input.timeoutMs);
     const onStop = () => controller.abort(new DOMException("stopped", "AbortError"));
     options.signal?.addEventListener("abort", onStop, { once: true });
+    // 토큰을 받는 사이 이미 멈췄으면(기기 지우기·다리 끝) 보내지 않는다 — 이미 난 abort 는 위 듣기에 오지 않는다.
+    if (options.signal?.aborted) onStop();
     const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
     if (token) headers.Authorization = `Bearer ${token}`;
     if (sessionToken && op !== "open") headers[input.sessionHeader] = sessionToken;
