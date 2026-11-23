@@ -6,9 +6,12 @@
 //   "fail"      → result status ERROR
 //   "hang"      → init 만 내고 답하지 않는다(중단·기한 시험)
 //   "crash"     → result 없이 code 3
+//   "result-on-term" → 답하지 않다가 SIGTERM 을 받으면 result 를 낸 뒤 끝난다(멈춤·결과 경합)
+//   "linger"    → result 를 낸 뒤 끝나지 않고 남는다(200ms 뒤 늦은 브리지 단계 하나 · SIGTERM 이면 끝) — 다음 차례 전 정리 시험
+// FAKE_AGY_LIFE_LOG 가 있으면 -p 프로세스의 «start <pid>» · «end <pid>» 를 한 줄씩 남긴다.
 //   그 밖       → reply «got <글>»
 // `--version`(FAKE_AGY_VERSION) · `models`(FAKE_AGY_AUTH=out 이면 1) · `plugin list --json`(FAKE_AGY_PLUGINS · FAKE_AGY_PLUGINS_FAIL) 은 한 번 출력하고 끝난다.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -26,10 +29,22 @@ if (args[0] === "models") {
 }
 if (args[0] === "plugin" && args[1] === "list") {
   if (process.env.FAKE_AGY_PLUGINS_FAIL) process.exit(2);
+  // FAKE_AGY_PLUGINS_HOLD=<파일>: «<파일>.started» 를 만들고 <파일> 이 생길 때까지 답을 붙잡는다(사전 점검 중 멈춤 시험).
+  const hold = process.env.FAKE_AGY_PLUGINS_HOLD;
+  if (hold) {
+    writeFileSync(`${hold}.started`, String(process.pid));
+    while (!existsSync(hold)) await new Promise((r) => setTimeout(r, 20));
+  }
   process.stdout.write(`${process.env.FAKE_AGY_PLUGINS ?? "[]"}\n`);
   process.exit(0);
 }
 if (process.env.FAKE_AGY_ARGS_LOG) appendFileSync(process.env.FAKE_AGY_ARGS_LOG, `${JSON.stringify({ args, cwd: process.cwd() })}\n`);
+const life = process.env.FAKE_AGY_LIFE_LOG;
+if (life) {
+  appendFileSync(life, `start ${process.pid}\n`);
+  process.on("exit", () => appendFileSync(life, `end ${process.pid}\n`));
+}
+process.on("SIGTERM", () => process.exit(0));
 const resume = args.indexOf("--conversation");
 const conversationId = resume >= 0 ? args[resume + 1] : `conv-${process.pid}`;
 const out = (e) => process.stdout.write(`${JSON.stringify(e)}\n`);
@@ -44,6 +59,18 @@ createInterface({ input: process.stdin }).once("line", (line) => {
   out({ event: "init", conversation_id: conversationId, init: { model: "fake", cwd: process.cwd(), tools: ["call_mcp_tool"] } });
   if (text === "crash") process.exit(3);
   if (text === "hang") {
+    setInterval(() => {}, 1_000);
+    return;
+  }
+  if (text === "result-on-term") {   // 멈춤(SIGTERM)과 결과가 겹치는 경우 — 끄라는 신호를 받은 뒤 result 를 내고 끝난다
+    process.removeAllListeners("SIGTERM");
+    process.on("SIGTERM", () => { reply("finished anyway"); process.exit(0); });
+    setInterval(() => {}, 1_000);
+    return;
+  }
+  if (text === "linger") {
+    reply("lingering");
+    setTimeout(() => step(9, "DONE", mcp("ainecto-pc", "create_documents", { output: doc("z") })), 200);
     setInterval(() => {}, 1_000);
     return;
   }

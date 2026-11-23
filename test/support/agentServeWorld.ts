@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, AgentId } from "../../src/core/agent/agents";
 import type { AgentSpawn } from "../../src/core/agent/child";
+import { agentReplySchema } from "../../src/core/agent/agents";
+import { antigravityAdapter } from "../../src/core/agent/antigravity";
 import { claudeCodeAdapter } from "../../src/core/agent/claudeCode";
 import { codexAdapter } from "../../src/core/agent/codex";
 import { AgentCallError, type AgentHttp, type AgentOp } from "../../src/core/agent/http";
@@ -17,6 +19,7 @@ import { DaemonLog } from "../../src/core/term/daemonLog";
 const FAKES: Record<string, string> = {
   claude: join(__dirname, "..", "fixtures", "fakeClaude.mjs"),
   codex: join(__dirname, "..", "fixtures", "fakeCodex.mjs"),
+  agy: join(__dirname, "..", "fixtures", "fakeAgy.mjs"),
 };
 
 /** 가짜 Agent 띄우기 — 실행 파일 이름으로 가짜 스크립트를 고른다. 모르는 이름은 진짜로 띄워 ENOENT 를 낸다. */
@@ -113,6 +116,8 @@ export interface World {
   done: Promise<ServeResult>;
   argsLog: string;
   codexArgsLog: string;
+  /** 가짜 agy 의 -p 실행(인자·cwd) 한 줄씩. */
+  agyArgsLog: string;
   logPath: string;
   sessionsPath: string;
   /** serve 가 사람에게 쓴 줄(시작 줄 등). */
@@ -159,6 +164,7 @@ export function startServe(options: WorldOptions = {}): World {
   const dir = mkdtempSync(join(tmpdir(), "agent-serve-"));
   const argsLog = join(dir, "args.jsonl");
   const codexArgsLog = join(dir, "codex-args.jsonl");
+  const agyArgsLog = join(dir, "agy-args.jsonl");
   const logPath = join(dir, "agent.log");
   const sessionsPath = join(dir, "sessions.json");
   const runsPath = join(dir, "runs.json");
@@ -174,13 +180,17 @@ export function startServe(options: WorldOptions = {}): World {
   const stop = new AbortController();
   const log = new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`);
   const shared = { spawnImpl: fakeSpawn, cwd: dir,
-    env: { ...process.env, ANTHROPIC_API_KEY: "", FAKE_CLAUDE_ARGS_LOG: argsLog, FAKE_CODEX_ARGS_LOG: codexArgsLog, ...options.env },
+    env: { ...process.env, ANTHROPIC_API_KEY: "", FAKE_CLAUDE_ARGS_LOG: argsLog, FAKE_CODEX_ARGS_LOG: codexArgsLog,
+      FAKE_AGY_ARGS_LOG: agyArgsLog, ...options.env },
     log, writeTools: WRITE_TOOLS };
   const all: AgentAdapter[] = [
     // 가짜 Agent 가 받은 인자 = 브리지 이름(할 일 차례만) + 재개 값 — 시험이 «누구로 붙었나»를 본다.
     claudeCodeAdapter({ ...shared, args: ({ resumeSessionId, agentName }) =>
       [...(agentName ? ["--agent", agentName] : []), ...(resumeSessionId ? ["--resume", resumeSessionId] : [])] }),
     codexAdapter({ ...shared, appServerArgs: (agentName) => ["app-server", ...(agentName ? ["--agent", agentName] : [])], clientVersion: "0.0.0" }),
+    antigravityAdapter({ spawnImpl: fakeSpawn, env: shared.env, home: join(dir, "home"), log, writeTools: WRITE_TOOLS,
+      toolNames: new Set([...WRITE_TOOLS, "search"]), workDir: (name) => join(dir, "app", "antigravity", name ?? "chat"),
+      mcpConfig: () => ({ mcpServers: { "ainecto-pc": { command: "node", args: [] } } }), schema: agentReplySchema }),
   ];
   const installed = options.installed ?? ["claude-code"];
   const adapters = new Map(all.filter((a) => installed.includes(a.id)).map((a) => [a.id, a] as const));
@@ -200,7 +210,7 @@ export function startServe(options: WorldOptions = {}): World {
     turnTimeoutMs: options.turnTimeoutMs,
     todos: options.todos ? { ...options.todos, runs: new AgentRunLog(runsPath, log) } : undefined,
   }));
-  return { server, stop, done, argsLog, codexArgsLog, logPath, sessionsPath, printed, runsPath };
+  return { server, stop, done, argsLog, codexArgsLog, agyArgsLog, logPath, sessionsPath, printed, runsPath };
 }
 
 export async function until<T>(read: () => T | undefined, ms = 10_000): Promise<T> {

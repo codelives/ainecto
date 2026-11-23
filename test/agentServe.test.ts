@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AgentCallError } from "../src/core/agent/http";
 import { finish, logRecords, spawned, startServe, until } from "./support/agentServeWorld";
 
@@ -188,6 +190,23 @@ describe("ainecto agent serve", () => {
     const stops = logRecords(w).filter((r) => r.event === "stop_request");
     expect(stops).toEqual([expect.objectContaining({ turnUuid: "t1", running: true })]);
     expect(logRecords(w).find((r) => r.event === "agent_response" && r.turnUuid === "t1")?.status).toBe("STOPPED");
+  });
+
+  it("Antigravity 사전 점검 중 웹 «중단» → STOPPED · agy -p 0(도구 실행 0) · 그 대화의 재개 값은 그대로(구현 리뷰 1차 P0-1)", async () => {
+    const holdDir = mkdtempSync(join(tmpdir(), "agy-serve-hold-"));
+    const hold = join(holdDir, "release");
+    const w = startServe({ installed: ["antigravity"], env: { FAKE_AGY_PLUGINS_HOLD: hold },
+      sessionsFile: { conversations: {}, byAgent: { antigravity: { "conv-a": { sessionId: "conv-keep", updatedAt: "2026-11-23T00:00:00Z" } } } } });
+    w.server.offer("t1", "conv-a", "hello", undefined, "antigravity");
+    await until(() => (existsSync(`${hold}.started`) ? true : undefined));
+    w.server.push({ state: "OPEN", offers: [], stops: ["t1"] });
+    const stopped = await until(() => w.server.replies()[0]);
+    writeFileSync(hold, "go");
+    await new Promise((r) => setTimeout(r, 600));
+    await finish(w);
+    expect(stopped).toMatchObject({ turnUuid: "t1", status: "STOPPED", documentUuids: [] });
+    expect(existsSync(w.agyArgsLog)).toBe(false);
+    expect(JSON.parse(readFileSync(w.sessionsPath, "utf8")).byAgent.antigravity["conv-a"].sessionId).toBe("conv-keep");
   });
 
   it("시작 전에 멈춘 차례는 Agent 에 넣지 않고 STOPPED", async () => {
