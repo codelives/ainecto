@@ -85,7 +85,7 @@ export async function executeAgentServe(input: {
     },
     log,
   });
-  const serverTools = (await tools.list()) as Array<{ name: string; annotations?: { readOnlyHint?: boolean } }>;
+  const serverTools = (await tools.list()) as Array<{ name: string; description?: unknown; inputSchema?: unknown; annotations?: { readOnlyHint?: boolean } }>;
   const writeTools = writeToolNames(serverTools);
 
   // 브리지 = 지금 돌고 있는 이 CLI 그대로(같은 node · 같은 스크립트 · 같은 서버 주소).
@@ -99,7 +99,7 @@ export async function executeAgentServe(input: {
       claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters, documentsMax), mcpConfig: claudeMcpConfig(bridge(agentName)), resumeSessionId }) }),
     codexAdapter({ ...shared, appServerArgs: (agentName) => codexAppServerArgs(bridge(agentName), writeTools), clientVersion: CLI_VERSION }),
     antigravityAdapter({ spawnImpl: spawnAgent, env: shared.env, home: homedir(), log, writeTools,
-      toolNames: new Set(serverTools.map((tool) => tool.name)),
+      tools: serverTools,
       // 연결 이름마다 한 폴더 — 이름 글자를 폴더 이름에 쓰지 않는다(해시).
       workDir: (agentName) => join(paths.antigravity,
         agentName ? `agent-${createHash("sha256").update(agentName).digest("hex").slice(0, 16)}` : "chat"),

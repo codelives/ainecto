@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { agentReplySchema, type AgentSession, type TurnOutcome } from "../src/core/agent/agents";
 import { antigravityAdapter, antigravityAuth } from "../src/core/agent/antigravity";
-import { antigravityAgentArgs, antigravityMcpConfig, antigravitySettings } from "../src/core/agent/antigravityArgs";
+import { antigravityAgentArgs, antigravityMcpConfig, antigravitySettings, antigravityToolPreamble } from "../src/core/agent/antigravityArgs";
 import { antigravityMcpPolicy, writeWorkspaceMcpConfig } from "../src/core/agent/antigravityPolicy";
 import type { AgentSpawn } from "../src/core/agent/child";
 import type { AgentLogRecord } from "../src/core/agent/log";
@@ -118,6 +118,15 @@ describe("Antigravity 고정 인자·인증(모델 호출 0)", () => {
     expect(antigravityAgentArgs({ schema: {}, settings })).not.toContain("--conversation");
   });
 
+  it("도구 정의 머리말: 서버가 준 이름·설명·inputSchema 만 한 줄 JSON · 브리지 이름 · 본문과 빈 줄로 나뉜다", () => {
+    const preamble = antigravityToolPreamble([{ name: "search", description: "find", inputSchema: { type: "object" },
+      annotations: { readOnlyHint: true } } as never]);
+    const [head, json, blank, rest] = preamble.split("\n");
+    expect(head).toContain('MCP server "ainecto-pc"');
+    expect(JSON.parse(json!)).toEqual([{ name: "search", description: "find", inputSchema: { type: "object" } }]);
+    expect([blank, rest]).toEqual(["", ""]);
+  });
+
   it("agy models 끝 코드 0 = 준비 · 과금 주체는 변수 유무로", () => {
     expect(antigravityAuth(1, {}, undefined)).toEqual({ ready: false, detail: "sign in — run `agy` once" });
     expect(antigravityAuth(0, {}, undefined)).toEqual({ ready: true, mode: "subscription", method: "google-account" });
@@ -131,14 +140,15 @@ function world(env: Record<string, string> = {}, options: { workDir?: string } =
   const t = tempRoot();
   const argsLog = join(t.root, "agy-args.jsonl");
   const lifeLog = join(t.root, "agy-life.log");
+  const inputLog = join(t.root, "agy-input.jsonl");
   const logPath = join(t.root, "agent.log");
   const spawnImpl: AgentSpawn = (command, args, opts) => spawn(command === "agy" ? process.execPath : command,
     command === "agy" ? [FAKE_AGY, ...args] : args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
   const adapter = antigravityAdapter({
     spawnImpl, home: t.home, log: new DaemonLog<AgentLogRecord>(logPath, `${logPath}.1`),
-    env: { ...process.env, FAKE_AGY_ARGS_LOG: argsLog, FAKE_AGY_LIFE_LOG: lifeLog, ...env },
+    env: { ...process.env, FAKE_AGY_ARGS_LOG: argsLog, FAKE_AGY_LIFE_LOG: lifeLog, FAKE_AGY_INPUT_LOG: inputLog, ...env },
     writeTools: new Set(["create_documents", "update_documents"]),
-    toolNames: new Set(["search", "create_documents", "update_documents"]),
+    tools: ["search", "create_documents", "update_documents"].map((name) => ({ name, inputSchema: { type: "object" } })),
     workDir: (name) => options.workDir ?? join(t.root, "app", "antigravity", name ? `agent-${name}` : "chat"),
     mcpConfig: () => OURS,
     schema: agentReplySchema,
@@ -148,7 +158,8 @@ function world(env: Record<string, string> = {}, options: { workDir?: string } =
   const open = (resumeRef?: string): AgentSession =>
     adapter.open({ conversationUuid: "conv-uuid", textMaxCharacters: 1000, documentsMax: 10, ...(resumeRef ? { resumeRef } : {}) });
   const life = () => (existsSync(lifeLog) ? readFileSync(lifeLog, "utf8").trim().split("\n") : []);
-  return { t, adapter, runs, logs, open, life };
+  const inputs = () => readFileSync(inputLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { tools: unknown });
+  return { t, adapter, runs, logs, open, life, inputs };
 }
 
 const alive = (pid: number): boolean => {
@@ -189,6 +200,9 @@ describe("Antigravity 세션 — 이벤트 → 결과 계약(r2 표)", () => {
     expect(one!.cwd.endsWith(join("antigravity", "chat"))).toBe(true);
     expect(JSON.parse(readFileSync(join(one!.cwd, ".agents", "mcp_config.json"), "utf8"))).toEqual(OURS);
     expect(w.logs().some((r) => r.event === "agent_usage" && r.inputTokens === 10)).toBe(true);
+    // 차례마다 입력 앞에 서버 tools/list 정의 한 벌(구현 리뷰 1차 P1 대안 ① — 정의 파일 읽기는 막혀 있다)
+    const defs = ["search", "create_documents", "update_documents"].map((name) => ({ name, schema: true }));
+    expect(w.inputs()).toEqual([{ tools: defs }, { tools: defs }]);
   });
 
   it("SUCCESS 아님 → result isError subtype = status · 결과 없이 끝남 → exited(code 3)", async () => {

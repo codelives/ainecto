@@ -23,6 +23,24 @@ export const AGY_CUSTOMIZATION_DIRS = [".agents", ".agent", "_agents", "_agent"]
 /** 권한 작업 이름으로 막는 내장 도구 — 셸 · 파일 쓰기 · 파일 읽기 · 주소 읽기 · 주소 실행. */
 const BUILTIN_DENY = ["command(*)", "write_file(*)", "read_file(*)", "read_url(*)", "execute_url(*)"] as const;
 
+/** 서버 tools/list 의 도구 하나(이름 · 설명 · 입력 schema) — serve 가 시작할 때 한 번 받은 것. */
+export interface AgyToolDefinition {
+  name: string;
+  description?: unknown;
+  inputSchema?: unknown;
+}
+
+/**
+ * 차례 입력 앞에 싣는 도구 정의 — 서버 tools/list 한 벌 그대로(손으로 복제하지 않는다 · 구현 리뷰 1차 P1 대안 ①).
+ * agy 는 MCP 정의를 파일(~/.gemini/antigravity-cli/mcp/…)로 두고 read_file 로 읽게 하는데, 우리는 read_file 을 막는다(헤드리스는 allow 를 무시해
+ * 그 폴더만 열 수 없다). 정의가 없으면 모델이 인자를 추측해 오류를 거듭했다(실측: 9~15번 · 정의를 실으면 0~1번 · 시간 절반 이하).
+ */
+export function antigravityToolPreamble(tools: ReadonlyArray<AgyToolDefinition>): string {
+  const definitions = tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+  return `[AiNecto tool definitions — MCP server "${ANTIGRAVITY_MCP_SERVER}" (call these with call_mcp_tool; `
+    + `the definitions are complete, do not look for definition files)]\n${JSON.stringify(definitions)}\n\n`;
+}
+
 /** 작업 폴더 {@code .agents/mcp_config.json} — MCP 서버는 이 CLI 의 브리지 하나뿐(stdio). */
 export function antigravityMcpConfig(bridge: AinectoBridge): Record<string, unknown> {
   return { mcpServers: { [ANTIGRAVITY_MCP_SERVER]: { command: bridge.command, args: bridge.args } } };
