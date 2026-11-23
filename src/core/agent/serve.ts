@@ -571,8 +571,12 @@ function serverLimits(value: unknown): ServerLimits {
  * link 를 연다 — 이 CLI 의 기능(features)을 알린다. ★옛 서버는 open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다 → 그때만
  * features 없이 한 번 더 연다(옛 서버는 멈춤 지시를 보내지 않는다).
  */
-async function openLink(deps: ServeDeps, agents: ReadonlyArray<Record<string, unknown>>): Promise<Record<string, unknown>> {
+async function openLink(deps: ServeDeps, allAgents: ReadonlyArray<Record<string, unknown>>): Promise<Record<string, unknown>> {
   const base = { hostName: deps.hostName, cliVersion: deps.cliVersion };
+  // ★open 본문의 agents[].id 는 서버가 닫힌 목록(AgentKind)으로 거른다 — 이 종류를 모르는 서버는 open 전체를 400 INVALID 로 거절한다.
+  //   그래서 맨 처음 한 번만 다 싣고, 거절되면 이 종류를 빼고 아래 단계를 밟는다(그 서버는 이 종류의 요청을 보내지 않는다).
+  const agents = allAgents.filter((a) => !NEWER_AGENT_IDS.includes(a.id as AgentId));
+  const newer = agents.length < allAgents.length;
   const named = agents.some((a) => a.name !== undefined);
   const unnamed = agents.map(({ name: _name, ...rest }) => rest);
   const features = pcFeatures(deps.todos !== undefined);
@@ -580,9 +584,11 @@ async function openLink(deps: ServeDeps, agents: ReadonlyArray<Record<string, un
   // 옛 서버는 open 본문이 닫혀 있다 — 모르는 칸(features 의 todos · agents[].name · features)은 400 INVALID. 새 칸부터 하나씩 덜어 다시 연다.
   // todos 를 모르는 서버는 할 일 신원은 주더라도 자동 실행 대상을 가리지 않는다 — 그때도 할 일은 받는다(그 서버가 예전처럼 맡긴다).
   // cliBuild(KAN-1113 #1890 D)를 모르는 서버는 그 칸만 빼고 다시 연다 — 아래 단계는 모두 cliBuild 없이.
+  const build = deps.cliBuild ? { cliBuild: deps.cliBuild } : {};
   const attempts: Array<{ body: Record<string, unknown>; dropped?: string }> = [
-    ...(deps.cliBuild ? [{ body: { ...base, cliBuild: deps.cliBuild, agents, features } }] : []),
-    { body: { ...base, agents, features }, ...(deps.cliBuild ? { dropped: "cliBuild" } : {}) },
+    ...(newer ? [{ body: { ...base, ...build, agents: allAgents, features } }] : []),
+    ...(deps.cliBuild ? [{ body: { ...base, cliBuild: deps.cliBuild, agents, features }, ...(newer ? { dropped: "agents.newer" } : {}) }] : []),
+    { body: { ...base, agents, features }, ...(deps.cliBuild ? { dropped: "cliBuild" } : newer ? { dropped: "agents.newer" } : {}) },
     ...(older.length < features.length ? [{ body: { ...base, agents, features: older }, dropped: "features.todos" }] : []),
     ...(named ? [{ body: { ...base, agents: unnamed, features: older }, dropped: "agents.name" }] : []),
     { body: { ...base, agents: unnamed }, dropped: "features" },
@@ -598,6 +604,9 @@ async function openLink(deps: ServeDeps, agents: ReadonlyArray<Record<string, un
     }
   }
 }
+
+/** 서버가 나중에 알게 된 Agent 종류 — open 이 거절되면 이것부터 뺀다(서버 AgentKind 에 들어가기 전 판과 붙을 때). */
+const NEWER_AGENT_IDS: readonly AgentId[] = ["antigravity"];
 
 /** 폴더 이름(agent.local)을 붙일 한 종류 — 준비된 서버 기본 Agent, 없으면 처음 준비된 것(순수 함수). */
 export function folderKind(agents: ReadonlyArray<{ id: AgentId; ready: boolean }>): AgentId | undefined {
