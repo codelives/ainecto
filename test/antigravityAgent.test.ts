@@ -256,7 +256,7 @@ describe("Antigravity 세션 — 이벤트 → 결과 계약(r2 표)", () => {
   it("감지·인증: 판이 다르면 로그만 · 로그인 없음 = 준비 안 됨", async () => {
     const w = world({ FAKE_AGY_VERSION: "1.6.0", FAKE_AGY_AUTH: "out" });
     expect(await w.adapter.detect()).toEqual({ installed: true, version: "1.6.0" });
-    expect(w.logs().find((r) => r.event === "agent_version_unverified")).toMatchObject({ version: "1.6.0", verified: "1.5.14" });
+    expect(w.logs().find((r) => r.event === "agent_version_unverified")).toMatchObject({ version: "1.6.0", verified: "1.5.15" });
     expect(await w.adapter.authStatus()).toMatchObject({ ready: false });
   });
 });
