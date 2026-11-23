@@ -34,7 +34,9 @@ export function replyForOutcome(
       return failed("AGENT_EXITED", `${agentName} 가 끝났어요(code ${outcome.code ?? "-"}${outcome.signal ? `, ${outcome.signal}` : ""}).`
         + (outcome.stderrTail ? `\n${outcome.stderrTail}` : ""));
     case "refused":
-      return failed(outcome.errorCode, `${agentName} 설정을 다 확인하지 못해 이 PC 에서 실행하지 않았어요(${outcome.reason}).`);
+      return failed(outcome.errorCode, outcome.errorCode === "AGENT_PREVIOUS_RUNNING"
+        ? `${agentName} 의 앞 요청 프로세스가 아직 끝나지 않아 이번 요청은 실행하지 않았어요. 잠시 뒤 다시 보내 주세요(${outcome.reason}).`
+        : `${agentName} 설정을 다 확인하지 못해 이 PC 에서 실행하지 않았어요(${outcome.reason}).`);
     case "result": {
       const { result } = outcome;
       if (result.isError) {

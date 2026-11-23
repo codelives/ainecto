@@ -48,8 +48,11 @@ export type TurnOutcome =
   | { kind: "result"; result: AgentTurnResult; facts: TurnFacts }
   | { kind: "timeout" }
   | { kind: "exited"; code: number | null; signal: string | null; stderrTail: string }
-  /** 돌리지 않았다 — 이 PC 의 Agent 설정을 다 확인하지 못했다(Antigravity 서버 이름 모으기 실패 · 설계 r3). 세션·재개 값은 그대로 둔다. */
-  | { kind: "refused"; errorCode: "AGENT_POLICY_UNVERIFIED"; reason: string };
+  /**
+   * 돌리지 않았다 — 세션·재개 값은 그대로 둔다. AGENT_POLICY_UNVERIFIED = 이 PC 의 Agent 설정을 다 확인하지 못했다(Antigravity 이름 모으기 · 설계 r3).
+   * AGENT_PREVIOUS_RUNNING = 앞 차례 프로세스를 끄지 못했다(그것이 끝날 때까지 다음 차례도 막는다 · 구현 리뷰 2차 P1).
+   */
+  | { kind: "refused"; errorCode: "AGENT_POLICY_UNVERIFIED" | "AGENT_PREVIOUS_RUNNING"; reason: string };
 
 /** Agent 가 무엇으로 인증해 도는가 — 과금 주체. 서버 연결 계약의 {@code auth} 칸과 같은 글이다. */
 export type AgentAuthMode = "apiKey" | "subscription";
