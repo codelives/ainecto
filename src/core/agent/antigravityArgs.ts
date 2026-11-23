@@ -49,7 +49,8 @@ export function antigravityAgentArgs(input: {
   conversationId?: string;
 }): string[] {
   const args = [
-    "-p",
+    // ★`-p` 는 값을 받는다 — 비우지 않으면 다음 인자를 프롬프트로 먹는다(실측 1.5.14 끝 코드 2). 프롬프트는 stdin(stream-json) 한 줄이라 빈 글.
+    "-p", "",
     "--input-format", "stream-json",
     "--output-format", "stream-json",
     "--json-schema", JSON.stringify(input.schema),

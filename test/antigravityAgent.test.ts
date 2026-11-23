@@ -112,7 +112,7 @@ describe("Antigravity 고정 인자·인증(모델 호출 0)", () => {
     expect(settings).toEqual({ toolPermission: "request-review", permissions: { allow: ["mcp(ainecto-pc/*)"],
       deny: ["command(*)", "write_file(*)", "read_file(*)", "read_url(*)", "execute_url(*)", "mcp(ainecto/*)", "mcp(other/*)"] } });
     const args = antigravityAgentArgs({ schema: { type: "object" }, settings, conversationId: "c1" });
-    expect(args.slice(0, 5)).toEqual(["-p", "--input-format", "stream-json", "--output-format", "stream-json"]);
+    expect(args.slice(0, 6)).toEqual(["-p", "", "--input-format", "stream-json", "--output-format", "stream-json"]);
     expect(JSON.parse(args[args.indexOf("--settings") + 1]!)).toEqual(settings);
     expect(args.slice(-2)).toEqual(["--conversation", "c1"]);
     expect(antigravityAgentArgs({ schema: {}, settings })).not.toContain("--conversation");
