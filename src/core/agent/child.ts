@@ -29,6 +29,7 @@ export class AgentChild {
   private stderr = "";
   private exitInfo: ChildExit | undefined;
   private readonly exited: Promise<void>;
+  private readonly outputDone: Promise<void>;
   private readonly onKilled: ((result: KillResult) => void) | undefined;
 
   constructor(
@@ -60,7 +61,9 @@ export class AgentChild {
     this.child.stdin.on("error", () => {
       // 프로세스가 먼저 끝나 stdin 이 깨졌다 — exit 이 이유를 남긴다.
     });
-    createInterface({ input: this.child.stdout }).on("line", hooks.line);
+    const lines = createInterface({ input: this.child.stdout });
+    lines.on("line", hooks.line);
+    this.outputDone = new Promise((resolve) => lines.once("close", () => resolve()));
   }
 
   get pid(): number {
@@ -105,12 +108,18 @@ export class AgentChild {
   async stop(): Promise<KillResult | undefined> {
     if (!this.alive) return undefined;
     this.child.stdin.end();
-    if (await this.waitExit(AGENT_STOP_WAIT_MS)) return undefined;
+    if (await this.waitForExit(AGENT_STOP_WAIT_MS)) return undefined;
     return await this.forceStop();
   }
 
-  private async waitExit(ms: number): Promise<boolean> {
+  /** {@code ms} 안에 프로세스가 끝나면 true. */
+  async waitForExit(ms: number): Promise<boolean> {
     return await withDeadline(this.exited.then(() => true), ms, false);
+  }
+
+  /** stdout 이 다 읽혔으면(마지막 줄까지 hooks.line 으로 나갔으면) true — exit 이 마지막 줄보다 먼저 올 수 있다. */
+  async waitForOutput(ms: number): Promise<boolean> {
+    return await withDeadline(this.outputDone.then(() => true), ms, false);
   }
 }
 

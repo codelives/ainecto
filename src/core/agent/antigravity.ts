@@ -3,10 +3,10 @@ import { join } from "node:path";
 import type { DaemonLog } from "../term/daemonLog";
 import type { AgentAdapter, AgentAuthStatus, AgentSession, TurnOutcome } from "./agents";
 import { AGY, ANTIGRAVITY_MCP_SERVER, VERIFIED_AGY_VERSION, antigravityAgentArgs, antigravitySettings } from "./antigravityArgs";
-import { antigravityMcpPolicy, writeWorkspaceMcpConfig } from "./antigravityPolicy";
+import { antigravityMcpPolicy, writeWorkspaceMcpConfig, type McpPolicy } from "./antigravityPolicy";
 import { AgentChild, detectByVersion, runToEnd, withDeadline, type AgentSpawn, type ChildExit } from "./child";
 import { TurnFactsCollector } from "./documents";
-import { AGENT_CALL_TIMEOUT_MS } from "./limits";
+import { AGENT_CALL_TIMEOUT_MS, AGENT_STOP_WAIT_MS } from "./limits";
 import type { AgentLogRecord } from "./log";
 
 export interface AntigravityDeps {
@@ -80,12 +80,19 @@ interface Turn {
   counted: Set<number>;
   /** 브리지 밖 서버에서 DONE 된 도구(사후 대조). */
   foreign: Array<{ server: string; tool: string }>;
+  /** 사용자 멈춤 · close · 기한 — 이 차례는 더 시작하지 않는다(사전 점검 중이어도). */
   interrupted: boolean;
+  /** 결과를 한 번 냈다 — 그 뒤 줄·exit 은 이 차례를 바꾸지 않는다. */
+  done: boolean;
+  /** 이 차례의 agy -p(사전 점검이 끝나 띄웠을 때만). */
+  child?: AgentChild;
 }
 
 /**
  * ★논리 세션 하나 · 차례마다 프로세스 하나(r2). {@code alive} = close 전. {@code sessionRef} 는 init 의 conversation_id 를 받는 즉시.
- * 앞 세대 프로세스의 늦은 줄·exit 은 버린다. 사용자 멈춤은 result(isError · interrupted)로 끝낸다 — 성공으로 위장하지 않는다.
+ * ★차례의 수명 = 사전 점검(앞 프로세스 정리 · 설정 쓰기 · 이름 모으기)부터 그 프로세스 종료까지(구현 리뷰 1차 P0-1·P0-2):
+ *   멈춤·close·기한은 사전 점검 중이어도 그 차례를 끝내고 agy -p 를 띄우지 않는다. 결과를 낸 뒤에도 그 프로세스는 {@link children} 이 쥐고 있고,
+ *   다음 차례는 앞 프로세스가 끝났는지(B6 기다린 뒤 강제로) 확인한 뒤에만 띄운다. 사용자 멈춤은 result(isError · interrupted) — 성공으로 위장하지 않는다.
  */
 class AntigravitySession implements AgentSession {
   readonly agent = "antigravity" as const;
@@ -93,8 +100,10 @@ class AntigravitySession implements AgentSession {
   sessionRef: string | undefined;
   private closed = false;
   private generation = 0;
-  private child: AgentChild | undefined;
+  private lastPid = -1;
   private turn: Turn | undefined;
+  /** 아직 끝나지 않은 차례 프로세스 전부(세대 무관) — 끝날 때(exit) 빠진다. */
+  private readonly children = new Set<AgentChild>();
   private readonly cwd: string;
 
   constructor(readonly conversationUuid: string, resumeRef: string | undefined, readonly agentName: string | undefined,
@@ -105,7 +114,7 @@ class AntigravitySession implements AgentSession {
   }
 
   get pid(): number {
-    return this.child?.pid ?? -1;
+    return this.lastPid;
   }
 
   get alive(): boolean {
@@ -114,49 +123,96 @@ class AntigravitySession implements AgentSession {
 
   async send(text: string, timeoutMs: number): Promise<TurnOutcome> {
     if (this.closed) return { kind: "exited", code: null, signal: null, stderrTail: "session closed" };
-    await mkdir(this.cwd, { recursive: true, mode: 0o700 });
-    await writeWorkspaceMcpConfig(this.cwd, this.deps.mcpConfig(this.agentName));
-    const policy = await antigravityMcpPolicy({ cwd: this.cwd, home: this.deps.home, pluginList: () => this.pluginList() });
-    if (!policy.ok) {
-      this.deps.log.write({ event: "agent_policy_unverified", agent: this.agent, conversationUuid: this.conversationUuid,
-        reason: policy.reason, ...(policy.path ? { path: policy.path } : {}) });
-      return { kind: "refused", errorCode: "AGENT_POLICY_UNVERIFIED", reason: policy.reason };
-    }
-    const generation = ++this.generation;
-    const outcome = new Promise<TurnOutcome>((resolve) => {
-      this.turn = { generation, resolve, facts: new TurnFactsCollector(), counted: new Set(), foreign: [], interrupted: false };
-    });
-    const args = antigravityAgentArgs({ schema: this.schema, settings: antigravitySettings(policy.deny), conversationId: this.sessionRef });
-    const child = new AgentChild(this.deps.spawnImpl, AGY, args, { cwd: this.cwd, env: this.deps.env }, {
-      line: (line) => this.onLine(generation, line),
-      exit: (exit) => this.onExit(generation, exit),
-      killed: (result) => this.deps.log.write({ event: "process_kill", pid: child.pid, agent: this.agent, ...result }),
-    });
-    this.child = child;
-    this.deps.log.write({ event: "process_start", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
-      resume: this.sessionRef !== undefined });
-    child.writeLine({ event: "user", message: { content: text } });
-    child.endInput();
+    let resolve!: (outcome: TurnOutcome) => void;
+    const outcome = new Promise<TurnOutcome>((r) => { resolve = r; });
+    const turn: Turn = { generation: ++this.generation, resolve, facts: new TurnFactsCollector(), counted: new Set(), foreign: [],
+      interrupted: false, done: false };
+    this.turn = turn;   // ★첫 await 전에 — 사전 점검 중의 멈춤도 이 차례에 걸린다
+    void this.run(turn, text).catch((error: unknown) => this.finish(turn, { kind: "exited", code: null, signal: null,
+      stderrTail: error instanceof Error ? error.message : String(error) }));
     try {
       return await withDeadline<TurnOutcome>(outcome, timeoutMs, { kind: "timeout" });
     } finally {
-      if (this.turn?.generation === generation) this.turn = undefined;
+      // 기한을 넘겼으면 이 차례는 끝 — 사전 점검이 늦게 끝나도 띄우지 않는다(떠 있는 프로세스는 serve 의 close 가 끈다).
+      if (!turn.done) {
+        turn.interrupted = true;
+        turn.done = true;
+      }
+      if (this.turn === turn) this.turn = undefined;
     }
   }
 
   async interrupt(): Promise<void> {
     const turn = this.turn;
-    if (!turn || !this.child?.alive) return;
+    if (!turn || turn.done) return;
     turn.interrupted = true;
-    await this.child.forceStop();
+    if (turn.child?.alive) {
+      await turn.child.forceStop();   // 그 exit 이 interrupted 로 끝낸다
+    } else {
+      this.finishInterrupted(turn);   // 사전 점검 중 — 띄우지 않고 바로 끝
+    }
   }
 
   async close(): Promise<void> {
     this.closed = true;
-    await this.child?.forceStop();
+    const turn = this.turn;
+    if (turn) turn.interrupted = true;
+    await Promise.all([...this.children].map(async (child) => await child.forceStop()));
+    if (turn) this.finishInterrupted(turn);
+  }
+
+  /** 한 차례 — 앞 프로세스 정리 → 사전 점검 → 띄우기. await 마다 멈춤을 다시 본다. */
+  private async run(turn: Turn, text: string): Promise<void> {
+    if (!(await this.settlePrevious())) {
+      this.finish(turn, { kind: "exited", code: null, signal: null, stderrTail: "the previous Antigravity process did not stop" });
+      return;
+    }
+    if (this.stopped(turn)) return this.finishInterrupted(turn);
+    let policy: McpPolicy;
+    try {
+      await mkdir(this.cwd, { recursive: true, mode: 0o700 });
+      await writeWorkspaceMcpConfig(this.cwd, this.deps.mcpConfig(this.agentName));
+      policy = await antigravityMcpPolicy({ cwd: this.cwd, home: this.deps.home, pluginList: () => this.pluginList() });
+    } catch (error) {
+      policy = { ok: false, reason: `could not prepare the work folder: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    if (this.stopped(turn)) return this.finishInterrupted(turn);
+    if (!policy.ok) {
+      this.deps.log.write({ event: "agent_policy_unverified", agent: this.agent, conversationUuid: this.conversationUuid,
+        reason: policy.reason, ...(policy.path ? { path: policy.path } : {}) });
+      this.finish(turn, { kind: "refused", errorCode: "AGENT_POLICY_UNVERIFIED", reason: policy.reason });
+      return;
+    }
+    const args = antigravityAgentArgs({ schema: this.schema, settings: antigravitySettings(policy.deny), conversationId: this.sessionRef });
+    const child: AgentChild = new AgentChild(this.deps.spawnImpl, AGY, args, { cwd: this.cwd, env: this.deps.env }, {
+      line: (line) => this.onLine(turn, child, line),
+      exit: (exit) => this.onExit(turn, child, exit),
+      killed: (result) => this.deps.log.write({ event: "process_kill", pid: child.pid, agent: this.agent, ...result }),
+    });
+    this.children.add(child);
+    turn.child = child;
+    this.lastPid = child.pid;
+    this.deps.log.write({ event: "process_start", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
+      resume: this.sessionRef !== undefined });
+    child.writeLine({ event: "user", message: { content: text } });
+    child.endInput();
+  }
+
+  /** 앞 차례 프로세스가 모두 끝났는가 — 안 끝났으면 B6 기다리고, 그래도면 강제로 끈다. 끝내 못 끄면 false(새 차례를 띄우지 않는다). */
+  private async settlePrevious(): Promise<boolean> {
+    for (const child of [...this.children]) {
+      if (await child.waitForExit(AGENT_STOP_WAIT_MS)) continue;
+      await child.forceStop();
+    }
+    return [...this.children].every((child) => !child.alive);
+  }
+
+  private stopped(turn: Turn): boolean {
+    return turn.interrupted || turn.done || this.closed;
   }
 
   private async pluginList(): Promise<{ ok: true; stdout: string } | { ok: false; detail: string }> {
+    // 기한 B1 을 넘기면 runToEnd 가 끈다 — 이 사이 멈춤이 오면 차례는 바로 끝나고, 이 결과는 버려진다(run 이 멈춤을 다시 본다).
     const run = await runToEnd(this.deps.spawnImpl, AGY, ["plugin", "list", "--json"],
       { cwd: this.cwd, env: this.deps.env, timeoutMs: AGENT_CALL_TIMEOUT_MS });
     if (run.spawnError || run.timedOut || run.code !== 0) {
@@ -165,35 +221,38 @@ class AntigravitySession implements AgentSession {
     return { ok: true, stdout: run.stdout };
   }
 
-  private current(generation: number): Turn | undefined {
-    return this.turn?.generation === generation ? this.turn : undefined;
-  }
-
+  /** 결과는 한 번만 — 그 뒤 줄·exit·멈춤은 이 차례를 바꾸지 않는다. */
   private finish(turn: Turn, outcome: TurnOutcome): void {
+    if (turn.done) return;
+    turn.done = true;
     if (this.turn === turn) this.turn = undefined;
     turn.resolve(outcome);
   }
 
-  private onExit(generation: number, exit: ChildExit): void {
-    this.deps.log.write({ event: "process_exit", pid: this.child?.pid ?? -1, agent: this.agent, conversationUuid: this.conversationUuid,
-      code: exit.code, signal: exit.signal });
-    const turn = this.current(generation);
-    if (!turn) return;
-    if (turn.interrupted) {
-      this.finish(turn, { kind: "result", facts: turn.facts.snapshot(), result: { isError: true, subtype: "interrupted" } });
-      return;
-    }
-    this.finish(turn, { kind: "exited", ...exit });
+  private finishInterrupted(turn: Turn): void {
+    this.finish(turn, { kind: "result", facts: turn.facts.snapshot(), result: { isError: true, subtype: "interrupted" } });
   }
 
-  private onLine(generation: number, line: string): void {
-    const turn = this.current(generation);
-    if (!turn) return;
+  /** 프로세스 종료 — 소유를 놓고(로그는 그 세대 pid), 결과가 아직이면 마지막 줄까지 읽힌 뒤에 정한다(exit 이 result 줄보다 먼저 올 수 있다). */
+  private onExit(turn: Turn, child: AgentChild, exit: ChildExit): void {
+    this.children.delete(child);
+    this.deps.log.write({ event: "process_exit", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
+      code: exit.code, signal: exit.signal });
+    void child.waitForOutput(AGENT_STOP_WAIT_MS).then(() => {
+      if (turn.interrupted) this.finishInterrupted(turn);
+      else this.finish(turn, { kind: "exited", ...exit });
+    });
+  }
+
+  private onLine(turn: Turn, child: AgentChild, line: string): void {
+    if (turn.done) return;   // 끝난 차례(앞 세대 포함)의 늦은 줄은 버린다
     let event: Record<string, unknown>;
     try {
-      event = JSON.parse(line) as Record<string, unknown>;
+      const value: unknown = JSON.parse(line);
+      if (!isObject(value)) throw new Error("not an object");
+      event = value;
     } catch {
-      this.deps.log.write({ event: "bad_line", pid: this.pid, agent: this.agent, length: line.length });
+      this.deps.log.write({ event: "bad_line", pid: child.pid, agent: this.agent, length: line.length });
       return;
     }
     if (event.event === "init") {
@@ -205,7 +264,7 @@ class AntigravitySession implements AgentSession {
       return;
     }
     if (event.event === "result" && isObject(event.result)) {
-      this.onResult(turn, event.result);
+      this.onResult(turn, child, event.result);
     }
   }
 
@@ -226,16 +285,17 @@ class AntigravitySession implements AgentSession {
     turn.facts.add(agyContentParts(tool.output), this.deps.writeTools.has(name));
   }
 
-  private onResult(turn: Turn, result: Record<string, unknown>): void {
+  private onResult(turn: Turn, child: AgentChild, result: Record<string, unknown>): void {
     if (typeof result.conversation_id === "string") this.sessionRef = result.conversation_id;
     const usage = isObject(result.usage) ? result.usage : undefined;
-    this.deps.log.write({ event: "agent_usage", pid: this.pid, agent: this.agent, conversationUuid: this.conversationUuid,
+    this.deps.log.write({ event: "agent_usage", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
       ...(typeof usage?.input_tokens === "number" ? { inputTokens: usage.input_tokens } : {}),
       ...(typeof usage?.output_tokens === "number" ? { outputTokens: usage.output_tokens } : {}) });
+    if (turn.interrupted) return this.finishInterrupted(turn);   // 멈춤과 결과가 겹치면 멈춤(웹은 이미 «중단»을 보냈다)
     const facts = turn.facts.snapshot();
     if (turn.foreign.length > 0) {
       for (const { server, tool } of turn.foreign) {
-        this.deps.log.write({ event: "agent_policy_violation", pid: this.pid, agent: this.agent, conversationUuid: this.conversationUuid,
+        this.deps.log.write({ event: "agent_policy_violation", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
           server, tool });
       }
       this.finish(turn, { kind: "result", facts, result: { isError: true, subtype: "policy_violation" } });
