@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, hkdfSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
@@ -36,12 +36,18 @@ import {
   type PairCodeInput,
   MAX_MESSAGES_PER_KEY,
   transcriptUserId,
+  REGISTER_PATH,
+  registerFragment,
+  registerKeys,
+  registerOfferMac,
+  registerRevealMac,
+  registerTag,
 } from "../src/core/term/e2e";
 
 /** ★front 와 같은 파일 — 기준(golden)이다. 구현을 고쳐서 이 값을 맞추지, 이 파일을 다시 만들지 않는다. */
 interface VectorHeader { type: string; session: string; operationId: string; projectUuid: string; counter: number; connIdHex: string; pcId: string }
 interface Vectors {
-  keys: { pcSigning: EcPrivateJwk; browserSigning: EcPrivateJwk; pcPublicRawHex: string; browserPublicRawHex: string };
+  keys: { pcSigning: EcPrivateJwk; browserSigning: EcPrivateJwk; pcPublicRawHex: string; browserPublicRawHex: string; browserKeyId: string };
   pairing: {
     userId: string; pcId: string; nPHex: string; nBHex: string; commitHex: string; transcriptHex: string;
     codeBlockAHex: string; codeBlockBHex: string; codeA: string; codeB: string; doneSignatureInputHex: string; doneSignatureHex: string;
@@ -56,6 +62,11 @@ interface Vectors {
     transcriptHex: string; welcomeSignatureHex: string; browserToPcKeySha256Hex: string; pcToBrowserKeySha256Hex: string; connIdHex: string;
   };
   messages: Array<{ direction: "browser-to-pc" | "pc-to-browser"; header: VectorHeader; plaintextUtf8: string; nonceHex: string; aadHex: string; ciphertextHex: string }>;
+  register: {
+    secretHex: string; secretBase64url: string; userId: string; pcId: string; attemptId: string; name: string; commitHex: string;
+    browserPublicRawHex: string; keyId: string; nBHex: string; transcriptHex: string; kBrowserHex: string; kPcHex: string; kAccountHex: string;
+    macB: string; macP: string; tag: string; fragment: string; urlExample: string;
+  };
 }
 
 const V = JSON.parse(readFileSync(new URL("./fixtures/e2e-vectors.v1.json", import.meta.url), "utf8")) as Vectors;
@@ -318,5 +329,56 @@ describe("E2E 거절 — 약속값·서명·카운터·AAD", () => {
     await expectCode(deriveChannelSecrets({ own: eP.privateKey, peerPublicRaw: offCurve, transcript }), "E2E_BAD_INPUT");
     expect(() => publicJwkFromRaw(new Uint8Array(65))).toThrow(E2eError);
     expect(asPrivateJwk({ ...pcKey, d: "short" })).toBeUndefined();
+  });
+});
+
+describe("자동 등록 벡터(auto-register-0.15.2 §1) — S 로 키를 건 macB·macP·tag", () => {
+  const R = V.register;
+  const b64u = (value: Uint8Array): string => Buffer.from(value).toString("base64url");
+  const offerInput = (over: Partial<Parameters<typeof registerOfferMac>[1]> = {}) => ({
+    userId: R.userId, pcId: R.pcId, attemptId: R.attemptId, commit: bytes(R.commitHex), browserPublicRaw: bytes(R.browserPublicRawHex),
+    keyId: R.keyId, nB: bytes(R.nBHex), name: R.name, ...over,
+  });
+
+  it("입력은 pairing 벡터 그대로 · K_b·K_p·K_tag · macB · macP · tag · fragment 가 벡터와 같다 — node:crypto 로 손으로 다시 만든 값과도 같다", async () => {
+    expect([R.commitHex, R.browserPublicRawHex, R.keyId, R.nBHex, R.transcriptHex])
+      .toEqual([V.pairing.commitHex, V.keys.browserPublicRawHex, V.keys.browserKeyId, V.pairing.nBHex, V.pairing.transcriptHex]);
+    const secret = bytes(R.secretHex);
+    expect(b64u(secret)).toBe(R.secretBase64url);
+    const keys = await registerKeys(secret);
+    expect([hex(keys.browser), hex(keys.pc), hex(keys.account)]).toEqual([R.kBrowserHex, R.kPcHex, R.kAccountHex]);
+    const hand = (info: string): string => Buffer.from(hkdfSync("sha256", secret, new Uint8Array(0), info, 32)).toString("hex");
+    expect([hand("ainecto-register-v1 browser"), hand("ainecto-register-v1 pc"), hand("ainecto-register-v1 account")])
+      .toEqual([R.kBrowserHex, R.kPcHex, R.kAccountHex]);
+
+    const macB = await registerOfferMac(keys.browser, offerInput());
+    expect(b64u(macB)).toBe(R.macB);
+    expect(createHmac("sha256", keys.browser).update(enc("ainecto-register-v1/offer", R.userId, R.pcId, R.attemptId, bytes(R.commitHex),
+      bytes(R.browserPublicRawHex), R.keyId, bytes(R.nBHex), R.name)).digest("base64url")).toBe(R.macB);
+    const macP = await registerRevealMac(keys.pc, { transcript: bytes(R.transcriptHex), attemptId: R.attemptId });
+    expect(b64u(macP)).toBe(R.macP);
+    expect(createHmac("sha256", keys.pc).update(enc("ainecto-register-v1/reveal", bytes(R.transcriptHex), R.attemptId)).digest("base64url")).toBe(R.macP);
+    const tag = await registerTag(keys.account, R.userId);
+    expect(tag).toBe(R.tag);
+    expect(createHmac("sha256", keys.account).update(R.userId).digest().subarray(0, 8).toString("base64url")).toBe(R.tag);
+    expect(registerFragment({ pcId: R.pcId, tag, secret })).toBe(R.fragment);
+    expect(R.urlExample).toBe(`https://dev.ainecto.com${REGISTER_PATH}#${R.fragment}`);
+    expect(R.fragment).toMatch(/^1\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{11}\.[A-Za-z0-9_-]{43}$/);
+  });
+
+  it("반례 — S 한 비트 · userId · attemptId · name 이 다르면 macB 가 다르다 · macP 는 attemptId·T 에 묶인다 · tag 는 계정마다 다르다", async () => {
+    const secret = bytes(R.secretHex);
+    const flipped = secret.slice();
+    flipped[0] = (flipped[0] ?? 0) ^ 0x01;
+    const keys = await registerKeys(secret);
+    expect(b64u(await registerOfferMac((await registerKeys(flipped)).browser, offerInput()))).not.toBe(R.macB);
+    for (const over of [{ userId: "user-2" }, { attemptId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef" }, { name: "Chrome · Windows" }, { pcId: "x" }]) {
+      expect(b64u(await registerOfferMac(keys.browser, offerInput(over)))).not.toBe(R.macB);
+    }
+    // 방향 키가 다르다 — K_p 로 낸 offer MAC 은 macB 가 아니다(반사 방지).
+    expect(b64u(await registerOfferMac(keys.pc, offerInput()))).not.toBe(R.macB);
+    expect(b64u(await registerRevealMac(keys.pc, { transcript: bytes(R.transcriptHex), attemptId: "other" }))).not.toBe(R.macP);
+    expect(await registerTag(keys.account, "user-2")).not.toBe(R.tag);
+    await expectCode(registerKeys(new Uint8Array(31)), "E2E_BAD_INPUT");
   });
 });

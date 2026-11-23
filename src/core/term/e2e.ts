@@ -1,4 +1,4 @@
-import { webcrypto } from "node:crypto";
+import { timingSafeEqual, webcrypto } from "node:crypto";
 
 /**
  * 원격 터미널 종단 간 암호화(E2E)의 순수 암호 한 벌 — I/O 0 · 새 의존성 0(`node:crypto` 의 WebCrypto 만).
@@ -26,6 +26,18 @@ import { webcrypto } from "node:crypto";
  *   하이픈·가운데 공백은 지우지 않는다.
  * - 브라우저 키 id = SHA-256(브라우저 공개키 65바이트) 앞 16바이트의 소문자 hex(32자, §13-3). 받은 id 가 이와 다르면 거절.
  *
+ * 자동 등록(설계 auto-register-0.15.2 §1 — 코드 A·B 자리를 일회용 비밀 S 로 키를 건 MAC 으로 바꾼다. commit·T·done 은 위 그대로)
+ * - S = 32바이트 무작위(CLI 가 만들어 주소 fragment 로만 넘긴다 — 파일·로그·stdout 에 쓰지 않는다).
+ * - HKDF-SHA256(IKM = S, salt = 빈 값, L = 32): K_b info "ainecto-register-v1 browser" · K_p info "ainecto-register-v1 pc"
+ *   · K_tag info "ainecto-register-v1 account" — 방향마다 키가 따로다(반사 방지).
+ * - macB = HMAC-SHA256(K_b, enc("ainecto-register-v1/offer", userId, pcId, attemptId, commit, browserPub, keyId, nB, name))
+ *          — userId 는 대화 기록 userId(소문자), name 은 브라우저가 보낸 그대로(다듬기 전), keyId 는 hex 문자열.
+ * - macP = HMAC-SHA256(K_p, enc("ainecto-register-v1/reveal", T, attemptId)) — T 는 pairTranscript 그대로(attemptId 는 여기서 묶는다).
+ * - tag  = base64url(HMAC-SHA256(K_tag, UTF-8(userId)) 앞 8바이트) — 주소에 userId 대신 싣는다(브라우저는 자기 userId 로 다시 계산해 비교만).
+ * - 주소 = https://<엔드포인트 origin>/api/v1/public/term-register#<fragment> · fragment = "1.<pcId>.<tag>.<base64url(S)>"(키 이름 없이 값만)
+ *   — 분석 도구 없는 api 페이지가 fragment 를 같은 origin sessionStorage 로 옮기고 S 없는 /app/ 로 넘긴다. base64url 은 모두 패딩 없음.
+ * - 비교는 상수 시간({@link macEquals}).
+ *
  * 채널(§11-2)
  * - hello 서명 입력(브라우저 키) = enc("ainecto-e2e-v1", "browser", "hello", userId, pcId, 채널, 브라우저 키 id, eB, nB)
  * - H = SHA-256(enc("ainecto-e2e-v1", userId, pcId, 채널, 브라우저 키 id, pcPub, browserPub, eB, nB, eP, nP′))
@@ -49,6 +61,11 @@ const VERSION = "ainecto-e2e-v1";
 const PAIR_LABEL = "ainecto-pair-v1";
 const PAIR_DONE_LABEL = "ainecto-pair-v1/done";
 const PAIR_CODE_INFO = { a: "ainecto-pair-code-A", b: "ainecto-pair-code-B" } as const;
+const REGISTER_INFO = { browser: "ainecto-register-v1 browser", pc: "ainecto-register-v1 pc", account: "ainecto-register-v1 account" } as const;
+const REGISTER_OFFER_LABEL = "ainecto-register-v1/offer";
+const REGISTER_REVEAL_LABEL = "ainecto-register-v1/reveal";
+/** tag 길이(바이트) — 설계 §1 «앞 8바이트». */
+const REGISTER_TAG_BYTES = 8;
 const KEY_INFO = { browserToPc: "ainecto-e2e-v1 b2p", pcToBrowser: "ainecto-e2e-v1 p2b", connId: "ainecto-e2e-v1 conn-id" } as const;
 /** 10^6 의 배수 중 2^32 보다 작은 가장 큰 값 — 이보다 작은 u32 만 써야 mod 10^6 이 고르다. */
 const PAIR_CODE_LIMIT = 4_294_000_000;
@@ -372,6 +389,79 @@ export async function pairCodes(transcript: Uint8Array): Promise<PairCodes> {
 export function pairDoneInput(transcript: Uint8Array): Uint8Array {
   expectLength("transcript", transcript, 32);
   return enc(PAIR_DONE_LABEL, transcript);
+}
+
+// ── 자동 등록(auto-register §1) ─────────────────────────────────
+
+/** S 에서 나온 세 키 — 각 32바이트. */
+export interface RegisterKeys {
+  /** K_b — 브라우저가 offer 에 macB 를 단다. */
+  browser: Uint8Array;
+  /** K_p — PC 가 reveal 에 macP 를 단다. */
+  pc: Uint8Array;
+  /** K_tag — 주소의 계정 tag. */
+  account: Uint8Array;
+}
+
+/** HKDF-SHA256(IKM = S, salt = 빈 값) → K_b·K_p·K_tag. */
+export async function registerKeys(secret: Uint8Array): Promise<RegisterKeys> {
+  expectLength("register secret", secret, NONCE_SEED_BYTES);
+  const ikm = await subtle.importKey("raw", secret, "HKDF", false, ["deriveBits"]);
+  const derive = async (info: string): Promise<Uint8Array> =>
+    new Uint8Array(await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: utf8(info) }, ikm, 256));
+  return { browser: await derive(REGISTER_INFO.browser), pc: await derive(REGISTER_INFO.pc), account: await derive(REGISTER_INFO.account) };
+}
+
+async function hmac(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  expectLength("mac key", key, 32);
+  const imported = await subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await subtle.sign("HMAC", imported, data));
+}
+
+/** macB 가 묶는 칸 — offer 그대로 + 이 시도의 attemptId·commit. */
+export interface RegisterOfferInput {
+  userId: string;
+  pcId: string;
+  attemptId: string;
+  commit: Uint8Array;
+  browserPublicRaw: Uint8Array;
+  keyId: string;
+  nB: Uint8Array;
+  name: string;
+}
+
+/** macB = HMAC(K_b, enc("ainecto-register-v1/offer", userId, pcId, attemptId, commit, browserPub, keyId, nB, name)). */
+export async function registerOfferMac(browserKey: Uint8Array, input: RegisterOfferInput): Promise<Uint8Array> {
+  expectLength("commit", input.commit, 32);
+  expectLength("browserPub", input.browserPublicRaw, PUBLIC_KEY_BYTES);
+  expectLength("nB", input.nB, NONCE_SEED_BYTES);
+  return await hmac(browserKey, enc(REGISTER_OFFER_LABEL, input.userId, input.pcId, input.attemptId, input.commit,
+    input.browserPublicRaw, input.keyId, input.nB, input.name));
+}
+
+/** macP = HMAC(K_p, enc("ainecto-register-v1/reveal", T, attemptId)). */
+export async function registerRevealMac(pcKey: Uint8Array, input: { transcript: Uint8Array; attemptId: string }): Promise<Uint8Array> {
+  expectLength("transcript", input.transcript, 32);
+  return await hmac(pcKey, enc(REGISTER_REVEAL_LABEL, input.transcript, input.attemptId));
+}
+
+/** tag = base64url(HMAC(K_tag, UTF-8(userId)) 앞 8바이트). */
+export async function registerTag(accountKey: Uint8Array, userId: string): Promise<string> {
+  return base64url((await hmac(accountKey, utf8(userId))).subarray(0, REGISTER_TAG_BYTES));
+}
+
+/** 등록 주소의 경로 — 앱(/app/, 분석 도구 있음)이 아니라 api 의 분석 없는 작은 페이지. */
+export const REGISTER_PATH = "/api/v1/public/term-register";
+
+/** 주소 fragment(# 뒤) — "1.<pcId>.<tag>.<base64url(S)>". */
+export function registerFragment(input: { pcId: string; tag: string; secret: Uint8Array }): string {
+  expectLength("register secret", input.secret, NONCE_SEED_BYTES);
+  return `1.${input.pcId}.${input.tag}.${base64url(input.secret)}`;
+}
+
+/** MAC 비교 — 상수 시간(길이가 다르면 false). */
+export function macEquals(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 // ── 채널(§11-2) ─────────────────────────────────────────────────

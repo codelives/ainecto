@@ -139,8 +139,8 @@ async function pair(deps: PairDeps): Promise<number> {
       pcId: settings.pcId,
       pcKey,
       transport,
-      prompt: { show: (line) => { tty.stderr.write(`${line}\n`); }, ask: (question, signal) => promptLine(tty, question, signal) },
-      pin: (browser) => pin(deps, key, pcKey, browser),
+      check: { kind: "codes", prompt: { show: (line) => { tty.stderr.write(`${line}\n`); }, ask: (question, signal) => promptLine(tty, question, signal) } },
+      pin: (browser) => pinBrowser({ keysPath: deps.keysPath, key, pcKey, browser, now: deps.now() }),
       waitMs: deps.waitMs,
     }));
   } finally {
@@ -171,13 +171,14 @@ async function pair(deps: PairDeps): Promise<number> {
 }
 
 /**
- * 코드 B 가 맞은 뒤의 핀 — 파일을 다시 읽어 넣는다.
+ * 확인(코드 B · 자동 등록의 macB)이 맞은 뒤의 핀 — 파일을 다시 읽어 넣는다. `ainecto pair` 와 자동 등록(pcCommand)이 이 검사 하나를 쓴다.
  * ★짝짓는 동안 다른 실행이 이 계정의 PC 키를 바꿨으면 저장하지 않는다(브라우저가 받은 키와 어긋난다).
  * ★이 브라우저(같은 keyId)의 철회가 아직 끝나지 않았으면 저장하지 않는다 — 그 철회의 완료가 이 핀의 나중 철회까지 끝난 것으로
  *   치우지 않게(리뷰 impl-4 #2). 던지면 done 을 보내지 않으니 브라우저는 PC 핀을 저장하지 않는다.
  */
-async function pin(deps: PairDeps, key: string, pcKey: EcPrivateJwk, browser: MatchedBrowser): Promise<void> {
-  await updatePcKeys(deps.keysPath, (latest) => {
+export async function pinBrowser(input: { keysPath: string; key: string; pcKey: EcPrivateJwk; browser: MatchedBrowser; now: Date }): Promise<void> {
+  const { key, pcKey, browser } = input;
+  await updatePcKeys(input.keysPath, (latest) => {
     const stored = latest.accounts[key]?.pcKey;
     if (stored && stored.d !== pcKey.d) {
       throw new CliCommandError("PAIR_CONFLICT", "This PC's key changed during browser registration (another `ainecto pair`?). Nothing was saved — run `ainecto pair` again.");
@@ -186,7 +187,7 @@ async function pin(deps: PairDeps, key: string, pcKey: EcPrivateJwk, browser: Ma
       throw new CliCommandError("PAIR_REMOVE_PENDING", `This browser's earlier removal has not finished. Nothing was saved — `
         + `run \`ainecto pair --remove ${browser.keyId}\` first, then \`ainecto pair\` again.`);
     }
-    return withBrowser(latest, key, pcKey, { ...browser, pairedAt: deps.now().toISOString() });
+    return withBrowser(latest, key, pcKey, { ...browser, pairedAt: input.now.toISOString() });
   });
 }
 

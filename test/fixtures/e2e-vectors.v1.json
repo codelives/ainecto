@@ -256,5 +256,33 @@
       "aadHex": "000e61696e6563746f2d6532652d763100056672616d650010ff3c00d3d5c65b049f3f27d71906a4cf002433663063366135322d376430652d346238652d396135312d32633666316439653862343700046d61696e000000000008000000000000012c",
       "ciphertextHex": "9100ab66ab9a933010cee1e41e4018b2b7a6f1edbc5d41b65ab74bd7ca622a4fcd33b1a098"
     }
-  ]
+  ],
+  "register": {
+    "_comment": [
+      "자동 등록 벡터(설계 auto-register-0.15.2 §1 · 규칙은 ainecto-cli src/core/term/e2e.ts 머리 주석 «자동 등록»).",
+      "입력 중 commit·browserPub·keyId·nB·T 는 위 pairing·keys 값을 그대로 쓴다(commitHex·keys.browserPublicRawHex·keys.browserKeyId·pairing.nBHex·pairing.transcriptHex).",
+      "userId 는 이 벡터에서 UUID 가 아닌 \"user-1\" 이다 — register 함수는 바이트만 묶는다(실제 호출은 대화 기록 userId 소문자 UUID).",
+      "macP = HMAC(K_p, enc(\"ainecto-register-v1/reveal\", T, attemptId)) — T 는 pairTranscript 그대로이고 done 서명도 그 T 그대로다.",
+      "주소 = https://<엔드포인트 origin>/api/v1/public/term-register#<fragment> — fragment 는 키 이름 없이 값만(1.<pcId>.<tag>.<S>) · base64url 은 모두 패딩 없음."
+    ],
+    "secretHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "secretBase64url": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+    "userId": "user-1",
+    "pcId": "11111111-2222-3333-4444-555555555555",
+    "attemptId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "name": "Chrome · macOS",
+    "commitHex": "f5feb75b909394ccb4efddc3fbdbd084a484fcc8a6876f24e8a23215b365baa2",
+    "browserPublicRawHex": "045d495dc1c7d9e3dfac6020ddfb11d8106462dc708ca02a0535959b7f3d64dc6dc2083453866460921f34717a50813d3e60378a2260bcef63225c8c001ce2b087",
+    "keyId": "c0495cf983e314e307b0406063614409",
+    "nBHex": "8d3c7f84dcc1ceb3816741a89fd82bba1c21382256ca3d1753cf9dd273ea4978",
+    "transcriptHex": "010bd0b3792a2ce91c33daa9c8af7b0a1b96f0d9fecb9a0642e971815a47026c",
+    "kBrowserHex": "50f2761ee355c64e0f9fb80e5010c8e6d2cf8f6ba0187ce01c622cb91fea5302",
+    "kPcHex": "28dd6d619221ad840fe6eba16728d6c792373653ca99aeda073b73a2d4bcb1f9",
+    "kAccountHex": "6e0ab806c590b830e2bb9dd3d35e1bd11688cb87230ed5627e65a5d47961765b",
+    "macB": "cG1fg57sr8N828t32VXpxgYkhzSGQ3Ay4nMge-yFNTE",
+    "macP": "7j9lWDG5lStr4hwbqEk9kpPa0ApRA9I4zqN20gc00Xo",
+    "tag": "iaEHdXpptpE",
+    "fragment": "1.11111111-2222-3333-4444-555555555555.iaEHdXpptpE.AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+    "urlExample": "https://dev.ainecto.com/api/v1/public/term-register#1.11111111-2222-3333-4444-555555555555.iaEHdXpptpE.AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  }
 }

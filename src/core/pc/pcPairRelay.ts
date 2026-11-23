@@ -9,8 +9,9 @@ import type { BrowserOffer, PairTransport } from "./pcPairing";
 /**
  * 짝짓기 서버 중계(설계 terminal-e2e §14-1 · A5) — PC 쪽 `/mcp/term/pc/pair/{open,send,poll}`. 서버는 메시지를 모른다(크기 상한만).
  *   open {pcId}             → {attemptId} — (사용자, pcId)당 하나 · 새 open 은 앞 시도를 끝낸다
- *   send {attemptId, msg}   → 202 — msg = commit{commit} · reveal{publicKey, nP} · done{signature} · abort{reason}
- *   poll {attemptId}        → 붙잡기 → {msgs:[…]} · 끝났으면 {closed:true} — 브라우저 쪽 msg 는 offer{publicKey, keyId, nB, name} · abort{reason}
+ *   send {attemptId, msg}   → 202 — msg = commit{commit} · reveal{publicKey, nP, macP?} · done{signature} · abort{reason}
+ *   poll {attemptId}        → 붙잡기 → {msgs:[…]} · 끝났으면 {closed:true} — 브라우저 쪽 msg 는 offer{publicKey, keyId, nB, name, macB?} · abort{reason}
+ *   macB·macP 는 자동 등록(auto-register-0.15.2 §1)만 싣는다 — 서버는 type 만 보고 나머지 칸을 그대로 넘긴다.
  * 바이너리는 모두 base64url(패딩 없음). 서버 호출은 공용 입구(pcHttp) — 요청 1줄 + 응답 1줄(remote.log, op = pair/…). 메시지 내용은 남기지 않는다.
  * ★시도는 한 번(§11-1): 브라우저 제안이 둘 오거나 모르는 메시지가 오면 그 시도를 끝낸다(PAIR_DUPLICATE·PAIR_BAD_MESSAGE).
  */
@@ -81,11 +82,11 @@ export function createPairRelay(input: {
           finished = true;
           throw new PairRelayError("PAIR_CLOSED", "The browser cancelled the registration.");
         }
-        if (offer) return offer;
+        if (offer) return { ...offer, attemptId };
       }
     },
-    async reveal(pcPublicRaw, nP, signal) {
-      await send({ type: "reveal", publicKey: b64u(pcPublicRaw), nP: b64u(nP) }, signal);
+    async reveal(pcPublicRaw, nP, signal, macP) {
+      await send({ type: "reveal", publicKey: b64u(pcPublicRaw), nP: b64u(nP), ...(macP ? { macP: b64u(macP) } : {}) }, signal);
     },
     async done(signature, signal) {
       await send({ type: "done", signature: b64u(signature) }, signal);
@@ -105,9 +106,9 @@ export function createPairRelay(input: {
 
 /**
  * 한 번의 poll 에 온 브라우저 메시지 → 제안(순수). 비면 undefined(다시 poll) · abort 면 "abort".
- * 제안이 둘이거나 모르는 종류·모양이면 그 시도를 끝낸다(던짐).
+ * 제안이 둘이거나 모르는 종류·모양이면 그 시도를 끝낸다(던짐). macB 는 선택 칸 — 있으면 32바이트 base64url 이어야 한다.
  */
-export function offerOf(msgs: readonly unknown[]): BrowserOffer | "abort" | undefined {
+export function offerOf(msgs: readonly unknown[]): Omit<BrowserOffer, "attemptId"> | "abort" | undefined {
   if (msgs.length === 0) return undefined;
   const items = msgs.map((msg) => (msg && typeof msg === "object" ? msg as Record<string, unknown> : {}));
   if (items.some((item) => item.type === "abort")) return "abort";
@@ -117,10 +118,12 @@ export function offerOf(msgs: readonly unknown[]): BrowserOffer | "abort" | unde
   const [item] = items;
   const publicRaw = fromB64u(item?.publicKey, PUBLIC_KEY_BYTES);
   const nB = fromB64u(item?.nB, NONCE_SEED_BYTES);
-  if (item?.type !== "offer" || !publicRaw || !nB || typeof item.keyId !== "string" || typeof item.name !== "string") {
+  const macB = item?.macB === undefined ? undefined : fromB64u(item.macB, 32 /* HMAC-SHA256 */);
+  if (item?.type !== "offer" || !publicRaw || !nB || typeof item.keyId !== "string" || typeof item.name !== "string"
+    || (item.macB !== undefined && !macB)) {
     throw new PairRelayError("PAIR_BAD_MESSAGE", "AiNecto relayed a browser registration message this CLI does not understand — this try was ended.");
   }
-  return { keyId: item.keyId, publicRaw, nB, name: item.name };
+  return { keyId: item.keyId, publicRaw, nB, name: item.name, ...(macB ? { macB } : {}) };
 }
 
 function b64u(bytes: Uint8Array): string {

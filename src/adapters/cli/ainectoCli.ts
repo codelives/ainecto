@@ -1,5 +1,5 @@
 import { FileTokenStore } from "../../core/auth/tokenStore";
-import { OAuthClient, usableAccessToken } from "../../core/auth/oauth";
+import { launchBrowser, OAuthClient, usableAccessToken } from "../../core/auth/oauth";
 import { resolveEndpoint, assertEnv, type AinectoEnv } from "../../core/config/endpoints";
 import { parsePayloadSource } from "../../core/input/payloadSource";
 import { McpRpcClient, isToolError } from "../../core/mcp/rpcClient";
@@ -181,6 +181,18 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       };
     };
 
+    const insideTermSession = process.env[SESSION_ENV] !== undefined;
+    // 브라우저 등록 중계 — 호출 줄(요청 1 + 응답 1)은 원격 다리와 같은 remote.log 에(op = pair/…). pair 와 자동 등록이 같이 쓴다.
+    const pairTransport = async (pcId: string) => {
+      const paths = termPaths();
+      await ensurePrivateDir(paths.dir);
+      return createPairRelay({ endpoint: resolved.endpoint, tokenProvider: connect().auth, log: openRemoteLog(paths), pcId, holdMs: PAIR_WAIT_MS });
+    };
+    const notifyPaired = async (browser: { keyId: string; name: string }): Promise<void> => {
+      const paths = termPaths();
+      await ensurePrivateDir(paths.dir);
+      await createPcNotifier({ log: openRemoteLog(paths) }).notify({ kind: "paired", keyId: browser.keyId, browserName: browser.name });
+    };
     /** «이 PC 연결» 입구들(start·stop·remote)이 같이 쓰는 것. */
     const pcDeps = (): PcDeps => ({
       io,
@@ -204,6 +216,21 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
       machine: () => collectStatus(collectInput()),
       account: () => readAccount(connect().client),
       setup: () => runSetup([]),
+      register: {
+        insideTermSession,
+        overSsh: process.env.SSH_CONNECTION !== undefined || process.env.SSH_TTY !== undefined,
+        openBrowser: (url) => launchBrowser(url),
+        transport: pairTransport,
+        notifyPaired,
+        waitMs: PAIR_WAIT_MS,
+        interrupt: () => {
+          const controller = new AbortController();
+          const skip = (): void => controller.abort();
+          process.once("SIGINT", skip);
+          return { signal: controller.signal, dispose: () => { process.off("SIGINT", skip); } };
+        },
+        now: () => new Date(),
+      },
     });
 
     if (domain === undefined || domain === "start") {
@@ -223,28 +250,19 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         io,
         json: parsed.json,
         interactive,
-        insideTermSession: process.env[SESSION_ENV] !== undefined,
+        insideTermSession,
         openTty: openDevTty,
         settingsPath: pcSettingsPath(),
         keysPath: pcKeysPath(),
         hostName: hostname(),
         endpoint: resolved.endpoint,
         account: () => readAccount(connect().client),
-        // 중계 호출 줄(요청 1 + 응답 1)은 원격 다리와 같은 remote.log 에(op = pair/…).
-        transport: async (pcId) => {
-          const paths = termPaths();
-          await ensurePrivateDir(paths.dir);
-          return createPairRelay({ endpoint: resolved.endpoint, tokenProvider: connect().auth, log: openRemoteLog(paths), pcId, holdMs: PAIR_WAIT_MS });
-        },
-        notifyPaired: async (browser) => {
-          const paths = termPaths();
-          await ensurePrivateDir(paths.dir);
-          await createPcNotifier({ log: openRemoteLog(paths) }).notify({ kind: "paired", keyId: browser.keyId, browserName: browser.name });
-        },
+        transport: pairTransport,
+        notifyPaired,
         findPcs: () => runningPcGroups(pcDeps()),
         turnOffPcs: (groups) => turnOffPcs(pcDeps(), groups),
-        // 연결 승인 전 대화형 — `ainecto`(인자 없음)와 같은 흐름 그대로(KAN-1348).
-        connectPc: () => executePcStart(pcDeps()),
+        // 연결 승인 전 대화형 — `ainecto`(인자 없음)와 같은 흐름 그대로(KAN-1348). 자동 등록은 빼고 이어서 코드로 등록한다.
+        connectPc: () => executePcStart({ ...pcDeps(), register: undefined }),
         waitMs: PAIR_WAIT_MS,
         now: () => new Date(),
       }, parsed.positionals.slice(1));

@@ -78,6 +78,7 @@ async function fakeBrowser(options: {
         publicRaw,
         nB,
         name: options.name ?? "Chrome · macOS",
+        attemptId: "attempt-1",
       };
       return relayed;
     },

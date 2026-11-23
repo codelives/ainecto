@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createPairRelay, offerOf, PairRelayError } from "../src/core/pc/pcPairRelay";
+import { E2eError } from "../src/core/term/e2e";
 import { runPairing, type MatchedBrowser } from "../src/core/pc/pcPairing";
 import {
   assertCommitment,
@@ -14,6 +15,10 @@ import {
   pairDoneInput,
   pairTranscript,
   publicJwkFromRaw,
+  macEquals,
+  registerKeys,
+  registerOfferMac,
+  registerRevealMac,
   publicRawFromJwk,
   randomBytes,
   verifyBytes,
@@ -157,7 +162,7 @@ describe("짝짓기 중계 — pair/open·send·poll 왕복(A5)", () => {
     let asked = false;
     const outcome = await runPairing({
       userId: USER_ID, pcId: PC_ID, pcKey, transport: relay(), waitMs: 10_000,
-      prompt: { show: () => undefined, ask: async () => { asked = true; return answer(); } },
+      check: { kind: "codes", prompt: { show: () => undefined, ask: async () => { asked = true; return answer(); } } },
       pin: async (browserKey) => { pinned.push(browserKey); },
     });
     return { outcome, pinned, asked };
@@ -214,5 +219,109 @@ describe("짝짓기 중계 — pair/open·send·poll 왕복(A5)", () => {
     expect(offerOf([{ type: "abort", reason: "x" }])).toBe("abort");
     expect(() => offerOf([{ type: "offer", publicKey: "AA", keyId: "k", nB: "AA", name: "n" }])).toThrow(PairRelayError);
     expect(() => offerOf([{ type: "reveal" }])).toThrow(PairRelayError);
+  });
+
+  /**
+   * 자동 등록 브라우저(auto-register §1) — 주소로 받은 S 로 offer 에 macB 를 달고, reveal 의 commit·macP 를 검증한 뒤 done 서명을 검증한다.
+   * tamper 는 브라우저(또는 중계)가 바꾸는 한 가지 — 반례마다 하나씩.
+   */
+  async function secretBrowser(secret: Uint8Array, tamper: {
+    flipBit?: boolean; userId?: string; attemptId?: string; relayRenames?: boolean; noMac?: boolean; keyId?: string; extraOffer?: boolean;
+  } = {}) {
+    const key = await generateSigningJwk();
+    const publicRaw = publicRawFromJwk(key);
+    const nB = randomBytes(32);
+    const keyId = tamper.keyId ?? await browserKeyIdOf(publicRaw);
+    const state: { commit?: Uint8Array; transcript?: Uint8Array; pcPub?: Uint8Array; macPVerified?: boolean; doneVerified?: boolean } = {};
+    const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
+    const bytes = (text: unknown) => new Uint8Array(Buffer.from(String(text), "base64url"));
+    const own = secret.slice();
+    if (tamper.flipBit) own[31] = (own[31] ?? 0) ^ 0x80;
+    const keys = await registerKeys(own);
+    const name = "Chrome · macOS";
+    fake.onPcMessage = async (msg) => {
+      if (msg.type === "commit") {
+        state.commit = bytes(msg.commit);
+        const macB = await registerOfferMac(keys.browser, { userId: tamper.userId ?? USER_ID, pcId: PC_ID, attemptId: tamper.attemptId ?? fake.attemptId,
+          commit: state.commit, browserPublicRaw: publicRaw, keyId, nB, name });
+        const offer = { type: "offer", publicKey: b64(publicRaw), keyId, nB: b64(nB), name: tamper.relayRenames ? "Evil · Linux" : name,
+          ...(tamper.noMac ? {} : { macB: b64(macB) }) };
+        fake.fromBrowser(offer);
+        if (tamper.extraOffer) fake.fromBrowser(offer);
+      } else if (msg.type === "reveal") {
+        state.pcPub = bytes(msg.publicKey);
+        const nP = bytes(msg.nP);
+        await assertCommitment(state.commit!, state.pcPub, nP);
+        state.transcript = await pairTranscript({ userId: USER_ID, pcId: PC_ID, pcPublicRaw: state.pcPub, browserPublicRaw: publicRaw, nP, nB });
+        state.macPVerified = typeof msg.macP === "string"
+          && macEquals(bytes(msg.macP), await registerRevealMac(keys.pc, { transcript: state.transcript, attemptId: fake.attemptId }));
+      } else if (msg.type === "done") {
+        state.doneVerified = state.macPVerified === true
+          && await verifyBytes(publicJwkFromRaw(state.pcPub!), bytes(msg.signature), pairDoneInput(state.transcript!));
+      }
+    };
+    return { keyId, state };
+  }
+
+  async function register(secret: Uint8Array) {
+    const pinned: MatchedBrowser[] = [];
+    const outcome = await runPairing({
+      userId: USER_ID, pcId: PC_ID, pcKey: await generateSigningJwk(), transport: relay(), waitMs: 10_000,
+      check: { kind: "secret", secret },
+      pin: async (browserKey) => { pinned.push(browserKey); },
+    });
+    return { outcome, pinned };
+  }
+
+  it("자동 등록(secret) — offer macB 검증 → 핀 → reveal 에 macP → done · 브라우저가 macP·done 을 검증 · 로그에 S·mac 없음", async () => {
+    const secret = randomBytes(32);
+    const web = await secretBrowser(secret);
+    const { outcome, pinned } = await register(secret);
+    expect(outcome).toMatchObject({ kind: "paired", doneError: undefined, browser: { name: "Chrome · macOS" } });
+    expect(pinned.map((item) => item.keyId)).toEqual([web.keyId]);
+    expect(web.state.macPVerified).toBe(true);
+    expect(web.state.doneVerified).toBe(true);
+    expect(fake.toBrowser.map((msg) => Object.keys(msg).sort())).toEqual([["commit", "type"], ["macP", "nP", "publicKey", "type"], ["signature", "type"]]);
+    const text = await readFile(logPath(), "utf8");
+    for (const value of [Buffer.from(secret).toString("base64url"), Buffer.from(secret).toString("hex"), String(fake.toBrowser[1]?.macP)]) {
+      expect(text).not.toContain(value);
+    }
+  });
+
+  it.each([
+    ["S 한 비트가 다르다", { flipBit: true }],
+    ["userId 가 다르다(다른 계정)", { userId: "0b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10" }],
+    ["attemptId 가 다르다(옛 시도)", { attemptId: "attempt-0" }],
+    ["중계가 이름을 바꿨다", { relayRenames: true }],
+    ["macB 가 없다(옛·수동 브라우저)", { noMac: true }],
+  ])("자동 등록 거절 — %s → code-mismatch · 핀 0 · reveal 없이 abort", async (_label, tamper) => {
+    const secret = randomBytes(32);
+    await secretBrowser(secret, tamper);
+    const { outcome, pinned } = await register(secret);
+    expect(outcome).toEqual({ kind: "code-mismatch" });
+    expect(pinned).toEqual([]);
+    expect(fake.toBrowser.map((msg) => msg.type)).toEqual(["commit", "abort"]);
+  });
+
+  it("자동 등록 거절 — keyId ≠ 공개키 지문이면 E2E_BAD_INPUT · offer 가 둘이면 PAIR_DUPLICATE — 둘 다 핀 0", async () => {
+    const secret = randomBytes(32);
+    await secretBrowser(secret, { keyId: "00000000000000000000000000000000" });
+    const wrongId = await register(secret).then(() => undefined, (error: unknown) => error);
+    expect(wrongId).toBeInstanceOf(E2eError);
+    expect((wrongId as E2eError).code).toBe("E2E_BAD_INPUT");
+
+    fake.toBrowser.length = 0;
+    await secretBrowser(secret, { extraOffer: true });
+    const duplicate = await register(secret).then(() => undefined, (error: unknown) => error);
+    expect((duplicate as PairRelayError).code).toBe("PAIR_DUPLICATE");
+    expect(fake.toBrowser.some((msg) => msg.type === "reveal")).toBe(false);
+  });
+
+  it("offer 의 macB 는 선택 칸 — 있으면 32바이트 base64url 이 아니면 PAIR_BAD_MESSAGE", async () => {
+    const key = publicRawFromJwk(await generateSigningJwk());
+    const base = { type: "offer", publicKey: Buffer.from(key).toString("base64url"), keyId: "k", nB: Buffer.from(randomBytes(32)).toString("base64url"), name: "n" };
+    expect(offerOf([base])).not.toHaveProperty("macB");
+    expect((offerOf([{ ...base, macB: Buffer.from(randomBytes(32)).toString("base64url") }]) as { macB?: Uint8Array }).macB).toHaveLength(32);
+    expect(() => offerOf([{ ...base, macB: "AA" }])).toThrow(PairRelayError);
   });
 });

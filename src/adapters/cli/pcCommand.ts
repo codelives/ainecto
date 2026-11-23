@@ -29,12 +29,24 @@ import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { isNodeError } from "../../core/fs/privateFiles";
-import { updatePcKeys, withoutEndpointKeys, type PcGroup } from "../../core/pc/pcKeys";
+import { loadPcKeys, updatePcKeys, withoutBrowser, withoutEndpointKeys, type PcGroup } from "../../core/pc/pcKeys";
+import { runPairing, type PairOutcome, type PairTransport } from "../../core/pc/pcPairing";
+import {
+  generateSigningJwk,
+  NONCE_SEED_BYTES,
+  randomBytes,
+  REGISTER_PATH,
+  registerFragment,
+  registerKeys,
+  registerTag,
+  transcriptUserId,
+} from "../../core/term/e2e";
 import { readFile } from "node:fs/promises";
 import type { CliIO } from "./ainectoCli";
 import { promptLine } from "./destructiveConfirmation";
 import { processGroupAlive, processGroupOf, processGroupUnavailableHint } from "../../core/os/launch";
 import { CliCommandError } from "./errors";
+import { pinBrowser } from "./pairCommand";
 import { pcNotApprovedText, pcResultText, preflightNotes } from "./pcStartText";
 
 /**
@@ -74,6 +86,27 @@ export interface PcDeps {
   account: () => Promise<AccountSummary>;
   /** `ainecto setup` 그대로. */
   setup: () => Promise<number>;
+  /** 브라우저 자동 등록(설계 auto-register-0.15.2) — 없으면 하지 않는다(`ainecto pair` 가 연결 승인부터 탈 때). */
+  register?: BrowserRegisterDeps;
+}
+
+/** 자동 등록에만 쓰는 것. */
+export interface BrowserRegisterDeps {
+  /** AiNecto 터미널 세션 안인가(AINECTO_TERM_SESSION) — 웹 원격 화면 안에서는 하지 않는다(pair 와 같은 규칙). */
+  insideTermSession: boolean;
+  /** ssh 로 들어온 터미널인가(SSH_CONNECTION·SSH_TTY) — 열면 사용자 손의 브라우저가 아니라 이 PC 화면에 뜬다(§4). */
+  overSsh: boolean;
+  /** 기본 브라우저로 연다 — 운영은 oauth.launchBrowser. 못 열면 거절. */
+  openBrowser: (url: string) => Promise<void>;
+  /** 서버 중계(이 PC 의 pcId 로) — 운영은 pcPairRelay.createPairRelay. */
+  transport: (pcId: string) => PairTransport | Promise<PairTransport>;
+  /** 양쪽에서 끝났다 — PC 알림. 던지지 않는다. */
+  notifyPaired: (browser: { keyId: string; name: string }) => Promise<void>;
+  /** 기한 — 운영은 PAIR_WAIT_MS(C-E1). */
+  waitMs: number;
+  /** Ctrl+C(건너뛰기) 를 기다린다 — 운영은 SIGINT 한 번. dispose 로 거둔다. */
+  interrupt: () => { signal: AbortSignal; dispose: () => void };
+  now: () => Date;
 }
 
 /** `ainecto` · `ainecto start` — 점검 → (처음이면) 동의 → pc 세션 시작/이미/갈아끼우기. */
@@ -131,12 +164,12 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
   if (action.kind === "already") {
     // ★웹 «원격 터미널 끊기» 뒤 원격은 그 pc 프로세스가 사는 동안 꺼진 채다 — 같은 판이어도 다시 띄워야 원격이 켜진다(R3).
     if (!remoteOffByWeb(await screenLines(deps, action.pc.session))) {
-      return withNotes(deps, later, print(deps, { connected: true, already: true, ...pcView(deps, action.pc) },
-        pcResultText({ kind: "already", folder: action.pc.cwd, version: pcVersionLabel(action.pc), log: deps.agentLog })));
+      return await withRegistration(deps, key, userId, withNotes(deps, later, print(deps, { connected: true, already: true, ...pcView(deps, action.pc) },
+        pcResultText({ kind: "already", folder: action.pc.cwd, version: pcVersionLabel(action.pc), log: deps.agentLog }))));
     }
     note("The remote terminal was turned off from the web — reconnecting this PC to turn it back on…");
     await stopPc(deps, action.pc);
-    return withNotes(deps, later, await launchPc(deps));
+    return await withRegistration(deps, key, userId, withNotes(deps, later, await launchPc(deps)));
   }
   await prepare(deps);
   if (action.kind === "replace") {
@@ -145,8 +178,94 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
       await stopPc(deps, pc);
     }
   }
-  return withNotes(deps, later, await launchPc(deps));
+  return await withRegistration(deps, key, userId, withNotes(deps, later, await launchPc(deps)));
 }
+
+/** 연결 결과를 찍은 «뒤» 브라우저 자동 등록 — 종료 코드는 그대로(등록이 안 돼도 연결은 이미 됐다). */
+async function withRegistration(deps: PcDeps, key: string, userId: string, code: number): Promise<number> {
+  if (code === 0) await registerBrowserIfNone(deps, { key, userId });
+  return code;
+}
+
+/**
+ * 브라우저 자동 등록(설계 auto-register-0.15.2 §1·§1-1·§2·§4) — 조건 넷(대화형 · 터미널 세션 밖 · 원격 허용 · 등록 브라우저 0)이 모두 맞을 때만.
+ * 일회용 비밀 S(32바이트)를 만들어 `https://<엔드포인트 origin>/api/v1/public/term-register#1.<pcId>.<tag>.<S>` 를 기본 브라우저로 열고
+ * (분석 도구 없는 api 페이지 — S 를 앱 주소에 싣지 않는다), 같은 S 로
+ * macB 를 검증 → 핀 → reveal(macP) → done. ★S 는 메모리에만 — 주소는 여는 명령의 인자로만 넘기고 stdout·stderr·로그·파일에 쓰지 않는다.
+ * ★origin 은 CLI 엔드포인트에서만 정한다(서버가 준 주소를 열지 않는다). 실패·시간 초과·건너뛰기는 안내 한 줄만 — 던지지 않는다.
+ */
+export async function registerBrowserIfNone(
+  deps: Pick<PcDeps, "io" | "json" | "interactive" | "settingsPath" | "hostName" | "keysPath" | "endpoint" | "register">,
+  account: { key: string; userId: string },
+): Promise<void> {
+  const register = deps.register;
+  if (!register || !deps.interactive || deps.json || register.insideTermSession) return;
+  const settings = await loadPcSettings(deps.settingsPath, deps.hostName);
+  if (settings.accounts[account.key]?.remoteTerminal !== true) return;
+  const stored = (await loadPcKeys(deps.keysPath)).accounts[account.key];
+  if ((stored?.browsers.length ?? 0) > 0) return;
+  const note = (line: string): void => {
+    deps.io.stderr.write(`${line}\n`);
+  };
+  const noBrowser = "This PC can't open a browser here. To register this browser, run `npx -y ainecto@latest pair` in this PC's terminal.";
+  if (register.overSsh) {
+    note(noBrowser);
+    return;
+  }
+  const userId = transcriptUserId(account.userId);
+  const secret = randomBytes(NONCE_SEED_BYTES);
+  const interrupt = register.interrupt();
+  let outcome: PairOutcome;
+  try {
+    const tag = await registerTag((await registerKeys(secret)).account, userId);
+    const url = `${new URL(deps.endpoint).origin}${REGISTER_PATH}#${registerFragment({ pcId: settings.pcId, tag, secret })}`;
+    try {
+      await register.openBrowser(url);
+    } catch {
+      note(noBrowser);
+      return;
+    }
+    note("");
+    note(`Finish in the browser that just opened (up to ${Math.round(register.waitMs / 60_000)} min · Ctrl+C to skip)`);
+    const pcKey = stored?.pcKey ?? await generateSigningJwk();
+    outcome = await runPairing({
+      userId,
+      pcId: settings.pcId,
+      pcKey,
+      transport: await register.transport(settings.pcId),
+      check: { kind: "secret", secret },
+      pin: (browser) => pinBrowser({ keysPath: deps.keysPath, key: account.key, pcKey, browser, now: register.now() }),
+      waitMs: register.waitMs,
+      cancel: interrupt.signal,
+    });
+  } catch (error) {
+    note(`Browser registration did not finish (${error instanceof Error ? error.message : String(error)}). ${REGISTER_AGAIN}`);
+    return;
+  } finally {
+    interrupt.dispose();
+    secret.fill(0);
+  }
+  if (outcome.kind !== "paired") {
+    const why = outcome.kind === "timeout" ? "timed out" : outcome.kind === "cancelled" ? "skipped" : "the browser could not be verified";
+    note(`Browser registration did not finish (${why}). Nothing was saved. ${REGISTER_AGAIN}`);
+    return;
+  }
+  const { browser, doneError } = outcome;
+  if (doneError !== undefined) {
+    // ★핀을 거둔다 — 남기면 등록 브라우저가 1 로 남아 `ainecto` 를 다시 실행해도 자동 등록이 돌지 않는다(그 브라우저는 PC 를 믿지 않는다).
+    await updatePcKeys(deps.keysPath, (keys) => {
+      const result = withoutBrowser(keys, account.key, browser.keyId);
+      return result.removed ? result.keys : undefined;
+    });
+    note(`The browser "${browser.name}" did not get the confirmation (${doneError}), so nothing was kept. ${REGISTER_AGAIN}`);
+    return;
+  }
+  await register.notifyPaired({ keyId: browser.keyId, name: browser.name });
+  deps.io.stdout.write(`Registered "${browser.name}" with this PC. Remove it later with \`ainecto pair --remove ${browser.keyId}\`.\n`);
+}
+
+/** 자동 등록이 끝나지 않았을 때 덧붙이는 안내(§1-1). */
+const REGISTER_AGAIN = "Try again: `npx -y ainecto@latest` · or register this browser with `npx -y ainecto@latest pair`.";
 
 /** 결과를 찍은 «뒤» 알릴 것(stderr) — 종료 코드는 그대로. */
 function withNotes(deps: PcDeps, notes: readonly string[], code: number): number {
@@ -302,15 +421,16 @@ export async function executeRemoteSetting(deps: PcDeps, argv: string[]): Promis
     : "Terminals from AiNecto on the web are blocked on this PC.";
   // ★떠 있는 pc 는 다시 띄운다 — 다리는 시작할 때 pc.json 을 읽으므로, 그래야 바로 반영된다(웹 PC 줄도 그때 바뀐다).
   const running = deps.termProblem === undefined ? runningPcs(await listed(deps)) : [];
+  const key = accountKey(deps.endpoint, userId);
   if (running.length === 0) {
-    return print(deps, { remoteTerminal: value === "on" }, said);
+    return await withRegistration(deps, key, userId, print(deps, { remoteTerminal: value === "on" }, said));
   }
   if (!deps.json) deps.io.stdout.write(`${said}\n`);
   deps.io.stderr.write("Reconnecting this PC so it takes effect…\n");
   for (const pc of running) {
     await stopPc(deps, pc);
   }
-  return await launchPc(deps);
+  return await withRegistration(deps, key, userId, await launchPc(deps));
 }
 
 /** 지금 떠 있는 PC 연결과 그 프로세스 그룹(`pair --remove` — 설계 terminal-e2e §13-2·§14-6 3). 데몬을 못 쓰거나 그룹을 못 읽으면 던진다. */
