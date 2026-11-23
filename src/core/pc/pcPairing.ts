@@ -176,9 +176,7 @@ export async function runPairing(input: {
     if (confirm.kind === "approval") {
       const consent = input.transport.deviceConsent?.bind(input.transport);
       if (!consent) throw new E2eError("E2E_BAD_INPUT", "This relay cannot carry the new device's consent — device approval aborted.");
-      // ★동의 전에 드러낸다(공개값) — 새 기기가 약속값과 대조하고 같은 T·숫자를 계산한다. 핀은 양쪽 동의 뒤에만.
-      const revealed = await relayed(() => input.transport.reveal(pcPublicRaw, nP, signal));
-      if (revealed === "timeout") return { kind: "timeout" };
+      // ★대기 중 허용을 먼저 세운다(T 는 드러내기 전에 이미 정해진다) — 서버가 reveal 중계로 B1 표시를 켤 때 물으면 이미 있다.
       const t = await transcript();
       const request: ApprovalRequest = { transcript: t, code: (await pairCodes(t)).a, name: browser.name, keyId: browser.keyId };
       // 한쪽이 거절하면 다른 쪽 대기를 바로 푼다(대기 중 허용이 남지 않게).
@@ -188,13 +186,15 @@ export async function runPairing(input: {
       let approverKeyId: string | undefined;
       let agreed: boolean | "timeout";
       try {
-        agreed = await relayed(() => bothAgree(
-          confirm.approve(request, step.signal).then((approval) => {
-            if (approval.accepted) approverKeyId = approval.approverKeyId;
-            return approval.accepted;
-          }),
-          consent(step.signal).then((sig) => sig !== undefined && verifyBytes(publicJwk, sig, pairApproveInput(t))),
-        ));
+        const byBrowser = confirm.approve(request, step.signal).then((approval) => {
+          if (approval.accepted) approverKeyId = approval.approverKeyId;
+          return approval.accepted;
+        });
+        // ★동의 전에 드러낸다(공개값) — 새 기기가 약속값과 대조하고 같은 T·숫자를 계산한다. 핀은 양쪽 동의 뒤에만.
+        const byDevice = input.transport.reveal(pcPublicRaw, nP, step.signal)
+          .then(() => consent(step.signal))
+          .then((sig) => sig !== undefined && verifyBytes(publicJwk, sig, pairApproveInput(t)));
+        agreed = await relayed(() => bothAgree(byBrowser, byDevice));
       } finally {
         signal.removeEventListener("abort", stop);
         step.abort();

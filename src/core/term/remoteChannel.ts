@@ -62,7 +62,7 @@ export function answerCodeOf(code: string): AnswerCode {
   return (ANSWER_CODES as readonly string[]).includes(code) ? code as AnswerCode : "TERM_FAILED";
 }
 
-export const COMMAND_KINDS = ["confirm", "input", "key", "resize", "create", "kill", "label"] as const;
+export const COMMAND_KINDS = ["confirm", "input", "key", "resize", "create", "kill", "label", "device"] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 
 /** poll 의 cmd 항목(A3) — 봉인 밖 평문 칸. kind·session·opId·projectUuid 는 AAD 칸이고, requestId 는 서버 상관 id(봉인 밖). */
@@ -85,7 +85,16 @@ export type ChannelCommand =
   | { kind: "resize"; session: string; instance: string; cols: number; rows: number }
   | { kind: "create"; opId: string; name: string; projectUuid?: string; cwd?: string; command?: string }
   | { kind: "kill"; opId: string; session: string; instance: string }
-  | { kind: "label"; opId: string; session: string; instance: string; label: string };
+  | { kind: "label"; opId: string; session: string; instance: string; label: string }
+  /** 기기 관리(approve-new-device §3-4) — 세션 없음 · 답 있음. 무엇을 하는지는 봉인 안에만(서버는 kind 만 본다). */
+  | { kind: "device"; opId: string; action: DeviceAction };
+
+/** device 명령의 봉인 안 action. T 는 32바이트. */
+export type DeviceAction =
+  | { action: "pending" }
+  | { action: "approve"; transcript: Uint8Array; accept: boolean }
+  | { action: "list" }
+  | { action: "remove"; keyId: string };
 
 /** hello 를 검증할 신뢰 — 다리가 hello 마다 pc-keys.json 에서 다시 읽는다(§6). */
 export interface HelloTrust {
@@ -185,6 +194,13 @@ export class ChannelBook {
   /** 채널을 장부에서 지운다(닫힘·웹 닫음·키 폐기). 있었으면 true. */
   drop(channelId: string): boolean {
     return this.channels.delete(channelId);
+  }
+
+  /** 그 브라우저 키의 채널을 모두 지운다(연결 중·활성 — 기기 지우기, approve-new-device §3-6) — 지운 id 들. */
+  dropBrowser(keyId: string): string[] {
+    const ids = [...this.channels.values()].filter((channel) => channel.browser.keyId === keyId).map((channel) => channel.channelId);
+    for (const id of ids) this.channels.delete(id);
+    return ids;
   }
 
   /** 모두 지운다(원격 끔·링크 다시 열기) — 지운 id 들. */
@@ -399,6 +415,31 @@ export function sealedCommand(wire: WireCommand, plaintext: Uint8Array): Channel
       const label = text(body.label);
       return targets(true) && label ? { kind: "label", opId: opId!, session: session!, instance: instance!, label } : undefined;
     }
+    case "device": {
+      if (!opId || wire.opId !== opId || wire.session !== undefined || wire.projectUuid !== undefined) return undefined;
+      const action = deviceAction(body);
+      return action ? { kind: "device", opId, action } : undefined;
+    }
+  }
+}
+
+/** device 본문의 action(순수) — 모양이 틀리면 undefined. */
+function deviceAction(body: Record<string, unknown>): DeviceAction | undefined {
+  switch (body.action) {
+    case "pending":
+      return { action: "pending" };
+    case "list":
+      return { action: "list" };
+    case "approve": {
+      const transcript = fromB64u(body.T, 32);
+      return transcript && typeof body.accept === "boolean" ? { action: "approve", transcript, accept: body.accept } : undefined;
+    }
+    case "remove": {
+      const keyId = text(body.keyId);
+      return keyId ? { action: "remove", keyId } : undefined;
+    }
+    default:
+      return undefined;
   }
 }
 

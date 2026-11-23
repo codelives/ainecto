@@ -29,6 +29,8 @@ import { existsSync } from "node:fs";
 import { rmdir } from "node:fs/promises";
 import { cliTagsOf, type CliTags } from "../pc/pcUpgrade";
 import type { PcNotifier } from "../pc/pcNotify";
+import { DeviceManager } from "../pc/pcDevices";
+import type { PairTransport } from "../pc/pcPairing";
 
 /**
  * 원격 터미널 다리 — 이 PC 의 term 세션 «전부»를 AiNecto 웹에 잇는다(KAN-738 next.10, 계획 multi-session-plan.md 11절).
@@ -105,7 +107,9 @@ export type RemoteLogRecord =
   /** PC 알림 한 건(pcNotify) — 종류·브라우저 키 id·묶인 수·도구. 글 내용은 남기지 않는다. */
   | { event: "pc_notify"; kind: string; browserKeyId: string; more: number; tool: string }
   /** 그 알림의 결과 — 실패는 이유 코드만(도구 stderr 원문 없음 · §11-7). */
-  | { event: "pc_notify_result"; kind: string; ok: boolean; tool: string; reason?: string };
+  | { event: "pc_notify_result"; kind: string; ok: boolean; tool: string; reason?: string }
+  /** 새 기기 허용·기기 관리(approve-new-device) — 단계 하나. 키·숫자·T 는 남기지 않는다(keyId 는 지문이라 남긴다). */
+  | { event: "pc_device"; step: string; requestId?: string; keyId?: string; result?: string; reason?: string };
 
 export function openRemoteLog(paths: TermPaths): DaemonLog<RemoteLogRecord> {
   const log = new DaemonLog<RemoteLogRecord>(paths.remoteLog, paths.previousRemoteLog);
@@ -172,6 +176,8 @@ export interface BridgeDeps {
   sessionEnv: Record<string, string>;
   /** 앱 홈 — 웹이 폴더를 비우고 만들면 그 아래 세션 폴더({@link webSessionFolder}, 0700)를 만들어 그 안에서 시작한다 — 끝내도 남긴다. */
   appHome: string;
+  /** 새 기기 허용 요청의 등록 중계(pcPairRelay — requestId 로 연다). 없으면 pair-request 를 받지 않는다(시험·옛 조립). */
+  pairRelay?: (requestId: string) => PairTransport;
   /** 끊으면 close 를 보내고 끝낸다. */
   signal: AbortSignal;
   print(line: string): void;
@@ -209,9 +215,11 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
   /** (채널, 세션)마다 화면 루프 하나. */
   const viewers = new Map<string, { watch: Watch; viewer: RemoteViewer }>();
   const book = new ChannelBook(deps.pcId);
+  let devices: DeviceManager | undefined;
   const end = (outcome: RemoteEnd): void => {
     if (ending) return;
     ending = outcome;
+    devices?.stop();
     stopper.abort();
     for (const { viewer } of viewers.values()) viewer.stop();
     viewers.clear();
@@ -377,6 +385,7 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
         void syncList();
         deps.print(`${REMOTE_STATE_PREFIX}on.`);
       } else {
+        devices?.stop();
         await closeAllChannels("REMOTE_OFF");
         deps.print(remote === "off-by-web"
           ? `${REMOTE_OFF_BY_WEB_LINE} Run \`ainecto\` (or \`ainecto remote on\`) on this PC to turn it back on.`
@@ -421,7 +430,37 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
       }
     };
 
+    /** 그 브라우저 키의 채널을 모두 닫는다(기기 지우기 — 연결 중·활성 · 화면 구독·대기 명령까지). */
+    const closeKey = async (keyId: string): Promise<void> => {
+      for (const channelId of book.dropBrowser(keyId)) {
+        stopViewers(channelId);
+        commands.forgetChannel(channelId);
+        deps.log.write({ event: "remote_channel", channelId, state: "closed", by: "pc", reason: "PAIRING_REQUIRED", browserKeyId: keyId });
+        try {
+          await deps.http.call("channel/close", { linkId: link.linkId, channelId, reason: "PAIRING_REQUIRED" }, { signal: stopper.signal });
+        } catch {
+          // 응답 줄은 공용 입구가 남겼다 — PC 장부에서는 이미 지웠다(그 채널의 명령은 이제 unknown-channel).
+        }
+      }
+    };
+    if (deps.trust && deps.pairRelay) {
+      const trust = deps.trust;
+      const relay = deps.pairRelay;
+      devices = new DeviceManager({
+        keysPath: trust.keysPath,
+        accountKey: trust.accountKey,
+        userId: trust.userId,
+        pcId: deps.pcId,
+        relay,
+        notifyRequest: (name) => void deps.notifier.notify({ kind: "device-request", keyId: "device-request", browserName: name }),
+        log: (record) => deps.log.write(record),
+        closeKey,
+        remoteOn: () => remote === "on" && !ending,
+      });
+    }
     const commands = new CommandRunner(deps, control, book, () => remote, () => link.linkId, stopper.signal, {
+      devices: () => devices,
+      trusted: async (keyId) => (await loadTrust(deps))?.browsers.some((item) => item.keyId === keyId) === true,
       closeChannel,
       refreshChannel,
       resized: (session, size) => {
@@ -458,7 +497,8 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
             end(refused(reopenError));
             break;
           }
-          // ★서버가 채널을 모두 잊었다 — 채널은 늘 새 hello 다(§11-2). 서버에 알릴 것도 없다.
+          // ★서버가 채널을 모두 잊었다 — 채널은 늘 새 hello 다(§11-2). 서버에 알릴 것도 없다. 진행 중 허용도 끝낸다(그 요청은 옛 링크의 것).
+          devices?.stop();
           const dropped = book.dropAll();
           for (const channelId of dropped) {
             stopViewers(channelId);
@@ -506,6 +546,9 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
             break;
           case "watch":
             watchList = item.channels;
+            break;
+          case "pair-request":
+            await devices?.onPairRequest(item.requestId);
             break;
           case "channel-closed":
             if (book.drop(item.channelId)) {
@@ -633,6 +676,10 @@ class DaemonControl {
 }
 
 interface RunnerHooks {
+  /** 기기 관리 — 없으면 device 명령은 거절 답. */
+  devices(): DeviceManager | undefined;
+  /** 그 브라우저 키가 지금 핀에 있나(confirm 때 다시 본다 — hello 뒤 지운 키가 활성되지 않게). */
+  trusted(keyId: string): Promise<boolean>;
   closeChannel(channelId: string, reason: CloseReason, browser?: ChannelBrowser): Promise<void>;
   refreshChannel(channelId: string): void;
   /** 세션 크기가 바뀌었다(데몬 set-size 의 적용값) — 그 세션을 보는 모든 화면 루프에. */
@@ -683,18 +730,73 @@ class CommandRunner {
         await this.hooks.closeChannel(wire.channelId, outcome.reason);
         return;
       case "confirmed":
+        if (!(await this.hooks.trusted(outcome.browser.keyId))) {
+          // hello 를 검증한 뒤 그 키가 지워졌다 — 활성하지 않는다.
+          await this.hooks.closeChannel(wire.channelId, "PAIRING_REQUIRED", outcome.browser);
+          return;
+        }
         this.deps.log.write({ event: "remote_channel", channelId: wire.channelId, state: "active", browserKeyId: outcome.browser.keyId });
         // ★키 소유 확인 뒤에만 «웹 세션 열림»(§11-2·§11-7) — hello 만으로는 알리지 않는다.
         void this.deps.notifier.notify({ kind: "session", keyId: outcome.browser.keyId, browserName: outcome.browser.name });
         await this.hooks.applyWatching();
         return;
       case "command":
-        await this.execute(wire, outcome.command, outcome.browser);
+        if (outcome.command.kind === "device") await this.device(wire, outcome.command, outcome.browser);
+        else await this.execute(wire, outcome.command, outcome.browser);
         return;
     }
   }
 
-  private async execute(wire: WireCommand, command: Exclude<ChannelCommand, { kind: "confirm" }>, browser: ChannelBrowser): Promise<void> {
+  /** 기기 관리 명령(approve-new-device §3-4) — 답 봉투 {opId, kind:"device", ok, detail?, result}. 세션 없음(AAD session ""). */
+  private async device(wire: WireCommand, command: Extract<ChannelCommand, { kind: "device" }>, browser: ChannelBrowser): Promise<void> {
+    this.deps.log.write({ event: "remote_command", type: "device", channelId: wire.channelId, n: wire.n, opId: command.opId,
+      ...(wire.requestId ? { requestId: wire.requestId } : {}) });
+    const devices = this.hooks.devices();
+    let failure: { code: string; message: string } | undefined;
+    let result: Record<string, unknown> = {};
+    if (this.remote() !== "on") {
+      failure = { code: "REMOTE_OFF", message: "Terminals from the web are turned off on this PC." };
+    } else if (!devices) {
+      failure = { code: "TERM_BAD_REQUEST", message: "This PC cannot manage devices (account unknown)." };
+    } else {
+      try {
+        result = await devices.command(command.action, browser);
+      } catch (error) {
+        failure = { code: errorCode(error), message: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    let box: { n: number; c: string };
+    try {
+      box = await this.book.seal(wire.channelId, { kind: "answer", session: "", opId: command.opId }, {
+        opId: command.opId,
+        kind: "device",
+        ok: failure === undefined,
+        ...(failure ? { detail: `${failure.code}: ${failure.message}` } : {}),
+        result,
+      });
+    } catch (error) {
+      // 자기 키를 지웠으면 채널이 이미 닫혔다 — 답은 못 간다(웹은 «결과 미확정» → 다른 기기의 목록으로 확인).
+      const reason = error instanceof ChannelSealError && error.reason !== "CHANNEL_GONE" ? error.reason : undefined;
+      this.logResult(wire, "device", "", false, failure?.code ?? reason ?? "CHANNEL_GONE");
+      if (reason) await this.hooks.closeChannel(wire.channelId, reason);
+      return;
+    }
+    if (wire.requestId) {
+      try {
+        await this.deps.http.call("answer", {
+          linkId: this.linkId(), requestId: wire.requestId, channelId: wire.channelId, ...box, ok: failure === undefined,
+          ...(failure ? { code: answerCodeOf(failure.code) } : {}),
+        }, { signal: this.stopSignal });
+      } catch {
+        // 응답 줄은 공용 입구가 남겼다 — 웹은 기한이면 «결과 미확정».
+      }
+    }
+    const raised = this.book.executed(wire.channelId, wire.n);
+    this.logResult(wire, "device", "", failure === undefined, failure?.code, raised ? wire.n : undefined);
+    if (raised) this.hooks.refreshChannel(wire.channelId);
+  }
+
+  private async execute(wire: WireCommand, command: Exclude<ChannelCommand, { kind: "confirm" | "device" }>, browser: ChannelBrowser): Promise<void> {
     const session = command.kind === "create" ? command.name : command.session;
     const opId = "opId" in command ? command.opId : undefined;
     this.deps.log.write({ event: "remote_command", type: command.kind, channelId: wire.channelId, n: wire.n, session,
@@ -736,7 +838,7 @@ class CommandRunner {
   }
 
   /** CRUD 답 — 봉인 본문 {opId, kind, session?, instance?, ok, detail?} · 바깥 code 는 허용 목록만(A7). 봉인을 못 하면 채널을 닫고 false. */
-  private async answer(wire: WireCommand, command: Extract<ChannelCommand, { opId: string }>, applied: Applied,
+  private async answer(wire: WireCommand, command: Extract<ChannelCommand, { kind: "create" | "kill" | "label" }>, applied: Applied,
     failure: { code: string; message: string } | undefined): Promise<boolean> {
     const session = command.kind === "create" ? command.name : command.session;
     const projectUuid = command.kind === "create" ? command.projectUuid : undefined;
@@ -778,7 +880,7 @@ class CommandRunner {
    * 명령 하나를 데몬에 — ★세션을 겨누는 명령은 인스턴스를 싣는다. 비교는 데몬이 적용하는 자리에서(§14-6 4 — 여기서 미리 보지 않는다).
    * 데몬 응답에 인스턴스가 없으면 옛 데몬이다(검사를 하지 않았다) — 실패로 친다.
    */
-  private async apply(channelId: string, command: Exclude<ChannelCommand, { kind: "confirm" }>): Promise<Applied> {
+  private async apply(channelId: string, command: Exclude<ChannelCommand, { kind: "confirm" | "device" }>): Promise<Applied> {
     switch (command.kind) {
       case "input": {
         const key = `${channelId}\u0000${command.session}`;
@@ -928,7 +1030,9 @@ export type PollItem =
   /** 채널은 알지만 모양이 틀린 cmd — 실행하지 않고 한 줄 남긴다(다음 번호가 결번이 되어 그 채널은 닫힌다). */
   | { type: "bad-cmd"; channelId: string; n: number }
   | { type: "watch"; channels: Watch[] }
-  | { type: "channel-closed"; channelId: string };
+  | { type: "channel-closed"; channelId: string }
+  /** 새 기기 허용 요청(approve-new-device §3-1) — 평문 · 서버가 만들 수 있다(시도를 여는 계기일 뿐 — 신뢰는 양쪽 동의로만). */
+  | { type: "pair-request"; requestId: string };
 
 /** poll 의 commands — 서버가 준 순서 그대로. 모르는 종류·모양 틀림은 뺀다(채널을 알 수 있는 cmd 는 bad-cmd). 순수 함수. */
 export function pollItems(answer: Record<string, unknown>): PollItem[] {
@@ -955,6 +1059,8 @@ export function pollItems(answer: Record<string, unknown>): PollItem[] {
         }) : [] }];
       case "channel-closed":
         return channelId ? [{ type: "channel-closed", channelId }] : [];
+      case "pair-request":
+        return typeof item.requestId === "string" && item.requestId !== "" ? [{ type: "pair-request", requestId: item.requestId }] : [];
       default:
         return [];
     }

@@ -4,6 +4,9 @@ import { ensurePrivateDir } from "../../core/fs/privateFiles";
 import { PC_SESSION_NAME } from "../../core/pc/pcSession";
 import { pcKeysPath } from "../../core/pc/pcKeys";
 import { createPcNotifier } from "../../core/pc/pcNotify";
+import { PAIR_WAIT_MS } from "../../core/pc/pcPairing";
+import { createPairRelay } from "../../core/pc/pcPairRelay";
+import { acquirePcBridgeLock } from "../../core/term/daemonLock";
 import { accountKey, loadPcSettings, pcSettingsPath } from "../../core/pc/pcSettings";
 import type { AccountSummary } from "../../core/setup/accountSummary";
 import { appHome, termPaths, type TermPaths } from "../../core/term/paths";
@@ -126,6 +129,14 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
   const { log } = setup;
   log.write({ event: "remote_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: setup.endpoint, host: setup.hostName,
     pcId: setup.pcId, remote: setup.remoteEnabled ? "on" : "off" });
+  // ★다리는 PC 에 하나(approve-new-device §3-6) — 기기 지우기가 이 키 파일의 마지막 말이 되게. 둘째는 시작하지 않는다.
+  const bridgeLock = await acquirePcBridgeLock(setup.paths);
+  if (!bridgeLock) {
+    const reason = "Another AiNecto connection is already running on this PC.";
+    log.write({ event: "remote_stop", pid: process.pid, reason });
+    setup.io.stderr.write(`Remote terminal stopped: ${reason}\n`);
+    return { exitCode: 1, reason };
+  }
   let result: RemoteResult;
   try {
     result = await runRemoteBridge({
@@ -138,6 +149,8 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
       remoteEnabled: setup.remoteEnabled,
       trust: setup.trust,
       notifier: createPcNotifier({ log }),
+      pairRelay: (requestId) => createPairRelay({ endpoint: setup.endpoint, tokenProvider: setup.auth, log, pcId: setup.pcId, requestId,
+        holdMs: PAIR_WAIT_MS }),
       exclude: [PC_SESSION_NAME],
       sessionEnv: setup.env,
       appHome: setup.appHome,
@@ -150,6 +163,8 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
     log.write({ event: "remote_stop", pid: process.pid, reason });
     setup.io.stderr.write(`Remote terminal stopped: ${reason}\n`);
     return { exitCode: 1, reason };
+  } finally {
+    bridgeLock.release();
   }
   log.write({ event: "remote_stop", pid: process.pid, reason: result.reason, exitCode: result.exitCode });
   if (result.exitCode !== 0 || !signal.aborted) {

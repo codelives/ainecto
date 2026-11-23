@@ -1,4 +1,4 @@
-import { constants, openSync } from "node:fs";
+import { closeSync, constants, openSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
 import { TermError } from "./errors";
@@ -74,39 +74,56 @@ const FILE_LOCK: Partial<Record<NodeJS.Platform, { flags: number; busy: readonly
   win32: { flags: constants.O_RDWR | constants.O_CREAT | WIN32_UV_FS_O_EXLOCK, busy: ["EBUSY"] },
 };
 
-/** 잠금 핸들 — 프로세스가 끝날 때까지 닫지 않는다(닫으면 잠금이 풀린다). */
-let heldFd: number | undefined;
-let heldServer: Server | undefined;
+/** 잠금 핸들 — 데몬 잠금은 프로세스가 끝날 때까지 닫지 않는다(닫으면 잠금이 풀린다). */
+const held: Array<{ release(): void }> = [];
 
 export async function acquireDaemonLock(paths: TermPaths): Promise<DaemonLockResult> {
+  const lock = await acquireProcessLock(paths);
+  if (!lock) return { held: false };
+  held.push(lock);
+  return { held: true };
+}
+
+/**
+ * PC 다리 하나를 지키는 잠금(approve-new-device §3-6) — 데몬 잠금과 같은 수단 · 다른 이름. 기기 지우기가 이 키 파일의 마지막 말이 되게
+ * 한 사용자·한 앱 폴더에 다리는 하나만 돈다.
+ */
+export async function acquirePcBridgeLock(paths: TermPaths): Promise<{ release(): void } | undefined> {
+  return await acquireProcessLock({
+    lockFile: paths.lockFile.replace(/daemon\.lock$/, "pc-bridge.lock"),
+    abstractLockName: paths.abstractLockName.replace(/\.lock$/, "-pc-bridge.lock"),
+  });
+}
+
+/** 잠금 하나 — 쥐었으면 푸는 손잡이, 남이 쥐고 있으면 undefined. 프로세스가 죽으면 OS 가 푼다. */
+async function acquireProcessLock(paths: Pick<TermPaths, "lockFile" | "abstractLockName">): Promise<{ release(): void } | undefined> {
   assertTermRuntime();
   const fileLock = FILE_LOCK[process.platform];
   if (fileLock) {
     try {
-      heldFd = openSync(paths.lockFile, fileLock.flags, PRIVATE_FILE_MODE);
-      return { held: true };
+      const fd = openSync(paths.lockFile, fileLock.flags, PRIVATE_FILE_MODE);
+      return { release: () => closeSync(fd) };
     } catch (error) {
       if (fileLock.busy.some((code) => isNodeError(error, code))) {
-        return { held: false };
+        return undefined;
       }
       throw error;
     }
   }
   if (process.platform === "linux") {
     const server = createServer((socket) => socket.destroy());
-    return await new Promise<DaemonLockResult>((resolve, reject) => {
+    return await new Promise<{ release(): void } | undefined>((resolve, reject) => {
       server.once("error", (error) => {
         if (isNodeError(error, "EADDRINUSE")) {
-          resolve({ held: false });
+          resolve(undefined);
           return;
         }
         reject(error);
       });
       server.listen(paths.abstractLockName, () => {
-        heldServer = server;
         // 잠금 소켓이 이벤트 루프를 붙잡지 않게 — 데몬은 스스로 끝낸다.
         server.unref();
-        resolve({ held: true });
+        resolve({ release: () => server.close() });
       });
     });
   }

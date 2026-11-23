@@ -17,7 +17,7 @@ import type { RemoteLogRecord } from "../term/remote";
 /** C-E3(Ryan 11-21 승인) — 같은 브라우저·같은 종류의 알림을 묶는 간격. */
 export const NOTIFY_BATCH_MS = 60_000;
 
-export type NotifyKind = "paired" | "session" | "shell" | "command";
+export type NotifyKind = "paired" | "session" | "shell" | "command" | "device-request";
 
 export interface NotifyEvent {
   kind: NotifyKind;
@@ -33,6 +33,7 @@ const WHAT: Record<NotifyKind, string> = {
   session: "opened a terminal connection to this PC",
   shell: "started a new shell on this PC",
   command: "started a command in a new terminal on this PC",
+  "device-request": "asks to open this PC's terminal — open AiNecto Terminal in a browser you already use to allow or refuse it",
 };
 
 /** 알림 글(순수) — 명령·폴더 없음. more = 묶여서 따로 알리지 않은 같은 종류의 수. */

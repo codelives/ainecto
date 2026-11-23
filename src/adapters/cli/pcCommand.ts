@@ -247,6 +247,8 @@ export async function registerBrowserOnStart(
   const secret = randomBytes(NONCE_SEED_BYTES);
   const interrupt = register.interrupt();
   let outcome: PairOutcome;
+  /** 이 시도가 쓴 핀의 시각 — 되돌릴 때 이 항목만 거둔다(그 사이 새 기기 허용으로 다시 쓰인 같은 키는 남긴다). */
+  let writtenAt = "";
   try {
     const tag = await registerTag((await registerKeys(secret)).account, userId);
     const url = `${new URL(deps.endpoint).origin}${REGISTER_PATH}#${registerFragment({ pcId: settings.pcId, tag, secret })}`;
@@ -259,13 +261,15 @@ export async function registerBrowserOnStart(
     note("");
     note(`Finish in the browser that just opened (up to ${Math.round(register.waitMs / 60_000)} min · Ctrl+C to skip)`);
     const pcKey = stored?.pcKey ?? await generateSigningJwk();
+    const pinnedAt = register.now();
+    writtenAt = pinnedAt.toISOString();
     outcome = await runPairing({
       userId,
       pcId: settings.pcId,
       pcKey,
       transport: await register.transport(settings.pcId),
       confirm: { kind: "secret", secret },
-      pin: (browser) => pinBrowser({ keysPath: deps.keysPath, key: account.key, pcKey, browser, now: register.now() }),
+      pin: (browser) => pinBrowser({ keysPath: deps.keysPath, key: account.key, pcKey, browser, now: pinnedAt }),
       waitMs: register.waitMs,
       cancel: interrupt.signal,
     });
@@ -285,8 +289,10 @@ export async function registerBrowserOnStart(
   if (doneError !== undefined) {
     // ★핀을 거둔다 — 남기면 등록 브라우저가 1 로 남아 `ainecto` 를 다시 실행해도 자동 등록이 돌지 않는다(그 브라우저는 PC 를 믿지 않는다).
     await updatePcKeys(deps.keysPath, (keys) => {
-      const result = withoutBrowser(keys, account.key, browser.keyId);
-      return result.removed ? result.keys : undefined;
+      const current = keys.accounts[account.key];
+      if (!current?.browsers.some((item) => item.keyId === browser.keyId && item.pairedAt === writtenAt)) return undefined;
+      return { accounts: { ...keys.accounts, [account.key]: { ...current,
+        browsers: current.browsers.filter((item) => !(item.keyId === browser.keyId && item.pairedAt === writtenAt)) } } };
     });
     note(`The browser "${browser.name}" did not get the confirmation (${doneError}), so nothing was kept. ${REGISTER_AGAIN}`);
     return;
