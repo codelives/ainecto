@@ -12,6 +12,23 @@ import { wireSessions } from "../src/core/term/remoteSessions";
 import { RemoteViewer } from "../src/core/term/remoteViewer";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
 import { FakeWeb, WebChannel } from "./support/fakeWeb";
+import { loadPcKeys } from "../src/core/pc/pcKeys";
+import type { PairTransport } from "../src/core/pc/pcPairing";
+import {
+  assertCommitment,
+  browserKeyIdOf,
+  generateSigningJwk,
+  importSigningKey,
+  pairApproveInput,
+  pairCodes,
+  pairDoneInput,
+  pairTranscript,
+  publicJwkFromRaw,
+  publicRawFromJwk,
+  randomBytes,
+  signBytes,
+  verifyBytes,
+} from "../src/core/term/e2e";
 import { cli, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
 const PROJECT = "0b9a8c7d-1111-4222-8333-444455556666";
@@ -98,7 +115,8 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
   const ids = () => ({ userId: USER_ID, pcId: PC_ID, keysPath: keysPath(), accountKey: accountKey(fake.endpoint, USER_ID) });
   const web = (options: { pin?: boolean; name?: string } = {}): Promise<FakeWeb> => FakeWeb.create(fake, ids(), options);
 
-  function start(options: { remoteEnabled?: boolean; exclude?: string[]; onAnswer?: BridgeDeps["onAnswer"]; trust?: boolean } = {})
+  function start(options: { remoteEnabled?: boolean; exclude?: string[]; onAnswer?: BridgeDeps["onAnswer"]; trust?: boolean;
+    pairRelay?: BridgeDeps["pairRelay"] } = {})
     : { done: Promise<RemoteResult>; stop: AbortController; printed: string[]; notified: string[][] } {
     const paths = termPaths(rig.home);
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });   // 운영은 pcRemoteSetup 이 만든다
@@ -127,6 +145,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
       signal: stop.signal,
       print: (line) => printed.push(line),
       ...(options.onAnswer ? { onAnswer: options.onAnswer } : {}),
+      ...(options.pairRelay ? { pairRelay: options.pairRelay } : {}),
     });
     return { done, stop, printed, notified };
   }
@@ -630,6 +649,89 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     expect(result.exitCode).toBe(1);
     expect(result.reason).toContain("401");
     expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
+  }, LONG);
+
+  /** device 명령 하나를 보내고 봉인 답의 본문을 기다린다. */
+  async function ask(channel: WebChannel, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const crud = await channel.device(body);
+    await until(async () => (await channel.answer(crud)) !== undefined, `device ${String(body.action)} answer`);
+    const answered = await channel.answer(crud);
+    expect(answered?.sealed).toMatchObject({ opId: crud.opId, kind: "device", ok: true });
+    return answered!.sealed.result as Record<string, unknown>;
+  }
+
+  it("새 기기 허용(approve-new-device) — pair-request → B1 이 물어 같은 숫자 → B1 허용 + 새 기기 [같아요] 서명 → 핀 · 목록 · 지우기는 그 키 채널만 닫고 그 키의 hello 는 거절", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const b1 = await web({ name: "Chrome · macOS" });
+    // 새 기기 N — 진짜 암호. 중계는 기억 안 대역(서버 pair 중계는 api 시험이 본다).
+    const nKey = await generateSigningJwk();
+    const nPub = publicRawFromJwk(nKey);
+    const nB = randomBytes(32);
+    const device: { commit?: Uint8Array; transcript?: Uint8Array; pcPub?: Uint8Array; clicked: boolean; doneVerified: boolean; aborts: string[] } = {
+      clicked: false, doneVerified: false, aborts: [],
+    };
+    const relay: PairTransport = {
+      async offer(commit) {
+        device.commit = commit;
+        return { keyId: await browserKeyIdOf(nPub), publicRaw: nPub, nB, name: "Safari · iPhone", attemptId: "attempt-1" };
+      },
+      async reveal(pcPub, nP) {
+        await assertCommitment(device.commit!, pcPub, nP);
+        device.pcPub = pcPub;
+        device.transcript = await pairTranscript({ userId: USER_ID, pcId: PC_ID, pcPublicRaw: pcPub, browserPublicRaw: nPub, nP, nB });
+      },
+      async deviceConsent() {
+        await until(() => device.clicked, "device click");
+        return await signBytes(await importSigningKey(nKey), pairApproveInput(device.transcript!));
+      },
+      async done(signature) {
+        device.doneVerified = await verifyBytes(publicJwkFromRaw(device.pcPub!), signature, pairDoneInput(device.transcript!));
+      },
+      async abort(reason) {
+        device.aborts.push(reason);
+      },
+    };
+    const run = start({ pairRelay: () => relay });
+    await until(() => fake.ops().includes("open"), "open");
+    expect(fake.calls.find((call) => call.op === "open")?.body).toMatchObject({ devices: true });
+    const channel = await b1.connect();
+    expect(await ask(channel, { action: "pending" })).toEqual({ request: null });
+
+    fake.push({ type: "pair-request", requestId: randomUUID() });
+    let request: Record<string, unknown> | null = null;
+    await until(async () => {
+      request = (await ask(channel, { action: "pending" })).request as Record<string, unknown> | null;
+      return request !== null;
+    }, "pending request");
+    const shown = request as unknown as { T: string; code: string; name: string };
+    expect(shown.name).toBe("Safari · iPhone");
+    expect(shown.code).toBe((await pairCodes(device.transcript!)).a);
+    expect(await ask(channel, { action: "approve", T: shown.T, accept: true })).toEqual({ result: "recorded" });
+    await sleep(200);
+    const nKeyId = await browserKeyIdOf(nPub);
+    // 새 기기가 [같아요]를 누르기 전엔 핀 0
+    expect((await loadPcKeys(keysPath())).accounts[accountKey(fake.endpoint, USER_ID)]?.browsers.map((b) => b.keyId)).not.toContain(nKeyId);
+    device.clicked = true;
+    await until(() => device.doneVerified, "device got done");
+    expect((await loadPcKeys(keysPath())).accounts[accountKey(fake.endpoint, USER_ID)]?.browsers.map((b) => b.keyId)).toContain(nKeyId);
+    expect(device.aborts).toEqual([]);
+
+    const listed = (await ask(channel, { action: "list" })).devices as Array<{ keyId: string; current: boolean }>;
+    expect(listed.map((d) => d.keyId).sort()).toEqual([b1.browser.keyId, nKeyId].sort());
+    expect(listed.find((d) => d.keyId === b1.browser.keyId)?.current).toBe(true);
+
+    // 지우기 — 다른 브라우저 b2 의 채널만 닫히고 B1 은 계속 · b2 의 다음 hello 는 거절
+    const b2 = await web({ name: "Firefox · Linux" });
+    const other = await b2.connect();
+    expect(await ask(channel, { action: "remove", keyId: b2.browser.keyId })).toEqual({ removed: true });
+    await until(() => other.closedReason() === "PAIRING_REQUIRED", "b2 channel closed");
+    expect(channel.closedReason()).toBeUndefined();
+    expect(((await ask(channel, { action: "list" })).devices as Array<{ keyId: string }>).map((d) => d.keyId)).not.toContain(b2.browser.keyId);
+    const again = await b2.hello();
+    expect(again).toMatchObject({ refused: "PAIRING_REQUIRED" });
+    run.stop.abort();
+    await run.done;
+    expectLogPairs();
   }, LONG);
 
   it("CLI — term remote 는 이제 PC 연결 안내(MOVED, 종료 1)", async () => {

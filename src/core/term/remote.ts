@@ -595,6 +595,9 @@ async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boo
   signal: AbortSignal | undefined): Promise<Link> {
   const opened = await deps.http.call("open", {
     pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled, sessions, e2e: E2E_VERSION,
+    // 새 기기 허용·기기 관리를 안다(approve-new-device §3-4) — 서버는 이 표시가 있는 링크에만 pair-request·device 를 보낸다.
+    // ★옛 서버는 모르는 칸을 400 으로 거절한다 — 배포는 api 먼저(§7).
+    ...(deps.trust && deps.pairRelay ? { devices: true } : {}),
   }, signal ? { signal } : undefined);
   const limits = serverLimits(opened.limits);
   if (typeof opened.linkId !== "string" || typeof opened.linkToken !== "string" || !limits) {

@@ -133,6 +133,14 @@ export class WebChannel {
     return { opId, requestId, meta: { session, opId } };
   }
 
+  /** 기기 관리(approve-new-device §3-4) — 세션 없음 · 봉인 안 action. */
+  async device(body: Record<string, unknown>): Promise<Crud> {
+    const opId = randomUUID();
+    const requestId = randomUUID();
+    await this.send("device", { opId, ...body }, { opId }, requestId);
+    return { opId, requestId, meta: { opId } };
+  }
+
   /** 이 채널에 온 화면 전부(복호) — 순서대로. */
   async frames(): Promise<OpenedFrame[]> {
     const mine = this.fake.frames.filter((frame) => frame.channelId === this.id);
