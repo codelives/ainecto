@@ -36,7 +36,7 @@ describe("ainecto 기본 실행 글", () => {
     expect(text).toMatch(/^This PC is now connected to AiNecto\. From AiNecto on the web you can open a terminal on this PC/);
     expect(text).toContain("It keeps running after you close this window. To stop it, run `ainecto stop`.");
     expect(text).not.toContain("session");
-    expect(pcResultText({ kind: "connected", agentMissing: true, log: "L" })).toContain("No Claude Code or Codex was found");
+    expect(pcResultText({ kind: "connected", agentMissing: true, log: "L" })).toContain("No Claude Code, Codex or Antigravity was found");
     expect(pcResultText({ kind: "already", folder: "/w", version: "1.0.0", log: "L" }))
       .toBe("This PC is already connected to AiNecto (folder /w, version 1.0.0). To stop it, run `ainecto stop`. Log: L");
   });

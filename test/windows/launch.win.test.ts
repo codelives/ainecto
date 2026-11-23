@@ -3,6 +3,8 @@ import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runToEnd, spawnAgent } from "../../src/core/agent/child";
+import { agentReplySchema } from "../../src/core/agent/agents";
+import { antigravityAgentArgs, antigravitySettings } from "../../src/core/agent/antigravityArgs";
 import { claudeAgentArgs } from "../../src/core/agent/claudeArgs";
 import { killTree, planLaunch, spawnCapture } from "../../src/core/os/launch";
 import { TermSession } from "../../src/core/term/session";
@@ -104,6 +106,12 @@ describe.runIf(WINDOWS)("W2 실행 계획 — 대상별 argv 왕복(child_proces
   it("일반 배치 %1 직접 — 공백·따옴표·한글 인자 하나", async () => {
     expect(await viaChild([join(work, "direct.bat"), "two words"])).toEqual(["two words"]);
   }, 60_000);
+
+  it("agy 헤드리스 실제 인자(공식 설치 = agy.exe 대역) — schema·settings JSON 이 그대로 건너간다", async () => {
+    const args = antigravityAgentArgs({ schema: agentReplySchema(4000, 10), settings: antigravitySettings(["ainecto", "other.x"]),
+      conversationId: "c-1" });
+    expect(await viaChild([join(work, "echo-node.exe"), join(work, "echo.js"), ...args])).toEqual(args);
+  }, 30_000);
 
   it("claude 헤드리스 실제 인자(npm 설치 가정)의 최종 cmd 줄 길이를 잰다 — 넘으면 LAUNCH_LINE_TOO_LONG", () => {
     const args = claudeAgentArgs({ schema: { type: "object" }, mcpConfig: { mcpServers: { ainecto: { command: process.execPath, args: ["x"] } } } });

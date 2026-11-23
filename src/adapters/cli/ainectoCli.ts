@@ -625,7 +625,7 @@ function helpText(): string {
     "  ainecto init --agent NAME                             name the agent working in this folder: writes .ainecto/agent.local (do not commit it) and puts the name in .mcp.json, .cursor/mcp.json, .agents/mcp_config.json and .codex/config.toml",
     "  ainecto init --undo",
     "",
-    "This PC (requests from AiNecto Chat and auto-run cards, answered by Claude Code or Codex on this machine):",
+    "This PC (requests from AiNecto Chat and auto-run cards, answered by Claude Code, Codex or Antigravity on this machine):",
     ...AGENT_HELP_LINES,
     "",
     "Terminal sessions on this machine (no tmux or cmux needed; macOS, Linux and Windows):",
