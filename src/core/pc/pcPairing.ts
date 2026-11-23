@@ -6,6 +6,7 @@ import {
   importSigningKey,
   macEquals,
   NONCE_SEED_BYTES,
+  pairApproveInput,
   pairCodes,
   pairCommitment,
   pairDoneInput,
@@ -17,6 +18,7 @@ import {
   registerOfferMac,
   registerRevealMac,
   signBytes,
+  verifyBytes,
   type EcPrivateJwk,
   type EcPublicJwk,
 } from "../term/e2e";
@@ -27,7 +29,8 @@ import {
  * ★시도는 한 번: 난수 한 쌍. 틀리거나 기한이 지나면 끝.
  * ★확인 방식은 시도를 연 원인이 정한다({@link PairConfirm}) — 실패한 방식에서 다른 방식으로 넘어가지 않는다.
  *   secret   로컬 `npx` 자동 등록 — 주소로 넘긴 일회용 비밀 S 로 키를 건 macB 검증 → 핀 → 드러내기(macP) → done
- *   approval 새 기기 허용 — 드러내기 → T → 이미 믿는 브라우저가 그 T 를 허용(숫자 6자리 비교) → 핀 → done
+ *   approval 새 기기 허용 — 드러내기 → T → 양쪽 동의(이미 믿는 브라우저의 허용 + 새 기기의 [같아요] 서명, 순서 무관 · 숫자 6자리 비교)
+ *            → 핀 → done
  */
 
 /** 짝짓기 한 번의 기한 — 브라우저 요청을 기다리고 코드를 치는 것까지(설계 §9 C-E1 승인: 5분). */
@@ -56,6 +59,11 @@ export interface PairTransport {
   reveal(pcPublicRaw: Uint8Array, nP: Uint8Array, signal: AbortSignal, macP?: Uint8Array): Promise<void>;
   /** 코드 B 가 맞고 핀한 뒤 — done 서명을 보낸다(브라우저는 이것을 검증한 뒤에만 PC 핀을 저장한다). */
   done(signature: Uint8Array, signal: AbortSignal): Promise<void>;
+  /**
+   * approval 만 — 3단계 뒤 새 기기의 동의를 기다린다: [같아요] 서명(64바이트) · 새 기기가 취소했으면 undefined.
+   * 서명은 2단계 공개키로 {@link pairApproveInput}(T) 를 검증한다(여기서는 받기만).
+   */
+  deviceConsent?(signal: AbortSignal): Promise<Uint8Array | undefined>;
   /** 짝짓지 못하고 끝났다(틀림·기한·취소·오류) — 브라우저에 알린다(최선 — 던지지 않는다). done 을 보냈으면 아무것도 안 한다. */
   abort(reason: "code-mismatch" | "timeout" | "cancelled" | "error"): Promise<void>;
 }
@@ -73,19 +81,24 @@ export type PairConfirm =
   | {
     kind: "approval";
     /**
-     * 이미 믿는 브라우저의 허용을 기다린다 — 그 T 에 허용이 오면 true · 거절이면 false. 기한·중단은 signal 로(끝나면 거절 · reject).
+     * 이미 믿는 브라우저의 결정을 기다린다 — 그 T 에 허용이면 허용한 브라우저 키 · 거절이면 accepted false. 기한·중단은 signal 로(reject).
      * 숫자는 {@link pairCodes}(T).a — 새 기기도 같은 T 로 같은 숫자를 계산해 보인다.
      */
-    approve(request: ApprovalRequest, signal: AbortSignal): Promise<boolean>;
+    approve(request: ApprovalRequest, signal: AbortSignal): Promise<Approval>;
   };
+
+/** 이미 믿는 브라우저의 결정. */
+export type Approval = { accepted: false } | { accepted: true; approverKeyId: string };
 
 /** 허용을 물을 것 — T 전체가 허용을 묶는다(approve-new-device §3-3). */
 export interface ApprovalRequest {
   transcript: Uint8Array;
   /** 두 화면에 뜨는 숫자 6자리. */
   code: string;
-  /** 다듬은 기기 이름(핀에 저장될 이름과 같다) — 신원 증거가 아니다. */
+  /** 다듬은 기기 이름(표시용 — 저장 때 중복이면 « (2)»가 붙을 수 있다) — 신원 증거가 아니다. */
   name: string;
+  /** 후보 키(새 기기) — 그 키를 지우면 진행 중 허용을 끝낸다. */
+  keyId: string;
 }
 
 export type PairOutcome =
@@ -103,8 +116,11 @@ export async function runPairing(input: {
   pcKey: EcPrivateJwk;
   transport: PairTransport;
   confirm: PairConfirm;
-  /** 확인이 맞았을 때 — 브라우저 키를 핀한다(pc-keys.json). 던지면 reveal·done 을 보내지 않는다. */
-  pin: (browser: MatchedBrowser) => Promise<void>;
+  /**
+   * 확인이 맞았을 때 — 브라우저 키를 핀한다(pc-keys.json). 던지면 reveal·done 을 보내지 않는다.
+   * approval 이면 허용한 브라우저 키가 함께 온다 — 같은 핀 파일 갱신 안에서 그 키가 아직 있는지 보고, 없으면 false(핀 0 · 거절로 끝).
+   */
+  pin: (browser: MatchedBrowser, approverKeyId?: string) => Promise<boolean | void>;
   /** 기한 — 운영은 {@link PAIR_WAIT_MS}. */
   waitMs: number;
   /** 사람이 건너뛴다(Ctrl+C) — 끝나면 cancelled. */
@@ -158,15 +174,33 @@ export async function runPairing(input: {
       pairTranscript({ userId: input.userId, pcId: input.pcId, pcPublicRaw, browserPublicRaw: offer.publicRaw, nP, nB: offer.nB });
     const confirm = input.confirm;
     if (confirm.kind === "approval") {
-      // ★허용 전에 드러낸다(공개값) — 새 기기가 약속값과 대조하고 같은 T·숫자를 계산한다. 핀은 그 T 의 허용 뒤에만.
+      const consent = input.transport.deviceConsent?.bind(input.transport);
+      if (!consent) throw new E2eError("E2E_BAD_INPUT", "This relay cannot carry the new device's consent — device approval aborted.");
+      // ★동의 전에 드러낸다(공개값) — 새 기기가 약속값과 대조하고 같은 T·숫자를 계산한다. 핀은 양쪽 동의 뒤에만.
       const revealed = await relayed(() => input.transport.reveal(pcPublicRaw, nP, signal));
       if (revealed === "timeout") return { kind: "timeout" };
       const t = await transcript();
-      const request: ApprovalRequest = { transcript: t, code: (await pairCodes(t)).a, name: browser.name };
-      const accepted = await relayed(() => confirm.approve(request, signal));
-      if (accepted === "timeout") return { kind: "timeout" };
-      if (!accepted) return { kind: "code-mismatch" };
-      await input.pin(browser);
+      const request: ApprovalRequest = { transcript: t, code: (await pairCodes(t)).a, name: browser.name, keyId: browser.keyId };
+      // 한쪽이 거절하면 다른 쪽 대기를 바로 푼다(대기 중 허용이 남지 않게).
+      const step = new AbortController();
+      const stop = (): void => step.abort();
+      signal.addEventListener("abort", stop, { once: true });
+      let approverKeyId: string | undefined;
+      let agreed: boolean | "timeout";
+      try {
+        agreed = await relayed(() => bothAgree(
+          confirm.approve(request, step.signal).then((approval) => {
+            if (approval.accepted) approverKeyId = approval.approverKeyId;
+            return approval.accepted;
+          }),
+          consent(step.signal).then((sig) => sig !== undefined && verifyBytes(publicJwk, sig, pairApproveInput(t))),
+        ));
+      } finally {
+        signal.removeEventListener("abort", stop);
+        step.abort();
+      }
+      if (agreed === "timeout") return { kind: "timeout" };
+      if (!agreed || (await input.pin(browser, approverKeyId)) === false) return { kind: "code-mismatch" };
       return await finish(browser, t, async () => {});
     }
     // ★S 를 아는 브라우저가 이 시도(attemptId·commit)에 이 키·이름을 냈는가 — 맞을 때만 핀하고 드러낸다(macB 없는 브라우저는 거절).
@@ -192,4 +226,23 @@ export async function runPairing(input: {
     }
     return { kind: "paired", browser, doneError };
   }
+}
+
+/** 둘 다 true 면 true · 하나라도 false 면 바로 false · 하나라도 실패하면 그 실패(둘 다 처리기를 단다 — 버려진 거절이 없다). */
+function bothAgree(a: Promise<boolean>, b: Promise<boolean>): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    let left = 2;
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    for (const each of [a, b]) {
+      each.then((ok) => {
+        if (!ok) settle(() => resolve(false));
+        else if (--left === 0) settle(() => resolve(true));
+      }, (error: unknown) => settle(() => reject(error)));
+    }
+  });
 }

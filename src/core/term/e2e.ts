@@ -60,6 +60,7 @@ type CryptoKey = webcrypto.CryptoKey;
 const VERSION = "ainecto-e2e-v1";
 const PAIR_LABEL = "ainecto-pair-v1";
 const PAIR_DONE_LABEL = "ainecto-pair-v1/done";
+const PAIR_APPROVE_LABEL = "ainecto-pair-v1/approve";
 const PAIR_CODE_INFO = { a: "ainecto-pair-code-A", b: "ainecto-pair-code-B" } as const;
 const REGISTER_INFO = { browser: "ainecto-register-v1 browser", pc: "ainecto-register-v1 pc", account: "ainecto-register-v1 account" } as const;
 const REGISTER_OFFER_LABEL = "ainecto-register-v1/offer";
@@ -389,6 +390,12 @@ export async function pairCodes(transcript: Uint8Array): Promise<PairCodes> {
 export function pairDoneInput(transcript: Uint8Array): Uint8Array {
   expectLength("transcript", transcript, 32);
   return enc(PAIR_DONE_LABEL, transcript);
+}
+
+/** 새 기기 동의 서명 입력 = enc("ainecto-pair-v1/approve", T) — 새 기기가 [같아요]에서 자기 키로 서명한다(approve-new-device §3-2 8). */
+export function pairApproveInput(transcript: Uint8Array): Uint8Array {
+  expectLength("transcript", transcript, 32);
+  return enc(PAIR_APPROVE_LABEL, transcript);
 }
 
 // ── 자동 등록(auto-register §1) ─────────────────────────────────
