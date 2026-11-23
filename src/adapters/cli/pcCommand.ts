@@ -207,7 +207,8 @@ export async function registerBrowserIfNone(
   const note = (line: string): void => {
     deps.io.stderr.write(`${line}\n`);
   };
-  const noBrowser = "This PC can't open a browser here. To register this browser, run `npx -y ainecto@latest pair` in this PC's terminal.";
+  // ★웹에는 코드 비교(수동) 등록이 없다(KAN-1348 반려 — 수동 탭이 자동 등록 시도를 가로챘다). PC 화면의 터미널에서 다시 실행하는 길 하나.
+  const noBrowser = "This PC can't open a browser here (for example over ssh). Run `npx -y ainecto@latest` in a terminal on this PC's own screen to register your browser.";
   if (register.overSsh) {
     note(noBrowser);
     return;
@@ -265,7 +266,7 @@ export async function registerBrowserIfNone(
 }
 
 /** 자동 등록이 끝나지 않았을 때 덧붙이는 안내(§1-1). */
-const REGISTER_AGAIN = "Try again: `npx -y ainecto@latest` · or register this browser with `npx -y ainecto@latest pair`.";
+const REGISTER_AGAIN = "Try again: `npx -y ainecto@latest`.";
 
 /** 결과를 찍은 «뒤» 알릴 것(stderr) — 종료 코드는 그대로. */
 function withNotes(deps: PcDeps, notes: readonly string[], code: number): number {

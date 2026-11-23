@@ -159,15 +159,16 @@ describe("브라우저 자동 등록 — registerBrowserIfNone(§1-1 조건 넷 
     await nothing(deps());
   });
 
-  it("ssh 이거나 브라우저를 못 열면 — pair 안내 한 줄만(종료 없음 · 던지지 않음)", async () => {
+  it("ssh 이거나 브라우저를 못 열면 — «PC 화면의 터미널에서 npx 다시» 한 줄만(pair 아님 · 종료 없음 · 던지지 않음)", async () => {
     await approve();
     const ssh = deps({}, { overSsh: true });
     await registerBrowserIfNone(ssh.deps, { key: KEY, userId: USER_ID });
     expect(ssh.opened).toEqual([]);
-    expect(ssh.err()).toContain("`npx -y ainecto@latest pair`");
+    expect(ssh.err()).toContain("Run `npx -y ainecto@latest` in a terminal on this PC's own screen");
+    expect(ssh.err()).not.toContain("pair");
     const fail = deps({}, { openBrowser: async () => { throw new Error("no xdg-open"); } });
     await registerBrowserIfNone(fail.deps, { key: KEY, userId: USER_ID });
-    expect(fail.err()).toContain("`npx -y ainecto@latest pair`");
+    expect(fail.err()).toContain("Run `npx -y ainecto@latest` in a terminal on this PC's own screen");
     expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers ?? []).toEqual([]);
   });
 
