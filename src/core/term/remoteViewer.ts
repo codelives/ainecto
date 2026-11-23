@@ -189,6 +189,8 @@ export class RemoteViewer {
         this.deps.onChannelEnded(error instanceof ChannelSealError ? error.reason : "CHANNEL_GONE");
         return;
       }
+      // 봉인하는 사이 멈췄다(기기 지우기·채널 닫기) — 이미 봉인한 화면도 보내지 않는다.
+      if (this.stopped) return;
       try {
         await this.deps.http.call("frame", { ...outer, ...box }, { signal: this.stopper.signal });
         sentKey = key;

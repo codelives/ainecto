@@ -634,6 +634,19 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     expect(fake.ops()).toEqual(["open"]);
   }, LONG);
 
+  it("새 CLI(devices:true)가 옛 서버를 만나면 — 그 칸 없이 한 번 더 open · 기존 터미널은 열린다(새 기기 허용만 없다)", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    fake.refuseDevicesField = true;
+    const run = start({ pairRelay: () => { throw new Error("no pair relay in this test"); } });
+    await until(() => fake.ops().filter((op) => op === "open").length === 2 && fake.ops().includes("poll"), "second open and poll");
+    const opens = fake.calls.filter((call) => call.op === "open").map((call) => call.body as Record<string, unknown>);
+    expect(opens[0]).toMatchObject({ devices: true });
+    expect(opens[1]).not.toHaveProperty("devices");
+    expect(remoteLog().some((r) => r.event === "remote_open_without_devices")).toBe(true);
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
   it("poll 기한 초과 → 기한 줄 남기고 같은 링크로 다시 poll · poll 401(로그인 거절) → 끝(1)", async () => {
     await ok("term", "new", "a", "--", "cat");
     fake.hangPolls = 1;

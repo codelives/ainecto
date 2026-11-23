@@ -109,7 +109,8 @@ export type RemoteLogRecord =
   /** 그 알림의 결과 — 실패는 이유 코드만(도구 stderr 원문 없음 · §11-7). */
   | { event: "pc_notify_result"; kind: string; ok: boolean; tool: string; reason?: string }
   /** 새 기기 허용·기기 관리(approve-new-device) — 단계 하나. 키·숫자·T 는 남기지 않는다(keyId 는 지문이라 남긴다). */
-  | { event: "pc_device"; step: string; requestId?: string; keyId?: string; result?: string; reason?: string };
+  | { event: "pc_device"; step: string; requestId?: string; keyId?: string; result?: string; reason?: string }
+  | { event: "remote_open_without_devices"; reason: string };
 
 export function openRemoteLog(paths: TermPaths): DaemonLog<RemoteLogRecord> {
   const log = new DaemonLog<RemoteLogRecord>(paths.remoteLog, paths.previousRemoteLog);
@@ -455,7 +456,8 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
         notifyRequest: (name) => void deps.notifier.notify({ kind: "device-request", keyId: "device-request", browserName: name }),
         log: (record) => deps.log.write(record),
         closeKey,
-        remoteOn: () => remote === "on" && !ending,
+        // ★PC 설정이 먼저다 — 서버 poll 의 remote 로는 줄일 수만 있다(서버가 «켜짐»을 보내도 PC 에서 끈 원격은 열리지 않는다).
+        remoteOn: () => deps.remoteEnabled && remote === "on" && !ending,
       });
     }
     const commands = new CommandRunner(deps, control, book, () => remote, () => link.linkId, stopper.signal, {
@@ -593,12 +595,18 @@ function startState(remoteEnabled: boolean): RemoteState {
 /** open 한 번 — 처음과 다시 열기가 같은 길. 새 토큰을 싣는다. */
 async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boolean, sessions: WireSession[],
   signal: AbortSignal | undefined): Promise<Link> {
-  const opened = await deps.http.call("open", {
-    pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled, sessions, e2e: E2E_VERSION,
-    // 새 기기 허용·기기 관리를 안다(approve-new-device §3-4) — 서버는 이 표시가 있는 링크에만 pair-request·device 를 보낸다.
-    // ★옛 서버는 모르는 칸을 400 으로 거절한다 — 배포는 api 먼저(§7).
-    ...(deps.trust && deps.pairRelay ? { devices: true } : {}),
-  }, signal ? { signal } : undefined);
+  const base = { pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled, sessions, e2e: E2E_VERSION };
+  // 새 기기 허용·기기 관리를 안다(approve-new-device §3-4) — 서버는 이 표시가 있는 링크에만 pair-request·device 를 보낸다.
+  const devices = deps.trust !== undefined && deps.pairRelay !== undefined;
+  let opened: Record<string, unknown>;
+  try {
+    opened = await deps.http.call("open", devices ? { ...base, devices: true } : base, signal ? { signal } : undefined);
+  } catch (error) {
+    // ★옛 서버는 모르는 칸을 400 INVALID 로 거절한다 — 표시 없이 한 번 더(기존 터미널은 그대로 열린다 · 새 기기 허용만 없다).
+    if (!devices || !(error instanceof PcCallError && error.status === 400 && error.code === "INVALID")) throw error;
+    deps.log.write({ event: "remote_open_without_devices", reason: "server refused the devices field" });
+    opened = await deps.http.call("open", base, signal ? { signal } : undefined);
+  }
   const limits = serverLimits(opened.limits);
   if (typeof opened.linkId !== "string" || typeof opened.linkToken !== "string" || !limits) {
     throw new TermError("TERM_REMOTE_BAD_RESPONSE", "AiNecto answered open without linkId, linkToken or limits.");

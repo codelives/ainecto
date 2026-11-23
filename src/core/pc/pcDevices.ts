@@ -119,7 +119,6 @@ export class DeviceManager {
   private async pair(requestId: string, pcKey: EcPrivateJwk, stop: AbortController): Promise<void> {
     let outcome: PairOutcome | undefined;
     let reason: string | undefined;
-    let writtenAt: string | undefined;
     const startedAt = this.now().getTime();
     try {
       outcome = await runPairing({
@@ -135,21 +134,17 @@ export class DeviceManager {
             return this.slot.wait(request, this.now(), signal);
           },
         },
-        pin: async (browser, approverKeyId) => {
-          writtenAt = this.now().toISOString();
-          return await this.pinApproved(browser, approverKeyId, pcKey, writtenAt, startedAt);
-        },
+        pin: async (browser, approverKeyId) =>
+          await this.pinApproved(browser, approverKeyId, pcKey, this.now().toISOString(), startedAt, stop.signal),
         waitMs: this.deps.waitMs ?? PAIR_WAIT_MS,
         cancel: stop.signal,
       });
     } catch (error) {
       reason = error instanceof Error ? error.message : String(error);
     }
-    if (outcome?.kind === "paired" && outcome.doneError !== undefined) {
-      // 새 기기는 PC 를 믿지 않는다(done 을 못 받음) — 이 작업이 쓴 그 항목만 거둔다(그 사이 다시 쓰인 같은 키는 남긴다).
-      await this.unpinWritten(outcome.browser.keyId, writtenAt);
-      reason = outcome.doneError;
-    }
+    // ★done 을 못 보냈다는 것은 PC 쪽 응답만 잃었을 수도 있다(새 기기는 받았을 수 있다) — 양쪽이 동의한 핀은 되돌리지 않는다.
+    // 새 기기가 정말 못 받았으면 그 기기는 PC 를 아직 믿지 않으니 다시 요청한다(같은 키 덮어쓰기).
+    if (outcome?.kind === "paired" && outcome.doneError !== undefined) reason = outcome.doneError;
     const result = outcome === undefined ? "error" : outcome.kind === "paired" && outcome.doneError !== undefined ? "done-failed" : outcome.kind;
     if (result !== "paired" && result !== "timeout") this.quietUntil = this.now().getTime() + NOTIFY_BATCH_MS;
     this.deps.log({ event: "pc_device", step: "finished", requestId, result, ...(outcome?.kind === "paired" ? { keyId: outcome.browser.keyId } : {}),
@@ -158,9 +153,12 @@ export class DeviceManager {
 
   /** 양쪽 동의 뒤 — 같은 갱신 안에서 «허용한 키가 아직 있음 · PC 키 그대로»를 다시 보고 쓴다. 아니면 false(핀 0). */
   private async pinApproved(browser: MatchedBrowser, approverKeyId: string | undefined, pcKey: EcPrivateJwk, pairedAt: string,
-    startedAt: number): Promise<boolean> {
+    startedAt: number, stopped: AbortSignal): Promise<boolean> {
     let pinned = false;
+    const deadline = startedAt + (this.deps.waitMs ?? PAIR_WAIT_MS);
     await updatePcKeys(this.deps.keysPath, (keys) => {
+      // 잠금을 기다리는 사이 끝났다(기한·다리 끝·원격 꺼짐·새 링크) — 쓰지 않는다.
+      if (stopped.aborted || this.now().getTime() >= deadline) return undefined;
       // 이 등록이 시작한 뒤 후보·허용한 키를 지웠으면 쓰지 않는다.
       if ((this.removedAt.get(browser.keyId) ?? -1) >= startedAt) return undefined;
       if (approverKeyId !== undefined && (this.removedAt.get(approverKeyId) ?? -1) >= startedAt) return undefined;
@@ -171,15 +169,6 @@ export class DeviceManager {
       return withBrowser(keys, this.deps.accountKey, pcKey, { ...browser, pairedAt });
     });
     return pinned;
-  }
-
-  private async unpinWritten(keyId: string, pairedAt: string | undefined): Promise<void> {
-    await updatePcKeys(this.deps.keysPath, (keys) => {
-      const account = keys.accounts[this.deps.accountKey];
-      if (!account?.browsers.some((item) => item.keyId === keyId && item.pairedAt === pairedAt)) return undefined;
-      return { accounts: { ...keys.accounts, [this.deps.accountKey]: { ...account,
-        browsers: account.browsers.filter((item) => !(item.keyId === keyId && item.pairedAt === pairedAt)) } } };
-    });
   }
 
   private async account(): Promise<PcKeys["accounts"][string] | undefined> {
