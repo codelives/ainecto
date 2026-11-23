@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -43,11 +44,19 @@ const signedIn: MachineStatus = {
 
 useTermRig();
 
+function sameDaemonVersion(version: string): void {
+  const file = termPaths(rig.home).daemonInfo;
+  if (!existsSync(file)) return;
+  writeFileSync(file, `${JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), version })}\n`);
+}
+
 function harness(overrides: Partial<PcDeps> & { version?: string; script?: string } = {}) {
   const stdin = new PassThrough();
   let out = "";
   let err = "";
   const version = overrides.version ?? "9.9.9";
+  // 운영에서 데몬은 같은 CLI 가 띄워 판이 같다 — 여기 데몬(rig)은 소스 판이라, 가짜 판(9.9.x)과 맞춰 옛 데몬 교체(upgradeDaemon)가 끼지 않게.
+  sameDaemonVersion(version);
   const env = Object.fromEntries(Object.entries(rig.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   const deps: PcDeps = {
     io: {
