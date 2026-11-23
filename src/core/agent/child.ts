@@ -54,8 +54,10 @@ export class AgentChild {
       };
       this.child.on("exit", done);
       this.child.on("error", (error) => {
-        this.stderr += `\n${error.message}`;
-        done(null, null);
+        this.stderr = `${this.stderr}\n${error.message}`.slice(-STDERR_KEEP);
+        // ★띄우지 못한 것(pid 없음)만 끝이다. 떠 있는 프로세스의 kill 오류(EPERM 등)는 사유만 남기고,
+        // 실제 exit 이 올 때까지 살아 있는 것으로 둔다 — 끝난 줄 알고 놓으면 다음 차례가 앞 프로세스 위에 뜬다.
+        if (this.child.pid === undefined) done(null, null);
       });
     });
     this.child.stdin.on("error", () => {
