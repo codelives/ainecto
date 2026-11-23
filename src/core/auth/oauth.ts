@@ -526,19 +526,24 @@ export function launchBrowser(url: string, deps: LaunchBrowserDeps = {}): Promis
       reject(unavailable(error instanceof Error ? error.message : String(error)));
       return;
     }
-    child.once("error", (error) => reject(unavailable(error.message)));
+    // ★unref 는 결과를 받은 «뒤»에 — 먼저 풀면 이 기다림만 남은 프로세스(로그인 loopback 서버가 없는 자동 등록)에서 Node 가
+    // 결과 전에 끝난다(unsettled top-level await · 종료 13 — KAN-1348 dev 실물).
+    const settle = (finish: () => void) => {
+      child.unref();
+      finish();
+    };
+    child.once("error", (error) => settle(() => reject(unavailable(error.message))));
     if (platform === "win32") {
-      child.once("spawn", () => resolve());
+      child.once("spawn", () => settle(resolve));
     } else {
       child.once("exit", (code, signal) => {
         if (code === 0) {
-          resolve();
+          settle(resolve);
         } else {
-          reject(unavailable(code === null ? `stopped by ${signal ?? "a signal"}` : `exited with code ${code}`));
+          settle(() => reject(unavailable(code === null ? `stopped by ${signal ?? "a signal"}` : `exited with code ${code}`)));
         }
       });
     }
-    child.unref();
   });
 }
 

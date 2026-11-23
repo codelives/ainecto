@@ -293,6 +293,18 @@ describe("launchBrowser", () => {
     const spawnImpl = fakeSpawn((child) => { child.emit("spawn"); child.emit("exit", 1, null); });
     await expect(launchBrowser(URL_, { platform: "win32", spawnImpl })).resolves.toBeUndefined();
   });
+
+  it("KAN-1348 — keeps the opener referenced until its result arrives (else Node exits 13 when nothing else holds the loop)", async () => {
+    const order: string[] = [];
+    const spawnImpl = vi.fn(() => {
+      const child = new EventEmitter() as EventEmitter & { unref: () => void };
+      child.unref = () => { order.push("unref"); };
+      setImmediate(() => { order.push("exit"); child.emit("exit", 0, null); });
+      return child as unknown as ChildProcess;
+    });
+    await launchBrowser(URL_, { platform: "darwin", spawnImpl });
+    expect(order).toEqual(["exit", "unref"]);
+  });
 });
 
 describe("stored token expiry", () => {
