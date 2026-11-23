@@ -39,7 +39,8 @@ export function useWinRig(): void {
   });
 }
 
-const TSX = WINDOWS
+/** tsx 로더(file:// 주소) — 시험이 소스(.ts)를 그대로 띄울 때 `node --import <이것>`. */
+export const TSX = WINDOWS
   ? execFileSync(process.execPath, ["--input-type=module", "-e", "console.log(import.meta.resolve('tsx'))"], { cwd: ROOT, encoding: "utf8" }).trim()
   : "";
 

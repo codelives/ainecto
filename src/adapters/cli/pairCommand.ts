@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
 import { ReadStream, WriteStream } from "node:tty";
+import { controllingTerminal } from "../../core/os/launch";
 import { renderSuccess } from "../../core/output/render";
 import {
   loadPcKeys,
@@ -29,7 +30,7 @@ import { CliCommandError } from "./errors";
  *   `pair`                  대화형만 — 코드 A 를 보이고 코드 B 를 한 번 받는다. 맞으면 그 브라우저 공개키를 pc-keys.json 에 넣는다.
  *   `pair --list`           짝지은 브라우저 목록.
  *   `pair --remove <id|이름>` 그 브라우저를 지우고(keyId 가 먼저), 떠 있는 PC 연결을 완전히 끈 것을 확인한 뒤에만 성공(§13-2) — 다시 띄우지 않는다.
- * ★코드는 /dev/tty 에만 쓰고 /dev/tty 에서만 읽는다 — 파이프·리다이렉트로 흘러가지 않게. AiNecto 터미널 세션(웹 원격 화면에 실릴 수 있음)
+ * ★코드는 제어 터미널(/dev/tty · Windows 콘솔)에만 쓰고 거기서만 읽는다 — 파이프·리다이렉트로 흘러가지 않게. AiNecto 터미널 세션(웹 원격 화면에 실릴 수 있음)
  *   안에서는 거절한다. 이것은 «원격 화면 중계에 코드가 실리지 않는다»까지만 보장한다.
  * 순서 판단은 core/pc/pcPairing, 여기는 입출력·파일만.
  */
@@ -66,18 +67,19 @@ export interface TtyIO extends ConfirmationIO {
 
 const USAGE = "Usage: ainecto pair [--list | --remove <keyId|name>]";
 
-/** 이 프로세스의 제어 터미널 — 없으면(데몬·CI) PAIR_NO_TTY. */
+/** 이 프로세스의 제어 터미널(Unix /dev/tty · Windows 콘솔 — launch.controllingTerminal) — 없으면(데몬·CI) PAIR_NO_TTY. */
 export function openDevTty(): TtyIO {
+  const terminal = controllingTerminal();
   let inFd: number | undefined;
   try {
-    inFd = openSync("/dev/tty", "r");
-    const outFd = openSync("/dev/tty", "w");
+    inFd = openSync(terminal.input, terminal.inputFlags);
+    const outFd = openSync(terminal.output, terminal.outputFlags);
     const stdin = new ReadStream(inFd);
     const stderr = new WriteStream(outFd);
     return { stdin, stderr, close: () => { stdin.destroy(); stderr.destroy(); } };
   } catch (error) {
     if (inFd !== undefined) closeSync(inFd);
-    throw new CliCommandError("PAIR_NO_TTY", `\`ainecto pair\` needs this PC's terminal (/dev/tty): ${error instanceof Error ? error.message : String(error)}`);
+    throw new CliCommandError("PAIR_NO_TTY", `\`ainecto pair\` needs this PC's terminal (${terminal.input}): ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
