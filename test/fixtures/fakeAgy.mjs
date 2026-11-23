@@ -55,8 +55,15 @@ const reply = (text) => out({ event: "result", result: { conversation_id: conver
   structured_output: { reply: text, openDocumentUuids: [], openCardUuids: [] }, usage: { input_tokens: 10, output_tokens: 2 } } });
 
 createInterface({ input: process.stdin }).once("line", (line) => {
-  // serve 가 앞에 붙이는 «열기» 규칙 줄([AiNecto rule] …)은 떼고 본다(가짜 claude 와 같다).
-  const text = JSON.parse(line).message.content.replace(/^\[AiNecto rule\][^\n]*\n\n?/, "");
+  // 어댑터가 앞에 싣는 도구 정의(머리 줄 + JSON 한 줄)와 serve 가 붙이는 «열기» 규칙 줄([AiNecto rule] …)은 떼고 본다.
+  //   FAKE_AGY_INPUT_LOG 가 있으면 받은 정의(도구 이름·schema 유무)를 한 줄 남긴다 — 시험이 «정의가 실렸나»를 본다.
+  const content = JSON.parse(line).message.content;
+  const defs = /^\[AiNecto tool definitions[^\n]*\]\n([^\n]*)\n\n/.exec(content);
+  if (process.env.FAKE_AGY_INPUT_LOG) {
+    const tools = defs ? JSON.parse(defs[1]).map((t) => ({ name: t.name, schema: t.inputSchema !== undefined })) : null;
+    appendFileSync(process.env.FAKE_AGY_INPUT_LOG, `${JSON.stringify({ tools })}\n`);
+  }
+  const text = content.slice(defs ? defs[0].length : 0).replace(/^\[AiNecto rule\][^\n]*\n\n?/, "");
   out({ event: "init", conversation_id: conversationId, init: { model: "fake", cwd: process.cwd(), tools: ["call_mcp_tool"] } });
   if (text === "crash") process.exit(3);
   if (text === "hang") {

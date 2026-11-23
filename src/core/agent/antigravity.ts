@@ -2,7 +2,8 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DaemonLog } from "../term/daemonLog";
 import type { AgentAdapter, AgentAuthStatus, AgentSession, TurnOutcome } from "./agents";
-import { AGY, ANTIGRAVITY_MCP_SERVER, VERIFIED_AGY_VERSION, antigravityAgentArgs, antigravitySettings } from "./antigravityArgs";
+import { AGY, ANTIGRAVITY_MCP_SERVER, VERIFIED_AGY_VERSION, antigravityAgentArgs, antigravitySettings, antigravityToolPreamble,
+  type AgyToolDefinition } from "./antigravityArgs";
 import { antigravityMcpPolicy, writeWorkspaceMcpConfig, type McpPolicy } from "./antigravityPolicy";
 import { AgentChild, detectByVersion, runToEnd, withDeadline, type AgentSpawn, type ChildExit } from "./child";
 import { TurnFactsCollector } from "./documents";
@@ -16,8 +17,8 @@ export interface AntigravityDeps {
   log: DaemonLog<AgentLogRecord>;
   /** 서버 tools/list 에서 readOnlyHint 가 아닌 도구 이름. */
   writeTools: ReadonlySet<string>;
-  /** 서버 tools/list 의 공개 도구 이름 전부 — 이 밖의 이름은 TurnFacts 에 싣지 않는다. */
-  toolNames: ReadonlySet<string>;
+  /** 서버 tools/list 의 공개 도구 전부 — 정의는 차례 입력 앞에 싣고, 이 밖의 이름은 TurnFacts 에 싣지 않는다. */
+  tools: ReadonlyArray<AgyToolDefinition>;
   /** 세션 폴더(연결 이름마다 하나 · 저장소 밖 앱 데이터 아래 · 우리 파일만 둔다). */
   workDir(agentName: string | undefined): string;
   /** 작업 폴더 {@code .agents/mcp_config.json} 내용(브리지 하나). */
@@ -34,6 +35,7 @@ export function antigravityAdapter(deps: AntigravityDeps): AgentAdapter {
   // ★이 PC 의 agy -p 프로세스 전부 — 세션이 아니라 어댑터가 쥔다. serve 가 세션을 바꾸거나 버려도(대화 전환 · exited) 끝나지 않은 프로세스는
   //   여기 남아 다음 차례를 막는다(구현 리뷰 2차 P1).
   const processes = new AgyProcesses();
+  const tools: AgyTools = { names: new Set(deps.tools.map((tool) => tool.name)), preamble: antigravityToolPreamble(deps.tools) };
   return {
     id: "antigravity",
     displayName: "Antigravity",
@@ -50,7 +52,7 @@ export function antigravityAdapter(deps: AntigravityDeps): AgentAdapter {
       return antigravityAuth(run.code, deps.env, await modelProvider(deps.home));
     },
     open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName }) =>
-      new AntigravitySession(conversationUuid, resumeRef, agentName, deps.schema(textMaxCharacters, documentsMax), deps, processes),
+      new AntigravitySession(conversationUuid, resumeRef, agentName, deps.schema(textMaxCharacters, documentsMax), deps, processes, tools),
   };
 }
 
@@ -112,6 +114,12 @@ class AgyProcesses {
   }
 }
 
+/** 도구 이름(TurnFacts 거르기) · 입력 앞에 싣는 정의 — 어댑터가 한 번 만든다. */
+interface AgyTools {
+  names: ReadonlySet<string>;
+  preamble: string;
+}
+
 interface Turn {
   generation: number;
   resolve(outcome: TurnOutcome): void;
@@ -147,7 +155,7 @@ class AntigravitySession implements AgentSession {
 
   constructor(readonly conversationUuid: string, resumeRef: string | undefined, readonly agentName: string | undefined,
     private readonly schema: Record<string, unknown>, private readonly deps: AntigravityDeps,
-    private readonly processes: AgyProcesses) {
+    private readonly processes: AgyProcesses, private readonly tools: AgyTools) {
     this.resumed = resumeRef !== undefined;
     this.sessionRef = resumeRef;
     this.cwd = deps.workDir(agentName);
@@ -236,7 +244,7 @@ class AntigravitySession implements AgentSession {
     this.lastPid = child.pid;
     this.deps.log.write({ event: "process_start", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
       resume: this.sessionRef !== undefined });
-    child.writeLine({ event: "user", message: { content: text } });
+    child.writeLine({ event: "user", message: { content: this.tools.preamble + text } });
     child.endInput();
   }
 
@@ -313,7 +321,7 @@ class AntigravitySession implements AgentSession {
       return;
     }
     if (typeof step.step_index !== "number" || turn.counted.has(step.step_index)) return;
-    if (tool.error !== undefined || typeof tool.output !== "string" || !this.deps.toolNames.has(name)) return;
+    if (tool.error !== undefined || typeof tool.output !== "string" || !this.tools.names.has(name)) return;
     turn.counted.add(step.step_index);
     turn.facts.add(agyContentParts(tool.output), this.deps.writeTools.has(name));
   }

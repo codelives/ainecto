@@ -206,7 +206,7 @@ export function startServe(options: WorldOptions = {}): World {
       [...(agentName ? ["--agent", agentName] : []), ...(resumeSessionId ? ["--resume", resumeSessionId] : [])] }),
     codexAdapter({ ...shared, appServerArgs: (agentName) => ["app-server", ...(agentName ? ["--agent", agentName] : [])], clientVersion: "0.0.0" }),
     antigravityAdapter({ spawnImpl: options.unkillableAgy ? unkillableAgySpawn(options.unkillableAgy) : fakeSpawn, env: shared.env, home: join(dir, "home"), log, writeTools: WRITE_TOOLS,
-      toolNames: new Set([...WRITE_TOOLS, "search"]), workDir: (name) => join(dir, "app", "antigravity", name ?? "chat"),
+      tools: [...WRITE_TOOLS, "search"].map((name) => ({ name })), workDir: (name) => join(dir, "app", "antigravity", name ?? "chat"),
       mcpConfig: () => ({ mcpServers: { "ainecto-pc": { command: "node", args: [] } } }), schema: agentReplySchema }),
   ];
   const installed = options.installed ?? ["claude-code"];
