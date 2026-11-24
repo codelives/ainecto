@@ -72,7 +72,7 @@ describe("serve 의 서버 MCP 도구 입구(tools.ts)", () => {
   });
 
   it("Agent 종류 헤더 값 = 서버 AgentTypeResolver 표의 이름", () => {
-    expect(AGENT_MCP_CLIENT_NAMES).toEqual({ "claude-code": "claude-code", codex: "codex-mcp-client" });
+    expect(AGENT_MCP_CLIENT_NAMES).toEqual({ "claude-code": "claude-code", codex: "codex-mcp-client", antigravity: "antigravity-client" });
   });
 
   it("도구 목록도 같은 입구", async () => {
