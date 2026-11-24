@@ -315,16 +315,6 @@ function daemonPid(paths: TermPaths): number | undefined {
   return readDaemonInfo(paths)?.pid;
 }
 
-/** 그 pid 가 끝날 때까지 기다린다(최대 ms) — 끝났으면 true. */
-export async function waitForPidGone(pid: number, ms: number): Promise<boolean> {
-  const until = Date.now() + ms;
-  while (isAlive(pid)) {
-    if (Date.now() >= until) return false;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return true;
-}
-
 function notListening(paths: TermPaths): string {
   const pid = daemonPid(paths);
   const holder = pid !== undefined && isAlive(pid)

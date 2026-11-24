@@ -24,7 +24,8 @@ import type { AccountSummary } from "../../core/setup/accountSummary";
 import { lastLine, type CommandRunner } from "../../core/setup/commandRunner";
 import { doctorChecks } from "../../core/setup/doctorChecks";
 import type { MachineStatus } from "../../core/setup/machineStatus";
-import { openTermClient, readDaemonInfo, termRequest, waitForPidGone, type TermConnectOptions } from "../../core/term/client";
+import { openTermClient, readDaemonInfo, termRequest, type TermConnectOptions } from "../../core/term/client";
+import { waitForDaemonLockFree } from "../../core/term/daemonLock";
 import { TermError } from "../../core/term/errors";
 import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
@@ -199,9 +200,12 @@ export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void):
     if (!yes(await promptLine(deps.io, "Update it now? [y/N]: "), false)) return;
   }
   note("Updating the AiNecto terminal service on this PC…");
+  // 이미 끝난 데몬이면(daemon.json 만 남음) 받을 쪽이 없다 — 그래도 판정은 아래 잠금 하나로 한다.
   await termRequest(deps.paths, { op: "kill-server" }, { start: false });
-  if (!(await waitForPidGone(info.pid, deps.stopDeadlineMs))) {
-    throw new CliCommandError("PC_START_FAILED", `The old terminal service (pid ${info.pid}) did not stop. Restart this PC, then run \`npx -y ainecto@latest\` again.`);
+  if (!(await waitForDaemonLockFree(deps.paths, deps.stopDeadlineMs))) {
+    throw new CliCommandError("PC_START_FAILED", `The old AiNecto terminal service (${info.version}, started as pid ${info.pid}) is still running and did not stop `
+      + `within ${Math.round(deps.stopDeadlineMs / 1000)} s. End it — on Windows: Task Manager › Details › the node.exe whose command line has `
+      + `"term daemon"; on macOS/Linux: \`kill ${info.pid}\` if that pid is still the daemon — or restart this PC, then run \`npx -y ainecto@latest\` again.`);
   }
 }
 

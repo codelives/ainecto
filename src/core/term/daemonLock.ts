@@ -95,6 +95,24 @@ export async function acquirePcBridgeLock(paths: TermPaths): Promise<{ release()
   });
 }
 
+/**
+ * 데몬 잠금이 풀릴 때까지 기다린다(최대 ms) — 풀렸으면 true. 잡아 보고 바로 놓는다(데몬 자리를 차지하지 않는다).
+ * ★옛 데몬이 «끝났나»는 이 잠금으로만 본다 — daemon.json 의 pid 는 데몬이 끝나도 남고, Windows 는 pid 를 금방 다른 프로세스에
+ *   다시 준다(KAN-1375 · 그 pid 가 살아 있다고 보고 매번 «did not stop» 으로 멈췄다).
+ */
+export async function waitForDaemonLockFree(paths: TermPaths, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  for (;;) {
+    const lock = await acquireProcessLock(paths);
+    if (lock) {
+      lock.release();
+      return true;
+    }
+    if (Date.now() >= until) return false;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 /** 잠금 하나 — 쥐었으면 푸는 손잡이, 남이 쥐고 있으면 undefined. 프로세스가 죽으면 OS 가 푼다. */
 async function acquireProcessLock(paths: Pick<TermPaths, "lockFile" | "abstractLockName">): Promise<{ release(): void } | undefined> {
   assertTermRuntime();

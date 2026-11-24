@@ -51,6 +51,21 @@ describe("옛 판 term 데몬 교체(upgradeDaemon) — 실물", () => {
     expect(info.pid).not.toBe(oldPid);
   }, LONG);
 
+  it("KAN-1375 — 데몬은 이미 끝났고 daemon.json 의 pid 를 다른 프로세스가 쓰고 있어도(Windows pid 재사용) 멈추지 않는다 · 판정은 잠금", async () => {
+    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 300", "pc", "run");
+    const oldPid = makeDaemonOld();
+    await ok("term", "kill-server");
+    await until(() => !daemonPids().includes(oldPid), "daemon gone");
+    // 끝난 데몬의 daemon.json 은 남는다 — 그 pid 를 살아 있는 다른 프로세스(이 시험 프로세스)가 쓰는 Windows 상황을 만든다.
+    const file = termPaths(rig.home).daemonInfo;
+    writeFileSync(file, `${JSON.stringify({ pid: process.pid, version: "0.15.4" })}\n`);
+    const notes: string[] = [];
+    const started = Date.now();
+    await upgradeDaemon(deps(), (line) => notes.push(line));
+    expect(notes).toEqual(["Updating the AiNecto terminal service on this PC…"]);
+    expect(Date.now() - started, "잠금이 비어 있으면 기한까지 기다리지 않는다").toBeLessThan(5_000);
+  }, LONG);
+
   it("사용자 세션이 있으면(비대화) 묻지 않고 그대로 둔다 — 세션이 살아 있다", async () => {
     await ok("term", "new", "work", "--", "/bin/sh");
     const oldPid = makeDaemonOld();
