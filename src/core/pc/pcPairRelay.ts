@@ -30,6 +30,15 @@ export class PairRelayError extends Error {
   }
 }
 
+/** PC 가 받을 수 없는 새 기기 허용 요청의 이유 — 웹이 사람 말로 바꾼다(KAN-1376). */
+export type RefuseReason = "no-trusted-browser" | "quiet" | "remote-off";
+
+/** 새 기기 허용 요청 하나의 중계 — 등록 중계 + 받을 수 없을 때 이유 알리기. */
+export type RequestRelay = PairTransport & {
+  /** 그 요청의 시도를 열어 abort{reason} 하나로 끝낸다(최선 — 던지지 않는다). 웹은 기한(5분)까지 기다리지 않고 이유를 보인다. */
+  refuse(reason: RefuseReason): Promise<void>;
+};
+
 export function createPairRelay(input: {
   endpoint: string;
   tokenProvider: TokenProvider;
@@ -40,7 +49,7 @@ export function createPairRelay(input: {
   /** poll 을 붙잡는 시간의 위쪽 끝 — 짝짓기 기한(C-E1)을 넘지 않는다. 기한·중단은 각 호출의 signal 이 끊는다. */
   holdMs: number;
   fetchImpl?: typeof fetch;
-}): PairTransport {
+}): RequestRelay {
   const http: PcHttp<PairOp> = createPcHttp<PairOp, RemoteLogRecord>({
     endpoint: input.endpoint,
     path: "term/pc",
@@ -111,6 +120,17 @@ export function createPairRelay(input: {
     async done(signature, signal) {
       await send({ type: "done", signature: b64u(signature) }, signal);
       finished = true;
+    },
+    async refuse(reason) {
+      try {
+        const opened = await http.call("pair/open", { pcId: input.pcId, ...(input.requestId ? { requestId: input.requestId } : {}) });
+        if (typeof opened.attemptId !== "string" || opened.attemptId === "") return;
+        attemptId = opened.attemptId;
+        finished = true;
+        await http.call("pair/send", { attemptId, msg: { type: "abort", reason } });
+      } catch {
+        // 응답 줄은 공용 입구가 남겼다 — 웹은 요청 기한(C-E1)에 끝난다.
+      }
     },
     async abort(reason) {
       if (!attemptId || finished) return;

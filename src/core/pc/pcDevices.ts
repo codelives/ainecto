@@ -1,7 +1,8 @@
 import { NOTIFY_BATCH_MS } from "./pcNotify";
 import { ApprovalSlot } from "./pcApproval";
 import { loadPcKeys, updatePcKeys, withBrowser, type PcKeys } from "./pcKeys";
-import { PAIR_WAIT_MS, runPairing, type MatchedBrowser, type PairOutcome, type PairTransport } from "./pcPairing";
+import { PAIR_WAIT_MS, runPairing, type MatchedBrowser, type PairOutcome } from "./pcPairing";
+import type { RefuseReason, RequestRelay } from "./pcPairRelay";
 import { transcriptUserId, type EcPrivateJwk } from "../term/e2e";
 import type { ChannelBrowser, DeviceAction } from "../term/remoteChannel";
 import type { RemoteLogRecord } from "../term/remote";
@@ -11,7 +12,9 @@ import type { RemoteLogRecord } from "../term/remote";
  * 이미 믿는 브라우저의 봉인 명령(device/pending·approve·list·remove)에 답한다.
  *
  * <pre>
- * 요청      poll 의 pair-request → 원격 켜짐 · 믿는 브라우저 ≥1 · 진행 중 없음 · 거절·취소 뒤 1분(NOTIFY_BATCH_MS) 지남 → 등록 작업 하나
+ * 요청      poll 의 pair-request → 원격 켜짐 · 믿는 브라우저 ≥1 · 거절·취소 뒤 1분(NOTIFY_BATCH_MS) 지남 → 등록 작업 하나
+ *          진행 중이 있으면 ★새 요청이 이긴다(앞 작업을 끝내고 이어서 — 서버도 새 요청이 앞 요청을 대신한다, KAN-1376)
+ *          받을 수 없으면 그 요청의 시도에 abort{reason} 하나로 이유를 알린다(웹이 5분 기다리지 않는다 — 전에는 말없이 버렸다)
  * 등록      runPairing(approval) — 양쪽 동의 뒤 핀은 핀 파일 갱신 하나 안에서 «허용한 키가 아직 있음»을 다시 보고 쓴다
  * 지우기    keyId 로만 · 먼저 «지움» 표시(그 뒤 시작된 등록만 그 키를 쓸 수 있다)·그 키가 후보인 대기 끝내기 → 핀 삭제 → 그 키의 채널 닫기 → 답
  *          ★핀을 쓰는 등록은 같은 핀 파일 잠금 안에서 «지움» 표시를 본다 — 지우는 사이 승인이 그 키를 되살리지 못한다
@@ -27,7 +30,7 @@ export interface DeviceManagerDeps {
   userId: string;
   pcId: string;
   /** 그 요청의 등록 중계(pcPairRelay — requestId 로 연다). */
-  relay(requestId: string): PairTransport;
+  relay(requestId: string): RequestRelay;
   /** PC OS 알림 — 새 기기가 허용을 기다린다(이름 · PC 당 묶음). */
   notifyRequest(name: string): void;
   log(record: RemoteLogRecord): void;
@@ -41,7 +44,9 @@ export interface DeviceManagerDeps {
 
 export class DeviceManager {
   private readonly slot = new ApprovalSlot();
-  private running: { requestId: string; stop: AbortController } | undefined;
+  private running: { requestId: string; stop: AbortController; replaced: boolean } | undefined;
+  /** 진행 중에 온 새 요청 — 앞 작업이 끝나면 이어서 받는다(마지막 것 하나). */
+  private next: string | undefined;
   private quietUntil = 0;
   /** keyId → 지운 시각(ms). 그보다 먼저 시작한 등록은 그 키를 쓰지 못한다(다시 요청하면 새 등록이라 쓸 수 있다). */
   private readonly removedAt = new Map<string, number>();
@@ -53,18 +58,32 @@ export class DeviceManager {
 
   /** poll 의 pair-request — 받을 수 있으면 등록 작업을 백그라운드로 시작한다(기다리지 않는다). */
   async onPairRequest(requestId: string): Promise<void> {
-    const refuse = (reason: string): void => this.deps.log({ event: "pc_device", step: "request", requestId, result: "ignored", reason });
-    if (!this.deps.remoteOn()) return refuse("remote-off");
-    if (this.running) return refuse("busy");
-    if (this.now().getTime() < this.quietUntil) return refuse("quiet");
+    const refuse = async (reason: RefuseReason): Promise<void> => {
+      this.deps.log({ event: "pc_device", step: "request", requestId, result: "refused", reason });
+      await this.deps.relay(requestId).refuse(reason);
+    };
+    if (!this.deps.remoteOn()) return await refuse("remote-off");
+    if (this.running) {
+      this.deps.log({ event: "pc_device", step: "request", requestId, result: "replacing", reason: this.running.requestId });
+      this.next = requestId;
+      this.running.replaced = true;
+      this.running.stop.abort();
+      return;
+    }
+    if (this.now().getTime() < this.quietUntil) return await refuse("quiet");
     const account = await this.account();
-    if (!account || account.browsers.length === 0) return refuse("no-trusted-browser");
-    const stop = new AbortController();
-    this.running = { requestId, stop };
+    if (!account || account.browsers.length === 0) return await refuse("no-trusted-browser");
+    const running = { requestId, stop: new AbortController(), replaced: false };
+    this.running = running;
     this.deps.log({ event: "pc_device", step: "request", requestId, result: "started" });
-    void this.pair(requestId, account.pcKey, stop).finally(() => {
+    void this.pair(requestId, account.pcKey, running).finally(() => {
       // ★자기 작업만 지운다 — 늦게 끝난 앞 작업이 다음 요청을 지우지 않는다.
-      if (this.running?.requestId === requestId) this.running = undefined;
+      if (this.running === running) this.running = undefined;
+      const next = this.next;
+      if (next !== undefined && this.running === undefined) {
+        this.next = undefined;
+        void this.onPairRequest(next);
+      }
     });
   }
 
@@ -116,7 +135,8 @@ export class DeviceManager {
     }
   }
 
-  private async pair(requestId: string, pcKey: EcPrivateJwk, stop: AbortController): Promise<void> {
+  private async pair(requestId: string, pcKey: EcPrivateJwk, running: { stop: AbortController; replaced: boolean }): Promise<void> {
+    const stop = running.stop;
     let outcome: PairOutcome | undefined;
     let reason: string | undefined;
     const startedAt = this.now().getTime();
@@ -146,7 +166,8 @@ export class DeviceManager {
     // 새 기기가 정말 못 받았으면 그 기기는 PC 를 아직 믿지 않으니 다시 요청한다(같은 키 덮어쓰기).
     if (outcome?.kind === "paired" && outcome.doneError !== undefined) reason = outcome.doneError;
     const result = outcome === undefined ? "error" : outcome.kind === "paired" && outcome.doneError !== undefined ? "done-failed" : outcome.kind;
-    if (result !== "paired" && result !== "timeout") this.quietUntil = this.now().getTime() + NOTIFY_BATCH_MS;
+    // 새 요청이 대신한 끝은 «거절·취소»가 아니다 — 쉬지 않고 이어서 받는다.
+    if (result !== "paired" && result !== "timeout" && !running.replaced) this.quietUntil = this.now().getTime() + NOTIFY_BATCH_MS;
     this.deps.log({ event: "pc_device", step: "finished", requestId, result, ...(outcome?.kind === "paired" ? { keyId: outcome.browser.keyId } : {}),
       ...(reason ? { reason } : {}) });
   }

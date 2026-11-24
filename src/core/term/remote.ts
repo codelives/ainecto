@@ -30,7 +30,7 @@ import { rmdir } from "node:fs/promises";
 import { cliTagsOf, type CliTags } from "../pc/pcUpgrade";
 import type { PcNotifier } from "../pc/pcNotify";
 import { DeviceManager } from "../pc/pcDevices";
-import type { PairTransport } from "../pc/pcPairing";
+import type { RequestRelay } from "../pc/pcPairRelay";
 
 /**
  * 원격 터미널 다리 — 이 PC 의 term 세션 «전부»를 AiNecto 웹에 잇는다(KAN-738 next.10, 계획 multi-session-plan.md 11절).
@@ -178,7 +178,7 @@ export interface BridgeDeps {
   /** 앱 홈 — 웹이 폴더를 비우고 만들면 그 아래 세션 폴더({@link webSessionFolder}, 0700)를 만들어 그 안에서 시작한다 — 끝내도 남긴다. */
   appHome: string;
   /** 새 기기 허용 요청의 등록 중계(pcPairRelay — requestId 로 연다). 없으면 pair-request 를 받지 않는다(시험·옛 조립). */
-  pairRelay?: (requestId: string) => PairTransport;
+  pairRelay?: (requestId: string) => RequestRelay;
   /** 끊으면 close 를 보내고 끝낸다. */
   signal: AbortSignal;
   print(line: string): void;

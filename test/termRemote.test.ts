@@ -13,7 +13,7 @@ import { RemoteViewer } from "../src/core/term/remoteViewer";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
 import { FakeWeb, WebChannel } from "./support/fakeWeb";
 import { loadPcKeys } from "../src/core/pc/pcKeys";
-import type { PairTransport } from "../src/core/pc/pcPairing";
+import type { RequestRelay } from "../src/core/pc/pcPairRelay";
 import {
   assertCommitment,
   browserKeyIdOf,
@@ -683,7 +683,10 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     const device: { commit?: Uint8Array; transcript?: Uint8Array; pcPub?: Uint8Array; clicked: boolean; doneVerified: boolean; aborts: string[] } = {
       clicked: false, doneVerified: false, aborts: [],
     };
-    const relay: PairTransport = {
+    const relay: RequestRelay = {
+      async refuse(reason) {
+        device.aborts.push(`refused:${reason}`);
+      },
       async offer(commit) {
         device.commit = commit;
         return { keyId: await browserKeyIdOf(nPub), publicRaw: nPub, nB, name: "Safari · iPhone", attemptId: "attempt-1" };
