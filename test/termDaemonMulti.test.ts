@@ -37,6 +37,48 @@ describe("ainecto term — 여러 세션용 데몬 op", () => {
     expect(plain).toMatchObject({ daemon: true, data: { modes: { altScreen: false, appCursor: false, bracketedPaste: false } } });
   }, LONG);
 
+  it("Ryan 11-25 색 싣기 — read(styles) 는 줄마다 속성 구간(흐림·24비트 색·팔레트·굵게·반전)과 커서 · 커서를 숨기면 커서 없음 · 옛 read 는 그대로", async () => {
+    await ok("term", "new", "color", "--", "/bin/sh", "-c",
+      "printf '\\033[2mdim\\033[0m \\033[38;2;102;102;102mgrey\\033[0m \\033[1;31mred\\033[0m 한\\033[7mX\\033[0m\\n'; printf 'end'; sleep 600");
+    await ok("term", "wait", "color", "--match", "end", "--timeout", "10");
+    const paths = termPaths(rig.home);
+    const styled = await termRequest(paths, { op: "read", name: "color", scrollback: false, styles: true }, { start: false }) as
+      { data: { lines: string[]; styles: object[]; runs: number[][]; cursor?: { row: number; col: number }; modes: { mouse: boolean } } };
+    expect(styled.data.lines).toEqual(["dim grey red 한X", "end"]);
+    const spans = styled.data.runs[0]!;
+    const picked: [string, object][] = [];
+    for (let at = 0; at < spans.length; at += 3) {
+      picked.push([styled.data.lines[0]!.slice(spans[at]!, spans[at + 1]!), styled.data.styles[spans[at + 2]!]!]);
+    }
+    expect(picked).toEqual([["dim", { dim: true }], ["grey", { fg: "#666666" }], ["red", { fg: 1, bold: true }], ["X", { inverse: true }]]);
+    expect(styled.data.runs[1]).toEqual([]);
+    expect(styled.data.cursor).toEqual({ row: 1, col: 3 });
+    expect(styled.data.modes.mouse).toBe(false);
+    const plain = await termRequest(paths, { op: "read", name: "color", scrollback: false }, { start: false }) as { data: Record<string, unknown> };
+    expect(plain.data.lines).toEqual(styled.data.lines);
+    expect(plain.data).not.toHaveProperty("runs");
+
+    await ok("term", "new", "hidden", "--", "/bin/sh", "-c", "printf '\\033[?25lhidden'; sleep 600");
+    await ok("term", "wait", "hidden", "--match", "hidden", "--timeout", "10");
+    const hidden = await termRequest(paths, { op: "read", name: "hidden", scrollback: false, styles: true }, { start: false }) as { data: object };
+    expect(hidden.data).not.toHaveProperty("cursor");
+  }, LONG);
+
+  it("Ryan 11-25 스크롤 — 마우스 추적(SGR)을 켠 전체 화면 앱에 wheel-up/down 은 화면 가운데 칸의 휠 보고 · modes.mouse 가 켜진다", async () => {
+    const app = "import os,tty; tty.setraw(0); os.write(1, b'\\x1b[?1049h\\x1b[?1002h\\x1b[?1006hready\\r\\n');"
+      + " got=b''\nwhile got.count(b'M') < 2: got += os.read(0, 64)\nos.write(1, repr(got).encode() + b'\\r\\n')\nimport time; time.sleep(600)";
+    // 크기를 주지 않으면 PTY 는 80x24 — 가운데 칸 = (40, 12).
+    await ok("term", "new", "mouse", "--", "python3", "-c", app);
+    await ok("term", "wait", "mouse", "--match", "ready", "--timeout", "10");
+    const paths = termPaths(rig.home);
+    const read = await termRequest(paths, { op: "read", name: "mouse", scrollback: false, styles: true }, { start: false });
+    expect(read).toMatchObject({ data: { modes: { altScreen: true, mouse: true } } });
+    await ok("term", "key", "mouse", "wheel-up");
+    await ok("term", "key", "mouse", "wheel-down");
+    await ok("term", "wait", "mouse", "--match", "64;40;12M", "--timeout", "10");
+    expect((await ok("term", "read", "mouse"))).toContain("b'\\x1b[<64;40;12M\\x1b[<65;40;12M'");
+  }, LONG);
+
   it("label — 보이는 이름만(데몬 이름은 그대로) · ls 에 · 매니페스트에 남아 restore 가 되살린다", async () => {
     await ok("term", "new", "work", "--", "/bin/sh", "-c", "sleep 600");
     const result = await termRequest(termPaths(rig.home), { op: "label", name: "work", label: "백엔드 서버" }, { start: false });

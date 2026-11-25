@@ -292,7 +292,12 @@ class TermDaemon {
       case "read": {
         // ★화면과 인스턴스 id 는 같은 세션 객체에서(§14-6 4) — 웹은 이 값으로 다음 명령을 겨눈다.
         const session = this.session(request.name);
-        const lines = await session.read({ scrollback: request.scrollback, lines: request.lines }, connection);
+        const range = { scrollback: request.scrollback, lines: request.lines };
+        if (request.styles) {
+          const screen = await session.readStyled(range, connection);
+          return { data: { name: request.name, instance: session.instance, ...screen, modes: await session.modes() } };
+        }
+        const lines = await session.read(range, connection);
         return { data: { name: request.name, instance: session.instance, lines, modes: await session.modes() } };
       }
       case "kill": {

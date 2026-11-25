@@ -1,5 +1,6 @@
 import { TermError } from "./errors";
 import { isUuid } from "./paths";
+import type { CellStyle, ScreenCursor } from "./screen";
 
 /**
  * 제어 소켓 프로토콜 — ★한 곳(설계 2-3·2-4). 양방향 모두 «JSON 한 줄»이다.
@@ -20,7 +21,8 @@ export type TermRequestBody =
   | { op: "ls" }
   | { op: "send"; name: string; text: string; paste: boolean; instance?: string }
   | { op: "key"; name: string; key: string; instance?: string }
-  | { op: "read"; name: string; scrollback: boolean; lines?: number }
+  /** styles = 글자 속성·커서까지(원격 화면) — 옛 데몬은 버리고 글자만 준다. */
+  | { op: "read"; name: string; scrollback: boolean; lines?: number; styles?: boolean }
   | { op: "kill"; name: string; instance?: string }
   | { op: "kill-server" }
   | { op: "restore"; env: Record<string, string> }
@@ -151,7 +153,8 @@ export function parseClientMessage(line: string): TermClientMessage {
     case "key":
       return { id, op, name: stringField(record, "name"), key: stringField(record, "key"), ...optionalInstance(record) };
     case "read":
-      return { id, op, name: stringField(record, "name"), scrollback: record.scrollback === true, lines: optionalSize(record, "lines") };
+      return { id, op, name: stringField(record, "name"), scrollback: record.scrollback === true, lines: optionalSize(record, "lines"),
+        ...(record.styles === true ? { styles: true } : {}) };
     case "kill":
       return { id, op, name: stringField(record, "name"), ...optionalInstance(record) };
     case "watch":
@@ -245,17 +248,35 @@ export function appliedSize(data: unknown): { cols: number; rows: number } | und
   return undefined;
 }
 
-/** `read` 응답의 화면 모드 — 옛 데몬이면 칸이 없어 undefined. */
-export function readModes(data: unknown): { altScreen: boolean; appCursor: boolean; bracketedPaste: boolean } | undefined {
+/** `read` 응답의 화면 모드 — 옛 데몬이면 칸이 없어 undefined. mouse 는 그보다 새 데몬만 준다(없으면 빼고 돌려준다). */
+export function readModes(data: unknown): { altScreen: boolean; appCursor: boolean; bracketedPaste: boolean; mouse?: boolean } | undefined {
   if (!data || typeof data !== "object" || !("modes" in data)) return undefined;
   const modes = data.modes;
   if (!modes || typeof modes !== "object") return undefined;
   const altScreen = "altScreen" in modes ? modes.altScreen : undefined;
   const appCursor = "appCursor" in modes ? modes.appCursor : undefined;
   const bracketedPaste = "bracketedPaste" in modes ? modes.bracketedPaste : undefined;
+  const mouse = "mouse" in modes ? modes.mouse : undefined;
   return typeof altScreen === "boolean" && typeof appCursor === "boolean" && typeof bracketedPaste === "boolean"
-    ? { altScreen, appCursor, bracketedPaste }
+    ? { altScreen, appCursor, bracketedPaste, ...(typeof mouse === "boolean" ? { mouse } : {}) }
     : undefined;
+}
+
+/**
+ * `read`(styles) 응답의 글자 속성 — 줄마다 구간이 하나씩 있어야 쓴다(모양이 어긋나면 undefined → 글자만 보낸다). 옛 데몬은 칸이 없다.
+ * 구간·커서의 값은 데몬이 만든 것을 그대로 옮긴다(웹이 다시 검사한다).
+ */
+export function readStyles(data: unknown, lineCount: number):
+  { styles: CellStyle[]; runs: number[][]; cursor?: ScreenCursor } | undefined {
+  if (!data || typeof data !== "object" || !("styles" in data) || !("runs" in data)) return undefined;
+  const { styles, runs } = data;
+  if (!Array.isArray(styles) || !styles.every((style) => style && typeof style === "object" && !Array.isArray(style))) return undefined;
+  if (!Array.isArray(runs) || runs.length !== lineCount
+    || !runs.every((row) => Array.isArray(row) && row.length % 3 === 0 && row.every((value) => Number.isInteger(value) && value >= 0))) return undefined;
+  const cursor = "cursor" in data ? data.cursor : undefined;
+  const at = cursor && typeof cursor === "object" && "row" in cursor && "col" in cursor
+    && Number.isInteger(cursor.row) && Number.isInteger(cursor.col) ? { row: cursor.row as number, col: cursor.col as number } : undefined;
+  return { styles: styles as CellStyle[], runs: runs as number[][], ...(at ? { cursor: at } : {}) };
 }
 
 /** `read`·`new` 응답의 세션 인스턴스 id — 옛 데몬이면 칸이 없어 undefined. */

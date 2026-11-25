@@ -12,6 +12,10 @@ export interface OpenedFrame {
   rows: number;
   text: string;
   modes?: Record<string, boolean>;
+  /** 글자 속성(새 CLI) — 봉인 본문 그대로. */
+  styles?: Record<string, unknown>[];
+  runs?: number[][];
+  cursor?: { row: number; col: number };
   instance: string;
   executedThrough: number;
 }
@@ -151,6 +155,9 @@ export class WebChannel {
         session: frame.session, n: frame.n, cols: frame.cols, rows: frame.rows,
         text: Buffer.from(String(body.d), "base64").toString("utf8"),
         ...(body.modes ? { modes: body.modes as Record<string, boolean> } : {}),
+        ...(body.styles ? { styles: body.styles as Record<string, unknown>[] } : {}),
+        ...(body.runs ? { runs: body.runs as number[][] } : {}),
+        ...(body.cursor ? { cursor: body.cursor as { row: number; col: number } } : {}),
         instance: String(body.instance),
         executedThrough: Number(body.executedThrough),
       });

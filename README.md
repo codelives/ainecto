@@ -221,7 +221,8 @@ ainecto term restore                              # after a reboot: start again 
 
 - Keys for `key`: `enter`, `tab`, `shift-tab`, `escape`, `backspace`, `delete`, `space`, `up`, `down`,
   `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `ctrl-a` … `ctrl-z` (`ctrl+c`, `esc` and `return`
-  are accepted too).
+  are accepted too). `wheel-up` and `wheel-down` scroll one step: a mouse wheel report when the app turned on
+  mouse tracking, otherwise the up/down key in a full-screen app (nothing in a plain shell).
 - `send --paste` sends the text as a bracketed paste when the app asked for one. To send text that starts
   with `-`, put it after `--`.
 - In `attach`, press `Ctrl-\` twice to send one `Ctrl-\` to the app.

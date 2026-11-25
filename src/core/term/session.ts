@@ -10,7 +10,7 @@ import { TermError } from "./errors";
 import { keyBytes, pasteBytes } from "./keys";
 import type { TermEvent } from "./protocol";
 import { QueryFilter } from "./queryFilter";
-import { screenLines, terminalResetSequence, type ReadRange } from "./screen";
+import { screenLines, styledScreen, terminalResetSequence, trackScreenFlags, type ReadRange, type ScreenFlags, type StyledScreen } from "./screen";
 
 /**
  * 세션 안 환경변수 — 에이전트가 «내가 누구인가»를 안다(설계 1-1 `identify` 행). 이름은 세션 수명 동안 바뀌지 않으므로
@@ -61,6 +61,8 @@ export interface ScreenModes {
   altScreen: boolean;
   appCursor: boolean;
   bracketedPaste: boolean;
+  /** 앱이 마우스 추적을 켰는가 — 원격 웹이 휠을 앱에 보낼지(`wheel-up`·`wheel-down`) 본다. 옛 데몬은 이 칸이 없다(웹은 휠을 보내지 않는다). */
+  mouse: boolean;
 }
 
 interface AttachState {
@@ -109,6 +111,7 @@ export class TermSession {
     private readonly pty: IPty,
     private readonly screen: Terminal,
     private readonly serializer: SerializeAddon,
+    private readonly flags: ScreenFlags,
   ) {}
 
   static async start(spec: SessionSpec, onExit: (session: TermSession, exitCode: number, signal: number) => void): Promise<TermSession> {
@@ -123,7 +126,8 @@ export class TermSession {
     const screen = new headless.Terminal({ cols: pty.cols, rows: pty.rows, allowProposedApi: true });
     const serializer = new serializeAddon.SerializeAddon();
     screen.loadAddon(serializer);
-    const session = new TermSession(spec, pty, screen, serializer);
+    const flags = trackScreenFlags(screen);
+    const session = new TermSession(spec, pty, screen, serializer, flags);
     session.label = spec.label;
     screen.onData((answer) => session.answerQuery(answer));
     pty.onData((data) => session.handleOutput(data));
@@ -162,6 +166,7 @@ export class TermSession {
       altScreen: this.screen.buffer.active.type === "alternate",
       appCursor: this.screen.modes.applicationCursorKeysMode,
       bracketedPaste: this.screen.modes.bracketedPasteMode,
+      mouse: this.screen.modes.mouseTrackingMode !== "none",
     };
   }
 
@@ -172,7 +177,16 @@ export class TermSession {
 
   async key(name: string): Promise<void> {
     await this.settled();
-    const bytes = keyBytes(name, { applicationCursorKeys: this.screen.modes.applicationCursorKeysMode });
+    const bytes = keyBytes(name, {
+      applicationCursorKeys: this.screen.modes.applicationCursorKeysMode,
+      wheel: {
+        mouseTracking: this.screen.modes.mouseTrackingMode,
+        sgrMouse: this.flags.sgrMouse,
+        altScreen: this.screen.buffer.active.type === "alternate",
+        cols: this.screen.cols,
+        rows: this.screen.rows,
+      },
+    });
     if (bytes === undefined) {
       throw new TermError("TERM_UNKNOWN_KEY", `Unknown key "${name}".`);
     }
@@ -186,6 +200,15 @@ export class TermSession {
     }
     await this.settled();
     return screenLines(this.screen.buffer.active, this.screen.rows, range);
+  }
+
+  /** {@link read} 와 같은 줄에 글자 속성·커서까지(원격 웹 화면 — 색·흐림을 칠한다). */
+  async readStyled(range: ReadRange, reader?: SessionSink): Promise<StyledScreen> {
+    if (reader && this.watchers.has(reader)) {
+      this.watchers.set(reader, true);
+    }
+    await this.settled();
+    return styledScreen(this.screen.buffer.active, this.screen.rows, range, this.flags.cursorVisible);
   }
 
   /**

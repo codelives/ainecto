@@ -68,6 +68,17 @@ describe("term key table", () => {
     }
   });
 
+  it("Ryan 11-25 — wheel-up/down: 마우스 추적이면 화면 가운데 칸 휠 보고(SGR · 옛 X10) · 추적 없는 전체 화면은 위/아래 키 · 보통 화면은 보낼 것 없음 · 화면 상태를 모르면 모르는 이름", () => {
+    const wheel = { mouseTracking: "drag" as const, sgrMouse: true, altScreen: true, cols: 100, rows: 31 };
+    expect(keyBytes("wheel-up", { ...normal, wheel })).toBe("\x1b[<64;50;16M");
+    expect(keyBytes("wheel-down", { ...normal, wheel })).toBe("\x1b[<65;50;16M");
+    expect(keyBytes("wheel-up", { ...normal, wheel: { ...wheel, sgrMouse: false } })).toBe(`\x1b[M${String.fromCharCode(96, 82, 48)}`);
+    expect(keyBytes("wheel-down", { ...app, wheel: { ...wheel, mouseTracking: "none" } })).toBe("\x1bOB");
+    expect(keyBytes("wheel-up", { ...normal, wheel: { ...wheel, mouseTracking: "none" } })).toBe("\x1b[A");
+    expect(keyBytes("wheel-up", { ...normal, wheel: { ...wheel, mouseTracking: "none", altScreen: false } })).toBe("");
+    expect(keyBytes("wheel-up", normal)).toBeUndefined();
+  });
+
   it("wraps a paste only when the app asked for bracketed paste", () => {
     expect(pasteBytes("a\nb", true)).toBe("\x1b[200~a\nb\x1b[201~");
     expect(pasteBytes("a\nb", false)).toBe("a\nb");

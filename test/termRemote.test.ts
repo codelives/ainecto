@@ -7,11 +7,12 @@ import { termPaths } from "../src/core/term/paths";
 import { createPcNotifier } from "../src/core/pc/pcNotify";
 import { createRemoteHttp, openRemoteLog, pollItems, remoteStateOf, runRemoteBridge, type BridgeDeps, type RemoteResult } from "../src/core/term/remote";
 import { frameBudget, screenFrame } from "../src/core/term/remoteFrame";
+import type { CellStyle } from "../src/core/term/screen";
 import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
 import { wireSessions } from "../src/core/term/remoteSessions";
 import { RemoteViewer } from "../src/core/term/remoteViewer";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
-import { FakeWeb, WebChannel } from "./support/fakeWeb";
+import { FakeWeb, WebChannel, type OpenedFrame } from "./support/fakeWeb";
 import { loadPcKeys } from "../src/core/pc/pcKeys";
 import type { RequestRelay } from "../src/core/pc/pcPairRelay";
 import {
@@ -44,6 +45,24 @@ describe("원격 다리 — 순수 함수", () => {
     const fit = screenFrame(["가".repeat(10), "b".repeat(10), "c".repeat(10)], 32);
     expect(fit.dropped).toBe(1);
     expect(screenFrame(["x"], 0).d).toBe("");
+  });
+
+  it("Ryan 11-25 색 싣기 — 속성 구간은 그 줄과 함께 덜어 내고 커서 줄 번호도 옮긴다 · 덜어 낸 줄의 커서는 없다 · 속성만 바뀌어도 hash 가 바뀐다", () => {
+    const styles: CellStyle[] = [{ dim: true }];
+    const attributes = { styles, runs: [[0, 1, 0], [], [0, 2, 0]], cursor: { row: 2, col: 1 } };
+    const whole = screenFrame(["a", "b", "cc"], 1_000, attributes);
+    expect(whole).toMatchObject({ runs: [[0, 1, 0], [], [0, 2, 0]], cursor: { row: 2, col: 1 }, dropped: 0 });
+    expect(whole.hash).not.toBe(screenFrame(["a", "b", "cc"], 1_000).hash);
+    expect(screenFrame(["a", "b", "cc"], 1_000, { ...attributes, cursor: { row: 2, col: 2 } }).hash).not.toBe(whole.hash);
+    // 상한 — 글자(base64)와 구간 JSON 을 함께 센다: 위 한 줄을 덜면 구간도 한 줄 준다.
+    const tight = screenFrame(["a", "b", "cc"], base64Size("b\r\ncc") + 10 + cursorSize() + "[],".length + "[0,2,0],".length, attributes);
+    expect(tight).toMatchObject({ dropped: 1, runs: [[], [0, 2, 0]], cursor: { row: 1, col: 1 } });
+    expect(screenFrame(["a", "b", "cc"], 1_000, { ...attributes, cursor: { row: 0, col: 0 } }).cursor).toEqual({ row: 0, col: 0 });
+    const lost = screenFrame(["a", "b", "cc"], base64Size("b\r\ncc") + 10 + cursorSize() + 20, { ...attributes, cursor: { row: 0, col: 0 } });
+    expect(lost.dropped).toBe(1);
+    expect(lost).not.toHaveProperty("cursor");
+    // 줄 수가 다른 구간(데몬이 어긴 모양)은 싣지 않는다.
+    expect(screenFrame(["a"], 1_000, { styles, runs: [] })).not.toHaveProperty("runs");
   });
 
   it("봉인 frame 의 d 자리 = 상한 − 바깥 칸(번호는 가장 긴 값) − base64url − 태그 16 − 봉인 본문의 다른 칸 · 그 d 로 만든 본문은 상한 안", () => {
@@ -166,8 +185,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
   }
 
   /** 그 채널에서 그 세션의 화면이 조건을 만족할 때까지 — 그 화면. */
-  async function frameWhere(channel: WebChannel, session: string, check: (frame: { text: string; executedThrough: number; instance: string;
-    cols: number; rows: number; modes?: Record<string, boolean> }) => boolean, what: string) {
+  async function frameWhere(channel: WebChannel, session: string, check: (frame: OpenedFrame) => boolean, what: string) {
     let found: Awaited<ReturnType<WebChannel["latest"]>>;
     await until(async () => {
       found = (await channel.frames()).filter((frame) => frame.session === session).find(check);
@@ -532,6 +550,31 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     expect((await run.done).exitCode).toBe(0);
   }, LONG);
 
+  it("Ryan 11-25 색 싣기·스크롤 — 봉인 화면에 속성 표·줄마다 구간·커서 · modes.mouse · 웹 wheel-up 키 → 앱에 SGR 휠 보고", async () => {
+    await ok("term", "new", "color", "--", "/bin/sh", "-c", "printf 'a \\033[2mhint\\033[0m'; sleep 600");
+    const app = "import os,tty; tty.setraw(0); os.write(1, b'\\x1b[?1049h\\x1b[?1000h\\x1b[?1006hready\\r\\n');"
+      + " got=b''\nwhile b'M' not in got: got += os.read(0, 64)\nos.write(1, repr(got).encode() + b'\\r\\n')\nimport time; time.sleep(600)";
+    await ok("term", "new", "mouse", "--", "python3", "-c", app);
+    await ok("term", "wait", "mouse", "--match", "ready", "--timeout", "10");
+    const browser = await web();
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    channel.watch("color", "mouse");
+    const color = await frameWhere(channel, "color", (frame) => frame.text.includes("hint"), "styled frame");
+    const row = color.runs![lines(color.text).indexOf("a hint")]!;
+    expect(row).toHaveLength(3);
+    expect(lines(color.text).find((line) => line.includes("hint"))!.slice(row[0], row[1])).toBe("hint");
+    expect(color.styles![row[2]!]).toEqual({ dim: true });
+    expect(color.cursor).toEqual({ row: lines(color.text).indexOf("a hint"), col: 6 });
+    expect(color.modes).toMatchObject({ mouse: false });
+    const mouse = await frameWhere(channel, "mouse", (frame) => frame.modes?.mouse === true, "mouse frame");
+    await channel.key("mouse", mouse.instance, "wheel-up");
+    await frameWhere(channel, "mouse", (frame) => frame.text.includes("[<64;40;12M"), "app got the wheel report");
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
   it("PC 설정 끔 → remoteEnabled=false·세션 0 으로 열고 hello 는 REMOTE_OFF 로 닫는다(이중 거절) · 다리는 계속", async () => {
     await ok("term", "new", "a", "--", "cat");
     const browser = await web();
@@ -758,3 +801,11 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     expect((await termRequest(termPaths(rig.home), { op: "ls" }, { start: false })).daemon).toBe(false);
   }, LONG);
 });
+
+function base64Size(text: string): number {
+  return 4 * Math.ceil(Buffer.byteLength(text, "utf8") / 3);
+}
+
+function cursorSize(): number {
+  return JSON.stringify({ cursor: { row: 2 ** 32 - 1, col: 2 ** 32 - 1 } }).length;
+}

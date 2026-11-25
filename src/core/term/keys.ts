@@ -13,6 +13,18 @@
 export interface KeyContext {
   /** 세션 화면의 DECCKM. */
   applicationCursorKeys: boolean;
+  /** 휠(`wheel-up`·`wheel-down`)을 바이트로 바꿀 때 보는 화면 상태 — 없으면 휠 이름을 모른다. */
+  wheel?: WheelContext;
+}
+
+/** 휠 한 칸을 무엇으로 보낼지 — 앱이 켠 마우스 추적·인코딩과 화면. */
+export interface WheelContext {
+  mouseTracking: "none" | "x10" | "vt200" | "drag" | "any";
+  /** `CSI ? 1006 h`(SGR 인코딩). */
+  sgrMouse: boolean;
+  altScreen: boolean;
+  cols: number;
+  rows: number;
 }
 
 const PLAIN_KEYS: Readonly<Record<string, string>> = {
@@ -63,7 +75,31 @@ export const KEY_NAMES: readonly string[] = [
   "ctrl-slash",
   "alt-<key>",
   "ctrl-/shift-/alt- + up/down/left/right/home/end/pageup/pagedown/delete",
+  "wheel-up",
+  "wheel-down",
 ];
+
+/**
+ * 휠 한 칸(원격 웹 화면의 스크롤, Ryan 11-25 «스크롤이 전혀 안되는데») — 앱이 마우스 추적을 켰으면 마우스 휠 보고(버튼 64·65)를
+ * 화면 가운데 칸으로(SGR 이면 `CSI < b;x;y M`, 아니면 옛 X10 `CSI M` + 세 바이트). 추적이 꺼진 전체 화면 앱이면 xterm 관례(alternate scroll)대로
+ * 위·아래 키. 그 밖(보통 화면의 셸)은 보낼 것이 없다 — 지난 줄은 웹이 받아 둔 스크롤백으로 본다.
+ */
+function wheelBytes(up: boolean, context: KeyContext): string | undefined {
+  const wheel = context.wheel;
+  if (!wheel) return undefined;
+  if (wheel.mouseTracking !== "none") {
+    const button = up ? 64 : 65;
+    const x = Math.max(1, Math.ceil(wheel.cols / 2));
+    const y = Math.max(1, Math.ceil(wheel.rows / 2));
+    return wheel.sgrMouse
+      ? `\x1b[<${button};${x};${y}M`
+      : `\x1b[M${String.fromCharCode(32 + button, 32 + Math.min(x, 223), 32 + Math.min(y, 223))}`;
+  }
+  if (wheel.altScreen) {
+    return `${context.applicationCursorKeys ? "\x1bO" : "\x1b["}${up ? "A" : "B"}`;
+  }
+  return "";
+}
 
 export function normalizeKeyName(raw: string): string {
   const lower = raw.trim().toLowerCase().replace(/\+/g, "-");
@@ -80,6 +116,9 @@ export function keyBytes(raw: string, context: KeyContext): string | undefined {
   const cursor = CURSOR_KEYS[name];
   if (cursor !== undefined) {
     return `${context.applicationCursorKeys ? "\x1bO" : "\x1b["}${cursor}`;
+  }
+  if (name === "wheel-up" || name === "wheel-down") {
+    return wheelBytes(name === "wheel-up", context);
   }
   return comboBytes(name);
 }

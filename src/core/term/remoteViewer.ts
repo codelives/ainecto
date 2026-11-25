@@ -4,10 +4,11 @@ import { openTermClient, type TermClient } from "./client";
 import type { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
 import type { TermPaths } from "./paths";
-import { readLines, readModes, sessionInstance } from "./protocol";
+import { readLines, readModes, readStyles, sessionInstance } from "./protocol";
 import type { RemoteHttp, RemoteLogRecord } from "./remote";
 import { ChannelSealError, type CloseReason } from "./remoteChannel";
 import { frameBudget, screenFrame } from "./remoteFrame";
+import type { CellStyle, ScreenCursor } from "./screen";
 import { FRAME_MIN_INTERVAL_MS, FRAME_SCROLLBACK_LINES, retryWait } from "./remoteLimits";
 
 /** 지금 이어진 링크 — 서버가 잊어 다시 열면 세대가 바뀐다. */
@@ -17,10 +18,16 @@ export interface ViewerLink {
   frameMaxBytes: number;
 }
 
-/** 봉인 frame 본문(§14-4 · A6) — d = base64(UTF-8 화면) · instance = 이 화면을 읽은 세션 객체의 인스턴스 id. */
+/**
+ * 봉인 frame 본문(§14-4 · A6) — d = base64(UTF-8 화면) · instance = 이 화면을 읽은 세션 객체의 인스턴스 id.
+ * styles·runs·cursor = 글자 속성 표·줄마다 구간·커서(선택 — 옛 데몬이면 없다, 웹은 없으면 글자만 그린다. 모양은 screen.ts StyledScreen).
+ */
 export interface FrameBody {
   d: string;
-  modes?: { altScreen: boolean; appCursor: boolean; bracketedPaste: boolean };
+  modes?: { altScreen: boolean; appCursor: boolean; bracketedPaste: boolean; mouse?: boolean };
+  styles?: CellStyle[];
+  runs?: number[][];
+  cursor?: ScreenCursor;
   instance: string;
   executedThrough: number;
 }
@@ -159,7 +166,7 @@ export class RemoteViewer {
       }
       let data: unknown;
       try {
-        data = await client.request({ op: "read", name, scrollback: true, lines: FRAME_SCROLLBACK_LINES + rows });
+        data = await client.request({ op: "read", name, scrollback: true, lines: FRAME_SCROLLBACK_LINES + rows, styles: true });
       } catch (error) {
         this.daemonFailed("read", error);
         return;
@@ -172,9 +179,11 @@ export class RemoteViewer {
         return;
       }
       const modes = readModes(data);
+      const lines = readLines(data);
+      const attributes = readStyles(data, lines.length);
       const outer = { linkId: target.linkId, channelId: this.deps.channelId, session: name, cols, rows };
-      const sealed = { ...(modes ? { modes } : {}), instance };
-      const frame = screenFrame(readLines(data), frameBudget(target.frameMaxBytes, outer, sealed));
+      const sealed = { ...(modes ? { modes } : {}), ...(attributes ? { styles: attributes.styles } : {}), instance };
+      const frame = screenFrame(lines, frameBudget(target.frameMaxBytes, outer, sealed), attributes);
       if (frame.dropped !== dropped) {
         dropped = frame.dropped;
         this.deps.log.write({ event: "remote_frame_trimmed", channelId: this.deps.channelId, session: name, dropped });
@@ -183,7 +192,9 @@ export class RemoteViewer {
       if (key === sentKey) continue;
       let box: { n: number; c: string };
       try {
-        box = await this.deps.seal({ d: frame.d, ...sealed, executedThrough });
+        box = await this.deps.seal({
+          d: frame.d, ...sealed, ...(frame.runs ? { runs: frame.runs } : {}), ...(frame.cursor ? { cursor: frame.cursor } : {}), executedThrough,
+        });
       } catch (error) {
         this.stop();
         this.deps.onChannelEnded(error instanceof ChannelSealError ? error.reason : "CHANNEL_GONE");
