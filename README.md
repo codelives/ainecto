@@ -208,6 +208,7 @@ the last point below.
 
 ```bash
 ainecto term new api --cwd ~/code/api -- claude   # start a session (without a command: your login shell)
+ainecto term new api --project <project-uuid> -- claude   # file it under that AiNecto project in Terminal on the web
 ainecto term ls [--json]
 ainecto term send api "run the tests"             # types the text, without Enter
 ainecto term key api enter                        # one key — see below
@@ -226,6 +227,9 @@ ainecto term restore                              # after a reboot: start again 
 - `send --paste` sends the text as a bracketed paste when the app asked for one. To send text that starts
   with `-`, put it after `--`.
 - In `attach`, press `Ctrl-\` twice to send one `Ctrl-\` to the app.
+- `--project` takes the project UUID from the project's web address (`…/projects/<uuid>`). Terminal on the web
+  lists the session under that project; without it, the session shows as outside any project. The tag stays
+  for the life of the session.
 - Inside a session, `AINECTO_TERM_SESSION` holds its name. A name does not change; renaming on the web
   changes only the name you see (`term ls` shows it as the label).
 - `restore` starts again each session that was running (name, folder, command) with the environment of the

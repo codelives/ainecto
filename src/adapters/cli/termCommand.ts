@@ -6,7 +6,7 @@ import { DETACH_HINT, DetachKeyScanner } from "../../core/term/detachKey";
 import { FULL_TERMINAL_RESET } from "../../core/term/screen";
 import { noSession, TermError } from "../../core/term/errors";
 import { KEY_NAMES } from "../../core/term/keys";
-import { termPaths, type TermPaths } from "../../core/term/paths";
+import { isUuid, termPaths, type TermPaths } from "../../core/term/paths";
 import { listedSessions, type TermRequestBody } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { renderSuccess } from "../../core/output/render";
@@ -17,7 +17,7 @@ import { CliCommandError } from "./errors";
 
 /** 도움말 — 전역 도움말이 이 줄들을 싣는다. */
 export const TERM_HELP_LINES: readonly string[] = [
-  "  ainecto term new <name> [--cwd DIR] [-- command args…]   start a session (default: your login shell); AINECTO_TERM_SESSION=<name> inside",
+  "  ainecto term new <name> [--cwd DIR] [--project UUID] [-- command args…]   start a session (default: your login shell); AINECTO_TERM_SESSION=<name> inside; --project files it under that AiNecto project on the web",
   "  ainecto term ls [--json]                                  list sessions",
   "  ainecto term send <name> [--paste] [--] <text>            type text (no Enter; --paste wraps it as a bracketed paste when the app asked for it)",
   `  ainecto term key <name> <key>                             press one key: ${KEY_NAMES.join(", ")}`,
@@ -100,8 +100,9 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
 }
 
 async function newSession(paths: TermPaths, argv: string[], input: TermCommandInput): Promise<number> {
-  const args = parseArgs(argv, { cwd: "string" });
-  const name = singleName(args.positionals, "term new <name> [--cwd DIR] [-- command args…]");
+  const args = parseArgs(argv, { cwd: "string", project: "string" });
+  const name = singleName(args.positionals, "term new <name> [--cwd DIR] [--project UUID] [-- command args…]");
+  const project = typeof args.flags.project === "string" ? projectFlag(args.flags.project) : undefined;
   const tty = input.io.stdout.isTTY ? { cols: input.io.stdout.columns, rows: input.io.stdout.rows } : {};
   const result = await termRequest(paths, {
     op: "new",
@@ -110,9 +111,25 @@ async function newSession(paths: TermPaths, argv: string[], input: TermCommandIn
     command: args.afterDashes.length > 0 ? args.afterDashes : null,
     env: stringEnv(),
     ...tty,
+    ...(project ? { project } : {}),
   }, { start: true });
   const data = result.daemon ? result.data : undefined;
-  return print(input, data, `Started ${name}. Attach with: ainecto term attach ${name}`);
+  // ★0.15.4 앞의 데몬은 project 칸을 모르고 버린다(protocol.ts) — 세션은 꼬리표 없이 뜬다. 조용히 넘기지 않고 한 줄로 알린다.
+  const dropped = project !== undefined && keptProject(data) !== project;
+  const started = `Started ${name}. Attach with: ainecto term attach ${name}`;
+  return print(input, data, dropped
+    ? `${started}\nThe running term background process is older and did not keep --project; the session has no project. `
+      + "Run `ainecto term kill-server` when no session needs it, then start the session again."
+    : started);
+}
+
+/** --project — AiNecto 프로젝트 UUID(웹 주소의 projects/<uuid>). 대문자도 받아 소문자로(데몬은 소문자만 받는다 — protocol.ts projectField). */
+function projectFlag(value: string): string {
+  const uuid = value.trim().toLowerCase();
+  if (!isUuid(uuid)) {
+    throw new TermError("TERM_USAGE", `--project needs an AiNecto project UUID (the part after projects/ in its web address), not "${value}".`);
+  }
+  return uuid;
 }
 
 async function listSessions(paths: TermPaths, argv: string[], input: TermCommandInput): Promise<number> {
@@ -359,6 +376,10 @@ function linesField(data: unknown): string[] {
     return data.lines.filter((line): line is string => typeof line === "string");
   }
   return [];
+}
+
+function keptProject(data: unknown): string | undefined {
+  return data && typeof data === "object" && "project" in data && typeof data.project === "string" ? data.project : undefined;
 }
 
 function resetField(data: unknown): string | undefined {

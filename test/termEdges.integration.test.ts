@@ -90,6 +90,19 @@ describe("ainecto term — review #81 edge cases", () => {
     expect(JSON.parse(json.stdout || json.stderr)).toMatchObject({ ok: false, error: { code: "TERM_SESSION_EXISTS" } });
   }, LONG);
 
+  it("--project tags the session for Terminal on the web — kept in ls · upper case taken as lower case · anything else refused before the daemon (Ryan 11-25)", async () => {
+    const uuid = "90aefe71-69cf-4a49-ba3c-5f75581dabc0";
+    await ok("term", "new", "tagged", "--project", uuid.toUpperCase(), "--", "/bin/sh");
+    await ok("term", "new", "plain", "--", "/bin/sh");
+    const listed = await sessions();
+    expect(listed.find((session) => session.name === "tagged")?.project).toBe(uuid);
+    expect(listed.find((session) => session.name === "plain")?.project).toBeUndefined();
+    const bad = await cli("term", "new", "bad", "--project", "not-a-uuid", "--json", "--", "/bin/sh");
+    expect(bad.code).toBe(1);
+    expect(JSON.parse(bad.stdout || bad.stderr)).toMatchObject({ ok: false, error: { code: "TERM_USAGE" } });
+    expect((await sessions()).map((session) => session.name)).not.toContain("bad");
+  }, LONG);
+
   it("T2: a query from the app is answered exactly once — detached, one attach, two attaches", async () => {
     await ok("term", "new", "cpr", "--", process.execPath, "-e", CPR_PROBE);
     await sleep(500);
