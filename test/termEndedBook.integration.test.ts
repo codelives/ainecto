@@ -135,4 +135,51 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
     expect(log).toContain("ended_book_error");
     expect(log).toContain("ended_book_recovered");
   }, LONG);
+  it("리뷰 r2 P1-1 — 다리가 목록을 읽은 뒤 listed-to 전에 끝난 세션: 끝 책의 같은 uuid 에 수신처가 찍힌다(이미 찍힌 수신처는 그대로)", async () => {
+    await ok("term", "new", "keep", "--", "cat");
+    await ok("term", "new", "late", "--", "cat");
+    await ok("term", "new", "early", "--", "cat");
+    const paths = termPaths(rig.home);
+    const [late, early] = [await instanceOf("late"), await instanceOf("early")];
+    await termRequest(paths, { op: "listed-to", to: "srv#u1", instances: [early] }, { start: false });
+    await ok("term", "kill", "late");    // 목록(ls)에는 살아 있었다 — 표시가 오기 전에 끝남
+    await ok("term", "kill", "early");
+    await until(() => book().length === 2, "two ends");
+    expect(await termRequest(paths, { op: "listed-to", to: "srv#u2", instances: [late, early] }, { start: false }))
+      .toEqual({ daemon: true, data: { marked: 1 } });
+    await until(() => book().find((r) => r.instance === late)?.to !== undefined, "late gets to");
+    expect(Object.fromEntries(book().map((r) => [r.name, r.to]))).toEqual({ late: "srv#u2", early: "srv#u1" });
+    expect((await listed()).ended?.find((r) => r.instance === late)?.to).toBe("srv#u2");
+  }, LONG);
+
+  it("리뷰 r2 P1-2 — 책을 못 읽는 채로 데몬이 정상 종료해도 그동안의 끝은 병합 대기 파일에 남고, 다음 데몬이 원본에 합친다(원본 보존)", async () => {
+    await ok("term", "new", "one", "--", "cat");
+    await ok("term", "kill-server");   // one 의 끝이 책에 남는다
+    await until(() => daemonPids().length === 0, "daemon gone");
+    const one = book()[0]!.instance;
+    const paths = termPaths(rig.home);
+    chmodSync(paths.ended, 0o000);
+    let two = "";
+    try {
+      await ok("term", "new", "keep", "--", "cat");   // 새 데몬이 시작할 때 책을 못 읽는다
+      await ok("term", "new", "two", "--", "cat");
+      two = await instanceOf("two");
+      await termRequest(paths, { op: "listed-to", to: "srv#u1", instances: [two] }, { start: false });
+      await ok("term", "kill", "two");
+      await until(async () => (await listed()).ended?.some((r) => r.instance === two) === true, "two in ls.ended");
+      await ok("term", "kill-server");   // 권한이 돌아오기 전에 정상 종료
+      await until(() => daemonPids().length === 0, "daemon gone");
+    } finally {
+      chmodSync(paths.ended, 0o600);
+    }
+    expect(book().map((r) => r.instance), "원본은 그대로").toEqual([one]);
+    await ok("term", "new", "three", "--", "cat");   // 다음 데몬 — 원본을 읽고 대기분을 얹는다
+    const recovered = (await listed()).ended ?? [];
+    expect(recovered.map((r) => r.instance), "two 를 되찾는다").toEqual(expect.arrayContaining([one, two]));
+    expect(recovered.find((r) => r.instance === two)?.to, "수신처까지").toBe("srv#u1");
+    await ok("term", "kill", "three");
+    await until(() => book().some((r) => r.name === "three"), "three written");
+    expect(book().map((r) => r.instance)).toEqual(expect.arrayContaining([one, two]));
+    expect(existsSync(paths.endedPending), "합친 뒤 대기 파일은 지운다").toBe(false);
+  }, LONG);
 });
