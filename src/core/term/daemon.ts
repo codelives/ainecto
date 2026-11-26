@@ -7,7 +7,7 @@ import { acquireDaemonLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
 import { afterListen, helloProof, prepareListen, type IpcAddress } from "./ipc";
-import { mergeEnded, readEndedBook, withEnded, withoutAcked, writeEndedBook } from "./endedBook";
+import { mergeEnded, readEndedBook, removeEndedBook, withEnded, withListedTo, withoutAcked, writeEndedBook } from "./endedBook";
 import { readManifest, writeManifest, type ManifestEntry } from "./manifest";
 import type { TermPaths } from "./paths";
 import {
@@ -74,6 +74,13 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
   }
   let ended: EndedRecord[] = [];
   let endedUnread = false;
+  let pending: EndedRecord[] = [];
+  try {
+    // 앞 데몬이 원본을 못 읽는 동안 생긴 끝 기록(리뷰 r2 P1-2) — 원본 위에 얹는다(같은 이름은 이것).
+    pending = await readEndedBook(paths.endedPending);
+  } catch (error) {
+    log.write({ event: "ended_book_error", message: `${paths.endedPending}: ${errorMessage(error)}` });
+  }
   try {
     ended = await readEndedBook(paths.ended);
   } catch (error) {
@@ -81,7 +88,8 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
     log.write({ event: "ended_book_error", message: errorMessage(error) });
     endedUnread = true;
   }
-  const daemon = new TermDaemon(paths, log, manifest, ended, endedUnread);
+  ended = mergeEnded(ended, pending, new Set());
+  const daemon = new TermDaemon(paths, log, manifest, ended, endedUnread, pending.length > 0);
   await daemon.listen();
   log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: daemon.address });
   process.on("SIGTERM", () => void daemon.shutdown("SIGTERM"));
@@ -152,6 +160,8 @@ class TermDaemon {
     private ended: EndedRecord[],
     /** 시작 때 책 파일을 못 읽었다(ENOENT 말고) — 다시 읽어 합칠 때까지 파일에 쓰지 않는다. */
     private endedUnread: boolean,
+    /** 병합 대기 파일(paths.endedPending)이 있다 — 원본에 합쳐 쓴 뒤 지운다. */
+    private endedPendingFile: boolean,
   ) {
     this.server = createServer((socket) => this.accept(socket));
   }
@@ -312,7 +322,10 @@ class TermDaemon {
           session.listedTo = request.to;
           marked += 1;
         }
-        return { data: { marked } };
+        // 다리가 목록을 읽은 뒤 이 표시 전에 끝난 세션 — 끝 책의 같은 uuid 에(리뷰 r2 P1-1 · endedBook withListedTo).
+        const late = this.ended.filter((record) => record.to === undefined && wanted.has(record.instance)).length;
+        if (late > 0) this.updateEnded((book) => withListedTo(book, wanted, request.to));
+        return { data: { marked: marked + late } };
       }
       case "ended-ack": {
         const before = this.ended.length;
@@ -512,19 +525,32 @@ class TermDaemon {
 
   /**
    * 끝 기록 책도 데몬 하나만 쓴다 — 매니페스트와 같은 한 줄 쓰기. 시작 때 못 읽었으면(endedUnread) 쓰기 전에 다시 읽어 합친다:
-   * 파일의 줄 위에 그동안 메모리에 생긴 줄을 얹는다(같은 이름은 메모리 것 · ack 한 instance 는 파일 것에서도 뺀다). 또 못 읽으면 이번에도 쓰지 않는다.
+   * 파일의 줄 위에 그동안 메모리에 생긴 줄을 얹는다(같은 이름은 메모리 것 · ack 한 instance 는 파일 것에서도 뺀다). 또 못 읽으면 원본은 그대로 두고
+   * 메모리의 줄을 병합 대기 파일에 쓴다 — 이대로 데몬이 끝나도 다음 데몬이 원본에 합친다(리뷰 r2 P1-2). 원본에 쓴 뒤 그 파일을 지운다.
+   * ★그동안 ack 한 instance 는 다음 데몬이 모른다 — 원본에 남아 있던 것은 한 번 더 올라간다(서버는 같은 기록 두 번을 한 번으로 본다).
    */
   private updateEnded(change: (book: EndedRecord[]) => EndedRecord[]): void {
     this.ended = change(this.ended);
     this.endedWrite = this.endedWrite
       .then(async () => {
         if (this.endedUnread) {
-          const stored = await readEndedBook(this.paths.ended);
+          let stored: EndedRecord[];
+          try {
+            stored = await readEndedBook(this.paths.ended);
+          } catch (error) {
+            await writeEndedBook(this.paths.endedPending, this.ended);
+            this.endedPendingFile = true;
+            throw error;
+          }
           this.ended = mergeEnded(stored, this.ended, this.endedAcked);
           this.endedUnread = false;
           this.log.write({ event: "ended_book_recovered", records: this.ended.length });
         }
         await writeEndedBook(this.paths.ended, this.ended);
+        if (this.endedPendingFile) {
+          await removeEndedBook(this.paths.endedPending);
+          this.endedPendingFile = false;
+        }
       })
       .catch((error) => this.log.write({ event: "ended_book_error", message: errorMessage(error) }));
   }
