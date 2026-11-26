@@ -196,6 +196,8 @@ class CodexSession implements AgentSession {
   private readonly stopRequested = new Promise<"stop">((resolve) => {
     this.releaseStop = () => resolve("stop");
   });
+  /** 준비 끝 또는 준비 중 멈춤 — ★생성 때 한 번만 만든다(차례마다 race 를 걸어 쌓지 않는다 · 코드 리뷰 C2 r2 P2-2). */
+  private readonly preparedOrStopped: Promise<Error | undefined | "stop">;
 
   constructor(
     readonly conversationUuid: string,
@@ -216,11 +218,12 @@ class CodexSession implements AgentSession {
       this.ready = true;
       return undefined;
     }, toError);
+    this.preparedOrStopped = Promise.race([this.started, this.stopRequested]);
   }
 
   /** 준비(initialize → thread/resume·start)가 끝난 뒤 그 응답의 thread id — 준비가 실패했거나 준비 중 멈췄으면 undefined. ★turn/start 보다 먼저 온다. */
   async confirmedRef(): Promise<string | undefined> {
-    const settled = await Promise.race([this.started, this.stopRequested]);
+    const settled = await this.preparedOrStopped;
     return settled === undefined && !this.stoppedBeforeStart ? this.sessionRef : undefined;
   }
 
@@ -228,13 +231,14 @@ class CodexSession implements AgentSession {
     return this.child.pid;
   }
 
+  /** ★준비 중 멈춘 세션은 자식이 아직 정리 중이어도 끝난 것으로 본다 — 다음 차례가 그 자식을 다시 쓰지 않는다(코드 리뷰 C2 r2 P0-1). */
   get alive(): boolean {
-    return this.child.alive;
+    return !this.stoppedBeforeStart && this.child.alive;
   }
 
   async send(text: string, timeoutMs: number): Promise<TurnOutcome> {
     const work = (async (): Promise<TurnOutcome> => {
-      const failed = await Promise.race([this.started, this.stopRequested]);
+      const failed = await this.preparedOrStopped;
       if (failed === "stop" || this.stoppedBeforeStart) {
         // 준비 중(또는 turn/start 전)에 멈춤 — 입력을 넣지 않는다. 재개 값은 지킨다(«끝남»이 아니다).
         return { kind: "result", facts: new TurnFactsCollector().snapshot(), result: { subtype: "interrupted_before_start", isError: true } };

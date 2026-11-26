@@ -177,8 +177,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   const live = new Map<AgentId, { session: AgentSession; owner: string | undefined }>();
   /** ★Chat 차례가 큐에서 나와 서버 답 처리를 끝낼 때까지 — 자동 교체의 «한가» 판정이 이 사이를 작업 중으로 본다(코드 리뷰 C2 P1-6). */
   let chatInFlight = false;
-  /** 마지막으로 확인한 주인 — 차례마다 묻다가 한 번 실패하면 이 값을 쓴다(코드 리뷰 C2 P1-4). */
-  let lastOwner: { value: string | undefined } | undefined;
+
   const received = new Set<string>();
   const queue: Job[] = [];
   /** 멈출 차례(열쇠 = {@link TurnJob.key}) — 웹 «중단»(turnUuid) · 임대를 잃은 할 일. 진행 중이면 멈추고, 시작 전이면 돌리지 않는다. */
@@ -328,16 +327,16 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     return session;
   };
 
-  /** 이 차례의 주인 — 묻다가 실패하면 마지막으로 확인한 값, 그것도 없으면 «모름»(재개 값·커서 없이 돈다). 실패는 한 줄 남긴다. */
+  /**
+   * 이 차례의 주인 — 묻다가 실패하면 «모름»: ★그 차례는 재개 값·커서 없이 돌고 sessions.json 은 건드리지 않는다(쓰기 0 — 확인 못 한 주인으로
+   * 남의 칸·멀쩡한 칸을 덮지 않는다 · 코드 리뷰 C2 r2 P0-2). 캐시는 두지 않는다(재연결·계정 바뀜과 엮이지 않게). 실패는 한 줄 남긴다.
+   */
   const ownerForTurn = async (turnUuid: string | undefined, todoId: string | undefined): Promise<{ owner: string | undefined; known: boolean }> => {
     try {
-      const value = await deps.owner();
-      lastOwner = { value };
-      return { owner: value, known: true };
+      return { owner: await deps.owner(), known: true };
     } catch (error) {
-      deps.log.write({ event: "agent_owner_unknown", turnUuid, todoId, error: error instanceof Error ? error.message : String(error),
-        fallback: lastOwner !== undefined });
-      return lastOwner ? { owner: lastOwner.value, known: true } : { owner: undefined, known: false };
+      deps.log.write({ event: "agent_owner_unknown", turnUuid, todoId, error: error instanceof Error ? error.message : String(error) });
+      return { owner: undefined, known: false };
     }
   };
 
@@ -356,12 +355,21 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     if (stopped() || !session.alive) return { kind: "ok", reply: undefined };   // 준비 중 멈춤 — 묻지 않는다(돌리지 않는다)
     const cursor = entry?.cursor !== undefined && owner !== undefined && entry.owner === owner && confirmed === entry.sessionId
       ? entry.cursor : null;
+    // ★조회도 남은 기한 안 — 기한이 끝나면 조회를 끊는다(코드 리뷰 C2 r2 P1-2). serve 멈춤도 끊는다.
+    const call = new AbortController();
+    const onServeStop = () => call.abort();
+    stopController.signal.addEventListener("abort", onServeStop, { once: true });
+    const timer = setTimeout(() => call.abort(), Math.max(0, deadlineAt - Date.now()));
     try {
-      const res = await deps.http.call("turn-context", { linkId, turnUuid, cursor }, { turnUuid, signal: stopController.signal });
-      return { kind: "ok", reply: turnContextIn(res) };
+      const res = await deps.http.call("turn-context", { linkId, turnUuid, cursor }, { turnUuid, signal: call.signal });
+      return Date.now() >= deadlineAt ? { kind: "timeout" } : { kind: "ok", reply: turnContextIn(res) };
     } catch (error) {
+      if (Date.now() >= deadlineAt) return { kind: "timeout" };
       if (error instanceof AgentCallError && !error.retryable) return { kind: "refused", error };
       return { kind: "ok", reply: undefined };
+    } finally {
+      clearTimeout(timer);
+      stopController.signal.removeEventListener("abort", onServeStop);
     }
   };
 
@@ -390,9 +398,11 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           const asked = await ownerForTurn(offer.turnUuid, offer.todoId);
           owner = asked.owner;
           try {
-            const stored = await deps.sessions.read(offer.conversationUuid, adapter.id);
-            entryRev = stored.rev;
-            entry = asked.known ? usableEntry(stored.entry, owner) : undefined;
+            if (asked.known) {   // 주인을 모르면 읽지도 쓰지도 않는다(entryRev 없음 = 쓰기 0)
+              const stored = await deps.sessions.read(offer.conversationUuid, adapter.id);
+              entryRev = stored.rev;
+              entry = usableEntry(stored.entry, owner);
+            }
           } catch (error) {
             deps.log.write({ event: "agent_session_unwritten", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: adapter.id,
               conversationUuid: offer.conversationUuid, reason: `read failed: ${error instanceof Error ? error.message : String(error)}` });
@@ -443,7 +453,9 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           const text = offer.todoId === undefined
             ? agentPromptText(offer.text, offer.context, turnContext && offer.turnUuid ? unreadLine(offer.turnUuid, turnContext) : undefined)
             : offer.text;
-          outcome = await session.send(text, Math.max(1, deadlineAt - Date.now()));
+          const remaining = deadlineAt - Date.now();
+          // 기한이 이미 지났으면 입력을 넣지 않는다(코드 리뷰 C2 r2 P1-2)
+          outcome = remaining > 0 ? await session.send(text, remaining) : { kind: "timeout" };
         }
       } finally {
         current = undefined;

@@ -5,7 +5,7 @@ import { AgentCallError } from "../src/core/agent/http";
 import { agentPromptText, turnContextIn, unreadLine } from "../src/core/agent/prompt";
 import { sessionChange, withoutSecrets } from "../src/core/agent/serve";
 import { agentOwner, AgentSessionMap, usableEntry } from "../src/core/agent/sessions";
-import { finish, logRecords, OWNER, spawned, startServe, until, type World } from "./support/agentServeWorld";
+import { codexSpawned, finish, logRecords, OWNER, spawned, startServe, until, type World } from "./support/agentServeWorld";
 
 /**
  * Connect C2(설계 connect-agent-dedicated-session r3 §4 C2 자동 인수 조건) — offer 의 {@code turnContextAvailable} 이 있으면 turn-context 를 한 번 부르고,
@@ -401,24 +401,90 @@ describe("Connect C2 r2 — 코드 리뷰 NO-GO 반례(connect-c2-code-review-as
     expect(withoutSecrets(reply, [""])).toBe(reply);
   });
 
-  it("P1-4 · 주인 조회가 실패해도 차례는 돈다(구 API 경로) — 한 번도 확인 못 했으면 재개·커서 없이 · 확인한 적 있으면 그 값으로", async () => {
+  it("P1-4 · 주인 조회가 실패해도 차례는 돈다(구 API 경로) — 재개 값·커서 없이 · 로그 한 줄", async () => {
     let calls = 0;
     const w = startServe({ owner: async () => {
       calls += 1;
-      if (calls === 1 || calls === 3) throw new Error("token refresh failed");
+      if (calls === 1) throw new Error("token refresh failed");
       return OWNER;
-    }, sessionsFile: { version: 2, conversations: { "conv-a": { sessionId: "sess-old", owner: OWNER, rev: 1 } } } });
+    } });
     w.server.offer("t1", "conv-a", "one");
     const first = await until(() => w.server.replies()[0]);
-    w.server.offer("t2", "conv-a", "two");
-    await until(() => w.server.replies()[1]);
-    w.server.offer("t3", "conv-a", "three");
-    const third = await until(() => w.server.replies()[2]);
     await finish(w);
     expect(first.status).toBe("DONE");
-    expect(third.status).toBe("DONE");
-    expect(spawned(w)).toEqual([[]]);   // 첫 차례는 재개 없이 · 그 뒤는 같은 주인 · 같은 세션을 다시 쓴다
-    expect(logRecords(w).filter((r) => r.event === "agent_owner_unknown").map((r) => r.fallback)).toEqual([false, true]);
+    expect(logRecords(w).filter((r) => r.event === "agent_owner_unknown")).toHaveLength(1);
+  });
+
+  it("r2 P0-2 · 주인을 확인 못 한 차례는 sessions.json 을 건드리지 않는다 — rev 3 칸이 그대로 · 다음 정상 차례는 원래 세션으로 재개", async () => {
+    let calls = 0;
+    const original = { sessionId: "sess-orig", cursor: "cur-orig", owner: OWNER, rev: 3 };
+    const w = startServe({ owner: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("token refresh failed");
+      return OWNER;
+    }, sessionsFile: { version: 2, conversations: { "conv-a": original } } });
+    w.server.offerWithContext("t1", "conv-a", "one");
+    const first = await until(() => w.server.replies()[0]);
+    expect(first.status).toBe("DONE");
+    expect(entry(w, "conv-a")).toMatchObject(original);   // 쓰기 0
+    w.server.offerWithContext("t2", "conv-a", "two");
+    const second = await until(() => w.server.replies()[1]);
+    await finish(w);
+    expect(spawned(w)).toEqual([[], ["--resume", "sess-orig"]]);
+    expect(String(second.reply)).toMatch(/two #1 in sess-orig$/);
+    expect(cursors(w)).toEqual([null, null]);
+    expect(entry(w, "conv-a")).toMatchObject({ sessionId: "sess-orig", cursor: "cur-t2", owner: OWNER, rev: 4 });
+  });
+
+  it("r2 P0-2 · 계정이 바뀐 재연결의 첫 조회가 실패해도 앞 계정의 주인을 새 칸에 쓰지 않는다(캐시 없음)", async () => {
+    const answers: Array<string | Error> = ["https://dev.ainecto.test acct-1", new Error("token refresh failed")];
+    const otherEntry = { sessionId: "sess-b", cursor: "cur-b", owner: "https://dev.ainecto.test acct-2", rev: 2 };
+    const w = startServe({ owner: async () => {
+      const next = answers.shift() ?? "https://dev.ainecto.test acct-2";
+      if (next instanceof Error) throw next;
+      return next;
+    }, sessionsFile: { version: 2, conversations: { "conv-b": otherEntry } } });
+    w.server.offer("t1", "conv-a", "one");
+    await until(() => w.server.replies()[0]);
+    w.server.offer("t2", "conv-b", "two");
+    await until(() => w.server.replies()[1]);
+    await finish(w);
+    expect(entry(w, "conv-b")).toMatchObject(otherEntry);
+    expect(entry(w, "conv-a").owner).toBe("https://dev.ainecto.test acct-1");
+  });
+
+  it("r2 P0-1 · 저장된 thread 없이 첫 Codex 차례를 준비 중 멈추면(자식 정리 650ms) → 다음 요청은 새 자식에서 DONE(표지 있음·없음)", async () => {
+    for (const flagged of [true, false]) {
+      const hold = marker();
+      writeFileSync(hold, "");
+      const w = startServe({ installed: ["codex"], env: { FAKE_CODEX_HOLD_THREAD: hold, FAKE_CODEX_EXIT_DELAY_MS: "650" } });
+      if (flagged) w.server.offerWithContext("t1", "conv-a", "hello", "codex");
+      else w.server.offer("t1", "conv-a", "hello", undefined, "codex");
+      await until(() => logRecords(w).find((r) => r.event === "agent_rpc" && r.method === "thread/start"));
+      w.server.push({ state: "OPEN", offers: [], stops: ["t1"] });
+      const stopped = await until(() => w.server.replies()[0]);
+      if (flagged) w.server.offerWithContext("t2", "conv-a", "again", "codex");
+      else w.server.offer("t2", "conv-a", "again", undefined, "codex");
+      const next = await until(() => w.server.replies()[1]);
+      await finish(w);
+      expect(stopped).toMatchObject({ turnUuid: "t1", status: "STOPPED" });
+      expect(next).toMatchObject({ turnUuid: "t2", status: "DONE" });
+      expect(codexSpawned(w)).toHaveLength(2);
+      expect(logRecords(w).filter((r) => r.event === "agent_rpc" && r.method === "turn/start")).toHaveLength(1);
+    }
+  });
+
+  it("r2 P1-2 · 알림 조회 중 차례 기한이 끝나면 조회를 끊고 Agent 에 입력을 넣지 않는다(TURN_TIMEOUT · turn/start 0)", async () => {
+    const w = startServe({ installed: ["codex"], turnTimeoutMs: 400 });
+    w.server.turnContextDelayMs = 1_500;
+    const t0 = Date.now();
+    w.server.offerWithContext("t1", "conv-a", "hello", "codex");
+    const timedOut = await until(() => w.server.replies()[0]);
+    const elapsed = Date.now() - t0;
+    await finish(w);
+    expect(timedOut).toMatchObject({ status: "FAILED", errorCode: "TURN_TIMEOUT" });
+    expect(elapsed).toBeLessThan(1_400);
+    expect(logRecords(w).filter((r) => r.event === "agent_rpc" && r.method === "turn/start")).toHaveLength(0);
   });
 
   it("P1-6 · Chat 차례는 큐에서 나온 뒤 서버 답 처리가 끝날 때까지 «작업 중» — 알림 조회 중·답 보내는 중 모두", async () => {

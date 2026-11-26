@@ -90,6 +90,9 @@ export class FakeServer implements AgentHttp {
   /** reply 를 받는 순간 부른다(그때의 상태를 보는 시험). */
   onReply: (body: Record<string, unknown>) => void = () => {};
 
+  /** turn-context 응답을 이만큼 늦춘다(호출의 signal 이 끊으면 네트워크 오류처럼 던진다). */
+  turnContextDelayMs = 0;
+
   turnContextCalls(): Array<Record<string, unknown>> {
     return this.calls.filter((c) => c.op === "turn-context").map((c) => c.body);
   }
@@ -140,6 +143,16 @@ export class FakeServer implements AgentHttp {
       return {};
     }
     if (op === "turn-context") {
+      if (this.turnContextDelayMs > 0) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, this.turnContextDelayMs);
+          options.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+        if (options.signal?.aborted) throw new AgentCallError("turn-context aborted", "turn-context");
+      }
       const answer = this.turnContext(body);
       if (answer instanceof AgentCallError) throw answer;
       return answer;

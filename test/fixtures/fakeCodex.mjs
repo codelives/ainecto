@@ -163,4 +163,5 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       out({ id, error: { code: -32601, message: `unknown method ${method}` } });
   }
 });
-process.stdin.on("end", () => process.exit(0));
+// FAKE_CODEX_EXIT_DELAY_MS — stdin 이 닫힌 뒤 그만큼 정리하다 끝난다(진짜 app-server 처럼 · 멈춘 자식 재사용 시험).
+process.stdin.on("end", () => setTimeout(() => process.exit(0), Number(process.env.FAKE_CODEX_EXIT_DELAY_MS ?? 0)));
