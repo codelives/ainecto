@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentCallError } from "../src/core/agent/http";
@@ -485,6 +485,57 @@ describe("Connect C2 r2 — 코드 리뷰 NO-GO 반례(connect-c2-code-review-as
     expect(timedOut).toMatchObject({ status: "FAILED", errorCode: "TURN_TIMEOUT" });
     expect(elapsed).toBeLessThan(1_400);
     expect(logRecords(w).filter((r) => r.event === "agent_rpc" && r.method === "turn/start")).toHaveLength(0);
+  });
+
+  it.each(["stop", "timeout", "late-403"] as const)("r3 P0-1 · 입력 전에 끝난 차례(%s)는 재개 칸을 그대로 둔다 → 다음 차례가 원래 thread·커서로 DONE", async (variant) => {
+    {
+      const original = { sessionId: "thr-A", cursor: "cur-old", owner: OWNER, rev: 3 };
+      const w = startServe({ installed: ["codex"], turnTimeoutMs: 600, sessionsFile: { version: 2, conversations: {},
+        byAgent: { codex: { "conv-a": original } } } });
+      w.server.turnContextDelayMs = 1_050;
+      if (variant === "late-403") {
+        const base = w.server.turnContext;
+        w.server.turnContext = (body) => (body.turnUuid === "t1" ? new AgentCallError("forbidden", "turn-context", 403) : base(body));
+      }
+      w.server.offerWithContext("t1", "conv-a", "hello", "codex");
+      await until(() => w.server.turnContextCalls()[0]);
+      if (variant === "stop") w.server.push({ state: "OPEN", offers: [], stops: ["t1"] });
+      const first = await until(() => w.server.replies()[0]);
+      expect(first.status, variant).toBe(variant === "stop" ? "STOPPED" : "FAILED");
+      if (variant !== "stop") expect(first.errorCode, variant).toBe("TURN_TIMEOUT");
+      expect(entry(w, "conv-a", "codex"), variant).toMatchObject(original);   // 입력 전 종료 — 칸 그대로
+      w.server.turnContextDelayMs = 0;
+      w.server.offerWithContext("t2", "conv-a", "again", "codex");
+      const second = await until(() => w.server.replies()[1]);
+      await finish(w);
+      expect(second.status, variant).toBe("DONE");
+      expect(String(second.reply), variant).toMatch(/in thr-A$/);
+      expect(cursors(w), variant).toEqual(["cur-old", "cur-old"]);
+      expect(entry(w, "conv-a", "codex"), variant).toMatchObject({ sessionId: "thr-A", cursor: "cur-t2", rev: 4 });
+      expect(logRecords(w).filter((r) => r.event === "agent_rpc" && r.method === "turn/start"), variant).toHaveLength(1);
+    }
+  });
+
+  it("r3 P1-1 · 주인을 묻는 사이 serve 가 멈추면 → 조회 0 · 입력 0 · sessions.json 쓰기 0", async () => {
+    let release: () => void = () => {};
+    const asked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let called = false;
+    const w = startServe({ owner: async () => {
+      called = true;
+      await asked;
+      return OWNER;
+    } });
+    w.server.offerWithContext("t1", "conv-a", "hello");
+    await until(() => (called ? true : undefined));
+    w.stop.abort();
+    release();
+    const result = await w.done;
+    expect(result).toEqual({ exitCode: 0, reason: "signal" });
+    expect(w.server.turnContextCalls()).toHaveLength(0);
+    expect(spawned(w)).toHaveLength(0);
+    expect(existsSync(w.sessionsPath)).toBe(false);
   });
 
   it("P1-6 · Chat 차례는 큐에서 나온 뒤 서버 답 처리가 끝날 때까지 «작업 중» — 알림 조회 중·답 보내는 중 모두", async () => {

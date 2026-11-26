@@ -183,7 +183,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   /** 멈출 차례(열쇠 = {@link TurnJob.key}) — 웹 «중단»(turnUuid) · 임대를 잃은 할 일. 진행 중이면 멈추고, 시작 전이면 돌리지 않는다. */
   const stopping = new Set<string>();
   /** 지금 Agent 에 들어간 차례(없으면 undefined) — 멈춤 지시가 이것을 멈춘다. */
-  let current: { key: string; session: AgentSession } | undefined;
+  /** abort = 이 차례의 멈춤 신호 — 알림 조회를 끊는다(입력 전 멈춤 · 코드 리뷰 C2 r3). */
+  let current: { key: string; session: AgentSession; abort: AbortController } | undefined;
   /** ★로컬 잠금 — 지금 돌고 있거나 줄에 선 할 일의 카드(카드마다 하나 · serve 에 한 번에 하나). */
   let todoInFlight: string | undefined;
   let wakeTodos: (() => void) | undefined;
@@ -195,7 +196,10 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     stopping.add(key);
     const running = current?.key === key;
     deps.log.write({ event: "stop_request", turnUuid: key, running, queued: queue.some((j) => jobKey(j) === key) });
-    if (running) void current?.session.interrupt();
+    if (running) {
+      current?.abort.abort();
+      void current?.session.interrupt();
+    }
   };
 
   const stop = (reason: string, code: number, message?: string) => {
@@ -346,19 +350,22 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
    * 네트워크·5xx·꼴이 어긋남이면 알림 줄 없이 돌린다(next 가 없으니 커서는 그대로).
    */
   const askTurnContext = async (turnUuid: string, session: AgentSession, entry: AgentSessionEntry | undefined,
-    owner: string | undefined, deadlineAt: number, stopped: () => boolean): Promise<{ kind: "ok"; reply: TurnContextReply | undefined } | { kind: "refused"; error: AgentCallError }
+    owner: string | undefined, deadlineAt: number, turnAbort: AbortSignal): Promise<{ kind: "ok"; reply: TurnContextReply | undefined } | { kind: "refused"; error: AgentCallError }
       | { kind: "timeout" }> => {
     // ★준비(Codex initialize·thread)도 이 차례의 기한 안 — 멈춤은 session.interrupt 가 이 기다림을 푼다(코드 리뷰 C2 P0-2).
     const TIMEOUT = Symbol("timeout");
     const confirmed = await withDeadline<string | undefined | typeof TIMEOUT>(session.confirmedRef(), Math.max(0, deadlineAt - Date.now()), TIMEOUT);
     if (confirmed === TIMEOUT) return { kind: "timeout" };
-    if (stopped() || !session.alive) return { kind: "ok", reply: undefined };   // 준비 중 멈춤 — 묻지 않는다(돌리지 않는다)
+    // 준비 중 멈춤(그 차례 · serve 전체) — 묻지 않는다(돌리지 않는다)
+    if (turnAbort.aborted || stopController.signal.aborted || !session.alive) return { kind: "ok", reply: undefined };
     const cursor = entry?.cursor !== undefined && owner !== undefined && entry.owner === owner && confirmed === entry.sessionId
       ? entry.cursor : null;
-    // ★조회도 남은 기한 안 — 기한이 끝나면 조회를 끊는다(코드 리뷰 C2 r2 P1-2). serve 멈춤도 끊는다.
+    // ★조회도 남은 기한 안 — 기한이 끝나면 조회를 끊는다(코드 리뷰 C2 r2 P1-2). 그 차례의 멈춤·serve 멈춤도 끊는다
+    // (붙이기 전에 이미 멈췄으면 위에서 돌아갔다 · r3 P1-1).
     const call = new AbortController();
     const onServeStop = () => call.abort();
     stopController.signal.addEventListener("abort", onServeStop, { once: true });
+    turnAbort.addEventListener("abort", onServeStop, { once: true });
     const timer = setTimeout(() => call.abort(), Math.max(0, deadlineAt - Date.now()));
     try {
       const res = await deps.http.call("turn-context", { linkId, turnUuid, cursor }, { turnUuid, signal: call.signal });
@@ -370,6 +377,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     } finally {
       clearTimeout(timer);
       stopController.signal.removeEventListener("abort", onServeStop);
+      turnAbort.removeEventListener("abort", onServeStop);
     }
   };
 
@@ -397,6 +405,10 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         if (adapter) {
           const asked = await ownerForTurn(offer.turnUuid, offer.todoId);
           owner = asked.owner;
+          if (stopReason) {   // 주인을 묻는 사이 serve 가 멈췄다 — 세션도 띄우지 않는다(r3 P1-1)
+            reply = stoppedReply(undefined, limits);
+            return reply;
+          }
           try {
             if (asked.known) {   // 주인을 모르면 읽지도 쓰지도 않는다(entryRev 없음 = 쓰기 0)
               const stored = await deps.sessions.read(offer.conversationUuid, adapter.id);
@@ -413,8 +425,9 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         deps.log.write({ event: "agent_request", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: offer.agent,
           conversationUuid: offer.conversationUuid, pid: session?.pid ?? -1, textLength: offer.text.length });
       }
-      if (stopping.has(offer.key)) {
-        reply = stoppedReply(undefined, limits);   // 시작 전에 멈춤 — 돌리지 않는다
+      if (stopping.has(offer.key) || stopReason) {
+        // 시작 전에 멈춤(그 차례 · serve 전체) — 돌리지 않는다 · 조회·입력·칸 쓰기 0(코드 리뷰 C2 r3 P1-1)
+        reply = stoppedReply(undefined, limits);
         return reply;
       }
       if (!adapter || !session) {
@@ -423,12 +436,15 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           reply: clip(`이 PC 에는 «${offer.agent}» 가 설치되어 있지 않아요.`, limits.textMaxCharacters) };
         return reply;
       }
-      current = { key: offer.key, session };
+      const turnAbort = new AbortController();
+      current = { key: offer.key, session, abort: turnAbort };
       let turnContext: TurnContextReply | undefined;
+      /** ★입력 전에 끝남(멈춤·기한·거절) — 재개 칸은 그대로 둔다(Agent 에 아무것도 넣지 않았다 · 코드 리뷰 C2 r3 P0-1). */
+      let beforeInput: "stopped" | "timeout" | undefined;
       try {
         if (offer.turnUuid !== undefined && offer.todoId === undefined && offer.turnContextAvailable === true) {
-          const asked = await askTurnContext(offer.turnUuid, session, entry, owner, deadlineAt, () => stopping.has(offer.key));
-          if (asked.kind === "refused") {
+          const asked = await askTurnContext(offer.turnUuid, session, entry, owner, deadlineAt, turnAbort.signal);
+          if (asked.kind === "refused" && !stopping.has(offer.key) && !stopReason) {
             const code = asked.error.code ?? String(asked.error.status);
             failure = `turn-context refused: ${code}`;
             stopOnFatal(asked.error, "turn");
@@ -436,29 +452,35 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
               reply: clip(`AiNecto refused this request's conversation context (${code}), so it did not run on this PC.`, limits.textMaxCharacters) };
             return reply;
           }
-          if (asked.kind === "timeout") {
-            outcome = { kind: "timeout" };
-          } else {
+          if (asked.kind === "timeout") beforeInput = "timeout";
+          if (asked.kind === "ok") {
             turnContext = asked.reply;
             if (turnContext) secrets.push(turnContext.readKey);
           }
         }
-        if (outcome === undefined && stopping.has(offer.key)) {
-          // 준비·알림 조회 사이에 멈춤 — 돌리지 않는다 · 재개 값은 그대로. 준비 중이던 자식은 interrupt 가 내렸다(다음 차례는 새로).
-          reply = stoppedReply(undefined, limits);
-          return reply;
-        }
-        if (outcome === undefined) {
+        if (stopping.has(offer.key) || stopReason) beforeInput = "stopped";   // 멈춤이 기한보다 앞선다
+        else if (beforeInput === undefined && deadlineAt - Date.now() <= 0) beforeInput = "timeout";   // 기한이 지났으면 넣지 않는다(r2 P1-2)
+        if (beforeInput === undefined) {
           // 할 일 차례의 답 글은 카드 실행 대화로만 간다(«열기» 단추 없음) — 지시문 그대로.
           const text = offer.todoId === undefined
             ? agentPromptText(offer.text, offer.context, turnContext && offer.turnUuid ? unreadLine(offer.turnUuid, turnContext) : undefined)
             : offer.text;
-          const remaining = deadlineAt - Date.now();
-          // 기한이 이미 지났으면 입력을 넣지 않는다(코드 리뷰 C2 r2 P1-2)
-          outcome = remaining > 0 ? await session.send(text, remaining) : { kind: "timeout" };
+          outcome = await session.send(text, deadlineAt - Date.now());
         }
       } finally {
         current = undefined;
+      }
+      if (outcome === undefined) {
+        // ★입력 전 종료는 이 한 분기 — 칸을 쓰지도 지우지도 않는다. 기한이면 그 세션을 내린다(준비가 멈춘 자식일 수 있다 · 다음 차례는 칸으로 다시 연다).
+        if (beforeInput === "timeout") {
+          await session.interrupt();
+          await session.close();
+          if (live.get(adapter.id)?.session === session) live.delete(adapter.id);
+          reply = replyForOutcome({ kind: "timeout" }, limits, adapter.displayName);
+        } else {
+          reply = stoppedReply(undefined, limits);
+        }
+        return reply;
       }
       if (outcome.kind === "timeout") {
         // 그 차례를 먼저 멈추고(더 쓰지 않게) 프로세스를 내린다 — 다음 요청은 새 프로세스.
