@@ -8,7 +8,7 @@ import type { IPty } from "node-pty";
 import { defaultShellCommand, planLaunch } from "../os/launch";
 import { TermError } from "./errors";
 import { keyBytes, pasteBytes } from "./keys";
-import type { TermEvent } from "./protocol";
+import type { SessionKind, TermEvent } from "./protocol";
 import { QueryFilter } from "./queryFilter";
 import { screenLines, styledScreen, terminalResetSequence, trackScreenFlags, type ReadRange, type ScreenFlags, type StyledScreen } from "./screen";
 
@@ -33,6 +33,8 @@ export interface SessionSpec {
   project?: string;
   /** 입력을 받지 않는 명령이면 "none"(launch.ts LaunchInput — 이 PC 연결 세션). 없으면 받는다. 옛 데몬·옛 파일은 이 칸 없이 그대로. */
   input?: "none";
+  /** 만들 때 받은 종류(protocol SessionKind) — 수명 동안 그대로. 없이 만든 세션은 칸 없음. */
+  kind?: SessionKind;
 }
 
 /** 세션의 출력·이벤트를 받는 쪽(연결 하나). */
@@ -54,6 +56,7 @@ export interface SessionInfo {
   label?: string;
   project?: string;
   lastOutputAt?: string;
+  kind?: SessionKind;
 }
 
 /** 화면의 터미널 모드 — 원격 웹이 «직접 키»로 바꿀지 본다. */
@@ -156,6 +159,7 @@ export class TermSession {
       ...(this.label !== undefined ? { label: this.label } : {}),
       ...(this.spec.project !== undefined ? { project: this.spec.project } : {}),
       ...(this.lastOutputAt !== undefined ? { lastOutputAt: this.lastOutputAt } : {}),
+      ...(this.spec.kind !== undefined ? { kind: this.spec.kind } : {}),
     };
   }
 
