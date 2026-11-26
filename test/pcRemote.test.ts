@@ -106,7 +106,7 @@ describe("pc run 의 원격 다리 — pc.json(pcId·계정별 원격 허용) �
 
   it("허용한 계정 → pc.json 의 pcId 로 remoteEnabled=true · 목록에서 자기 pc 세션은 뺀다", async () => {
     await ok("term", "new", "work", "--", "cat");
-    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600");
+    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600", "pc", "run");   // 옛 CLI 가 만든 PC 연결 세션 흉내(종류 칸 없음 — 이름 + pc run)
     const path = writeSettings({ [accountKey(fake.endpoint, "u1")]: { consentedAt: "2026-11-17T00:00:00Z", remoteTerminal: true } });
     const bridge = run(path, async () => ({ userId: "u1" }));
     await until(() => fake.ops().includes("open"), "open");

@@ -1,7 +1,7 @@
 import { openTermClient } from "./client";
 import { noSession, TermError } from "./errors";
 import type { TermPaths } from "./paths";
-import { readLines } from "./protocol";
+import { readLines, sessionInstance } from "./protocol";
 import type { ReadRange } from "./screen";
 
 export interface WaitResult {
@@ -17,6 +17,8 @@ export interface WaitResult {
  * ★정규식은 «클라이언트»에서 돈다. 데몬은 «바뀜» 알림만 보내고 화면 글자를 돌려줄 뿐이라, 오래 걸리는 정규식이
  *   데몬(모든 세션)을 막지 않는다 — 설계 7 ⑦ «실행 범위 제한»을 실행 상한 값 없이 지킨다.
  * 데몬은 다음 read 전까지 알림을 한 번만 보낸다(출력이 많아도 알림이 쌓이지 않는다).
+ * instance(있으면) = 그 인스턴스의 화면만 본다 — read 답의 인스턴스가 다르면(같은 이름으로 다시 만든 세션) SESSION_REPLACED.
+ *   답에 인스턴스 칸이 없으면(옛 데몬) 이름만으로 본다.
  */
 export async function waitForMatch(
   paths: TermPaths,
@@ -24,6 +26,7 @@ export async function waitForMatch(
   pattern: RegExp,
   range: ReadRange,
   timeoutMs: number | undefined,
+  instance?: string,
 ): Promise<WaitResult> {
   const client = await openTermClient(paths, { start: false });
   if (!client) {
@@ -64,6 +67,10 @@ export async function waitForMatch(
           throw new TermError("TERM_SESSION_ENDED", ended);
         }
         throw error;
+      }
+      const seen = sessionInstance(data);
+      if (instance !== undefined && seen !== undefined && seen !== instance) {
+        throw new TermError("SESSION_REPLACED", `The session "${name}" was replaced by a new one with the same name.`);
       }
       const lines = readLines(data);
       for (const line of lines) {

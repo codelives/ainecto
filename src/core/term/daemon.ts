@@ -7,6 +7,7 @@ import { acquireDaemonLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
 import { afterListen, helloProof, prepareListen, type IpcAddress } from "./ipc";
+import { readEndedBook, withEnded, withoutAcked, writeEndedBook } from "./endedBook";
 import { readManifest, writeManifest, type ManifestEntry } from "./manifest";
 import type { TermPaths } from "./paths";
 import {
@@ -14,6 +15,8 @@ import {
   LineDecoder,
   parseClientMessage,
   RETRY_CODE,
+  type EndedRecord,
+  type EndReason,
   type TermClientMessage,
   type TermEvent,
   type TermRequest,
@@ -69,7 +72,15 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
     log.write({ event: "manifest_error", message: errorMessage(error) });
     manifest = [];
   }
-  const daemon = new TermDaemon(paths, log, manifest);
+  let ended: EndedRecord[];
+  try {
+    ended = await readEndedBook(paths.ended);
+  } catch (error) {
+    // 깨진 끝 기록 책도 데몬을 막지 않는다 — 잃는 것은 서버 장부의 «끝났습니다» 표시뿐(그 줄은 «확인 안 됨»으로 남는다).
+    log.write({ event: "ended_book_error", message: errorMessage(error) });
+    ended = [];
+  }
+  const daemon = new TermDaemon(paths, log, manifest, ended);
   await daemon.listen();
   log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: daemon.address });
   process.on("SIGTERM", () => void daemon.shutdown("SIGTERM"));
@@ -122,6 +133,7 @@ class TermDaemon {
   private shuttingDown = false;
   private stopping = false;
   private manifestWrite: Promise<void> = Promise.resolve();
+  private endedWrite: Promise<void> = Promise.resolve();
   private resolveFinished: (code: number) => void = () => undefined;
   /** 이번 주소 — listen 뒤에 정해진다(Windows 는 증명 비밀값 포함). */
   private ipc: IpcAddress | undefined;
@@ -133,6 +145,8 @@ class TermDaemon {
     private readonly paths: TermPaths,
     private readonly log: DaemonLog,
     private manifest: ManifestEntry[],
+    /** 끝 기록 책(endedBook.ts) — 서버가 받았다고 다리가 ended-ack 하기 전까지. */
+    private ended: EndedRecord[],
   ) {
     this.server = createServer((socket) => this.accept(socket));
   }
@@ -164,7 +178,12 @@ class TermDaemon {
     this.stopping = true;
     this.stopAccepting();
     await this.inflightAtMost(0);
+    // 데몬과 함께 끝나는 세션(SIGTERM·SIGINT — PTY 가 같이 닫힌다)도 끝 기록에. restore 는 매니페스트로 새 인스턴스를 띄운다.
+    for (const session of this.sessions.values()) {
+      this.recordEnd(session, "exited");
+    }
     await this.manifestWrite;
+    await this.endedWrite;
     for (const connection of this.connections) {
       connection.end();
     }
@@ -272,13 +291,19 @@ class TermDaemon {
         assertSessionName(request.name);
         const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString(),
           ...(request.project !== undefined ? { project: request.project } : {}),
-          ...(request.input !== undefined ? { input: request.input } : {}) };
+          ...(request.input !== undefined ? { input: request.input } : {}),
+          ...(request.kind !== undefined ? { kind: request.kind } : {}) };
         const session = await this.startSession(entry, request.env, request.cols, request.rows);
         this.updateManifest((entries) => [...entries.filter((item) => item.name !== entry.name), entry]);
         return { data: session.info() };
       }
       case "ls":
-        return { data: { sessions: [...this.sessions.values()].map((session) => session.info()) } };
+        return { data: { sessions: [...this.sessions.values()].map((session) => session.info()), ended: this.ended } };
+      case "ended-ack": {
+        const before = this.ended.length;
+        this.updateEnded((book) => withoutAcked(book, request.instances));
+        return { data: { acked: before - this.ended.length } };
+      }
       case "send": {
         const session = this.session(request.name, request.instance);
         await session.send(request.text, request.paste);
@@ -303,6 +328,8 @@ class TermDaemon {
       case "kill": {
         const session = this.session(request.name, request.instance);
         this.sessions.delete(request.name);
+        // ★표에서 먼저 뺀다 — 뒤따르는 PTY 끝(sessionEnded)은 current 가 아니라 두 번째 기록을 만들지 않는다.
+        this.recordEnd(session, "killed");
         session.kill();
         this.updateManifest((entries) => entries.filter((item) => item.name !== request.name));
         this.notifySessions();
@@ -315,6 +342,8 @@ class TermDaemon {
         await this.inflightAtMost(1);
         const names = [...this.sessions.keys()];
         for (const session of this.sessions.values()) {
+          // 사람이 세션마다 지운 것이 아니다 — killed(서버가 줄을 숨김)가 아니라 exited(«끝났습니다» + 지우기).
+          this.recordEnd(session, "exited");
           session.kill();
         }
         this.sessions.clear();
@@ -410,6 +439,7 @@ class TermDaemon {
     const kept = current && endedFromOutside(exitCode, signal);
     if (current) {
       this.sessions.delete(session.name);
+      this.recordEnd(session, "exited", exitCode, signal);
       if (!kept) {
         this.updateManifest((entries) => entries.filter((item) => item.name !== session.name));
       }
@@ -443,6 +473,33 @@ class TermDaemon {
     for (const connection of this.listWatchers) {
       connection.send({ event: "sessions" });
     }
+  }
+
+  /**
+   * 끝 기록 한 줄 — 세션이 끝나는 세 곳(스스로 끝남·kill·kill-server)과 데몬 종료가 여기 하나로 온다.
+   * signal 이 있으면 그 번호를 글로(코드는 뜻이 없다) · 없으면 exitCode(준 때만).
+   */
+  private recordEnd(session: TermSession, reason: EndReason, exitCode?: number, signal?: number): void {
+    const info = session.info();
+    const record: EndedRecord = {
+      instance: session.instance,
+      name: session.name,
+      ...(info.kind !== undefined ? { kind: info.kind } : {}),
+      command: info.command,
+      endedAt: new Date().toISOString(),
+      reason,
+      ...(signal ? { signal: String(signal) } : exitCode !== undefined ? { exitCode } : {}),
+    };
+    this.updateEnded((book) => withEnded(book, record));
+  }
+
+  /** 끝 기록 책도 데몬 하나만 쓴다 — 매니페스트와 같은 한 줄 쓰기. */
+  private updateEnded(change: (book: EndedRecord[]) => EndedRecord[]): void {
+    this.ended = change(this.ended);
+    const snapshot = this.ended;
+    this.endedWrite = this.endedWrite
+      .then(() => writeEndedBook(this.paths.ended, snapshot))
+      .catch((error) => this.log.write({ event: "ended_book_error", message: errorMessage(error) }));
   }
 
   /** 매니페스트는 데몬 하나만 쓴다 — 쓰기를 한 줄로 세운다. */

@@ -1,7 +1,6 @@
 import { hostname } from "node:os";
 import type { TokenProvider } from "../../core/auth/oauth";
 import { ensurePrivateDir } from "../../core/fs/privateFiles";
-import { PC_SESSION_NAME } from "../../core/pc/pcSession";
 import { pcKeysPath } from "../../core/pc/pcKeys";
 import { createPcNotifier } from "../../core/pc/pcNotify";
 import { PAIR_WAIT_MS } from "../../core/pc/pcPairing";
@@ -151,7 +150,6 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
       notifier: createPcNotifier({ log }),
       pairRelay: (requestId) => createPairRelay({ endpoint: setup.endpoint, tokenProvider: setup.auth, log, pcId: setup.pcId, requestId,
         holdMs: PAIR_WAIT_MS }),
-      exclude: [PC_SESSION_NAME],
       sessionEnv: setup.env,
       appHome: setup.appHome,
       signal,
