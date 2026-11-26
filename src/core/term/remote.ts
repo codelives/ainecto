@@ -8,7 +8,7 @@ import { DaemonLog } from "./daemonLog";
 import { transcriptUserId } from "./e2e";
 import { TermError } from "./errors";
 import { isUuid, webSessionFolder, type TermPaths } from "./paths";
-import { appliedSize, listedSessions, sessionInstance, type TermRequestBody } from "./protocol";
+import { appliedSize, listedEnded, listedSessions, sessionInstance, type TermRequestBody } from "./protocol";
 import {
   answerCodeOf,
   ChannelBook,
@@ -21,7 +21,8 @@ import {
   type WireCommand,
 } from "./remoteChannel";
 import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
-import { sessionsKey, wireSessions, type WireSession } from "./remoteSessions";
+import { listing, sessionsKey, type Listing } from "./remoteSessions";
+import { PC_SESSION_NAME } from "../pc/bridgeKind";
 import { RemoteViewer, type ViewerLink } from "./remoteViewer";
 import { shellLineCommand } from "../os/launch";
 import { ensurePrivateDir } from "../fs/privateFiles";
@@ -72,7 +73,9 @@ const E2E_VERSION = 1;
  */
 export type RemoteLogRecord =
   | { event: "remote_start"; pid: number; version: string; endpoint: string; host: string; pcId: string; remote: string }
-  | { event: "remote_opened"; linkId: string; sessions: number; remote: string; pollHoldSeconds: number; frameMaxBytes: number }
+  | { event: "remote_opened"; linkId: string; sessions: number; ended: number; remote: string; pollHoldSeconds: number; frameMaxBytes: number }
+  /** 서버가 받은 끝 기록을 데몬 책에서 지웠다(보낸 instance 수 · 데몬이 실제로 지운 수). */
+  | { event: "remote_ended_acked"; instances: number; acked: number }
   | { event: "remote_call"; callId: string; op: string; bytes: number }
   | { event: "remote_call_response"; callId: string; op: string; ok: boolean; status?: number; code?: string; error?: string; ms: number;
       state?: string; reason?: string; remote?: string; commands?: number; version?: number }
@@ -171,8 +174,6 @@ export interface BridgeDeps {
   trust: BridgeTrust | undefined;
   /** PC 알림(§4-6 · §11-7) — 새 채널 확인·셸 생성·첫 명령 시작. 다리가 끝날 때 모아 둔 것을 내보낸다. */
   notifier: PcNotifier;
-  /** 목록에서 뺄 세션 — 이 다리를 돌리는 pc 세션. */
-  exclude: readonly string[];
   /** 웹이 만드는 세션의 환경(로컬 `term new` 와 같은 규칙: 다리 프로세스의 환경). */
   sessionEnv: Record<string, string>;
   /** 앱 홈 — 웹이 폴더를 비우고 만들면 그 아래 세션 폴더({@link webSessionFolder}, 0700)를 만들어 그 안에서 시작한다 — 끝내도 남긴다. */
@@ -231,47 +232,63 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
 
   const control = new DaemonControl(deps.paths);
   let listWatch: TermClient | undefined;
+  /** 지금 PC 연결(pc-bridge) 세션 이름 — 마지막 ls 의 것. 웹 명령이 그 세션을 겨누면 거절한다. */
+  let bridges: readonly string[] = [];
+  const list = async (): Promise<Listing> => {
+    const current = await currentListing(deps);
+    bridges = current.bridges;
+    return current;
+  };
   try {
-    const first = await currentSessions(deps);
+    const first = await list();
     if (ending) return { exitCode: ending.exitCode, reason: ending.reason };
     let link: Link;
     try {
-      link = await openLink(deps, 1, deps.remoteEnabled, deps.remoteEnabled ? first : [], undefined);
+      link = await openLink(deps, 1, deps.remoteEnabled, first, undefined);
     } catch (error) {
       return { exitCode: 1, reason: refused(error).reason };
     }
     let remote = startState(deps.remoteEnabled);
-    /** 서버에 마지막으로 올린 목록 — 바뀐 때만 올린다. */
-    let uploaded = deps.remoteEnabled ? sessionsKey(first) : undefined;
+    /** 서버에 마지막으로 올린 목록 — 바뀐 때만 올린다(끝 기록이 남아 있으면 같아도 올린다). */
+    let uploaded = deps.remoteEnabled ? sessionsKey(first.sessions) : undefined;
     /** 서버가 마지막으로 알려 준 보기 목록(A1 — 가장 최근 watch 가 전체). 활성 채널만 화면을 받는다. */
     let watchList: Watch[] = [];
-    deps.log.write({ event: "remote_opened", linkId: link.linkId, sessions: deps.remoteEnabled ? first.length : 0, remote,
+    deps.log.write({ event: "remote_opened", linkId: link.linkId, sessions: deps.remoteEnabled ? first.sessions.length : 0, ended: first.ended.length, remote,
       pollHoldSeconds: link.pollHoldSeconds, frameMaxBytes: link.frameMaxBytes });
     deps.print(deps.remoteEnabled
-      ? `${REMOTE_STATE_PREFIX}on — ${first.length} session(s) from ${deps.hostName} are listed in AiNecto on the web.`
+      ? `${REMOTE_STATE_PREFIX}on — ${first.sessions.length} session(s) from ${deps.hostName} are listed in AiNecto on the web.`
       : `${REMOTE_STATE_PREFIX}off on this PC (\`ainecto remote on\` allows it).`);
 
-    /** 목록 올리기 — 한 줄로 세운다(겹쳐 올리지 않게). 원격이 꺼졌으면 올리지 않는다. */
+    /**
+     * 목록 올리기 — 한 줄로 세운다(겹쳐 올리지 않게). 원격이 꺼졌으면 올리지 않는다(끝 기록은 책에 남아 다음 open 에 실린다).
+     * ★끝 기록은 서버 2xx 뒤에만 책에서 지운다 — 실패·끊김이면 책 그대로, 다음 poll·알림 때 다시 싣는다.
+     */
     let syncing: Promise<void> = Promise.resolve();
     const syncList = (): Promise<void> => {
       syncing = syncing.then(async () => {
         if (ending || remote !== "on") return;
-        let sessions: WireSession[];
+        let current: Listing;
         try {
-          sessions = await currentSessions(deps);
+          current = await list();
         } catch (error) {
           daemonFailed(deps, "ls", undefined, error);
           return;
         }
-        const key = sessionsKey(sessions);
-        if (key === uploaded) return;
-        try {
-          await deps.http.call("sessions", { linkId: link.linkId, sessions }, { signal: stopper.signal });
-          uploaded = key;
-          for (const { viewer } of viewers.values()) viewer.refresh();
-        } catch {
-          // 응답 줄은 공용 입구가 남겼다 — 다음 poll 이 돌아올 때 다시 견준다(uploaded 그대로).
+        const key = sessionsKey(current.sessions);
+        if (key === uploaded && current.ended.length === 0) {
+          await ackEnded(deps, current.ack);   // 올릴 것 없는 pc-bridge 끝 기록만 남았다
+          return;
         }
+        try {
+          await deps.http.call("sessions", { linkId: link.linkId, sessions: current.sessions,
+            ...(current.ended.length > 0 ? { ended: current.ended } : {}) }, { signal: stopper.signal });
+        } catch {
+          // 응답 줄은 공용 입구가 남겼다 — 다음 poll 이 돌아올 때 다시 견준다(uploaded·책 그대로).
+          return;
+        }
+        uploaded = key;
+        await ackEnded(deps, current.ack);
+        for (const { viewer } of viewers.values()) viewer.refresh();
       });
       return syncing;
     };
@@ -366,7 +383,7 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
       }
       const missing = wanted.filter((watch) => !viewers.has(viewerKey(watch)));
       if (missing.length > 0) {
-        const sizes = new Map((await currentSessions(deps).catch(() => [])).map((s) => [s.name, { cols: s.cols, rows: s.rows }]));
+        const sizes = new Map(((await list().catch(() => undefined))?.sessions ?? []).map((s) => [s.name, { cols: s.cols, rows: s.rows }]));
         for (const watch of missing) {
           const size = sizes.get(watch.session);
           if (size && !viewers.has(viewerKey(watch))) {
@@ -461,6 +478,8 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
       });
     }
     const commands = new CommandRunner(deps, control, book, () => remote, () => link.linkId, stopper.signal, {
+      // 지금 PC 연결 세션 · 만들기는 그 이름 자체도(startPcSession 이 늘 그 이름으로 띄운다 — 웹이 먼저 차지하면 PC 연결이 못 뜬다)
+      refuses: (session, create) => bridges.includes(session) || (create && session === PC_SESSION_NAME),
       devices: () => devices,
       trusted: async (keyId) => (await loadTrust(deps))?.browsers.some((item) => item.keyId === keyId) === true,
       closeChannel,
@@ -489,10 +508,10 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
           try {
             // 웹에서 끈 원격은 이 프로세스가 사는 동안 꺼진 채다(R2) — 서버가 잊었어도 다시 켜서 열지 않는다.
             const enabled = deps.remoteEnabled && remote !== "off-by-web";
-            const sessions = enabled ? await currentSessions(deps) : [];
-            link = await openLink(deps, previous.generation + 1, enabled, sessions, stopper.signal);
+            const current = await list();
+            link = await openLink(deps, previous.generation + 1, enabled, current, stopper.signal);
             if (enabled) remote = "on";
-            uploaded = enabled ? sessionsKey(sessions) : undefined;
+            uploaded = enabled ? sessionsKey(current.sessions) : undefined;
           } catch (reopenError) {
             if (ending) break;
             if (reopenError instanceof PcCallError && reopenError.retryable) continue;
@@ -592,10 +611,14 @@ function startState(remoteEnabled: boolean): RemoteState {
   return remoteEnabled ? "on" : "off-by-pc";
 }
 
-/** open 한 번 — 처음과 다시 열기가 같은 길. 새 토큰을 싣는다. */
-async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boolean, sessions: WireSession[],
+/**
+ * open 한 번 — 처음과 다시 열기가 같은 길. 새 토큰을 싣는다. 목록은 원격이 켜졌을 때만 · 끝 기록은 원격을 끈 채여도 싣는다
+ * (api 는 그때 목록은 안 올리고 끝 기록만 받는다). 201 뒤에만 책에서 지운다.
+ */
+async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boolean, current: Listing,
   signal: AbortSignal | undefined): Promise<Link> {
-  const base = { pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled, sessions, e2e: E2E_VERSION };
+  const base = { pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled,
+    sessions: remoteEnabled ? current.sessions : [], ...(current.ended.length > 0 ? { ended: current.ended } : {}), e2e: E2E_VERSION };
   // 새 기기 허용·기기 관리를 안다(approve-new-device §3-4) — 서버는 이 표시가 있는 링크에만 pair-request·device 를 보낸다.
   const devices = deps.trust !== undefined && deps.pairRelay !== undefined;
   let opened: Record<string, unknown>;
@@ -612,13 +635,31 @@ async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boo
     throw new TermError("TERM_REMOTE_BAD_RESPONSE", "AiNecto answered open without linkId, linkToken or limits.");
   }
   deps.http.useSessionToken(opened.linkToken);
+  await ackEnded(deps, current.ack);
   return { linkId: opened.linkId, generation, ...limits };
 }
 
-/** 지금 데몬의 세션 목록(자기 pc 세션 뺌). 데몬이 없으면 빈 목록. */
-async function currentSessions(deps: BridgeDeps): Promise<WireSession[]> {
+/** 지금 데몬의 세션 목록·끝 기록(ls 한 번 — PC 연결 세션은 뺌). 데몬이 없으면 빈 목록. */
+async function currentListing(deps: BridgeDeps): Promise<Listing> {
   const result = await termRequest(deps.paths, { op: "ls" }, { start: false });
-  return wireSessions(listedSessions(result.daemon ? result.data : undefined), deps.exclude);
+  const data = result.daemon ? result.data : undefined;
+  return listing(listedSessions(data), listedEnded(data));
+}
+
+/**
+ * 서버가 받은 끝 기록을 데몬 책에서 지운다 — ★ack 가 undefined(옛 데몬: ls 에 ended 칸 없음)면 보내지 않는다(모르는 op 에 연결을 끊는다).
+ * 실패하면 한 줄 남기고 책 그대로 — 다음에 또 보내도 서버는 한 번으로 본다.
+ */
+async function ackEnded(deps: BridgeDeps, ack: readonly string[] | undefined): Promise<void> {
+  if (!ack || ack.length === 0) return;
+  try {
+    const result = await termRequest(deps.paths, { op: "ended-ack", instances: [...ack] }, { start: false });
+    const acked = result.daemon && result.data && typeof result.data === "object" && "acked" in result.data && typeof result.data.acked === "number"
+      ? result.data.acked : 0;
+    deps.log.write({ event: "remote_ended_acked", instances: ack.length, acked });
+  } catch (error) {
+    daemonFailed(deps, "ended-ack", undefined, error);
+  }
 }
 
 /** hello 마다 — pc-keys.json 의 이 계정(PC 키·짝지은 브라우저). 없거나 못 읽으면 undefined(PAIRING_REQUIRED). */
@@ -687,6 +728,8 @@ class DaemonControl {
 }
 
 interface RunnerHooks {
+  /** 웹 명령이 그 세션에 가면 안 되나(PC 연결 세션) — create 면 만들 이름. */
+  refuses(session: string, create: boolean): boolean;
   /** 기기 관리 — 없으면 device 명령은 거절 답. */
   devices(): DeviceManager | undefined;
   /** 그 브라우저 키가 지금 핀에 있나(confirm 때 다시 본다 — hello 뒤 지운 키가 활성되지 않게). */
@@ -818,7 +861,7 @@ class CommandRunner {
     if (this.remote() !== "on") {
       // ★이중 거절 — 서버가 먼저 막지만 PC 도 원격이 꺼졌으면 하지 않는다.
       failure = { code: "REMOTE_OFF", message: "Terminals from the web are turned off on this PC." };
-    } else if (this.deps.exclude.includes(session)) {
+    } else if (this.hooks.refuses(session, command.kind === "create")) {
       failure = { code: "TERM_NO_SESSION", message: `No session named "${session}".` };
     } else {
       try {

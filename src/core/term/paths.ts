@@ -22,6 +22,8 @@ export interface TermPaths {
   daemonInfo: string;
   /** 복원 매니페스트. */
   manifest: string;
+  /** 끝 기록 책 — 서버가 받았다고 확인하기 전까지의 세션 끝(endedBook.ts). */
+  ended: string;
   /** 데몬 로그 — JSON 한 줄씩. */
   log: string;
   /** 크기를 넘겨 밀려난 직전 로그 — 하나만 남는다. */
@@ -75,6 +77,7 @@ export function termPaths(home: string = homedir(), platform: NodeJS.Platform = 
     abstractLockName: `\0ainecto-term-${process.getuid?.() ?? "na"}-${createHash("sha256").update(dir).digest("hex")}.lock`,
     daemonInfo: join(dir, "daemon.json"),
     manifest: join(dir, "sessions.json"),
+    ended: join(dir, "ended.json"),
     log: join(dir, "daemon.log"),
     previousLog: join(dir, "daemon.log.1"),
     remoteLog: join(dir, "remote.log"),

@@ -1,5 +1,6 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
+import type { SessionKind } from "./protocol";
 
 /**
  * 복원 매니페스트 `sessions.json` — 데몬이 죽거나 재부팅된 뒤 `ainecto term restore` 가 다시 띄울 목록(설계 2-6).
@@ -18,6 +19,8 @@ export interface ManifestEntry {
   project?: string;
   /** 입력을 받지 않는 명령이면 "none"(launch.ts LaunchInput — 이 PC 연결 세션). 없으면 받는다. 옛 데몬·옛 파일은 이 칸 없이 그대로. */
   input?: "none";
+  /** 만들 때 받은 종류 — restore 가 그대로 되살린다. 없이 만든 줄(옛 CLI·옛 파일)은 칸 없음. */
+  kind?: SessionKind;
 }
 
 interface ManifestFile {
@@ -60,5 +63,6 @@ function isEntry(value: unknown): value is ManifestEntry {
     && (entry.label === undefined || typeof entry.label === "string")
     && (entry.project === undefined || typeof entry.project === "string")
     && (entry.input === undefined || entry.input === "none")
+    && (entry.kind === undefined || entry.kind === "user" || entry.kind === "pc-bridge")
     && (entry.command === null || (Array.isArray(entry.command) && entry.command.every((item) => typeof item === "string")));
 }

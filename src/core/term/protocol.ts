@@ -10,6 +10,31 @@ import type { CellStyle, ScreenCursor } from "./screen";
  */
 
 /**
+ * 세션 종류 — 만들 때 받은 값만 남는다(세션 수명 동안 그대로 · 매니페스트·ls·끝 기록에). 없이 만든 세션(옛 CLI)은 칸 없음 —
+ * 그 줄의 판정은 pcSession.bridgeKind 한 곳이 한다.
+ */
+export type SessionKind = "user" | "pc-bridge";
+
+/** 끝 사유 — exited(스스로 끝남·데몬과 함께 끝남) · killed(사람이 세션을 지움). api 장부 end_reason 과 같은 두 값. */
+export type EndReason = "exited" | "killed";
+
+/**
+ * 끝 기록 한 줄(데몬 책 `ended.json` · ls 답의 ended) — 서버 장부가 «끝났습니다(시각·코드)»를 보이게 한다.
+ * command 는 PC 안 판정용(종류 칸 없는 옛 줄 — bridgeKind)이고 서버에 올리지 않는다.
+ * signal = 끝낸 신호 번호를 글로(0 이면 칸 없음) · exitCode = 신호 없이 끝났을 때만.
+ */
+export interface EndedRecord {
+  instance: string;
+  name: string;
+  kind?: SessionKind;
+  command: string[] | null;
+  endedAt: string;
+  reason: EndReason;
+  exitCode?: number;
+  signal?: string;
+}
+
+/**
  * 요청 본문 — id 는 클라이언트가 붙인다.
  * instance(있으면) = 그 이름의 «지금» 세션 인스턴스와 같을 때만 적용한다 — 다르면 SESSION_REPLACED(설계 terminal-e2e §14-6 4).
  * 원격 다리는 웹 명령마다 봉인 본문의 인스턴스를 싣는다. 로컬 `term` 명령은 싣지 않는다(이름만).
@@ -17,8 +42,14 @@ import type { CellStyle, ScreenCursor } from "./screen";
 export type TermRequestBody =
   /** project = 프로젝트 꼬리표(KAN-1238, {@link isUuid}) — 세션 수명 동안 그대로, 매니페스트·ls 에 남는다. 옛 데몬은 버린다. */
   | { op: "new"; name: string; cwd: string; command: string[] | null; env: Record<string, string>; cols?: number; rows?: number;
-      project?: string; input?: "none" }
+      project?: string; input?: "none"; kind?: SessionKind }
+  /** 답 = {sessions, ended} — ended 는 아직 서버가 받았다고 확인하지 않은 끝 기록(옛 데몬은 칸 없음). */
   | { op: "ls" }
+  /**
+   * 서버가 받은 끝 기록을 책에서 지운다(그 instance 만 — 같은 이름의 더 새 끝 기록은 남는다).
+   * ★옛 데몬은 모르는 op 에 연결을 끊는다 — 다리는 ls 답에 ended 칸이 있을 때만 보낸다.
+   */
+  | { op: "ended-ack"; instances: string[] }
   | { op: "send"; name: string; text: string; paste: boolean; instance?: string }
   | { op: "key"; name: string; key: string; instance?: string }
   /** styles = 글자 속성·커서까지(원격 화면) — 옛 데몬은 버리고 글자만 준다. */
@@ -135,7 +166,10 @@ export function parseClientMessage(line: string): TermClientMessage {
         rows: optionalSize(record, "rows"),
         ...(record.project === undefined ? {} : { project: projectField(record, "project") }),
         ...(record.input === undefined ? {} : { input: noInputField(record, "input") }),
+        ...(record.kind === undefined ? {} : { kind: kindField(record, "kind") }),
       };
+    case "ended-ack":
+      return { id, op, instances: stringListField(record, "instances") };
     case "ls":
     case "kill-server":
     case "detach":
@@ -220,6 +254,25 @@ export interface ListedSession {
   lastOutputAt?: string;
   /** 세션 인스턴스 id(무작위) — 옛 데몬이면 칸 없음. */
   instance?: string;
+  /** 만들 때 받은 종류 — 없이 만들었거나 옛 데몬이면 칸 없음(pcSession.bridgeKind). */
+  kind?: SessionKind;
+}
+
+/** `ls` 응답 → 끝 기록. ★칸이 없으면 undefined(옛 데몬 — 끝 기록을 모름 · ended-ack 도 모른다). 모양이 틀린 줄은 뺀다. */
+export function listedEnded(data: unknown): EndedRecord[] | undefined {
+  if (!data || typeof data !== "object" || !("ended" in data) || !Array.isArray(data.ended)) return undefined;
+  return data.ended.filter(isEndedRecord);
+}
+
+export function isEndedRecord(value: unknown): value is EndedRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.instance === "string" && record.instance !== "" && typeof record.name === "string"
+    && (record.kind === undefined || record.kind === "user" || record.kind === "pc-bridge")
+    && (record.command === null || (Array.isArray(record.command) && record.command.every((item) => typeof item === "string")))
+    && typeof record.endedAt === "string" && (record.reason === "exited" || record.reason === "killed")
+    && (record.exitCode === undefined || Number.isInteger(record.exitCode))
+    && (record.signal === undefined || typeof record.signal === "string");
 }
 
 /** `ls` 응답 → 세션 목록 — 모양이 맞지 않는 줄은 뺀다. */
@@ -340,6 +393,23 @@ function projectField(record: Record<string, unknown>, key: string): string {
   const value = stringField(record, key);
   if (!isUuid(value)) {
     throw new TermProtocolError(`"${key}" must be a lowercase UUID.`);
+  }
+  return value;
+}
+
+function kindField(record: Record<string, unknown>, key: string): SessionKind {
+  const value = record[key];
+  if (value !== "user" && value !== "pc-bridge") {
+    throw new TermProtocolError(`"${key}" must be "user" or "pc-bridge".`);
+  }
+  return value;
+}
+
+/** 빈 글이 아닌 문자열 목록(빈 목록 허용). */
+function stringListField(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === "string" && item !== "")) {
+    throw new TermProtocolError(`"${key}" must be a string array.`);
   }
   return value;
 }

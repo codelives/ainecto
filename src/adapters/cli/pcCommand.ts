@@ -7,9 +7,9 @@ import {
   withoutEndpoint,
   withRemoteTerminal,
 } from "../../core/pc/pcSettings";
+import { PC_SESSION_NAME } from "../../core/pc/bridgeKind";
 import {
   PC_OUTCOME_PATTERN,
-  PC_SESSION_NAME,
   daemonUpgrade,
   pcAction,
   remoteOffByWeb,
@@ -28,7 +28,7 @@ import { openTermClient, readDaemonInfo, termRequest, type TermConnectOptions } 
 import { waitForDaemonLockFree } from "../../core/term/daemonLock";
 import { TermError } from "../../core/term/errors";
 import type { TermPaths } from "../../core/term/paths";
-import { listedSessions, readLines, type ListedSession } from "../../core/term/protocol";
+import { listedSessions, readLines, sessionInstance, type ListedSession } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { isNodeError } from "../../core/fs/privateFiles";
 import { loadPcKeys, updatePcKeys, withoutBrowser, withoutEndpointKeys, type PcGroup } from "../../core/pc/pcKeys";
@@ -328,7 +328,8 @@ export type PcStartOutcome = { kind: "connected"; agentMissing: boolean } | { ki
  */
 export async function startPcSession(deps: PcDeps): Promise<PcStartOutcome> {
   const startedAt = new Date().toISOString();
-  await termRequest(deps.paths, {
+  // ★종류는 여기 한 곳에서 찍는다 — 시작·갈아끼우기·원격 설정 반영·자동 업그레이드·되돌림이 모두 이 함수를 지난다(P1-1 입구 ②).
+  const created = await termRequest(deps.paths, {
     op: "new",
     name: PC_SESSION_NAME,
     cwd: deps.cwd,
@@ -336,16 +337,19 @@ export async function startPcSession(deps: PcDeps): Promise<PcStartOutcome> {
     env: deps.sessionEnv,
     // 사람 입력을 받지 않는다 — Windows 에서 stop·swap 의 ^C 뒤 cmd «일괄 작업» 확인이 기다리지 않게(launch.ts LaunchInput).
     input: "none",
+    kind: "pc-bridge",
   }, { start: true });
+  // 준비 증거는 «방금 만든 그 인스턴스»의 화면만 — 그 사이 같은 이름으로 다시 만든 세션의 줄로 «연결됨»을 찍지 않는다(옛 데몬은 칸 없음 → 이름만).
+  const instance = created.daemon ? sessionInstance(created.data) : undefined;
   let line: string;
   try {
-    line = (await waitForMatch(deps.paths, PC_SESSION_NAME, PC_OUTCOME_PATTERN, { scrollback: true }, deps.readyDeadlineMs)).line;
+    line = (await waitForMatch(deps.paths, PC_SESSION_NAME, PC_OUTCOME_PATTERN, { scrollback: true }, deps.readyDeadlineMs, instance)).line;
   } catch (error) {
     if (error instanceof TermError && error.code === "TERM_WAIT_TIMEOUT") {
       return { kind: "connecting" };
     }
-    // 끝남 — 기다리는 동안(SESSION_ENDED) 또는 기다리기 전에 이미(NO_SESSION: 바로 끝나 데몬 표에서 빠졌다).
-    if (error instanceof TermError && (error.code === "TERM_SESSION_ENDED" || error.code === "TERM_NO_SESSION")) {
+    // 끝남 — 기다리는 동안(SESSION_ENDED) 또는 기다리기 전에 이미(NO_SESSION: 바로 끝나 데몬 표에서 빠졌다) · 같은 이름의 다른 세션으로 바뀜(SESSION_REPLACED).
+    if (error instanceof TermError && (error.code === "TERM_SESSION_ENDED" || error.code === "TERM_NO_SESSION" || error.code === "SESSION_REPLACED")) {
       const last = await lastLogLineSince(deps.agentLog, startedAt);
       throw new CliCommandError("PC_START_FAILED", `The PC connection stopped right after it started (${error.message})`
         + `${last ? ` Last log line: ${last}` : ""} Log: ${deps.agentLog}`);
