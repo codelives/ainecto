@@ -9,6 +9,8 @@ export class PcCallError<Op extends string = string> extends Error {
     readonly op: Op,
     readonly status?: number,
     readonly code?: string,
+    /** 413 본문 상한 거절이면 서버가 알려 준 상한(오류 본문의 maxBytes) — 다리가 끝 기록을 그 안으로 나눠 다시 보낸다. */
+    readonly maxBytes?: number,
   ) {
     super(message);
     this.name = "PcCallError";
@@ -61,12 +63,12 @@ export function createPcHttp<Op extends string, R extends { event: string }, O e
   sessionHeader: string;
   logging: PcCallLogging<R, O>;
   /** 오류 종류 — 기능마다 이름을 달리 둘 때. */
-  error?: (message: string, op: Op, status?: number, code?: string) => PcCallError<Op>;
+  error?: (message: string, op: Op, status?: number, code?: string, maxBytes?: number) => PcCallError<Op>;
   fetchImpl?: typeof fetch;
 }): PcHttp<Op, O> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const base = `${input.endpoint.replace(/\/+$/, "")}/${input.path}/`;
-  const fail = input.error ?? ((message, op, status, code) => new PcCallError(message, op, status, code));
+  const fail = input.error ?? ((message, op, status, code, maxBytes) => new PcCallError(message, op, status, code, maxBytes));
   const { log } = input.logging;
   let sessionToken: string | undefined;
 
@@ -115,7 +117,8 @@ export function createPcHttp<Op extends string, R extends { event: string }, O e
           const code = typeof parsed?.code === "string" ? parsed.code : undefined;
           outcome = { ok: false, status: response.status, code };
           // 서버 오류 본문은 {code, message}(api ApiExceptionHandler 한 곳) — 설명은 message 칸.
-          throw fail(typeof parsed?.message === "string" ? parsed.message : `HTTP ${response.status}`, op, response.status, code);
+          const maxBytes = response.status === 413 && typeof parsed?.maxBytes === "number" && parsed.maxBytes > 0 ? parsed.maxBytes : undefined;
+          throw fail(typeof parsed?.message === "string" ? parsed.message : `HTTP ${response.status}`, op, response.status, code, maxBytes);
         }
         outcome = { ok: true, status: response.status, body: parsed ?? {} };
         return parsed ?? {};

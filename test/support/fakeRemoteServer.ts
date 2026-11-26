@@ -34,6 +34,8 @@ export class FakeRemoteServer {
   pollError: { status: number; code: string } | undefined;
   /** 있으면 sessions 를 이 오류로 거절한다(일시 장애 흉내 — 끝 기록은 책에 남아야 한다). */
   sessionsError: { status: number; code: string } | undefined;
+  /** 화면 밖 본문 상한(api C4) — open 답 limits.bodyMaxBytes 로 알리고, 넘으면 413 BODY_TOO_LARGE {maxBytes}. */
+  bodyMaxBytes = 64 * 1024;
   /** 다음 open 을 이 오류로 거절한다(옛 서버 흉내 — 400 INVALID). */
   openError: { status: number; code: string } | undefined;
   /** 옛 서버 흉내 — open 에 모르는 칸 devices 가 있으면 400 INVALID(그 칸이 없으면 받는다). */
@@ -112,6 +114,10 @@ export class FakeRemoteServer {
       res.writeHead(status, { "Content-Type": "application/json" });
       res.end(text);
     };
+    if (op !== "frame" && Buffer.byteLength(raw, "utf8") > this.bodyMaxBytes) {
+      reply(413, { code: "BODY_TOO_LARGE", message: "too large", maxBytes: this.bodyMaxBytes });
+      return;
+    }
     if (op !== "open" && (!this.known || body.linkId !== this.linkId || token !== this.linkToken)) {
       reply(404, { code: "REMOTE_NOT_FOUND", message: "No such open remote terminal." });
       return;
@@ -134,7 +140,7 @@ export class FakeRemoteServer {
         this.remote = body.remoteEnabled === true ? "on" : "off-by-pc";
         this.listed = body.sessions as Array<Record<string, unknown>>;
         reply(201, { linkId: this.linkId, linkToken: this.linkToken,
-          limits: { pollHoldSeconds: 1, frameMaxBytes: 1024 * 1024, bodyMaxBytes: 64 * 1024 } });
+          limits: { pollHoldSeconds: 1, frameMaxBytes: 1024 * 1024, bodyMaxBytes: this.bodyMaxBytes } });
         return;
       case "sessions":
         if (this.sessionsError) {

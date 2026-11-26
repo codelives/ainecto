@@ -21,7 +21,7 @@ import {
   type WireCommand,
 } from "./remoteChannel";
 import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
-import { listing, sessionsKey, type Listing } from "./remoteSessions";
+import { endedThatFit, listing, sessionsKey, type Listing, type WireEnded } from "./remoteSessions";
 import { PC_SESSION_NAME } from "../pc/bridgeKind";
 import { RemoteViewer, type ViewerLink } from "./remoteViewer";
 import { shellLineCommand } from "../os/launch";
@@ -76,6 +76,8 @@ export type RemoteLogRecord =
   | { event: "remote_opened"; linkId: string; sessions: number; ended: number; remote: string; pollHoldSeconds: number; frameMaxBytes: number }
   /** 서버가 받은 끝 기록을 데몬 책에서 지웠다(보낸 instance 수 · 데몬이 실제로 지운 수). */
   | { event: "remote_ended_acked"; instances: number; acked: number }
+  /** 본문 상한(413 BODY_TOO_LARGE · 서버가 준 maxBytes) — 끝 기록을 그 안으로 나눠 보낸다(실은 수 · 남긴 수). */
+  | { event: "remote_body_limit"; op: string; maxBytes: number; ended: number; held: number }
   | { event: "remote_call"; callId: string; op: string; bytes: number }
   | { event: "remote_call_response"; callId: string; op: string; ok: boolean; status?: number; code?: string; error?: string; ms: number;
       state?: string; reason?: string; remote?: string; commands?: number; version?: number }
@@ -174,6 +176,11 @@ export interface BridgeDeps {
   trust: BridgeTrust | undefined;
   /** PC 알림(§4-6 · §11-7) — 새 채널 확인·셸 생성·첫 명령 시작. 다리가 끝날 때 모아 둔 것을 내보낸다. */
   notifier: PcNotifier;
+  /**
+   * 끝 기록의 수신처 — 서버 + 계정(pcSettings.accountKey). 이 수신처가 목록으로 받은 세션의 끝만 싣고 ACK 한다(리뷰 0.16.6 P0-2).
+   * 계정을 모르면 undefined — 끝 기록을 다루지 않는다(책에 남는다).
+   */
+  destination: string | undefined;
   /** 웹이 만드는 세션의 환경(로컬 `term new` 와 같은 규칙: 다리 프로세스의 환경). */
   sessionEnv: Record<string, string>;
   /** 앱 홈 — 웹이 폴더를 비우고 만들면 그 아래 세션 폴더({@link webSessionFolder}, 0700)를 만들어 그 안에서 시작한다 — 끝내도 남긴다. */
@@ -197,6 +204,8 @@ export interface RemoteResult {
 
 interface Link extends ViewerLink {
   pollHoldSeconds: number;
+  /** 화면 밖 본문 상한(서버 limits.bodyMaxBytes — api C4) · 옛 서버면 undefined. */
+  bodyMaxBytes?: number;
 }
 
 interface RemoteEnd extends RemoteResult {
@@ -244,10 +253,12 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
     if (ending) return { exitCode: ending.exitCode, reason: ending.reason };
     let link: Link;
     try {
-      link = await openLink(deps, 1, deps.remoteEnabled, first, undefined);
+      link = await openLink(deps, 1, deps.remoteEnabled, first, undefined, undefined);
     } catch (error) {
       return { exitCode: 1, reason: refused(error).reason };
     }
+    /** 본문 상한 — open 답(bodyMaxBytes) 또는 413 의 maxBytes. 모르면 undefined(전부 싣는다). */
+    let bodyMax = link.bodyMaxBytes;
     let remote = startState(deps.remoteEnabled);
     /** 서버에 마지막으로 올린 목록 — 바뀐 때만 올린다(끝 기록이 남아 있으면 같아도 올린다). */
     let uploaded = deps.remoteEnabled ? sessionsKey(first.sessions) : undefined;
@@ -275,19 +286,26 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
           return;
         }
         const key = sessionsKey(current.sessions);
-        if (key === uploaded && current.ended.length === 0) {
-          await ackEnded(deps, current.ack);   // 올릴 것 없는 pc-bridge 끝 기록만 남았다
+        const base = { linkId: link.linkId, sessions: current.sessions };
+        // 상한 안에 들어가는 앞쪽 끝 기록만 — 나머지는 책에 남아 다음 poll 에 이어서(리뷰 0.16.6 P1-1).
+        const ended = current.ended.slice(0, endedThatFit(base, current.ended, bodyMax));
+        if (key === uploaded && ended.length === 0) {
+          await settle(deps, current, []);   // 올릴 것 없는 끝 기록(PC 연결 세션·아무도 못 본 세션)만 지운다
           return;
         }
+        await markListed(deps, current);
         try {
-          await deps.http.call("sessions", { linkId: link.linkId, sessions: current.sessions,
-            ...(current.ended.length > 0 ? { ended: current.ended } : {}) }, { signal: stopper.signal });
-        } catch {
-          // 응답 줄은 공용 입구가 남겼다 — 다음 poll 이 돌아올 때 다시 견준다(uploaded·책 그대로).
+          await deps.http.call("sessions", ended.length > 0 ? { ...base, ended } : base, { signal: stopper.signal });
+        } catch (error) {
+          // 응답 줄은 공용 입구가 남겼다 — 다음 poll 이 돌아올 때 다시 견준다(uploaded·책 그대로). 413 이면 그 상한으로 다음에 나눈다.
+          if (error instanceof PcCallError && error.status === 413 && error.maxBytes !== undefined) {
+            bodyMax = error.maxBytes;
+            deps.log.write({ event: "remote_body_limit", op: "sessions", maxBytes: error.maxBytes, ended: 0, held: current.ended.length });
+          }
           return;
         }
         uploaded = key;
-        await ackEnded(deps, current.ack);
+        await settle(deps, current, ended);
         for (const { viewer } of viewers.values()) viewer.refresh();
       });
       return syncing;
@@ -509,7 +527,8 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
             // 웹에서 끈 원격은 이 프로세스가 사는 동안 꺼진 채다(R2) — 서버가 잊었어도 다시 켜서 열지 않는다.
             const enabled = deps.remoteEnabled && remote !== "off-by-web";
             const current = await list();
-            link = await openLink(deps, previous.generation + 1, enabled, current, stopper.signal);
+            link = await openLink(deps, previous.generation + 1, enabled, current, stopper.signal, bodyMax);
+            bodyMax = link.bodyMaxBytes ?? bodyMax;
             if (enabled) remote = "on";
             uploaded = enabled ? sessionsKey(current.sessions) : undefined;
           } catch (reopenError) {
@@ -613,29 +632,45 @@ function startState(remoteEnabled: boolean): RemoteState {
 
 /**
  * open 한 번 — 처음과 다시 열기가 같은 길. 새 토큰을 싣는다. 목록은 원격이 켜졌을 때만 · 끝 기록은 원격을 끈 채여도 싣는다
- * (api 는 그때 목록은 안 올리고 끝 기록만 받는다). 201 뒤에만 책에서 지운다.
+ * (api 는 그때 목록은 안 올리고 끝 기록만 받는다). 끝 기록은 본문 상한 안의 앞쪽만 — 상한을 모르는 첫 open 이 413 이면 그 maxBytes 로
+ * 한 번 나눠 다시 보낸다. 201 뒤에만 실은 것을 책에서 지운다.
  */
 async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boolean, current: Listing,
-  signal: AbortSignal | undefined): Promise<Link> {
+  signal: AbortSignal | undefined, bodyMax: number | undefined): Promise<Link> {
   const base = { pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled,
-    sessions: remoteEnabled ? current.sessions : [], ...(current.ended.length > 0 ? { ended: current.ended } : {}), e2e: E2E_VERSION };
+    sessions: remoteEnabled ? current.sessions : [], e2e: E2E_VERSION };
   // 새 기기 허용·기기 관리를 안다(approve-new-device §3-4) — 서버는 이 표시가 있는 링크에만 pair-request·device 를 보낸다.
   const devices = deps.trust !== undefined && deps.pairRelay !== undefined;
+  const call = async (ended: WireEnded[]): Promise<Record<string, unknown>> => {
+    const body = ended.length > 0 ? { ...base, ended } : base;
+    try {
+      return await deps.http.call("open", devices ? { ...body, devices: true } : body, signal ? { signal } : undefined);
+    } catch (error) {
+      // ★옛 서버는 모르는 칸을 400 INVALID 로 거절한다 — 표시 없이 한 번 더(기존 터미널은 그대로 열린다 · 새 기기 허용만 없다).
+      if (!devices || !(error instanceof PcCallError && error.status === 400 && error.code === "INVALID")) throw error;
+      deps.log.write({ event: "remote_open_without_devices", reason: "server refused the devices field" });
+      return await deps.http.call("open", body, signal ? { signal } : undefined);
+    }
+  };
+  const fit = (max: number | undefined): WireEnded[] =>
+    current.ended.slice(0, endedThatFit(devices ? { ...base, devices: true } : base, current.ended, max));
+  if (remoteEnabled) await markListed(deps, current);
+  let sent = fit(bodyMax);
   let opened: Record<string, unknown>;
   try {
-    opened = await deps.http.call("open", devices ? { ...base, devices: true } : base, signal ? { signal } : undefined);
+    opened = await call(sent);
   } catch (error) {
-    // ★옛 서버는 모르는 칸을 400 INVALID 로 거절한다 — 표시 없이 한 번 더(기존 터미널은 그대로 열린다 · 새 기기 허용만 없다).
-    if (!devices || !(error instanceof PcCallError && error.status === 400 && error.code === "INVALID")) throw error;
-    deps.log.write({ event: "remote_open_without_devices", reason: "server refused the devices field" });
-    opened = await deps.http.call("open", base, signal ? { signal } : undefined);
+    if (!(error instanceof PcCallError && error.status === 413 && error.maxBytes !== undefined && sent.length > 0)) throw error;
+    sent = fit(error.maxBytes);
+    deps.log.write({ event: "remote_body_limit", op: "open", maxBytes: error.maxBytes, ended: sent.length, held: current.ended.length - sent.length });
+    opened = await call(sent);
   }
   const limits = serverLimits(opened.limits);
   if (typeof opened.linkId !== "string" || typeof opened.linkToken !== "string" || !limits) {
     throw new TermError("TERM_REMOTE_BAD_RESPONSE", "AiNecto answered open without linkId, linkToken or limits.");
   }
   deps.http.useSessionToken(opened.linkToken);
-  await ackEnded(deps, current.ack);
+  await settle(deps, current, sent);
   return { linkId: opened.linkId, generation, ...limits };
 }
 
@@ -643,15 +678,35 @@ async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boo
 async function currentListing(deps: BridgeDeps): Promise<Listing> {
   const result = await termRequest(deps.paths, { op: "ls" }, { start: false });
   const data = result.daemon ? result.data : undefined;
-  return listing(listedSessions(data), listedEnded(data));
+  return listing(listedSessions(data), listedEnded(data), deps.destination);
 }
 
 /**
- * 서버가 받은 끝 기록을 데몬 책에서 지운다 — ★ack 가 undefined(옛 데몬: ls 에 ended 칸 없음)면 보내지 않는다(모르는 op 에 연결을 끊는다).
+ * 곧 이 수신처에 올릴 세션들을 데몬에 표시한다(listed-to) — 끝나면 그 끝 기록이 이 수신처의 것이 된다. ★보내기 «전에» 한다: 보낸 뒤면 그 사이
+ * 끝난 세션의 기록에 수신처가 빠져 버려진다. 보내기가 실패해도 같은 수신처라 무해하다(다음에 그 수신처로 간다). 옛 데몬·계정 모름이면 하지 않는다.
+ */
+async function markListed(deps: BridgeDeps, current: Listing): Promise<void> {
+  const instances = current.sessions.flatMap((session) => (session.instance ? [session.instance] : []));
+  if (!current.known || deps.destination === undefined || instances.length === 0) return;
+  try {
+    await termRequest(deps.paths, { op: "listed-to", to: deps.destination, instances }, { start: false });
+  } catch (error) {
+    daemonFailed(deps, "listed-to", undefined, error);
+  }
+}
+
+/** 서버가 받은 끝 기록 + 올리지 않고 지울 것을 책에서 지운다(옛 데몬이면 하지 않는다). */
+async function settle(deps: BridgeDeps, current: Listing, sent: readonly WireEnded[]): Promise<void> {
+  if (!current.known) return;
+  await ackEnded(deps, [...sent.map((record) => record.instance), ...current.drop]);
+}
+
+/**
+ * 끝 기록을 데몬 책에서 지운다 — 부르는 쪽(settle)이 옛 데몬을 거른다(모르는 op 에 연결을 끊는다).
  * 실패하면 한 줄 남기고 책 그대로 — 다음에 또 보내도 서버는 한 번으로 본다.
  */
-async function ackEnded(deps: BridgeDeps, ack: readonly string[] | undefined): Promise<void> {
-  if (!ack || ack.length === 0) return;
+async function ackEnded(deps: BridgeDeps, ack: readonly string[]): Promise<void> {
+  if (ack.length === 0) return;
   try {
     const result = await termRequest(deps.paths, { op: "ended-ack", instances: [...ack] }, { start: false });
     const acked = result.daemon && result.data && typeof result.data === "object" && "acked" in result.data && typeof result.data.acked === "number"
@@ -985,6 +1040,7 @@ class CommandRunner {
             command: command.command === undefined ? null : shellLineCommand(command.command, this.deps.sessionEnv),
             env: this.deps.sessionEnv,
             ...(project !== undefined ? { project } : {}),
+            kind: "user",   // 웹이 만드는 세션도 사람의 세션(리뷰 0.16.6 P1-4)
           });
         } catch (error) {
           if (made) await this.dropSessionFolder(command.opId, made);
@@ -1063,12 +1119,13 @@ function createdProject(data: unknown): string | undefined {
 }
 
 /** open 응답 limits — 서버 값(C1·C3). 모양이 틀리면 undefined. */
-function serverLimits(value: unknown): { pollHoldSeconds: number; frameMaxBytes: number } | undefined {
+function serverLimits(value: unknown): { pollHoldSeconds: number; frameMaxBytes: number; bodyMaxBytes?: number } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const pollHoldSeconds = "pollHoldSeconds" in value ? value.pollHoldSeconds : undefined;
   const frameMaxBytes = "frameMaxBytes" in value ? value.frameMaxBytes : undefined;
+  const bodyMaxBytes = "bodyMaxBytes" in value ? value.bodyMaxBytes : undefined;
   return typeof pollHoldSeconds === "number" && pollHoldSeconds >= 0 && typeof frameMaxBytes === "number" && frameMaxBytes > 0
-    ? { pollHoldSeconds, frameMaxBytes }
+    ? { pollHoldSeconds, frameMaxBytes, ...(typeof bodyMaxBytes === "number" && bodyMaxBytes > 0 ? { bodyMaxBytes } : {}) }
     : undefined;
 }
 

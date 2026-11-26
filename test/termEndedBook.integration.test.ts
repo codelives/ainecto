@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
 import { parseClientMessage } from "../src/core/term/protocol";
@@ -10,7 +10,8 @@ import { daemonPids, json, LONG, ok, rig, sleep, until, useTermRig } from "./ter
  */
 useTermRig();
 
-type Ended = { instance: string; name: string; kind?: string; command: string[] | null; endedAt: string; reason: string; exitCode?: number; signal?: string };
+type Ended = { instance: string; name: string; kind?: string; command: string[] | null; endedAt: string; reason: string; exitCode?: number; signal?: string;
+  to?: string };
 
 const book = (): Ended[] => {
   const path = termPaths(rig.home).ended;
@@ -35,11 +36,11 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
     const three = ended.find((r) => r.name === "three")!.instance;
     const sig = ended.find((r) => r.name === "sig")!.instance;
     expect(ended).toHaveLength(3);
-    expect(ended.find((r) => r.instance === three)).toEqual({ instance: three, name: "three", command: ["/bin/sh", "-c", "sleep 0.3; exit 3"],
+    expect(ended.find((r) => r.instance === three)).toEqual({ instance: three, name: "three", kind: "user", command: ["/bin/sh", "-c", "sleep 0.3; exit 3"],
       endedAt: expect.any(String), reason: "exited", exitCode: 3 });
     expect(ended.find((r) => r.instance === sig)).toMatchObject({ name: "sig", reason: "exited", signal: "15" });
     expect(ended.find((r) => r.instance === sig)).not.toHaveProperty("exitCode");
-    expect(ended.find((r) => r.instance === k)).toEqual({ instance: k, name: "k", command: ["cat"], endedAt: expect.any(String), reason: "killed" });
+    expect(ended.find((r) => r.instance === k)).toEqual({ instance: k, name: "k", kind: "user", command: ["cat"], endedAt: expect.any(String), reason: "killed" });
     expect((await listed()).ended?.map((r) => r.instance).sort()).toEqual([three, sig, k].sort());
   }, LONG);
 
@@ -77,13 +78,18 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
     expect((await listed()).ended?.map((r) => r.instance).sort()).toEqual([a, b].sort());
   }, LONG);
 
-  it("종류 — new 의 kind 를 ls·매니페스트·끝 기록이 그대로 · 없이 만든 세션은 칸 없음 · 모르는 값은 요청 거절", async () => {
+  it("종류 — new 의 kind 를 ls·매니페스트·끝 기록이 그대로 · 없이 만든 세션(옛 CLI)은 칸 없음 · 로컬 term new 는 user 를 찍는다(리뷰 P1-4) · 모르는 값은 요청 거절", async () => {
     await ok("term", "new", "plain", "--", "cat");
+    // 이름·인자가 옛 판별식(ainecto-pc + pc run)에 걸려도 사람이 만든 세션은 user
+    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600", "pc", "run");
     const paths = termPaths(rig.home);
     await termRequest(paths, { op: "new", name: "bridge", cwd: rig.home, command: ["cat"], env: {}, kind: "pc-bridge" }, { start: false });
+    await termRequest(paths, { op: "new", name: "old-cli", cwd: rig.home, command: ["cat"], env: {} }, { start: false });
     const sessions = (await listed()).sessions;
     expect(sessions.find((s) => s.name === "bridge")?.kind).toBe("pc-bridge");
-    expect(sessions.find((s) => s.name === "plain")).not.toHaveProperty("kind");
+    expect(sessions.find((s) => s.name === "plain")?.kind).toBe("user");
+    expect(sessions.find((s) => s.name === "ainecto-pc")?.kind).toBe("user");
+    expect(sessions.find((s) => s.name === "old-cli")).not.toHaveProperty("kind");
     const manifest = JSON.parse(readFileSync(paths.manifest, "utf8")) as { sessions: Array<{ name: string; kind?: string }> };
     expect(manifest.sessions.find((s) => s.name === "bridge")?.kind).toBe("pc-bridge");
     await ok("term", "kill", "bridge");
@@ -92,5 +98,41 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
     expect(() => parseClientMessage(JSON.stringify({ id: "1", op: "new", name: "x", cwd: "/", command: null, env: {}, kind: "robot" })))
       .toThrow(/"kind" must be "user" or "pc-bridge"/);
     expect(() => parseClientMessage(JSON.stringify({ id: "1", op: "ended-ack", instances: "x" }))).toThrow(/"instances"/);
+  }, LONG);
+
+  it("listed-to — 그 수신처가 목록으로 받은 세션의 끝 기록에 수신처(to)가 남는다 · 표시 안 한 세션은 칸 없음 · 마지막 표시가 이긴다", async () => {
+    await ok("term", "new", "keep", "--", "cat");
+    await ok("term", "new", "a", "--", "cat");
+    await ok("term", "new", "b", "--", "cat");
+    await ok("term", "new", "c", "--", "cat");
+    const paths = termPaths(rig.home);
+    const [a, b] = [await instanceOf("a"), await instanceOf("b")];
+    expect(await termRequest(paths, { op: "listed-to", to: "srv#u1", instances: [a, b, "not-a-session"] }, { start: false }))
+      .toEqual({ daemon: true, data: { marked: 2 } });
+    await termRequest(paths, { op: "listed-to", to: "srv#u2", instances: [b] }, { start: false });
+    for (const name of ["a", "b", "c"]) await ok("term", "kill", name);
+    await until(() => book().length === 3, "three ends");
+    expect(Object.fromEntries(book().map((r) => [r.name, r.to]))).toEqual({ a: "srv#u1", b: "srv#u2", c: undefined });
+  }, LONG);
+
+  it("리뷰 P1-2 — 시작 때 책을 못 읽으면(ENOENT 말고) 덮지 않는다: 그동안의 끝은 메모리에 · 읽게 되면 합쳐 쓴다(원본의 미전송 기록 보존)", async () => {
+    await ok("term", "new", "one", "--", "cat");
+    await ok("term", "kill-server");   // one 의 끝이 책에 남는다
+    await until(() => daemonPids().length === 0, "daemon gone");
+    const one = book()[0]!.instance;
+    const path = termPaths(rig.home).ended;
+    chmodSync(path, 0o000);
+    try {
+      await ok("term", "new", "keep", "--", "cat");   // 새 데몬이 시작할 때 책을 못 읽는다
+    } finally {
+      chmodSync(path, 0o600);
+    }
+    await ok("term", "new", "two", "--", "cat");
+    await ok("term", "kill", "two");
+    await until(() => book().some((r) => r.name === "two"), "two written");
+    expect(book().map((r) => r.instance)).toContain(one);
+    const log = readFileSync(termPaths(rig.home).log, "utf8");
+    expect(log).toContain("ended_book_error");
+    expect(log).toContain("ended_book_recovered");
   }, LONG);
 });

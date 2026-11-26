@@ -59,7 +59,7 @@ describe("P1-1 입구 ② — startPcSession · 준비는 그 인스턴스로만
     expect((await startPcSession(deps)).kind).toBe("connected");
     const sessions = ((await json("term", "ls")).data as { sessions: Array<{ name: string; kind?: string }> }).sessions;
     expect(sessions.find((s) => s.name === PC_SESSION_NAME)?.kind).toBe("pc-bridge");
-    expect(sessions.find((s) => s.name === "keep")).not.toHaveProperty("kind");
+    expect(sessions.find((s) => s.name === "keep")?.kind, "로컬 term new 는 user").toBe("user");
   }, LONG);
 
   it("waitForMatch(instance) — 화면이 맞아도 다른 인스턴스면 SESSION_REPLACED · 같은 인스턴스면 맞음", async () => {

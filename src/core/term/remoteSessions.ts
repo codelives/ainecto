@@ -33,24 +33,52 @@ export interface WireEnded {
   signal?: string;
 }
 
-/** 다리가 한 번의 ls 로 보는 것 — 올릴 목록 · 올릴 끝 기록 · 서버 2xx 뒤 책에서 지울 instance(옛 데몬이면 undefined — ended-ack 를 모른다). */
+/**
+ * 다리가 한 번의 ls 로 보는 것 — 올릴 목록 · 이 수신처에 올릴 끝 기록 · 서버에 올리지 않고 책에서 지울 instance.
+ * known = 데몬이 끝 기록을 안다(ls 에 ended 칸 — 옛 데몬은 false: ended-ack·listed-to 를 보내지 않는다).
+ */
 export interface Listing {
   sessions: WireSession[];
   ended: WireEnded[];
-  ack: string[] | undefined;
+  /** 올리지 않고 지울 것 — PC 연결 세션의 끝 · 어느 서버도 목록으로 받은 적 없는 세션의 끝. */
+  drop: string[];
+  known: boolean;
   /** 지금 pc-bridge 인 세션 이름 — 웹 명령이 그 세션을 겨누면 거절한다. */
   bridges: string[];
 }
 
-export function listing(listed: readonly ListedSession[], ended: readonly EndedRecord[] | undefined): Listing {
+/**
+ * ★끝 기록은 «그 세션을 목록으로 받은 수신처»(서버 + 계정 — destination)에만 간다(리뷰 0.16.6 P0-2). 다른 수신처의 기록은 싣지도 지우지도 않는다
+ * (그 수신처의 다리가 다시 열 때 받는다). destination 이 없으면(계정을 모름) 끝 기록은 하나도 다루지 않는다.
+ */
+export function listing(listed: readonly ListedSession[], ended: readonly EndedRecord[] | undefined, destination: string | undefined): Listing {
   const user = (row: { name: string; command: readonly string[] | null; kind?: ListedSession["kind"] }): boolean => bridgeKind(row) === "user";
+  const records = destination === undefined ? [] : (ended ?? []);
   return {
     sessions: wireSessions(listed.filter(user)),
-    ended: (ended ?? []).filter(user).map(wireEnded),
-    // pc-bridge 끝 기록은 올리지 않고 같이 지운다(데몬은 원격의 뜻을 모른 채 둔다).
-    ack: ended?.map((record) => record.instance),
+    ended: records.filter((record) => user(record) && record.to === destination).map(wireEnded),
+    // PC 연결 세션의 끝(데몬은 원격의 뜻을 모른 채 둔다) · 아무 서버도 본 적 없는 세션의 끝 — 올릴 곳이 없다.
+    drop: records.filter((record) => !user(record) || record.to === undefined).map((record) => record.instance),
+    known: ended !== undefined,
     bridges: listed.filter((row) => !user(row)).map((row) => row.name),
   };
+}
+
+/**
+ * 본문 상한(서버가 알려 준 bodyMaxBytes · 413 의 maxBytes) 안에 들어가는 앞쪽 끝 기록 수(순수 함수 — 리뷰 0.16.6 P1-1). 상한을 모르면 전부.
+ * 하나도 안 들어가면 0(목록만 보낸다 — 다음 번에도 같으면 그 기록은 책에 남는다).
+ */
+export function endedThatFit(body: Record<string, unknown>, ended: readonly WireEnded[], maxBytes: number | undefined): number {
+  if (maxBytes === undefined || ended.length === 0) return ended.length;
+  const size = (count: number): number => Buffer.byteLength(JSON.stringify(count > 0 ? { ...body, ended: ended.slice(0, count) } : body), "utf8");
+  let low = 0;
+  let high = ended.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (size(mid) <= maxBytes) low = mid;
+    else high = mid - 1;
+  }
+  return low;
 }
 
 function wireEnded(record: EndedRecord): WireEnded {

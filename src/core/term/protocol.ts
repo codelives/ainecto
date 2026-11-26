@@ -32,6 +32,8 @@ export interface EndedRecord {
   reason: EndReason;
   exitCode?: number;
   signal?: string;
+  /** 그 세션을 목록으로 받은 수신처(listed-to) — 그 수신처의 다리만 싣고 ACK 한다. 없으면 어느 서버도 본 적 없는 세션. */
+  to?: string;
 }
 
 /**
@@ -50,6 +52,11 @@ export type TermRequestBody =
    * ★옛 데몬은 모르는 op 에 연결을 끊는다 — 다리는 ls 답에 ended 칸이 있을 때만 보낸다.
    */
   | { op: "ended-ack"; instances: string[] }
+  /**
+   * 이 instance 들을 그 수신처(서버 + 계정 — pcSettings.accountKey)가 목록으로 받았다 — 끝나면 끝 기록에 그 수신처를 적는다(리뷰 0.16.6 P0-2).
+   * 다리는 서버 2xx 뒤에만, ls 답에 ended 칸이 있을 때만 보낸다(옛 데몬은 모르는 op 에 연결을 끊는다).
+   */
+  | { op: "listed-to"; to: string; instances: string[] }
   | { op: "send"; name: string; text: string; paste: boolean; instance?: string }
   | { op: "key"; name: string; key: string; instance?: string }
   /** styles = 글자 속성·커서까지(원격 화면) — 옛 데몬은 버리고 글자만 준다. */
@@ -170,6 +177,11 @@ export function parseClientMessage(line: string): TermClientMessage {
       };
     case "ended-ack":
       return { id, op, instances: stringListField(record, "instances") };
+    case "listed-to": {
+      const to = stringField(record, "to");
+      if (to === "") throw new TermProtocolError(`"to" must not be empty.`);
+      return { id, op, to, instances: stringListField(record, "instances") };
+    }
     case "ls":
     case "kill-server":
     case "detach":
@@ -272,7 +284,8 @@ export function isEndedRecord(value: unknown): value is EndedRecord {
     && (record.command === null || (Array.isArray(record.command) && record.command.every((item) => typeof item === "string")))
     && typeof record.endedAt === "string" && (record.reason === "exited" || record.reason === "killed")
     && (record.exitCode === undefined || Number.isInteger(record.exitCode))
-    && (record.signal === undefined || typeof record.signal === "string");
+    && (record.signal === undefined || typeof record.signal === "string")
+    && (record.to === undefined || typeof record.to === "string");
 }
 
 /** `ls` 응답 → 세션 목록 — 모양이 맞지 않는 줄은 뺀다. */
