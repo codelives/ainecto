@@ -24,15 +24,16 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
   it("스스로 끝(exit 3) → exited+코드 · 신호로 끝 → signal 글(코드 없음) · kill → killed 1건(뒤따른 PTY 끝이 와도 2건 아님) · ls 에 ended", async () => {
     await ok("term", "new", "keep", "--", "cat");
     await ok("term", "new", "three", "--", "/bin/sh", "-c", "sleep 0.3; exit 3");
-    const three = await instanceOf("three");
     await ok("term", "new", "sig", "--", "/bin/sh", "-c", "sleep 0.3; kill -TERM $$");
-    const sig = await instanceOf("sig");
     await ok("term", "new", "k", "--", "cat");
     const k = await instanceOf("k");
     await ok("term", "kill", "k");
     await until(() => book().length === 3, "three ends");
     await sleep(500);   // kill 뒤의 PTY 끝까지 지나가게
     const ended = book();
+    // 스스로 끝나는 둘의 instance 는 책에서 — ls 보다 먼저 끝날 수 있다(바쁜 기계)
+    const three = ended.find((r) => r.name === "three")!.instance;
+    const sig = ended.find((r) => r.name === "sig")!.instance;
     expect(ended).toHaveLength(3);
     expect(ended.find((r) => r.instance === three)).toEqual({ instance: three, name: "three", command: ["/bin/sh", "-c", "sleep 0.3; exit 3"],
       endedAt: expect.any(String), reason: "exited", exitCode: 3 });
