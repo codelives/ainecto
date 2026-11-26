@@ -674,28 +674,33 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     await ok("term", "new", "keep", "--", "cat");
     await ok("term", "new", "gone", "--", "cat");
     const run = start();
-    await until(() => fake.ops().includes("open"), "open");
-    const gone = await instanceOf("gone");
-    fake.sessionsError = { status: 503, code: "UNAVAILABLE" };
-    await ok("term", "new", "x", "--", "/bin/sh", "-c", "sleep 0.3; exit 3");
-    const x = await instanceOf("x");
-    await until(() => endedBook().some((r) => r.instance === x), "x ended into the book");
-    await ok("term", "kill", "gone");
-    await until(() => endedSent().filter((r) => r.instance === gone).length >= 2, "kept resending while the server answers 503");
-    expect(endedBook().map((r) => r.instance).sort()).toEqual([gone, x].sort());   // 2xx 전에는 지우지 않는다
-    fake.sessionsError = undefined;
-    await until(() => endedBook().length === 0, "acked after 2xx");
-    const sent = endedSent();
-    expect(sent.find((r) => r.instance === x)).toEqual({ op: "sessions", instance: x, name: "x", kind: "user", endedAt: expect.any(String), reason: "exited", exitCode: 3 });
-    expect(sent.find((r) => r.instance === gone)).toEqual({ op: "sessions", instance: gone, name: "gone", kind: "user", endedAt: expect.any(String), reason: "killed" });
-    expect(sent.every((r) => !("command" in r))).toBe(true);
-    // 다 받은 뒤에는 목록이 같으면 다시 보내지 않는다
-    const calls = fake.calls.filter((call) => call.op === "sessions").length;
-    await sleep(2500);
-    expect(fake.calls.filter((call) => call.op === "sessions").length).toBe(calls);
-    expect(remoteLog().some((r) => r.event === "remote_ended_acked" && (r.acked as number) >= 1)).toBe(true);
-    run.stop.abort();
-    await run.done;
+    try {
+      await until(() => fake.ops().includes("open"), "open");
+      const gone = await instanceOf("gone");
+      fake.sessionsError = { status: 503, code: "UNAVAILABLE" };
+      await ok("term", "new", "x", "--", "/bin/sh", "-c", "sleep 0.3; exit 3");
+      // instance 는 끝 기록 책에서 — ls 보다 먼저 끝날 수 있다
+      await until(() => endedBook().some((r) => r.name === "x"), "x ended into the book");
+      const x = endedBook().find((r) => r.name === "x")!.instance;
+      await ok("term", "kill", "gone");
+      await until(() => endedSent().filter((r) => r.instance === gone).length >= 2, "kept resending while the server answers 503");
+      expect(endedBook().map((r) => r.instance).sort()).toEqual([gone, x].sort());   // 2xx 전에는 지우지 않는다
+      fake.sessionsError = undefined;
+      await until(() => endedBook().length === 0, "acked after 2xx");
+      const sent = endedSent();
+      expect(sent.find((r) => r.instance === x)).toEqual({ op: "sessions", instance: x, name: "x", kind: "user", endedAt: expect.any(String), reason: "exited", exitCode: 3 });
+      expect(sent.find((r) => r.instance === gone)).toEqual({ op: "sessions", instance: gone, name: "gone", kind: "user", endedAt: expect.any(String), reason: "killed" });
+      expect(sent.every((r) => !("command" in r))).toBe(true);
+      // 다 받은 뒤에는 목록이 같으면 다시 보내지 않는다
+      const calls = fake.calls.filter((call) => call.op === "sessions").length;
+      await sleep(2500);
+      expect(fake.calls.filter((call) => call.op === "sessions").length).toBe(calls);
+      expect(remoteLog().some((r) => r.event === "remote_ended_acked" && (r.acked as number) >= 1)).toBe(true);
+    } finally {
+      // 단언이 실패해도 다리를 멈춘다 — 안 그러면 지운 HOME 에 다음 시험 내내 poll 을 남긴다
+      run.stop.abort();
+      await run.done;
+    }
     expectLogPairs();
   }, LONG);
 
@@ -708,33 +713,39 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     await until(() => endedBook().length === 2, "two ends in the book");
     const done = endedBook().find((r) => r.name === "done")!.instance;
     const run = start({ remoteEnabled: false });
-    await until(() => fake.ops().includes("open"), "open");
-    expect(fake.calls[0]?.body).toMatchObject({ remoteEnabled: false, sessions: [],
-      ended: [{ instance: done, name: "done", kind: "user", endedAt: expect.any(String), reason: "exited", exitCode: 0 }] });
-    expect(endedSent().some((r) => r.instance === pc)).toBe(false);
-    await until(() => endedBook().length === 0, "both acked after 201");
-    run.stop.abort();
-    await run.done;
+    try {
+      await until(() => fake.ops().includes("open"), "open");
+      expect(fake.calls[0]?.body).toMatchObject({ remoteEnabled: false, sessions: [],
+        ended: [{ instance: done, name: "done", kind: "user", endedAt: expect.any(String), reason: "exited", exitCode: 0 }] });
+      expect(endedSent().some((r) => r.instance === pc)).toBe(false);
+      await until(() => endedBook().length === 0, "both acked after 201");
+    } finally {
+      run.stop.abort();
+      await run.done;
+    }
   }, LONG);
 
   it("PC 연결 세션 이름 — 웹이 그 이름으로 만들지 못한다(PC 연결이 못 뜨게 되므로) · 이름만 같은 사용자 셸(옛 줄·pc run 아님)은 목록에 오르고 입력도 간다", async () => {
     const browser = await web();
     await ok("term", "new", "base", "--", "cat");
     const run = start();
-    await until(() => fake.ops().includes("open"), "open");
-    const channel = await browser.connect();
-    const taken = await channel.create({ name: "ainecto-pc" });
-    await until(async () => (await channel.answer(taken)) !== undefined, "answer");
-    expect((await channel.answer(taken))?.outer).toMatchObject({ ok: false, code: "TERM_NO_SESSION" });
-    expect((await sessions()).some((s) => s.name === "ainecto-pc")).toBe(false);
-    await ok("term", "new", "ainecto-pc", "--", "cat");
-    await until(() => fake.listedNames().includes("ainecto-pc"), "a user shell named ainecto-pc is listed");
-    channel.watch("ainecto-pc");
-    const frame = await frameWhere(channel, "ainecto-pc", () => true, "frame");
-    await channel.input("ainecto-pc", frame.instance, "typed-into-it\r");
-    await frameWhere(channel, "ainecto-pc", (f) => lines(f.text).includes("typed-into-it"), "input reached it");
-    run.stop.abort();
-    await run.done;
+    try {
+      await until(() => fake.ops().includes("open"), "open");
+      const channel = await browser.connect();
+      const taken = await channel.create({ name: "ainecto-pc" });
+      await until(async () => (await channel.answer(taken)) !== undefined, "answer");
+      expect((await channel.answer(taken))?.outer).toMatchObject({ ok: false, code: "TERM_NO_SESSION" });
+      expect((await sessions()).some((s) => s.name === "ainecto-pc")).toBe(false);
+      await ok("term", "new", "ainecto-pc", "--", "cat");
+      await until(() => fake.listedNames().includes("ainecto-pc"), "a user shell named ainecto-pc is listed");
+      channel.watch("ainecto-pc");
+      const frame = await frameWhere(channel, "ainecto-pc", () => true, "frame");
+      await channel.input("ainecto-pc", frame.instance, "typed-into-it\r");
+      await frameWhere(channel, "ainecto-pc", (f) => lines(f.text).includes("typed-into-it"), "input reached it");
+    } finally {
+      run.stop.abort();
+      await run.done;
+    }
   }, LONG);
 
   it("api 재시작(poll 404 REMOTE_NOT_FOUND) → 같은 PC 로 다시 open(목록 포함) · 옛 채널은 버린다(새 hello 로만) · 새 채널 화면이 새 링크로", async () => {
