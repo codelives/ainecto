@@ -7,7 +7,7 @@ import { acquireDaemonLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
 import { afterListen, helloProof, prepareListen, type IpcAddress } from "./ipc";
-import { readEndedBook, withEnded, withoutAcked, writeEndedBook } from "./endedBook";
+import { mergeEnded, readEndedBook, withEnded, withoutAcked, writeEndedBook } from "./endedBook";
 import { readManifest, writeManifest, type ManifestEntry } from "./manifest";
 import type { TermPaths } from "./paths";
 import {
@@ -72,15 +72,16 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
     log.write({ event: "manifest_error", message: errorMessage(error) });
     manifest = [];
   }
-  let ended: EndedRecord[];
+  let ended: EndedRecord[] = [];
+  let endedUnread = false;
   try {
     ended = await readEndedBook(paths.ended);
   } catch (error) {
-    // 깨진 끝 기록 책도 데몬을 막지 않는다 — 잃는 것은 서버 장부의 «끝났습니다» 표시뿐(그 줄은 «확인 안 됨»으로 남는다).
+    // ★못 읽은 책은 덮지 않는다(리뷰 0.16.6 P1-2) — 빈 책으로 시작하되, 다시 읽어 합칠 때까지 파일에 쓰지 않는다(원본 보존).
     log.write({ event: "ended_book_error", message: errorMessage(error) });
-    ended = [];
+    endedUnread = true;
   }
-  const daemon = new TermDaemon(paths, log, manifest, ended);
+  const daemon = new TermDaemon(paths, log, manifest, ended, endedUnread);
   await daemon.listen();
   log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: daemon.address });
   process.on("SIGTERM", () => void daemon.shutdown("SIGTERM"));
@@ -134,6 +135,8 @@ class TermDaemon {
   private stopping = false;
   private manifestWrite: Promise<void> = Promise.resolve();
   private endedWrite: Promise<void> = Promise.resolve();
+  /** 책을 못 읽은 동안 ack 한 instance — 다시 읽은 파일에서 되살리지 않는다. */
+  private readonly endedAcked = new Set<string>();
   private resolveFinished: (code: number) => void = () => undefined;
   /** 이번 주소 — listen 뒤에 정해진다(Windows 는 증명 비밀값 포함). */
   private ipc: IpcAddress | undefined;
@@ -147,6 +150,8 @@ class TermDaemon {
     private manifest: ManifestEntry[],
     /** 끝 기록 책(endedBook.ts) — 서버가 받았다고 다리가 ended-ack 하기 전까지. */
     private ended: EndedRecord[],
+    /** 시작 때 책 파일을 못 읽었다(ENOENT 말고) — 다시 읽어 합칠 때까지 파일에 쓰지 않는다. */
+    private endedUnread: boolean,
   ) {
     this.server = createServer((socket) => this.accept(socket));
   }
@@ -299,8 +304,19 @@ class TermDaemon {
       }
       case "ls":
         return { data: { sessions: [...this.sessions.values()].map((session) => session.info()), ended: this.ended } };
+      case "listed-to": {
+        const wanted = new Set(request.instances);
+        let marked = 0;
+        for (const session of this.sessions.values()) {
+          if (!wanted.has(session.instance)) continue;
+          session.listedTo = request.to;
+          marked += 1;
+        }
+        return { data: { marked } };
+      }
       case "ended-ack": {
         const before = this.ended.length;
+        if (this.endedUnread) for (const instance of request.instances) this.endedAcked.add(instance);
         this.updateEnded((book) => withoutAcked(book, request.instances));
         return { data: { acked: before - this.ended.length } };
       }
@@ -489,16 +505,27 @@ class TermDaemon {
       endedAt: new Date().toISOString(),
       reason,
       ...(signal ? { signal: String(signal) } : exitCode !== undefined ? { exitCode } : {}),
+      ...(session.listedTo !== undefined ? { to: session.listedTo } : {}),
     };
     this.updateEnded((book) => withEnded(book, record));
   }
 
-  /** 끝 기록 책도 데몬 하나만 쓴다 — 매니페스트와 같은 한 줄 쓰기. */
+  /**
+   * 끝 기록 책도 데몬 하나만 쓴다 — 매니페스트와 같은 한 줄 쓰기. 시작 때 못 읽었으면(endedUnread) 쓰기 전에 다시 읽어 합친다:
+   * 파일의 줄 위에 그동안 메모리에 생긴 줄을 얹는다(같은 이름은 메모리 것 · ack 한 instance 는 파일 것에서도 뺀다). 또 못 읽으면 이번에도 쓰지 않는다.
+   */
   private updateEnded(change: (book: EndedRecord[]) => EndedRecord[]): void {
     this.ended = change(this.ended);
-    const snapshot = this.ended;
     this.endedWrite = this.endedWrite
-      .then(() => writeEndedBook(this.paths.ended, snapshot))
+      .then(async () => {
+        if (this.endedUnread) {
+          const stored = await readEndedBook(this.paths.ended);
+          this.ended = mergeEnded(stored, this.ended, this.endedAcked);
+          this.endedUnread = false;
+          this.log.write({ event: "ended_book_recovered", records: this.ended.length });
+        }
+        await writeEndedBook(this.paths.ended, this.ended);
+      })
       .catch((error) => this.log.write({ event: "ended_book_error", message: errorMessage(error) }));
   }
 

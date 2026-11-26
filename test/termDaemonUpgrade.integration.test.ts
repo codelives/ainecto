@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { upgradeDaemon, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { termPaths } from "../src/core/term/paths";
 import { CLI_VERSION } from "../src/core/version";
-import { daemonPids, LONG, ok, rig, sessions, until, useTermRig } from "./termRig";
+import { daemonPids, LONG, ok, oldPcSession, rig, sessions, until, useTermRig } from "./termRig";
 
 /**
  * KAN-1348(11-23 Ryan 운영 시험) — 11-17 판 term 데몬이 남아 0.15.3 의 프로젝트 묶음을 버렸다.
@@ -39,7 +39,7 @@ function deps(): PcDeps {
 describe("옛 판 term 데몬 교체(upgradeDaemon) — 실물", () => {
   it("PC 연결 세션뿐 → 옛 데몬을 내린다(다음 start 가 이 판으로 새로 띄운다)", async () => {
     // pc run 을 도는 세션 흉내 — 명령 단어에 «pc run» 이 있으면 PC 연결 세션이다(runningPcs 와 같은 판정).
-    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 300", "pc", "run");
+    await oldPcSession(["/bin/sh", "-c", "sleep 300", "pc", "run"]);
     const oldPid = makeDaemonOld();
     const notes: string[] = [];
     await upgradeDaemon(deps(), (line) => notes.push(line));
@@ -52,7 +52,7 @@ describe("옛 판 term 데몬 교체(upgradeDaemon) — 실물", () => {
   }, LONG);
 
   it("KAN-1375 — 데몬은 이미 끝났고 daemon.json 의 pid 를 다른 프로세스가 쓰고 있어도(Windows pid 재사용) 멈추지 않는다 · 판정은 잠금", async () => {
-    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 300", "pc", "run");
+    await oldPcSession(["/bin/sh", "-c", "sleep 300", "pc", "run"]);
     const oldPid = makeDaemonOld();
     await ok("term", "kill-server");
     await until(() => !daemonPids().includes(oldPid), "daemon gone");

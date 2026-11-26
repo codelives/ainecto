@@ -108,6 +108,8 @@ export class TermSession {
    * 원격 명령은 이 값이 맞을 때만 이 세션에 적용된다(daemon.ts 의 이름 찾기 한 곳). 화면(read)도 이 객체에서 같이 낸다.
    */
   readonly instance = randomUUID();
+  /** 이 세션을 목록으로 받은 수신처(daemon listed-to) — 끝 기록에 옮긴다. 마지막으로 받은 곳 하나(두 계정에 번갈아 보였으면 나중 것). */
+  listedTo: string | undefined;
 
   private constructor(
     readonly spec: SessionSpec,

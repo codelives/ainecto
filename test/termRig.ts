@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import headless from "@xterm/headless";
 import * as nodePty from "node-pty";
+import { termRequest } from "../src/core/term/client";
+import { termPaths } from "../src/core/term/paths";
 
 /**
  * `ainecto term` 실물 시험의 공용 틀 — 진짜 CLI 프로세스·진짜 데몬·진짜 PTY. 가짜·호출 횟수 세기 없음.
@@ -189,4 +191,15 @@ export function attachInPty(name: string, cols: number, rows: number) {
       return lines.join("\n");
     },
   };
+}
+
+/**
+ * 옛 CLI 가 만든 PC 연결 세션 흉내 — 종류 칸 없이 이름 ainecto-pc + 명령 «pc run»(bridgeKind 의 옛 줄 규칙). `term new` 는 이제 kind user 를
+ * 찍어(리뷰 0.16.6 P1-4) 이 흉내를 못 만든다 — 데몬에 직접 new 를 보낸다. 데몬을 띄우려고 잠깐 세션 하나를 만들었다 지운다.
+ */
+export async function oldPcSession(command: string[] = ["/bin/sh", "-c", "sleep 600", "pc", "run"]): Promise<void> {
+  await ok("term", "new", "pc-fixture-warm", "--", "/bin/sh", "-c", "sleep 600");
+  const env = Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string"));
+  await termRequest(termPaths(rig.home), { op: "new", name: "ainecto-pc", cwd: rig.home, command, env }, { start: false });
+  await ok("term", "kill", "pc-fixture-warm");
 }

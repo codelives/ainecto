@@ -42,3 +42,11 @@ export function withoutAcked(book: readonly EndedRecord[], instances: readonly s
   const acked = new Set(instances);
   return book.filter((item) => !acked.has(item.instance));
 }
+
+/**
+ * 시작 때 못 읽었던 책을 다시 읽었을 때 합친다(순수 함수) — 파일의 줄 위에 그동안 메모리에 생긴 줄을 얹고(같은 이름은 메모리 것),
+ * 그동안 ack 한 instance 는 뺀다. 원본의 미전송 기록을 잃지 않는다(리뷰 0.16.6 P1-2).
+ */
+export function mergeEnded(stored: readonly EndedRecord[], memory: readonly EndedRecord[], acked: ReadonlySet<string>): EndedRecord[] {
+  return memory.reduce((book, record) => withEnded(book, record), withoutAcked(stored, [...acked]));
+}

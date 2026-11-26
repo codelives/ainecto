@@ -112,6 +112,8 @@ async function newSession(paths: TermPaths, argv: string[], input: TermCommandIn
     env: stringEnv(),
     ...tty,
     ...(project ? { project } : {}),
+    // 사람이 만드는 세션은 종류를 찍는다 — 이름·인자가 옛 판별식(ainecto-pc + pc run)에 걸려도 PC 연결로 보지 않는다(리뷰 0.16.6 P1-4). 옛 데몬은 버린다.
+    kind: "user",
   }, { start: true });
   const data = result.daemon ? result.data : undefined;
   // ★0.15.4 앞의 데몬은 project 칸을 모르고 버린다(protocol.ts) — 세션은 꼬리표 없이 뜬다. 조용히 넘기지 않고 한 줄로 알린다.

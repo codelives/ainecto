@@ -150,6 +150,8 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
       notifier: createPcNotifier({ log }),
       pairRelay: (requestId) => createPairRelay({ endpoint: setup.endpoint, tokenProvider: setup.auth, log, pcId: setup.pcId, requestId,
         holdMs: PAIR_WAIT_MS }),
+      // 끝 기록의 수신처 = 이 서버·계정(pc-keys 의 계정 열쇠와 같은 값) — 계정을 모르면 없음(끝 기록을 다루지 않는다).
+      destination: setup.trust?.accountKey,
       sessionEnv: setup.env,
       appHome: setup.appHome,
       signal,
