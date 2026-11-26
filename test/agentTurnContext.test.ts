@@ -516,6 +516,32 @@ describe("Connect C2 r2 — 코드 리뷰 NO-GO 반례(connect-c2-code-review-as
     }
   });
 
+  it("r4 P1 · 프롬프트를 조립하는 사이 기한이 지나면 → 입력 0(turn/start 0) · TURN_TIMEOUT · 재개 칸 그대로", async () => {
+    const original = { sessionId: "thr-A", cursor: "cur-old", owner: OWNER, rev: 3 };
+    const w = startServe({ installed: ["codex"], turnTimeoutMs: 5_000, sessionsFile: { version: 2, conversations: {},
+      byAgent: { codex: { "conv-a": original } } } });
+    const realNow = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, "now");
+    try {
+      // 맥락의 project 를 읽는 순간(= 조립 중) 다음 시계 읽기 한 번이 기한을 넘긴다 — 결정적으로 «조립 중 기한 초과»
+      // (한 번만 — 시험의 until 기한·로그 시각은 실제 시계 그대로)
+      const context = { get project() {
+        clock.mockImplementationOnce(() => realNow() + 60_000);
+        return undefined;
+      } };
+      w.server.push({ state: "OPEN", offers: [{ turnUuid: "t1", conversationUuid: "conv-a", text: "hello", agent: "codex", context,
+        turnContextAvailable: true }] });
+      const timedOut = await until(() => w.server.replies()[0]);
+      clock.mockRestore();
+      await finish(w);
+      expect(timedOut).toMatchObject({ status: "FAILED", errorCode: "TURN_TIMEOUT" });
+      expect(logRecords(w).filter((r) => r.event === "agent_rpc" && r.method === "turn/start")).toHaveLength(0);
+      expect(entry(w, "conv-a", "codex")).toMatchObject(original);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("r3 P1-1 · 주인을 묻는 사이 serve 가 멈추면 → 조회 0 · 입력 0 · sessions.json 쓰기 0", async () => {
     let release: () => void = () => {};
     const asked = new Promise<void>((resolve) => {

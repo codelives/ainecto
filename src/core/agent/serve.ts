@@ -459,13 +459,15 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           }
         }
         if (stopping.has(offer.key) || stopReason) beforeInput = "stopped";   // 멈춤이 기한보다 앞선다
-        else if (beforeInput === undefined && deadlineAt - Date.now() <= 0) beforeInput = "timeout";   // 기한이 지났으면 넣지 않는다(r2 P1-2)
         if (beforeInput === undefined) {
           // 할 일 차례의 답 글은 카드 실행 대화로만 간다(«열기» 단추 없음) — 지시문 그대로.
           const text = offer.todoId === undefined
             ? agentPromptText(offer.text, offer.context, turnContext && offer.turnUuid ? unreadLine(offer.turnUuid, turnContext) : undefined)
             : offer.text;
-          outcome = await session.send(text, deadlineAt - Date.now());
+          // ★보낼지는 입력 직전에 잰 남은 시간 하나로 — 0 이하면 넣지 않는다(입력 전 종료 · 재개 칸 보존 · 재리뷰 r4 P1)
+          const remaining = deadlineAt - Date.now();
+          if (remaining > 0) outcome = await session.send(text, remaining);
+          else beforeInput = "timeout";
         }
       } finally {
         current = undefined;
