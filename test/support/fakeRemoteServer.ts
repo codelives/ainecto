@@ -32,6 +32,8 @@ export class FakeRemoteServer {
   private closedReason: string | undefined;
   private readonly replies: string[] = [];
   pollError: { status: number; code: string } | undefined;
+  /** 있으면 sessions 를 이 오류로 거절한다(일시 장애 흉내 — 끝 기록은 책에 남아야 한다). */
+  sessionsError: { status: number; code: string } | undefined;
   /** 다음 open 을 이 오류로 거절한다(옛 서버 흉내 — 400 INVALID). */
   openError: { status: number; code: string } | undefined;
   /** 옛 서버 흉내 — open 에 모르는 칸 devices 가 있으면 400 INVALID(그 칸이 없으면 받는다). */
@@ -135,6 +137,10 @@ export class FakeRemoteServer {
           limits: { pollHoldSeconds: 1, frameMaxBytes: 1024 * 1024, bodyMaxBytes: 64 * 1024 } });
         return;
       case "sessions":
+        if (this.sessionsError) {
+          reply(this.sessionsError.status, { code: this.sessionsError.code, message: "unavailable" });
+          return;
+        }
         this.listed = body.sessions as Array<Record<string, unknown>>;
         reply(200, {});
         return;

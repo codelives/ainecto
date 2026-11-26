@@ -26,6 +26,7 @@ export type DaemonLogRecord =
   | { event: "attach"; conn: number; name: string }
   | { event: "detach"; conn: number; name: string; reason: string }
   | { event: "manifest_error"; message: string }
+  | { event: "ended_book_error"; message: string }
   /** 클라이언트가 쓴다 — 주소에서 답한 쪽이 이 사용자의 데몬임을 증명하지 못했다(Windows, ipc.ts). 아무 요청도 보내지 않았다. */
   | { event: "ipc_impostor"; pid: number; message: string };
 

@@ -6,12 +6,12 @@ import type { ListedSession } from "../term/protocol";
 import { CALL_TIMEOUT_MS } from "../term/remoteLimits";
 import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../term/remote";
 import { bridgePackageSpec, CLI_VERSION, PACKAGE_NAME } from "../version";
+import { bridgeKind } from "./bridgeKind";
 
 /**
- * «이 PC 연결» — 기존 term 데몬의 세션 하나({@link PC_SESSION_NAME})가 내부 명령 `ainecto pc run` 을 돈다(KAN-738, root REQ d37a6dc2).
- * 새 데몬 0. 여기는 순수 함수: 세션 명령 만들기 · 도는 것 찾기(★이름이 아니라 명령으로) · 시작/이미/갈아끼우기 판정 · 끄기 기다림.
+ * «이 PC 연결» — 기존 term 데몬의 세션 하나(bridgeKind.PC_SESSION_NAME)가 내부 명령 `ainecto pc run` 을 돈다(KAN-738, root REQ d37a6dc2).
+ * 새 데몬 0. 여기는 순수 함수: 세션 명령 만들기 · 도는 것 찾기(★종류로 — bridgeKind 한 곳) · 시작/이미/갈아끼우기 판정 · 끄기 기다림.
  */
-export const PC_SESSION_NAME = "ainecto-pc";
 
 /** 받은 전역 플래그 — pc 세션에 그대로 넘긴다. */
 export interface LaunchFlags {
@@ -55,23 +55,19 @@ export interface RunningPc {
   packageSpec?: string;
 }
 
-function isPcCommand(command: readonly string[] | null | undefined): command is readonly string[] {
-  return Array.isArray(command) && command.some((word, index) => word === "pc" && command[index + 1] === "run");
-}
-
 function packageSpecOf(command: readonly string[]): string | undefined {
   const index = command.indexOf("--package");
   const spec = index >= 0 ? command[index + 1] : undefined;
   return spec !== undefined && (spec === PACKAGE_NAME || spec.startsWith(`${PACKAGE_NAME}@`)) ? spec : undefined;
 }
 
-/** term ls → `pc run` 을 도는 세션들(보통 하나). */
-export function runningPcs(sessions: ReadonlyArray<Pick<ListedSession, "name" | "cwd" | "command">>): RunningPc[] {
+/** term ls → PC 연결 세션들(보통 하나 — 종류는 bridgeKind 한 곳). */
+export function runningPcs(sessions: ReadonlyArray<Pick<ListedSession, "name" | "cwd" | "command" | "kind">>): RunningPc[] {
   return sessions.flatMap((session) => {
-    if (!isPcCommand(session.command)) {
+    if (bridgeKind(session) !== "pc-bridge") {
       return [];
     }
-    const packageSpec = packageSpecOf(session.command);
+    const packageSpec = packageSpecOf(session.command ?? []);
     return [{ session: session.name, cwd: session.cwd, ...(packageSpec ? { packageSpec } : {}) }];
   });
 }
@@ -112,13 +108,13 @@ export type DaemonUpgrade = { kind: "keep" } | { kind: "restart" } | { kind: "as
 export function daemonUpgrade(
   daemonVersion: string | undefined,
   cliVersion: string,
-  sessions: ReadonlyArray<Pick<ListedSession, "name" | "command">>,
+  sessions: ReadonlyArray<Pick<ListedSession, "name" | "command" | "kind">>,
   insideTermSession: boolean,
 ): DaemonUpgrade {
   if (daemonVersion === undefined || daemonVersion === cliVersion || insideTermSession) {
     return { kind: "keep" };
   }
-  const user = sessions.filter((session) => !isPcCommand(session.command)).map((session) => session.name);
+  const user = sessions.filter((session) => bridgeKind(session) !== "pc-bridge").map((session) => session.name);
   return user.length === 0 ? { kind: "restart" } : { kind: "ask", sessions: user };
 }
 
@@ -142,7 +138,7 @@ const STOP_NOTES: Readonly<Record<string, string>> = {
 
 /** `ainecto status` 의 «이 PC 연결» 칸(순수 함수) — 연결·동의·원격 터미널 허용·이 PC 의 터미널 세션(연결 세션은 뺀다). */
 export function pcStatusView(input: {
-  sessions: ReadonlyArray<Pick<ListedSession, "name" | "cwd" | "command">>;
+  sessions: ReadonlyArray<Pick<ListedSession, "name" | "cwd" | "command" | "kind">>;
   /** 이 계정의 동의 — 로그인 전·계정을 못 읽었으면 undefined. */
   approval: { consentedAt: string; remoteTerminal: boolean } | undefined;
   agentLog: string;

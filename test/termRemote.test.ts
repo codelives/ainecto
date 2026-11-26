@@ -9,7 +9,7 @@ import { createRemoteHttp, openRemoteLog, pollItems, remoteStateOf, runRemoteBri
 import { frameBudget, screenFrame } from "../src/core/term/remoteFrame";
 import type { CellStyle } from "../src/core/term/screen";
 import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
-import { wireSessions } from "../src/core/term/remoteSessions";
+import { listing } from "../src/core/term/remoteSessions";
 import { RemoteViewer } from "../src/core/term/remoteViewer";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
 import { FakeWeb, WebChannel, type OpenedFrame } from "./support/fakeWeb";
@@ -30,7 +30,7 @@ import {
   signBytes,
   verifyBytes,
 } from "../src/core/term/e2e";
-import { cli, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
+import { cli, json, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
 const PROJECT = "0b9a8c7d-1111-4222-8333-444455556666";
 const USER_ID = "5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10";
@@ -98,17 +98,39 @@ describe("원격 다리 — 순수 함수", () => {
     expect(remoteStateOf("later")).toBeUndefined();
   });
 
-  it("올릴 목록 — 다리 자기 세션은 뺀다 · label·project·lastOutputAt·instance 는 있을 때만(옛 데몬은 instance 칸 없음)", () => {
+  it("올릴 목록 — PC 연결 세션(종류 pc-bridge)은 뺀다 · 남은 줄은 kind user · label·project·lastOutputAt·instance 는 있을 때만(옛 데몬은 instance 칸 없음)", () => {
     const instance = randomUUID();
-    expect(wireSessions([
-      { name: "ainecto-pc", pid: 1, clients: 0, cols: 80, rows: 24, cwd: "/", command: null, instance: randomUUID() },
+    const pcRun = ["npx", "-y", "--package", "@ainecto/mcp@0.16.4", "ainecto", "pc", "run"];
+    const got = listing([
+      { name: "ainecto-pc", pid: 1, clients: 0, cols: 80, rows: 24, cwd: "/", command: pcRun, instance: randomUUID(), kind: "pc-bridge" },
       { name: "api", pid: 2, clients: 0, cols: 100, rows: 30, cwd: "/", command: null, label: "백엔드", project: PROJECT,
         lastOutputAt: "2026-11-17T00:00:00Z", instance },
       { name: "web", pid: 3, clients: 1, cols: 80, rows: 24, cwd: "/", command: ["npm", "start"] },
-    ], ["ainecto-pc"])).toEqual([
-      { name: "api", label: "백엔드", project: PROJECT, cols: 100, rows: 30, lastOutputAt: "2026-11-17T00:00:00Z", instance },
-      { name: "web", cols: 80, rows: 24 },
+    ], undefined);
+    expect(got.sessions).toEqual([
+      { name: "api", label: "백엔드", project: PROJECT, cols: 100, rows: 30, lastOutputAt: "2026-11-17T00:00:00Z", instance, kind: "user" },
+      { name: "web", cols: 80, rows: 24, kind: "user" },
     ]);
+    expect(got.bridges).toEqual(["ainecto-pc"]);
+    // 옛 데몬(ls 에 ended 칸 없음) — 올릴 끝 기록 0 · 지울 것도 모름(ended-ack 를 보내지 않는다)
+    expect(got.ended).toEqual([]);
+    expect(got.ack).toBeUndefined();
+  });
+
+  it("올릴 끝 기록 — user 것만 서버 모양으로(command 는 싣지 않음) · pc-bridge 끝은 올리지 않고 같이 지운다 · 옛 줄(종류 없음)도 bridgeKind 로", () => {
+    const pcRun = ["npx", "-y", "--package", "@ainecto/mcp@0.16.3", "ainecto", "pc", "run"];
+    const [a, b, c, d] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    const got = listing([], [
+      { instance: a, name: "api", command: null, endedAt: "2026-11-26T01:00:00.000Z", reason: "exited", exitCode: 3 },
+      { instance: b, name: "ainecto-pc", kind: "pc-bridge", command: pcRun, endedAt: "2026-11-26T01:00:01.000Z", reason: "killed" },
+      { instance: c, name: "ainecto-pc", command: pcRun, endedAt: "2026-11-26T01:00:02.000Z", reason: "exited", signal: "15" },
+      { instance: d, name: "job", kind: "user", command: ["node", "tasks.js", "pc", "run"], endedAt: "2026-11-26T01:00:03.000Z", reason: "killed" },
+    ]);
+    expect(got.ended).toEqual([
+      { instance: a, name: "api", kind: "user", endedAt: "2026-11-26T01:00:00.000Z", reason: "exited", exitCode: 3 },
+      { instance: d, name: "job", kind: "user", endedAt: "2026-11-26T01:00:03.000Z", reason: "killed" },
+    ]);
+    expect(got.ack).toEqual([a, b, c, d]);
   });
 
   it("다시 하기 간격 — C12 에서 두 배씩 C13 까지 · 흔들림 0~C12", () => {
@@ -134,7 +156,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
   const ids = () => ({ userId: USER_ID, pcId: PC_ID, keysPath: keysPath(), accountKey: accountKey(fake.endpoint, USER_ID) });
   const web = (options: { pin?: boolean; name?: string } = {}): Promise<FakeWeb> => FakeWeb.create(fake, ids(), options);
 
-  function start(options: { remoteEnabled?: boolean; exclude?: string[]; onAnswer?: BridgeDeps["onAnswer"]; trust?: boolean;
+  function start(options: { remoteEnabled?: boolean; onAnswer?: BridgeDeps["onAnswer"]; trust?: boolean;
     pairRelay?: BridgeDeps["pairRelay"] } = {})
     : { done: Promise<RemoteResult>; stop: AbortController; printed: string[]; notified: string[][] } {
     const paths = termPaths(rig.home);
@@ -158,7 +180,6 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
       remoteEnabled: options.remoteEnabled ?? true,
       trust: options.trust === false ? undefined : { keysPath: keysPath(), accountKey: accountKey(fake.endpoint, USER_ID), userId: USER_ID.toUpperCase() },
       notifier: createPcNotifier({ log, platform: "darwin", run: async (_file, args) => { notified.push(args); } }),
-      exclude: options.exclude ?? ["ainecto-pc"],
       sessionEnv: Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string")),
       appHome: join(rig.home, "app"),
       signal: stop.signal,
@@ -199,7 +220,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
   it("open 에 e2e:1 · 짝지은 브라우저 hello → welcome(서명 검증) → confirm 뒤 보는 세션만 봉인 화면 · 세션별 입력 · 선 위 본문에 표지 없음 · 멈춤 → close", async () => {
     await ok("term", "new", "a", "--", "cat");
     await ok("term", "new", "b", "--", "cat");
-    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600");
+    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600", "pc", "run");   // 옛 CLI 가 만든 PC 연결 세션 흉내(종류 칸 없음 — 이름 + pc run)
     const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
@@ -637,6 +658,83 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     expect(result.reason).toContain("REPLACED");
     expect(fake.ops()).not.toContain("close");
     expect(fake.ops().filter((op) => op === "open")).toHaveLength(1);
+  }, LONG);
+
+  /** 데몬 끝 기록 책(ended.json) — 없으면 빈 목록. */
+  const endedBook = (): Array<Record<string, unknown>> => {
+    const path = termPaths(rig.home).ended;
+    return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as { ended: Array<Record<string, unknown>> }).ended : [];
+  };
+  const instanceOf = async (name: string): Promise<string> =>
+    ((await json("term", "ls")).data as { sessions: Array<{ name: string; instance: string }> }).sessions.find((s) => s.name === name)!.instance;
+  const endedSent = (): Array<Record<string, unknown>> => fake.calls.flatMap((call) =>
+    Array.isArray(call.body.ended) ? (call.body.ended as Array<Record<string, unknown>>).map((item) => ({ op: call.op, ...item })) : []);
+
+  it("장부 끝 기록 — 스스로 끝남(exit 3)·웹 밖 kill 을 목록이 같아도 sessions 에 싣는다 · 5xx 면 책 그대로 다시 · 2xx 뒤 ended-ack 로 책이 빈다 · command 는 올리지 않는다", async () => {
+    await ok("term", "new", "keep", "--", "cat");
+    await ok("term", "new", "gone", "--", "cat");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const gone = await instanceOf("gone");
+    fake.sessionsError = { status: 503, code: "UNAVAILABLE" };
+    await ok("term", "new", "x", "--", "/bin/sh", "-c", "sleep 0.3; exit 3");
+    const x = await instanceOf("x");
+    await until(() => endedBook().some((r) => r.instance === x), "x ended into the book");
+    await ok("term", "kill", "gone");
+    await until(() => endedSent().filter((r) => r.instance === gone).length >= 2, "kept resending while the server answers 503");
+    expect(endedBook().map((r) => r.instance).sort()).toEqual([gone, x].sort());   // 2xx 전에는 지우지 않는다
+    fake.sessionsError = undefined;
+    await until(() => endedBook().length === 0, "acked after 2xx");
+    const sent = endedSent();
+    expect(sent.find((r) => r.instance === x)).toEqual({ op: "sessions", instance: x, name: "x", kind: "user", endedAt: expect.any(String), reason: "exited", exitCode: 3 });
+    expect(sent.find((r) => r.instance === gone)).toEqual({ op: "sessions", instance: gone, name: "gone", kind: "user", endedAt: expect.any(String), reason: "killed" });
+    expect(sent.every((r) => !("command" in r))).toBe(true);
+    // 다 받은 뒤에는 목록이 같으면 다시 보내지 않는다
+    const calls = fake.calls.filter((call) => call.op === "sessions").length;
+    await sleep(2500);
+    expect(fake.calls.filter((call) => call.op === "sessions").length).toBe(calls);
+    expect(remoteLog().some((r) => r.event === "remote_ended_acked" && (r.acked as number) >= 1)).toBe(true);
+    run.stop.abort();
+    await run.done;
+    expectLogPairs();
+  }, LONG);
+
+  it("장부 끝 기록 — 다리가 없던 사이 끝난 세션은 다음 open 에 실린다(원격을 끈 채여도 · 목록은 안 싣는다) · 201 뒤 책이 빈다 · PC 연결 세션의 끝은 올리지 않고 같이 지운다", async () => {
+    await ok("term", "new", "keep", "--", "cat");
+    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600", "pc", "run");
+    await ok("term", "new", "done", "--", "/bin/sh", "-c", "exit 0");
+    const pc = await instanceOf("ainecto-pc");
+    await ok("term", "kill", "ainecto-pc");
+    await until(() => endedBook().length === 2, "two ends in the book");
+    const done = endedBook().find((r) => r.name === "done")!.instance;
+    const run = start({ remoteEnabled: false });
+    await until(() => fake.ops().includes("open"), "open");
+    expect(fake.calls[0]?.body).toMatchObject({ remoteEnabled: false, sessions: [],
+      ended: [{ instance: done, name: "done", kind: "user", endedAt: expect.any(String), reason: "exited", exitCode: 0 }] });
+    expect(endedSent().some((r) => r.instance === pc)).toBe(false);
+    await until(() => endedBook().length === 0, "both acked after 201");
+    run.stop.abort();
+    await run.done;
+  }, LONG);
+
+  it("PC 연결 세션 이름 — 웹이 그 이름으로 만들지 못한다(PC 연결이 못 뜨게 되므로) · 이름만 같은 사용자 셸(옛 줄·pc run 아님)은 목록에 오르고 입력도 간다", async () => {
+    const browser = await web();
+    await ok("term", "new", "base", "--", "cat");
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    const taken = await channel.create({ name: "ainecto-pc" });
+    await until(async () => (await channel.answer(taken)) !== undefined, "answer");
+    expect((await channel.answer(taken))?.outer).toMatchObject({ ok: false, code: "TERM_NO_SESSION" });
+    expect((await sessions()).some((s) => s.name === "ainecto-pc")).toBe(false);
+    await ok("term", "new", "ainecto-pc", "--", "cat");
+    await until(() => fake.listedNames().includes("ainecto-pc"), "a user shell named ainecto-pc is listed");
+    channel.watch("ainecto-pc");
+    const frame = await frameWhere(channel, "ainecto-pc", () => true, "frame");
+    await channel.input("ainecto-pc", frame.instance, "typed-into-it\r");
+    await frameWhere(channel, "ainecto-pc", (f) => lines(f.text).includes("typed-into-it"), "input reached it");
+    run.stop.abort();
+    await run.done;
   }, LONG);
 
   it("api 재시작(poll 404 REMOTE_NOT_FOUND) → 같은 PC 로 다시 open(목록 포함) · 옛 채널은 버린다(새 hello 로만) · 새 채널 화면이 새 링크로", async () => {
