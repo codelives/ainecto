@@ -57,9 +57,14 @@ export type AgentLogRecord =
       workId?: string; conversationUuid?: string; runDropped?: boolean; ms: number }
   /** runs.json 읽기 — 없음(missing)·깨짐(unreadable → 비움)도 이 한 줄. */
   | { event: "runs_load"; entries: number; reason?: string }
-  /** sessions.json 칸을 쓰려 했으나 그 사이 다른 작성자가 바꿨다(rev 가 다름) — 늦은 결과로 보고 버렸다(설계 connect-agent-dedicated-session r3 §3-4). */
-  | { event: "agent_session_stale"; turnUuid?: string; todoId?: string; agent: string; conversationUuid: string; expectedRev: number;
-      change: "set" | "forget" }
+  /**
+   * sessions.json 칸을 읽거나 쓰지 못했다 — reason = stale(그 사이 다른 작성자가 바꿈 · 늦은 결과로 버림) · read failed · write failed.
+   * 답은 그대로 간다(이어 붙이기만 못 한다 · 설계 connect-agent-dedicated-session r3 §3-4).
+   */
+  | { event: "agent_session_unwritten"; turnUuid?: string; todoId?: string; agent: string; conversationUuid: string; expectedRev?: number;
+      change?: "set" | "forget"; reason: string }
+  /** 이 차례의 sessions.json 주인(로그인 토큰)을 읽지 못했다 — fallback = 마지막으로 확인한 주인을 썼다(없으면 재개 값·커서 없이). */
+  | { event: "agent_owner_unknown"; turnUuid?: string; todoId?: string; error: string; fallback: boolean }
   /** 가져간 할 일의 임대 — 연장 실패·놓기 등(도구 호출 줄과 별개로, serve 가 그 결과로 무엇을 했나). */
   | { event: "todo_lease"; todoId: string; action: string; ok: boolean; error?: string; next?: string }
   /**

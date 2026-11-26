@@ -1,9 +1,9 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentCallError } from "../src/core/agent/http";
 import { agentPromptText, turnContextIn, unreadLine } from "../src/core/agent/prompt";
-import { sessionChange } from "../src/core/agent/serve";
+import { sessionChange, withoutSecrets } from "../src/core/agent/serve";
 import { agentOwner, AgentSessionMap, usableEntry } from "../src/core/agent/sessions";
 import { finish, logRecords, OWNER, spawned, startServe, until, type World } from "./support/agentServeWorld";
 
@@ -40,10 +40,12 @@ describe("Connect C2 — turn-context · 새 글 알림 줄 · DONE 때만 커�
 
     expect(w.server.turnContextCalls()).toEqual([{ linkId: LINK, turnUuid: "t1", cursor: null }, { linkId: LINK, turnUuid: "t2", cursor: "cur-t1" }]);
     expect(String(first.reply)).toContain("[AiNecto chat] 2 message(s) in this conversation have not reached you yet (you have not seen this conversation before).");
-    expect(String(first.reply)).toContain('execute_read {"operation":"chat_list_messages","args":{"turnUuid":"t1","readKey":"rk-t1"}}');
+    // ★가짜 Claude 는 받은 입력을 답 글로 되말한다 — 서버로 가는 답 글에는 읽기 열쇠가 없다(코드 리뷰 C2 P0-3 a)
+    expect(String(first.reply)).toContain('execute_read {"operation":"chat_list_messages","args":{"turnUuid":"t1","readKey":"[readKey]"}}');
+    expect(JSON.stringify(w.server.replies())).not.toContain("rk-t");
     expect(String(first.reply)).toMatch(/\n\nhello #1 in sess-\d+$/);
     expect(String(second.reply)).toContain("(written since your last answer here)");
-    expect(String(second.reply)).toContain('{"operation":"chat_list_messages","args":{"turnUuid":"t2","readKey":"rk-t2","since":"cur-t1"}}');
+    expect(String(second.reply)).toContain('{"operation":"chat_list_messages","args":{"turnUuid":"t2","readKey":"[readKey]","since":"cur-t1"}}');
     expect(spawned(w)).toHaveLength(1);
     expect(entry(w, "conv-a")).toMatchObject({ cursor: "cur-t2", owner: OWNER, rev: 2 });
   });
@@ -155,19 +157,27 @@ describe("Connect C2 — turn-context · 새 글 알림 줄 · DONE 때만 커�
     expect(entry(unknown, "conv-a").owner).toBeUndefined();
   });
 
-  it("차례 사이에 다른 작성자가 그 칸을 바꿨다(rev 다름) → 이 차례의 쓰기는 버리고 로그 한 줄 · 남의 값이 남는다", async () => {
+  it("차례 사이에 다른 작성자가 그 칸을 바꿨다(rev 다름) → 이 차례의 쓰기는 버리고 로그 한 줄 · ★다음 차례는 옛 자식이 아니라 파일의 승자로", async () => {
     const w = startServe();
     const base = w.server.turnContext;
     w.server.turnContext = (body) => {
-      writeFileSync(w.sessionsPath, JSON.stringify({ version: 2, conversations: { "conv-a": { sessionId: "sess-other", cursor: "cur-other", owner: OWNER, rev: 7 } } }));
+      if (body.turnUuid === "t1") {
+        writeFileSync(w.sessionsPath, JSON.stringify({ version: 2, conversations: { "conv-a": { sessionId: "sess-other", cursor: "cur-other", owner: OWNER, rev: 7 } } }));
+      }
       return base(body);
     };
     w.server.offerWithContext("t1", "conv-a", "hello");
     await until(() => w.server.replies()[0]);
-    await finish(w);
     expect(entry(w, "conv-a")).toMatchObject({ sessionId: "sess-other", cursor: "cur-other", rev: 7 });
-    expect(logRecords(w).filter((r) => r.event === "agent_session_stale")).toEqual([
-      expect.objectContaining({ turnUuid: "t1", agent: "claude-code", conversationUuid: "conv-a", expectedRev: 0, change: "set" })]);
+    w.server.offerWithContext("t2", "conv-a", "again");
+    const second = await until(() => w.server.replies()[1]);
+    await finish(w);
+    expect(logRecords(w).filter((r) => r.event === "agent_session_unwritten")).toEqual([
+      expect.objectContaining({ turnUuid: "t1", agent: "claude-code", conversationUuid: "conv-a", expectedRev: 0, change: "set", reason: "stale" })]);
+    expect(spawned(w)).toEqual([[], ["--resume", "sess-other"]]);   // 옛 자식을 다시 쓰지 않고 승자로 다시 연다
+    expect(String(second.reply)).toMatch(/again #1 in sess-other$/);
+    expect(cursors(w)).toEqual([null, null]);   // 새로 띄운 Claude 는 확인 전 — 처음 규칙
+    expect(entry(w, "conv-a")).toMatchObject({ sessionId: "sess-other", cursor: "cur-t2", rev: 8 });
   });
 
   it("Codex: thread/resume 응답의 id 가 칸과 같으면 확인됨 → 커서를 싣는다 · ★부르는 때는 resume 응답 뒤 · turn/start 전", async () => {
@@ -199,7 +209,7 @@ describe("Connect C2 — turn-context · 새 글 알림 줄 · DONE 때만 커�
     expect(entry(w, "conv-a", "codex")).toMatchObject({ sessionId: "thr-B", cursor: "cur-t1", rev: 2 });
   });
 
-  it("Antigravity: 새로 띄운 세션은 칸과 같은 id 여도 확인 전 → 처음 규칙 · 같은 세션의 다음 차례(agy 가 id 를 밝힘)는 커서", async () => {
+  it("Antigravity: 차례마다 agy -p 를 새로 띄우므로 ★늘 처음 규칙(null) — 앞 프로세스가 밝힌 id 는 이번 프로세스의 확인이 아니다", async () => {
     const w = startServe({ installed: ["antigravity"] });
     w.server.offerWithContext("t1", "conv-a", "hello", "antigravity");
     await until(() => w.server.replies()[0]);
@@ -208,7 +218,7 @@ describe("Connect C2 — turn-context · 새 글 알림 줄 · DONE 때만 커�
     await until(() => w.server.replies()[1]);
     await finish(w);
     expect(stored).toMatchObject({ cursor: "cur-t1", rev: 1 });
-    expect(cursors(w)).toEqual([null, "cur-t1"]);
+    expect(cursors(w)).toEqual([null, null]);
 
     const fresh = startServe({ installed: ["antigravity"], sessionsFile: { version: 2, conversations: {},
       byAgent: { antigravity: { "conv-a": { ...stored } } } } });
@@ -230,14 +240,44 @@ describe("sessions.json 칸 — 잠금 안 CAS(rev)", () => {
     const b = new AgentSessionMap(p);
     const seenA = await a.read("conv-a", "codex");
     const seenB = await b.read("conv-a", "codex");
-    expect(seenA).toEqual({ sessionId: "S", cursor: "10", owner: OWNER, rev: 1 });
-    expect(await a.write("conv-a", "codex", seenA!.rev, { sessionId: "S", cursor: "30", owner: OWNER })).toBe("written");
-    expect(await b.write("conv-a", "codex", seenB!.rev, { sessionId: "S", cursor: "20", owner: OWNER })).toBe("stale");
-    expect(await b.write("conv-a", "codex", seenB!.rev, undefined)).toBe("stale");
+    expect(seenA).toEqual({ entry: { sessionId: "S", cursor: "10", owner: OWNER }, rev: 1 });
+    expect(await a.write("conv-a", "codex", seenA.rev, { sessionId: "S", cursor: "30", owner: OWNER })).toBe("written");
+    expect(await b.write("conv-a", "codex", seenB.rev, { sessionId: "S", cursor: "20", owner: OWNER })).toBe("stale");
+    expect(await b.write("conv-a", "codex", seenB.rev, undefined)).toBe("stale");
     const after = JSON.parse(readFileSync(p, "utf8"));
     expect(after.byAgent.codex["conv-a"]).toMatchObject({ sessionId: "S", cursor: "30", rev: 2 });
     expect(after.conversations["conv-b"]).toEqual({ sessionId: "sess-b", updatedAt: "x" });
     expect(after.extra).toEqual({ keep: true });
+  });
+
+  it("★지워도 세대가 남는다 — 옛 칸(rev 1)을 읽은 늦은 작성자는 지운 뒤 새로 쓴 칸(rev 1 아님)을 덮지도 지우지도 못한다(코드 리뷰 C2 P1-2)", async () => {
+    const p = path();
+    writeFileSync(p, JSON.stringify({ version: 2, conversations: { "conv-a": { sessionId: "OLD", cursor: "10", owner: OWNER, rev: 1 } } }));
+    const late = new AgentSessionMap(p);
+    const other = new AgentSessionMap(p);
+    const seenLate = await late.read("conv-a", "claude-code");
+    expect(await other.write("conv-a", "claude-code", 1, undefined)).toBe("written");
+    expect(await other.read("conv-a", "claude-code")).toEqual({ rev: 2 });
+    expect(await other.write("conv-a", "claude-code", 2, { sessionId: "NEW", cursor: "30", owner: OWNER })).toBe("written");
+    expect(await late.write("conv-a", "claude-code", seenLate.rev, { sessionId: "OLD", cursor: "20", owner: OWNER })).toBe("stale");
+    expect(await late.write("conv-a", "claude-code", seenLate.rev, undefined)).toBe("stale");
+    expect(JSON.parse(readFileSync(p, "utf8")).conversations["conv-a"]).toMatchObject({ sessionId: "NEW", cursor: "30", rev: 3 });
+  });
+
+  it("파일을 읽지 못하면(ENOENT 밖 — 권한) 쓰지 않고 던진다 · 다른 대화의 칸이 그대로 남는다(코드 리뷰 C2 P2-1)", async () => {
+    const p = path();
+    const original = JSON.stringify({ version: 2, conversations: { "conv-old": { sessionId: "KEEP", updatedAt: "x" } } });
+    writeFileSync(p, original);
+    chmodSync(p, 0o000);
+    try {
+      const map = new AgentSessionMap(p);
+      await expect(map.read("conv-new", "claude-code")).rejects.toThrow();
+      await expect(map.write("conv-new", "claude-code", 0, { sessionId: "S" })).rejects.toThrow();
+    } finally {
+      chmodSync(p, 0o600);
+    }
+    expect(readFileSync(p, "utf8")).toBe(original);
+    expect(await new AgentSessionMap(join(p, "..", "missing.json")).read("c", "claude-code")).toEqual({ rev: 0 });
   });
 });
 
@@ -254,11 +294,11 @@ describe("C2 순수 함수", () => {
   });
 
   it("usableEntry — 둘 다 알려진 주인이 다를 때만 버린다", () => {
-    const e = { sessionId: "s", cursor: "c", owner: "o1", rev: 1 };
+    const e = { sessionId: "s", cursor: "c", owner: "o1" };
     expect(usableEntry(e, "o2")).toBeUndefined();
     expect(usableEntry(e, "o1")).toBe(e);
     expect(usableEntry(e, undefined)).toBe(e);
-    expect(usableEntry({ sessionId: "s", rev: 0 }, "o1")).toEqual({ sessionId: "s", rev: 0 });
+    expect(usableEntry({ sessionId: "s" }, "o1")).toEqual({ sessionId: "s" });
   });
 
   it("turnContextIn — 꼴이 어긋난 답은 undefined(알림 없이 · 커서 그대로)", () => {
@@ -272,8 +312,8 @@ describe("C2 순수 함수", () => {
   });
 
   it("sessionChange — DONE 만 next · 그 밖엔 같은 세션 id 일 때만 커서를 지킨다 · 재개 세션이 끝나면 칸을 지운다", () => {
-    const entry = { sessionId: "s1", cursor: "c1", owner: "o", rev: 3 };
-    const base = { outcome: "result" as const, resumed: true, sessionRef: "s1", next: "n2", entry, owner: "o" };
+    const stored = { sessionId: "s1", cursor: "c1", owner: "o" };
+    const base = { outcome: "result" as const, resumed: true, sessionRef: "s1", next: "n2", entry: stored, owner: "o" };
     expect(sessionChange({ ...base, status: "DONE" })).toEqual({ kind: "write", next: { sessionId: "s1", cursor: "n2", owner: "o" } });
     expect(sessionChange({ ...base, status: "FAILED" })).toEqual({ kind: "write", next: { sessionId: "s1", cursor: "c1", owner: "o" } });
     expect(sessionChange({ ...base, status: "STOPPED", next: undefined })).toEqual({ kind: "write", next: { sessionId: "s1", cursor: "c1", owner: "o" } });
@@ -284,5 +324,119 @@ describe("C2 순수 함수", () => {
     expect(sessionChange({ ...base, outcome: "exited", resumed: false, status: "FAILED" })).toEqual({ kind: "keep" });
     expect(sessionChange({ ...base, outcome: "refused", status: "FAILED" })).toEqual({ kind: "keep" });
     expect(sessionChange({ ...base, sessionRef: undefined, status: "DONE" })).toEqual({ kind: "keep" });
+  });
+});
+
+describe("Connect C2 r2 — 코드 리뷰 NO-GO 반례(connect-c2-code-review-astra62)", () => {
+  const marker = () => join(mkdtempSync(join(tmpdir(), "codex-hold-")), "hold");
+
+  it("P0-1 · 열람 403(turn-context 와 reply 둘 다) → 그 차례만 버리고 같은 연결에서 다음 차례 · serve 는 auth 로 멈추지 않는다", async () => {
+    const w = startServe();
+    const base = w.server.turnContext;
+    const forbidden = () => new AgentCallError("User not authorized for workspace", "turn-context", 403);
+    w.server.turnContext = (body) => (body.turnUuid === "t1" ? forbidden() : base(body));
+    w.server.replyError = (body) => (body.turnUuid === "t1" ? new AgentCallError("User not authorized for workspace", "reply", 403) : undefined);
+    w.server.offerWithContext("t1", "conv-a", "one");
+    w.server.offerWithContext("t2", "conv-a", "two");
+    const second = await until(() => w.server.replies()[1]);
+    const result = await finish(w);
+    expect(w.server.replies()[0]).toMatchObject({ turnUuid: "t1", status: "FAILED" });
+    expect(second).toMatchObject({ turnUuid: "t2", status: "DONE" });
+    expect(result).toEqual({ exitCode: 0, reason: "signal" });
+  });
+
+  it("P0-1 · 401 은 어디서든 로그인 거절 — turn-context 401 이면 serve 가 auth 로 멈춘다", async () => {
+    const w = startServe();
+    w.server.turnContext = () => new AgentCallError("invalid_token", "turn-context", 401);
+    w.server.offerWithContext("t1", "conv-a", "one");
+    const result = await w.done;
+    expect(result).toEqual({ exitCode: 1, reason: "auth" });
+  });
+
+  it("P0-2 · Codex 준비(thread/start)가 답하지 않으면 → 차례 기한 안에 TURN_TIMEOUT · turn-context 0 · 다음 요청은 새 프로세스로", async () => {
+    const hold = marker();
+    writeFileSync(hold, "");
+    const w = startServe({ installed: ["codex"], env: { FAKE_CODEX_HOLD_THREAD: hold }, turnTimeoutMs: 500 });
+    const t0 = Date.now();
+    w.server.offerWithContext("t1", "conv-a", "hello", "codex");
+    const timedOut = await until(() => w.server.replies()[0]);
+    const elapsed = Date.now() - t0;
+    w.server.offerWithContext("t2", "conv-a", "again", "codex");
+    const next = await until(() => w.server.replies()[1]);
+    await finish(w);
+    expect(timedOut).toMatchObject({ status: "FAILED", errorCode: "TURN_TIMEOUT" });
+    expect(elapsed).toBeLessThan(3_000);
+    expect(next.status).toBe("DONE");
+    expect(w.server.turnContextCalls().map((c) => c.turnUuid)).toEqual(["t2"]);
+  });
+
+  it("P0-2 · Codex 준비 중 웹 «중단» → 바로 STOPPED · 자식을 내리고 큐가 나아간다 · 재개 값은 그대로(표지 있음·없음 둘 다)", async () => {
+    for (const flagged of [true, false]) {
+      const hold = marker();
+      writeFileSync(hold, "");
+      const w = startServe({ installed: ["codex"], env: { FAKE_CODEX_HOLD_THREAD: hold }, sessionsFile: { version: 2, conversations: {},
+        byAgent: { codex: { "conv-a": { sessionId: "thr-A", cursor: "cur-old", owner: OWNER, rev: 1 } } } } });
+      if (flagged) w.server.offerWithContext("t1", "conv-a", "hello", "codex");
+      else w.server.offer("t1", "conv-a", "hello", undefined, "codex");
+      await until(() => logRecords(w).find((r) => r.event === "agent_rpc" && (r.method === "thread/resume")));
+      const t0 = Date.now();
+      w.server.push({ state: "OPEN", offers: [], stops: ["t1"] });
+      const stopped = await until(() => w.server.replies()[0]);
+      const elapsed = Date.now() - t0;
+      w.server.offer("t2", "conv-a", "again", undefined, "codex");
+      const next = await until(() => w.server.replies()[1]);
+      await finish(w);
+      expect(stopped).toMatchObject({ turnUuid: "t1", status: "STOPPED" });
+      expect(elapsed).toBeLessThan(3_000);
+      expect(next.status).toBe("DONE");
+      expect(String(next.reply)).toMatch(/in thr-A$/);   // 재개 값 thr-A 그대로 — 새 프로세스가 그것으로 이어 간다
+      expect(w.server.turnContextCalls()).toHaveLength(0);
+    }
+  });
+
+  it("P0-3 a · 답 글의 읽기 열쇠는 보내기 전에 가린다(Agent 가 되말한 것 · stderr 에 실린 것 모두) — 순수 함수", () => {
+    const reply = { status: "FAILED" as const, reply: "args rk-1 … stderr: readKey=rk-1", documentUuids: [] };
+    expect(withoutSecrets(reply, ["rk-1"]).reply).toBe("args [readKey] … stderr: readKey=[readKey]");
+    expect(withoutSecrets(reply, [])).toBe(reply);
+    expect(withoutSecrets(reply, [""])).toBe(reply);
+  });
+
+  it("P1-4 · 주인 조회가 실패해도 차례는 돈다(구 API 경로) — 한 번도 확인 못 했으면 재개·커서 없이 · 확인한 적 있으면 그 값으로", async () => {
+    let calls = 0;
+    const w = startServe({ owner: async () => {
+      calls += 1;
+      if (calls === 1 || calls === 3) throw new Error("token refresh failed");
+      return OWNER;
+    }, sessionsFile: { version: 2, conversations: { "conv-a": { sessionId: "sess-old", owner: OWNER, rev: 1 } } } });
+    w.server.offer("t1", "conv-a", "one");
+    const first = await until(() => w.server.replies()[0]);
+    w.server.offer("t2", "conv-a", "two");
+    await until(() => w.server.replies()[1]);
+    w.server.offer("t3", "conv-a", "three");
+    const third = await until(() => w.server.replies()[2]);
+    await finish(w);
+    expect(first.status).toBe("DONE");
+    expect(third.status).toBe("DONE");
+    expect(spawned(w)).toEqual([[]]);   // 첫 차례는 재개 없이 · 그 뒤는 같은 주인 · 같은 세션을 다시 쓴다
+    expect(logRecords(w).filter((r) => r.event === "agent_owner_unknown").map((r) => r.fallback)).toEqual([false, true]);
+  });
+
+  it("P1-6 · Chat 차례는 큐에서 나온 뒤 서버 답 처리가 끝날 때까지 «작업 중» — 알림 조회 중·답 보내는 중 모두", async () => {
+    const w = startServe();
+    const seen: boolean[] = [];
+    const base = w.server.turnContext;
+    w.server.turnContext = (body) => {
+      seen.push(w.busy());
+      return base(body);
+    };
+    w.server.onReply = () => {
+      seen.push(w.busy());
+    };
+    expect(w.busy()).toBe(false);
+    w.server.offerWithContext("t1", "conv-a", "hello");
+    await until(() => w.server.replies()[0]);
+    await until(() => (w.busy() ? undefined : true));
+    await finish(w);
+    expect(seen).toEqual([true, true]);
   });
 });

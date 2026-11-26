@@ -7,6 +7,7 @@ import type { AgentLogRecord } from "./log";
 import { agentPromptText, turnContextIn, unreadLine, type AgentTurnContext, type TurnContextReply } from "./prompt";
 import { clip, replyForOutcome, stoppedReply, type AgentReply } from "./reply";
 import { usableEntry, type AgentSessionEntry, type AgentSessionMap, type AgentSessionWrite } from "./sessions";
+import { withDeadline } from "./child";
 import type { AgentRunLog } from "./runs";
 import { claimTodo, closeTodo, keepLease, resumeTodo, runTodo, TODO_KINDS, todosIn, type AgentTodo, type ClaimedTodo, type LeaseKeeper,
   type TodoOutcome } from "./todoRun";
@@ -172,7 +173,12 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   let stopReason: string | undefined;
   let exitCode = 0;
   let wakeWorker: (() => void) | undefined;
-  const live = new Map<AgentId, AgentSession>();
+  /** Agent 마다 살아 있는 세션 하나와 그 세션을 연 주인(sessions.json 칸 주인과 같은 값). */
+  const live = new Map<AgentId, { session: AgentSession; owner: string | undefined }>();
+  /** ★Chat 차례가 큐에서 나와 서버 답 처리를 끝낼 때까지 — 자동 교체의 «한가» 판정이 이 사이를 작업 중으로 본다(코드 리뷰 C2 P1-6). */
+  let chatInFlight = false;
+  /** 마지막으로 확인한 주인 — 차례마다 묻다가 한 번 실패하면 이 값을 쓴다(코드 리뷰 C2 P1-4). */
+  let lastOwner: { value: string | undefined } | undefined;
   const received = new Set<string>();
   const queue: Job[] = [];
   /** 멈출 차례(열쇠 = {@link TurnJob.key}) — 웹 «중단»(turnUuid) · 임대를 잃은 할 일. 진행 중이면 멈추고, 시작 전이면 돌리지 않는다. */
@@ -183,7 +189,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   let todoInFlight: string | undefined;
   let wakeTodos: (() => void) | undefined;
 
-  deps.onBusyProbe?.(() => current !== undefined || queue.length > 0 || todoInFlight !== undefined);
+  deps.onBusyProbe?.(() => chatInFlight || current !== undefined || queue.length > 0 || todoInFlight !== undefined);
 
   const requestStop = (key: string) => {
     if (stopping.has(key)) return;
@@ -201,7 +207,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     stopController.abort();
     wakeWorker?.();
     wakeTodos?.();
-    for (const session of live.values()) void session.close();
+    for (const { session } of live.values()) void session.close();
   };
   const onUserStop = () => stop("signal", 0, "Stopping…");
   if (deps.signal.aborted) onUserStop();
@@ -210,9 +216,11 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   /**
    * 로그인이 막혔다 — 다시 하지 않는다. ★LINK_NOT_FOUND(서버가 link 를 잊음 — api 재시작)는 여기서 멈추지 않는다: poll 이 {@link reopen} 한다.
    * 다른 호출(reply 등)은 그 답만 버린다 — 서버가 재시작으로 그 차례도 잊었다.
+   * ★401 은 어디서든 로그인 거절이다. 403 은 link 단위 호출(open·poll)에서만 — 차례 단위 호출(turn-context·reply)의 403 은 그 대화의 열람 거절일 수
+   * 있으므로(워크스페이스 권한 회수) 그 차례만 버린다. 로그인이 정말 막혔으면 poll 이 곧 같은 403 으로 멈춘다(코드 리뷰 C2 P0-1).
    */
-  const stopOnFatal = (error: AgentCallError) => {
-    if (error.status === 401 || error.status === 403) {
+  const stopOnFatal = (error: AgentCallError, scope: "link" | "turn") => {
+    if (error.status === 401 || (error.status === 403 && scope === "link")) {
       stop("auth", 1, `AiNecto refused the CLI sign-in (${error.code ?? error.status}). Run \`ainecto auth login\` and start again.`);
     }
   };
@@ -242,7 +250,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           if (nameRefused(error)) {
             stop("agent_name_invalid", 1, nameRefusedMessage(error));
           } else if (error.status === 401 || error.status === 403) {
-            stopOnFatal(error);
+            stopOnFatal(error, "link");
           } else {
             stop("reopen_refused", 1, `AiNecto refused to reconnect this PC (${error.code ?? error.status}): ${error.message}`);
           }
@@ -286,7 +294,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           continue;
         }
         if (error instanceof AgentCallError && !error.retryable) {
-          stopOnFatal(error);
+          stopOnFatal(error, "link");
           if (stopReason) return;
         }
         delay = nextRetryDelay(delay);
@@ -297,20 +305,40 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
 
   /**
    * 그 Agent 의 이 대화 세션 — 다른 대화·다른 연결 이름의 세션이거나 끝났으면 내리고 새로(재개 값이 있으면 재개 — 이름이 바뀌어도
-   * 같은 대화의 맥락은 잇는다).
+   * 같은 대화의 맥락은 잇는다). ★살아 있는 세션도 파일 칸과 맞을 때만 다시 쓴다 — 같은 주인이고 세션 id 가 칸의 sessionId 와 같을 때.
+   * 다른 작성자가 파일에서 이겼으면(CAS) 그 승자로 다시 연다(옛 자식이 승자를 되돌리지 않게 · 코드 리뷰 C2 P1-3).
    */
   const sessionFor = async (adapter: AgentAdapter, conversationUuid: string, agentName: string | undefined,
-    resumeRef: string | undefined): Promise<AgentSession> => {
+    entry: AgentSessionEntry | undefined, owner: string | undefined): Promise<AgentSession> => {
     const existing = live.get(adapter.id);
-    if (existing && existing.conversationUuid === conversationUuid && existing.agentName === agentName && existing.alive) return existing;
+    const s = existing?.session;
+    const sameOwner = existing?.owner === undefined || owner === undefined || existing.owner === owner;   // 둘 다 알려지고 다를 때만 다르다
+    if (s && s.conversationUuid === conversationUuid && s.agentName === agentName && s.alive && sameOwner
+      && s.sessionRef === entry?.sessionId) {
+      if (owner !== undefined) existing.owner = owner;
+      return s;
+    }
     if (existing) {
       live.delete(adapter.id);
-      await existing.close();
+      await existing.session.close();
     }
-    const session = adapter.open({ conversationUuid, resumeRef,
+    const session = adapter.open({ conversationUuid, resumeRef: entry?.sessionId,
       textMaxCharacters: limits.textMaxCharacters, documentsMax: limits.documentsMax, ...(agentName ? { agentName } : {}) });
-    live.set(adapter.id, session);
+    live.set(adapter.id, { session, owner });
     return session;
+  };
+
+  /** 이 차례의 주인 — 묻다가 실패하면 마지막으로 확인한 값, 그것도 없으면 «모름»(재개 값·커서 없이 돈다). 실패는 한 줄 남긴다. */
+  const ownerForTurn = async (turnUuid: string | undefined, todoId: string | undefined): Promise<{ owner: string | undefined; known: boolean }> => {
+    try {
+      const value = await deps.owner();
+      lastOwner = { value };
+      return { owner: value, known: true };
+    } catch (error) {
+      deps.log.write({ event: "agent_owner_unknown", turnUuid, todoId, error: error instanceof Error ? error.message : String(error),
+        fallback: lastOwner !== undefined });
+      return lastOwner ? { owner: lastOwner.value, known: true } : { owner: undefined, known: false };
+    }
   };
 
   /**
@@ -319,39 +347,58 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
    * 네트워크·5xx·꼴이 어긋남이면 알림 줄 없이 돌린다(next 가 없으니 커서는 그대로).
    */
   const askTurnContext = async (turnUuid: string, session: AgentSession, entry: AgentSessionEntry | undefined,
-    owner: string | undefined): Promise<{ kind: "ok"; reply: TurnContextReply | undefined } | { kind: "refused"; code: string }> => {
-    const confirmed = await session.confirmedRef();
+    owner: string | undefined, deadlineAt: number, stopped: () => boolean): Promise<{ kind: "ok"; reply: TurnContextReply | undefined } | { kind: "refused"; error: AgentCallError }
+      | { kind: "timeout" }> => {
+    // ★준비(Codex initialize·thread)도 이 차례의 기한 안 — 멈춤은 session.interrupt 가 이 기다림을 푼다(코드 리뷰 C2 P0-2).
+    const TIMEOUT = Symbol("timeout");
+    const confirmed = await withDeadline<string | undefined | typeof TIMEOUT>(session.confirmedRef(), Math.max(0, deadlineAt - Date.now()), TIMEOUT);
+    if (confirmed === TIMEOUT) return { kind: "timeout" };
+    if (stopped() || !session.alive) return { kind: "ok", reply: undefined };   // 준비 중 멈춤 — 묻지 않는다(돌리지 않는다)
     const cursor = entry?.cursor !== undefined && owner !== undefined && entry.owner === owner && confirmed === entry.sessionId
       ? entry.cursor : null;
     try {
       const res = await deps.http.call("turn-context", { linkId, turnUuid, cursor }, { turnUuid, signal: stopController.signal });
       return { kind: "ok", reply: turnContextIn(res) };
     } catch (error) {
-      if (error instanceof AgentCallError && !error.retryable) return { kind: "refused", code: error.code ?? String(error.status) };
+      if (error instanceof AgentCallError && !error.retryable) return { kind: "refused", error };
       return { kind: "ok", reply: undefined };
     }
   };
 
+  /** 한 차례 — ★서버로 가는 답 글에서 이 차례의 읽기 열쇠를 가린다(Agent 가 되말하거나 stderr 에 실려도 · 코드 리뷰 C2 P0-3 a). */
   const runTurn = async (offer: TurnJob): Promise<AgentReply> => {
+    const secrets: string[] = [];
+    return withoutSecrets(await runTurnInner(offer, secrets), secrets);
+  };
+
+  const runTurnInner = async (offer: TurnJob, secrets: string[]): Promise<AgentReply> => {
     const started = Date.now();
+    /** ★이 차례의 기한 — 준비(세션 확인)·알림 조회·입력·응답이 함께 쓴다(코드 리뷰 C2 P0-2). */
+    const deadlineAt = started + (deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
     const adapter = isAgentId(offer.agent) ? deps.adapters.get(offer.agent) : undefined;
     let session: AgentSession | undefined;
     let outcome: TurnOutcome | undefined;
     let reply: AgentReply | undefined;
     let failure: string | undefined;
-    /** 이 차례가 읽은 sessions.json 칸(주인이 다르면 없음)과 그 rev — 끝의 쓰기는 이 rev 로만(CAS). */
+    /** 이 차례가 읽은 sessions.json 칸(주인이 다르면·주인을 모르면 없음)과 그 자리의 rev — 끝의 쓰기는 이 rev 로만(CAS). 못 읽었으면 쓰지 않는다. */
     let entry: AgentSessionEntry | undefined;
-    let entryRev = 0;
+    let entryRev: number | undefined;
     let owner: string | undefined;
     try {
       try {
         if (adapter) {
-          owner = await deps.owner();
-          const stored = await deps.sessions.read(offer.conversationUuid, adapter.id);
-          entryRev = stored?.rev ?? 0;
-          entry = usableEntry(stored, owner);
+          const asked = await ownerForTurn(offer.turnUuid, offer.todoId);
+          owner = asked.owner;
+          try {
+            const stored = await deps.sessions.read(offer.conversationUuid, adapter.id);
+            entryRev = stored.rev;
+            entry = asked.known ? usableEntry(stored.entry, owner) : undefined;
+          } catch (error) {
+            deps.log.write({ event: "agent_session_unwritten", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: adapter.id,
+              conversationUuid: offer.conversationUuid, reason: `read failed: ${error instanceof Error ? error.message : String(error)}` });
+          }
         }
-        session = adapter ? await sessionFor(adapter, offer.conversationUuid, offer.agentName, entry?.sessionId) : undefined;
+        session = adapter ? await sessionFor(adapter, offer.conversationUuid, offer.agentName, entry, owner) : undefined;
       } finally {
         deps.log.write({ event: "agent_request", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: offer.agent,
           conversationUuid: offer.conversationUuid, pid: session?.pid ?? -1, textLength: offer.text.length });
@@ -370,24 +417,34 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       let turnContext: TurnContextReply | undefined;
       try {
         if (offer.turnUuid !== undefined && offer.todoId === undefined && offer.turnContextAvailable === true) {
-          const asked = await askTurnContext(offer.turnUuid, session, entry, owner);
+          const asked = await askTurnContext(offer.turnUuid, session, entry, owner, deadlineAt, () => stopping.has(offer.key));
           if (asked.kind === "refused") {
-            failure = `turn-context refused: ${asked.code}`;
+            const code = asked.error.code ?? String(asked.error.status);
+            failure = `turn-context refused: ${code}`;
+            stopOnFatal(asked.error, "turn");
             reply = { status: "FAILED", errorCode: "AGENT_INTERNAL", documentUuids: [],
-              reply: clip(`AiNecto refused this request's conversation context (${asked.code}), so it did not run on this PC.`, limits.textMaxCharacters) };
+              reply: clip(`AiNecto refused this request's conversation context (${code}), so it did not run on this PC.`, limits.textMaxCharacters) };
             return reply;
           }
-          turnContext = asked.reply;
+          if (asked.kind === "timeout") {
+            outcome = { kind: "timeout" };
+          } else {
+            turnContext = asked.reply;
+            if (turnContext) secrets.push(turnContext.readKey);
+          }
         }
-        if (stopping.has(offer.key)) {
-          reply = stoppedReply(undefined, limits);   // 알림을 묻는 사이에 멈춤 — 돌리지 않는다
+        if (outcome === undefined && stopping.has(offer.key)) {
+          // 준비·알림 조회 사이에 멈춤 — 돌리지 않는다 · 재개 값은 그대로. 준비 중이던 자식은 interrupt 가 내렸다(다음 차례는 새로).
+          reply = stoppedReply(undefined, limits);
           return reply;
         }
-        // 할 일 차례의 답 글은 카드 실행 대화로만 간다(«열기» 단추 없음) — 지시문 그대로.
-        const text = offer.todoId === undefined
-          ? agentPromptText(offer.text, offer.context, turnContext && offer.turnUuid ? unreadLine(offer.turnUuid, turnContext) : undefined)
-          : offer.text;
-        outcome = await session.send(text, deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
+        if (outcome === undefined) {
+          // 할 일 차례의 답 글은 카드 실행 대화로만 간다(«열기» 단추 없음) — 지시문 그대로.
+          const text = offer.todoId === undefined
+            ? agentPromptText(offer.text, offer.context, turnContext && offer.turnUuid ? unreadLine(offer.turnUuid, turnContext) : undefined)
+            : offer.text;
+          outcome = await session.send(text, Math.max(1, deadlineAt - Date.now()));
+        }
       } finally {
         current = undefined;
       }
@@ -397,17 +454,23 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         await session.close();
       }
       if (outcome.kind === "timeout" || outcome.kind === "exited") {
-        if (live.get(adapter.id) === session) live.delete(adapter.id);
+        if (live.get(adapter.id)?.session === session) live.delete(adapter.id);
       }
       // 멈춘 차례 — 세션은 살아 있고(재개 값도 아래에서 저장) 다음 요청은 같은 세션으로 «이어서» 간다.
       reply = stopping.has(offer.key) ? stoppedReply(outcome, limits) : replyForOutcome(outcome, limits, adapter.displayName);
       const change = sessionChange({ outcome: outcome.kind, resumed: session.resumed, sessionRef: session.sessionRef, status: reply.status,
         next: turnContext?.next, entry, owner });
-      if (change.kind === "write") {
-        const written = await deps.sessions.write(offer.conversationUuid, adapter.id, entryRev, change.next);
-        if (written === "stale") {
-          deps.log.write({ event: "agent_session_stale", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: adapter.id,
-            conversationUuid: offer.conversationUuid, expectedRev: entryRev, change: change.next === undefined ? "forget" : "set" });
+      if (change.kind === "write" && entryRev !== undefined) {
+        // ★쓰기 실패는 답을 바꾸지 않는다 — 이어 붙이기만 못 한다(로그 한 줄).
+        let reason: string | undefined;
+        try {
+          if (await deps.sessions.write(offer.conversationUuid, adapter.id, entryRev, change.next) === "stale") reason = "stale";
+        } catch (error) {
+          reason = `write failed: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        if (reason) {
+          deps.log.write({ event: "agent_session_unwritten", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: adapter.id,
+            conversationUuid: offer.conversationUuid, expectedRev: entryRev, change: change.next === undefined ? "forget" : "set", reason });
         }
       }
       return reply;
@@ -458,7 +521,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       } catch (error) {
         if (stopReason) return;
         if (error instanceof AgentCallError && !error.retryable) {
-          stopOnFatal(error);   // 그 밖의 4xx(남의 대화·없는 turn)는 이 답만 버린다 — 이유는 응답 줄에 있다
+          stopOnFatal(error, "turn");   // 그 밖의 4xx(남의 대화·열람 거절·없는 turn)는 이 답만 버린다 — 이유는 응답 줄에 있다
           return;
         }
         delay = nextRetryDelay(delay);
@@ -513,8 +576,13 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         await runTodoJob(job);
         continue;
       }
-      const reply = await runTurn({ key: job.offer.turnUuid, ...job.offer });
-      if (!stopReason) await sendReply(job.offer, reply);
+      chatInFlight = true;
+      try {
+        const reply = await runTurn({ key: job.offer.turnUuid, ...job.offer });
+        if (!stopReason) await sendReply(job.offer, reply);
+      } finally {
+        chatInFlight = false;
+      }
     }
   })();
 
@@ -597,7 +665,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     await closeTodo(toolsAs(todos!.tools, job.identity), deps.log, job.claimed, "release");
   }
   deps.signal.removeEventListener("abort", onUserStop);
-  await Promise.all([...live.values()].map((session) => session.close()));
+  await Promise.all([...live.values()].map(({ session }) => session.close()));
   if (stopReason === "signal") {
     try {
       await deps.http.call("close", { linkId });
@@ -745,4 +813,10 @@ export function sessionChange(input: {
     : input.entry?.sessionId === input.sessionRef ? input.entry.cursor : undefined;
   return { kind: "write", next: { sessionId: input.sessionRef, ...(cursor !== undefined ? { cursor } : {}),
     ...(input.owner !== undefined ? { owner: input.owner } : {}) } };
+}
+
+/** 답 글에서 비밀 값(이 차례의 읽기 열쇠)을 가린다(순수). 서버로 가는 답 글은 이것을 지난다. */
+export function withoutSecrets(reply: AgentReply, secrets: readonly string[]): AgentReply {
+  const text = secrets.filter((secret) => secret !== "").reduce((out, secret) => out.split(secret).join("[readKey]"), reply.reply);
+  return text === reply.reply ? reply : { ...reply, reply: text };
 }

@@ -85,6 +85,11 @@ export class FakeServer implements AgentHttp {
     next: `cur-${String(body.turnUuid)}`, readKey: `rk-${String(body.turnUuid)}`,
   });
 
+  /** reply 를 이 오류로 거절한다(undefined 면 받는다) — 짝 API 의 reply 도 열람 검사를 탄다(코드 리뷰 C2 P0-1). */
+  replyError: (body: Record<string, unknown>) => AgentCallError | undefined = () => undefined;
+  /** reply 를 받는 순간 부른다(그때의 상태를 보는 시험). */
+  onReply: (body: Record<string, unknown>) => void = () => {};
+
   turnContextCalls(): Array<Record<string, unknown>> {
     return this.calls.filter((c) => c.op === "turn-context").map((c) => c.body);
   }
@@ -128,6 +133,12 @@ export class FakeServer implements AgentHttp {
       return { linkId: this.opens === 1 ? "11111111-1111-4111-8111-111111111111" : `link-${this.opens}`, linkToken: `tok-${this.opens}`,
         limits: { pollHoldSeconds: this.pollHoldSeconds, textMaxCharacters: 10_000, documentsMax: 50 }, ...(agents ? { agents } : {}) };
     }
+    if (op === "reply") {
+      this.onReply(body);
+      const refused = this.replyError(body);
+      if (refused) throw refused;
+      return {};
+    }
     if (op === "turn-context") {
       const answer = this.turnContext(body);
       if (answer instanceof AgentCallError) throw answer;
@@ -162,6 +173,8 @@ export interface World {
   printed: string[];
   /** 이 PC 가 돌던 카드(runs.json) — 할 일을 받을 때만 쓴다. */
   runsPath: string;
+  /** serve 의 «작업 중» 판정(자동 교체가 보는 것). */
+  busy: () => boolean;
 }
 
 export interface WorldOptions {
@@ -170,8 +183,8 @@ export interface WorldOptions {
   installed?: AgentId[];
   /** sessions.json 에 미리 둘 내용. */
   sessionsFile?: Record<string, unknown>;
-  /** sessions.json 칸의 지금 주인 — 기본 {@link OWNER} · null 이면 모름. */
-  owner?: string | null;
+  /** sessions.json 칸의 지금 주인 — 기본 {@link OWNER} · null 이면 모름. 함수면 차례마다 그것을 부른다(던지면 조회 실패). */
+  owner?: string | null | (() => Promise<string | undefined>);
   /** Agent 환경에 더할 값(예: 시험용 가짜 ANTHROPIC_API_KEY). */
   env?: Record<string, string>;
   /** 옛 서버(open 의 features 를 모른다). */
@@ -241,11 +254,16 @@ export function startServe(options: WorldOptions = {}): World {
   const adapters = new Map(all.filter((a) => installed.includes(a.id)).map((a) => [a.id, a] as const));
   const sessions = new AgentSessionMap(sessionsPath);
   const printed: string[] = [];
+  const busy: { probe: () => boolean } = { probe: () => false };
   const done = Promise.resolve().then(() => runAgentServe({
     http: server,
     log,
     sessions,
-    owner: async () => options.owner === undefined ? OWNER : options.owner ?? undefined,
+    owner: typeof options.owner === "function" ? options.owner
+      : async () => options.owner === undefined ? OWNER : (options.owner as string | null) ?? undefined,
+    onBusyProbe: (probe) => {
+      busy.probe = probe;
+    },
     adapters,
     agents: installed.map((id) => ({ id, ready: true })),
     hostName: "test-host",
@@ -256,7 +274,7 @@ export function startServe(options: WorldOptions = {}): World {
     turnTimeoutMs: options.turnTimeoutMs,
     todos: options.todos ? { ...options.todos, runs: new AgentRunLog(runsPath, log) } : undefined,
   }));
-  return { server, stop, done, argsLog, codexArgsLog, agyArgsLog, logPath, sessionsPath, printed, runsPath };
+  return { server, stop, done, argsLog, codexArgsLog, agyArgsLog, logPath, sessionsPath, printed, runsPath, busy: () => busy.probe() };
 }
 
 export async function until<T>(read: () => T | undefined, ms = 10_000): Promise<T> {

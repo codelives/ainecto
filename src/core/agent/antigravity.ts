@@ -147,8 +147,6 @@ class AntigravitySession implements AgentSession {
   readonly agent = "antigravity" as const;
   readonly resumed: boolean;
   sessionRef: string | undefined;
-  /** agy 가 init·result 로 conversation_id 를 직접 밝혔다 — 넘긴 재개 값({@code sessionRef} 의 처음 값)은 확인이 아니다. */
-  private reported = false;
   private closed = false;
   private generation = 0;
   private lastPid = -1;
@@ -171,8 +169,12 @@ class AntigravitySession implements AgentSession {
     return !this.closed;
   }
 
+  /**
+   * ★늘 undefined(처음 규칙) — 차례마다 agy -p 를 새로 띄우고({@code --conversation}), 그 프로세스는 첫 입력 뒤에야 id 를 밝힌다.
+   * 앞 프로세스가 밝힌 id 는 이번 프로세스의 확인이 아니다(코드 리뷰 C2 P1-1).
+   */
   async confirmedRef(): Promise<string | undefined> {
-    return this.reported ? this.sessionRef : undefined;
+    return undefined;
   }
 
   async send(text: string, timeoutMs: number): Promise<TurnOutcome> {
@@ -303,7 +305,7 @@ class AntigravitySession implements AgentSession {
       return;
     }
     if (event.event === "init") {
-      if (typeof event.conversation_id === "string") this.report(event.conversation_id);
+      if (typeof event.conversation_id === "string") this.sessionRef = event.conversation_id;
       return;
     }
     if (event.event === "step_update" && isObject(event.step_update)) {
@@ -313,11 +315,6 @@ class AntigravitySession implements AgentSession {
     if (event.event === "result" && isObject(event.result)) {
       this.onResult(turn, child, event.result);
     }
-  }
-
-  private report(conversationId: string): void {
-    this.sessionRef = conversationId;
-    this.reported = true;
   }
 
   /** TurnFacts(r2 좁힘): tool · DONE · call_mcp_tool · 브리지 · 공개 도구 이름 · 오류 없는 글 결과 · 같은 단계 한 번. */
@@ -338,7 +335,7 @@ class AntigravitySession implements AgentSession {
   }
 
   private onResult(turn: Turn, child: AgentChild, result: Record<string, unknown>): void {
-    if (typeof result.conversation_id === "string") this.report(result.conversation_id);
+    if (typeof result.conversation_id === "string") this.sessionRef = result.conversation_id;
     const usage = isObject(result.usage) ? result.usage : undefined;
     this.deps.log.write({ event: "agent_usage", pid: child.pid, agent: this.agent, conversationUuid: this.conversationUuid,
       ...(typeof usage?.input_tokens === "number" ? { inputTokens: usage.input_tokens } : {}),

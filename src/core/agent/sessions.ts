@@ -1,17 +1,25 @@
 import { readFile } from "node:fs/promises";
 import { SHORT_WRITE_LOCK, withFileLock, type FileLockOptions } from "../fs/fileLock";
-import { writePrivateFileAtomic } from "../fs/privateFiles";
+import { isNodeError, writePrivateFileAtomic } from "../fs/privateFiles";
 import { AGENT_IDS, DEFAULT_AGENT, type AgentId } from "./agents";
 
 /**
  * (대화, Agent) 칸 하나(설계 connect-agent-dedicated-session r3 §3-4).
  * {@code cursor} = 서버가 준 «이 세션 기억에 이 대화의 어디까지 들어 있나»(불투명 · 그 {@code sessionId} 와 짝) ·
- * {@code owner} = 쓴 계정(서버 주소 + 사용자 id — 모르면 없음) · {@code rev} = 칸을 쓸 때마다 1 씩 는다(없으면 0 — 옛 CLI 가 쓴 칸).
+ * {@code owner} = 쓴 계정(서버 주소 + 사용자 id — 모르면 없음).
  */
 export interface AgentSessionEntry {
   sessionId: string;
   cursor?: string;
   owner?: string;
+}
+
+/**
+ * 칸 자리 하나 — {@code rev} = 그 자리의 세대(쓸 때마다 1 씩 · ★지워도 남는다 — 지운 자리는 {@code {rev}} 만 남긴 표지).
+ * 옛 CLI 가 쓴 칸·처음 자리는 0. {@code entry} = 재개할 세션(지웠거나 없으면 없음).
+ */
+export interface AgentSessionSlot {
+  entry?: AgentSessionEntry;
   rev: number;
 }
 
@@ -29,23 +37,23 @@ export type AgentSessionWrite = { sessionId: string; cursor?: string; owner?: st
 export class AgentSessionMap {
   constructor(private readonly path: string, private readonly lock: FileLockOptions = SHORT_WRITE_LOCK) {}
 
-  /** 그 칸 — 없거나 파일이 없거나 깨졌으면 undefined. */
-  async read(conversationUuid: string, agent: AgentId): Promise<AgentSessionEntry | undefined> {
-    return entryOf(slot(await this.readFile(), agent)?.[conversationUuid]);
+  /** 그 자리 — 파일이 없거나 깨졌으면 빈 자리(rev 0). 그 밖의 읽기 오류는 던진다(부른 쪽이 재개 없이 돈다). */
+  async read(conversationUuid: string, agent: AgentId): Promise<AgentSessionSlot> {
+    return slotOf(slot(await this.readFile(), agent)?.[conversationUuid]);
   }
 
   /**
-   * 그 칸을 {@code next} 로(undefined 면 지운다) — 잠금 안에서 다시 읽은 칸의 rev 가 {@code expectedRev}(칸이 없으면 0)일 때만.
+   * 그 칸을 {@code next} 로(undefined 면 지운다 — 세대 {@code {rev}} 는 남긴다) — 잠금 안에서 다시 읽은 자리의 rev 가 {@code expectedRev} 일 때만.
+   * ★파일이 없을 때(ENOENT)·깨졌을 때만 새로 쓴다. 그 밖의 읽기 오류는 던진다 — 읽지 못한 파일의 다른 칸을 지우지 않는다.
    * @return 썼으면 "written", rev 가 달라 버렸으면 "stale"(부른 쪽이 로그 한 줄)
    */
   async write(conversationUuid: string, agent: AgentId, expectedRev: number, next: AgentSessionWrite): Promise<"written" | "stale"> {
     return await withFileLock(`${this.path}.lock`, this.lock, async () => {
       const file = (await this.readFile()) ?? {};
-      const current = entryOf(slot(file, agent)?.[conversationUuid]);
-      if ((current?.rev ?? 0) !== expectedRev) return "stale";
+      if (slotOf(slot(file, agent)?.[conversationUuid]).rev !== expectedRev) return "stale";
       const byConversation = agent === DEFAULT_AGENT ? objectIn(file, "conversations") : objectIn(objectIn(file, "byAgent"), agent);
       if (next === undefined) {
-        delete byConversation[conversationUuid];
+        byConversation[conversationUuid] = { rev: expectedRev + 1 };   // 지운 자리 — 늦은 작성자가 옛 세대로 되살리지 못하게
       } else {
         byConversation[conversationUuid] = {
           sessionId: next.sessionId,
@@ -62,10 +70,17 @@ export class AgentSessionMap {
     });
   }
 
-  /** 읽은 파일 객체 — 없거나 깨졌으면 undefined(이어 붙이기만 못 할 뿐 serve 는 돈다 · 다음 쓰기가 새로 쓴다). */
+  /** 읽은 파일 객체 — 없거나(ENOENT) 깨졌으면 undefined(다음 쓰기가 새로 쓴다). 그 밖의 읽기 오류(권한 등)는 던진다. */
   private async readFile(): Promise<Record<string, unknown> | undefined> {
+    let text: string;
     try {
-      const parsed: unknown = JSON.parse(await readFile(this.path, "utf8"));
+      text = await readFile(this.path, "utf8");
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) return undefined;
+      throw error;
+    }
+    try {
+      const parsed: unknown = JSON.parse(text);
       return isObject(parsed) ? parsed : undefined;
     } catch {
       return undefined;
@@ -104,14 +119,18 @@ function slot(file: Record<string, unknown> | undefined, agent: AgentId): Record
   return isObject(value) ? value : undefined;
 }
 
-/** 칸 하나 — {sessionId: 글} 인 것만. 나머지 칸은 꼴이 맞을 때만 싣는다. */
-function entryOf(value: unknown): AgentSessionEntry | undefined {
-  if (!isObject(value) || typeof value.sessionId !== "string") return undefined;
+/** 자리 하나 — 세대는 지운 표지에도 있다. 칸은 {sessionId: 글} 일 때만, 나머지 칸은 꼴이 맞을 때만 싣는다. */
+function slotOf(value: unknown): AgentSessionSlot {
+  if (!isObject(value)) return { rev: 0 };
+  const rev = typeof value.rev === "number" && Number.isSafeInteger(value.rev) && value.rev > 0 ? value.rev : 0;
+  if (typeof value.sessionId !== "string") return { rev };
   return {
-    sessionId: value.sessionId,
-    ...(typeof value.cursor === "string" ? { cursor: value.cursor } : {}),
-    ...(typeof value.owner === "string" ? { owner: value.owner } : {}),
-    rev: typeof value.rev === "number" && Number.isSafeInteger(value.rev) && value.rev > 0 ? value.rev : 0,
+    entry: {
+      sessionId: value.sessionId,
+      ...(typeof value.cursor === "string" ? { cursor: value.cursor } : {}),
+      ...(typeof value.owner === "string" ? { owner: value.owner } : {}),
+    },
+    rev,
   };
 }
 

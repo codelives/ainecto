@@ -188,6 +188,14 @@ class CodexSession implements AgentSession {
   private turn: ActiveTurn | undefined;
   /** 끝나지 않은 차례 — 기한을 넘긴 뒤에도 interrupt 할 수 있게 따로 둔다. */
   private runningTurnId: string | undefined;
+  /** 준비가 끝났다(thread id 를 받음). */
+  private ready = false;
+  /** ★준비 중 멈춤(코드 리뷰 C2 P0-2) — 준비가 끝나지 않은 자식은 내리고, 기다리던 쪽(confirmedRef·send)을 바로 풀어 준다. */
+  private stoppedBeforeStart = false;
+  private releaseStop: () => void = () => {};
+  private readonly stopRequested = new Promise<"stop">((resolve) => {
+    this.releaseStop = () => resolve("stop");
+  });
 
   constructor(
     readonly conversationUuid: string,
@@ -204,7 +212,16 @@ class CodexSession implements AgentSession {
     this.child = server.child;
     this.rpc = server.rpc;
     deps.log.write({ event: "process_start", pid: this.child.pid, agent: this.agent, conversationUuid, resume: this.resumed });
-    this.started = this.start(resumeRef).then(() => undefined, toError);
+    this.started = this.start(resumeRef).then(() => {
+      this.ready = true;
+      return undefined;
+    }, toError);
+  }
+
+  /** 준비(initialize → thread/resume·start)가 끝난 뒤 그 응답의 thread id — 준비가 실패했거나 준비 중 멈췄으면 undefined. ★turn/start 보다 먼저 온다. */
+  async confirmedRef(): Promise<string | undefined> {
+    const settled = await Promise.race([this.started, this.stopRequested]);
+    return settled === undefined && !this.stoppedBeforeStart ? this.sessionRef : undefined;
   }
 
   get pid(): number {
@@ -215,14 +232,13 @@ class CodexSession implements AgentSession {
     return this.child.alive;
   }
 
-  /** 준비(initialize → thread/resume·start)가 끝난 뒤 그 응답의 thread id — 준비가 실패했으면 undefined. ★turn/start 보다 먼저 온다. */
-  async confirmedRef(): Promise<string | undefined> {
-    return (await this.started) ? undefined : this.sessionRef;
-  }
-
   async send(text: string, timeoutMs: number): Promise<TurnOutcome> {
     const work = (async (): Promise<TurnOutcome> => {
-      const failed = await this.started;
+      const failed = await Promise.race([this.started, this.stopRequested]);
+      if (failed === "stop" || this.stoppedBeforeStart) {
+        // 준비 중(또는 turn/start 전)에 멈춤 — 입력을 넣지 않는다. 재개 값은 지킨다(«끝남»이 아니다).
+        return { kind: "result", facts: new TurnFactsCollector().snapshot(), result: { subtype: "interrupted_before_start", isError: true } };
+      }
       if (failed) {
         // 준비가 안 되는 세션(없는 thread · 로그인 풀림 …)은 내린다 — 부른 쪽은 «끝남»으로 보고 재개 값을 버린다.
         await this.child.stop();
@@ -263,6 +279,13 @@ class CodexSession implements AgentSession {
 
   /** 실측: {@code turn/interrupt} → 12ms 뒤 {@code interrupted}, 같은 thread 가 이어진다(증적 three-agents ⑦). B6 안에 답이 없으면 그대로 둔다. */
   async interrupt(): Promise<void> {
+    if (!this.ready && this.child.alive) {
+      // 준비가 끝나지 않았다 — 멈출 turn 이 없다. 그 자식을 내리고 기다리던 쪽을 푼다(다음 요청은 새 프로세스).
+      this.stoppedBeforeStart = true;
+      this.releaseStop();
+      await this.child.stop();
+      return;
+    }
     const turnId = this.runningTurnId;
     if (!turnId || !this.sessionRef || !this.child.alive) return;
     await withDeadline(this.rpc.request("turn/interrupt", { threadId: this.sessionRef, turnId }).then(() => undefined, () => undefined),

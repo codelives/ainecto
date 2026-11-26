@@ -14,7 +14,7 @@
 //   "crash"      → code 3 으로 끝난다
 //   그 밖        → {"reply":"got <글> #<이 프로세스의 차례 수> in <threadId>","openDocumentUuids":[],"openCardUuids":[]}
 // 글 맨 앞의 «열기» 규칙 줄([AiNecto rule] …)은 떼고 본다.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -47,6 +47,14 @@ function startServers(config = {}) {
     out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name, status: "starting", error: null } });
     out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name, status: "ready", error: null } });
   }
+}
+
+/** FAKE_CODEX_HOLD_THREAD 파일이 있으면 그 파일을 지우고 thread/start·resume 에 답하지 않는다(한 번 · 준비 단계 기한·멈춤 시험). */
+function holdThread() {
+  const marker = process.env.FAKE_CODEX_HOLD_THREAD;
+  if (!marker || !existsSync(marker)) return false;
+  unlinkSync(marker);
+  return true;
 }
 
 function act(turnId, raw) {
@@ -121,11 +129,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       out({ id, result: { config: { mcp_servers: { ainecto: { command: "node" }, node_repl: { command: "node" }, openaiDeveloperDocs: { url: "https://x" } } } } });
       return;
     case "thread/start":
+      if (holdThread()) return;
       thread = `thr-${process.pid}`;
       startServers(params.config);
       out({ id, result: { thread: { id: thread }, approvalPolicy: params.approvalPolicy, sandbox: params.sandbox } });
       return;
     case "thread/resume":
+      if (holdThread()) return;
       if (params.threadId === "thr-gone") {
         out({ id, error: { code: -32600, message: "thread not found: thr-gone" } });
         return;
