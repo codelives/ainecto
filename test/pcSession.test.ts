@@ -53,16 +53,20 @@ describe("이 PC 연결 — 순수 함수", () => {
       .toEqual(["npx", "-y", "--package", "@ainecto/mcp", "ainecto", "pc", "run", "--endpoint", "https://x.test/mcp"]);
   });
 
-  it("도는 것은 이름이 아니라 «명령»(pc run)으로 찾는다 · 판은 --package 값", () => {
+  // ★기준 바뀜(장부 CLI 단위 · 설계 term-ledger-cli-unit-prep 2-1 · 재리뷰 r3 P0-1) — 예전 기대는 «이름이 아니라 명령으로»였다.
+  //   그 규칙은 이름이 다른 사용자 작업(`node … pc run`)도 PC 연결로 세어 stopPc 가 끄게 했다. `pc run` 과 이름 ainecto-pc 는 같은 커밋
+  //   (717024b)에서 함께 생겨, 낸 판의 PC 연결 세션은 모두 그 이름이다 — 둘 다 요구해도 놓치는 진짜 연결이 없다.
+  it("도는 것은 종류로 찾는다 — kind 칸 · 없으면(옛 CLI) 이름 ainecto-pc + 명령 pc run 둘 다 · 판은 --package 값", () => {
     const found = runningPcs([
-      { name: "whatever", cwd: "/w", command: pcCommand("@ainecto/mcp@0.14.0") },
-      { name: "ainecto-pc", cwd: "/x", command: null },
+      { name: "ainecto-pc", cwd: "/w", command: pcCommand("@ainecto/mcp@0.14.0") },
+      { name: "whatever", cwd: "/v", command: pcCommand("@ainecto/mcp@0.14.0") },
+      { name: "ainecto-pc-x", cwd: "/x", command: null },
       { name: "shell", cwd: "/y", command: ["zsh", "-lc", "echo pc run"] },
-      { name: "stand-in", cwd: "/z", command: ["/usr/bin/node", "-e", "…", "pc", "run"] },
+      { name: "stamped", cwd: "/z", command: ["/usr/bin/node", "-e", "…", "pc", "run"], kind: "pc-bridge" },
     ]);
     expect(found).toEqual([
-      { session: "whatever", cwd: "/w", packageSpec: "@ainecto/mcp@0.14.0" },
-      { session: "stand-in", cwd: "/z" },
+      { session: "ainecto-pc", cwd: "/w", packageSpec: "@ainecto/mcp@0.14.0" },
+      { session: "stamped", cwd: "/z" },
     ]);
     expect(found.map(pcVersionLabel)).toEqual(["0.14.0", "unpinned"]);
   });
