@@ -71,6 +71,24 @@ export class FakeServer implements AgentHttp {
     this.push({ state: "OPEN", offers: [{ turnUuid, conversationUuid, text, context, ...(agent ? { agent } : {}) }] });
   }
 
+  /** turn-context 를 아는 서버의 offer(칸 {@code turnContextAvailable: true} · 설계 connect C2). */
+  offerWithContext(turnUuid: string, conversationUuid: string, text: string, agent?: string): void {
+    this.push({ state: "OPEN", offers: [{ turnUuid, conversationUuid, text, turnContextAvailable: true, ...(agent ? { agent } : {}) }] });
+  }
+
+  /**
+   * turn-context 답 — 기본: 새 글 2개 · 커서가 없으면 처음(since 없음) · 있으면 since = 그 커서 · next = «cur-<turn>» · readKey = «rk-<turn>».
+   * 오류를 돌려주면 그것으로 거절한다.
+   */
+  turnContext: (body: Record<string, unknown>) => Record<string, unknown> | AgentCallError = (body) => ({
+    conversationUuid: "conv", count: 2, first: body.cursor === null, since: body.cursor, pageSize: 10,
+    next: `cur-${String(body.turnUuid)}`, readKey: `rk-${String(body.turnUuid)}`,
+  });
+
+  turnContextCalls(): Array<Record<string, unknown>> {
+    return this.calls.filter((c) => c.op === "turn-context").map((c) => c.body);
+  }
+
   push(response: Record<string, unknown> | AgentCallError): void {
     this.polls.push(response);
     this.waiting?.();
@@ -110,6 +128,11 @@ export class FakeServer implements AgentHttp {
       return { linkId: this.opens === 1 ? "11111111-1111-4111-8111-111111111111" : `link-${this.opens}`, linkToken: `tok-${this.opens}`,
         limits: { pollHoldSeconds: this.pollHoldSeconds, textMaxCharacters: 10_000, documentsMax: 50 }, ...(agents ? { agents } : {}) };
     }
+    if (op === "turn-context") {
+      const answer = this.turnContext(body);
+      if (answer instanceof AgentCallError) throw answer;
+      return answer;
+    }
     if (op !== "poll") return {};
     for (;;) {
       const next = this.polls.shift();
@@ -147,6 +170,8 @@ export interface WorldOptions {
   installed?: AgentId[];
   /** sessions.json 에 미리 둘 내용. */
   sessionsFile?: Record<string, unknown>;
+  /** sessions.json 칸의 지금 주인 — 기본 {@link OWNER} · null 이면 모름. */
+  owner?: string | null;
   /** Agent 환경에 더할 값(예: 시험용 가짜 ANTHROPIC_API_KEY). */
   env?: Record<string, string>;
   /** 옛 서버(open 의 features 를 모른다). */
@@ -174,6 +199,9 @@ export interface WorldOptions {
   /** 가짜 agy -p 를 «끌 수 없는» 프로세스로(child.kill 이 신호를 안 보냄 — OS 종료 실패 흉내 · 시험이 직접 pid 로 끝낸다). eperm = kill 이 error 도 낸다. */
   unkillableAgy?: "silent" | "eperm";
 }
+
+/** 시험 serve 의 기본 주인(서버 주소 + 사용자 id). */
+export const OWNER = "https://dev.ainecto.test u-1";
 
 export const WRITE_TOOLS = new Set(["create_documents", "update_documents", "kanban_apply_changes"]);
 
@@ -213,10 +241,11 @@ export function startServe(options: WorldOptions = {}): World {
   const adapters = new Map(all.filter((a) => installed.includes(a.id)).map((a) => [a.id, a] as const));
   const sessions = new AgentSessionMap(sessionsPath);
   const printed: string[] = [];
-  const done = sessions.load().then(() => runAgentServe({
+  const done = Promise.resolve().then(() => runAgentServe({
     http: server,
     log,
     sessions,
+    owner: async () => options.owner === undefined ? OWNER : options.owner ?? undefined,
     adapters,
     agents: installed.map((id) => ({ id, ready: true })),
     hostName: "test-host",

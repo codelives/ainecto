@@ -215,6 +215,11 @@ class CodexSession implements AgentSession {
     return this.child.alive;
   }
 
+  /** 준비(initialize → thread/resume·start)가 끝난 뒤 그 응답의 thread id — 준비가 실패했으면 undefined. ★turn/start 보다 먼저 온다. */
+  async confirmedRef(): Promise<string | undefined> {
+    return (await this.started) ? undefined : this.sessionRef;
+  }
+
   async send(text: string, timeoutMs: number): Promise<TurnOutcome> {
     const work = (async (): Promise<TurnOutcome> => {
       const failed = await this.started;

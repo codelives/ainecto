@@ -26,6 +26,13 @@ export interface FileLockOptions {
   testHooks?: { beforeReclaim?: () => Promise<void>; duringReclaim?: () => Promise<void> };
 }
 
+/**
+ * 짧은 쓰기 하나의 잠금 — 대기 5 s · 다시 보기 50 ms. 사용자 결재 2026-11-21 «이 값으로 승인 (추천)»(설계 terminal-e2e §14-7 C-E10 · `pc-keys.json`).
+ * 쓰기 하나는 수 ms 라, 이만큼 못 잡으면 다른 실행이 멈춰 있는 것이다. 죽은 잠금(pid 가 없음)은 기다리지 않고 바로 치운다.
+ * ★같은 성질의 짧은 «읽기 → 바꾸기 → 쓰기»(`pc-keys.json` · Agent `sessions.json`)가 이 값 하나를 쓴다.
+ */
+export const SHORT_WRITE_LOCK: FileLockOptions = { waitMs: 5_000, pollMs: 50 };
+
 export class FileLockTimeoutError extends Error {
   constructor(readonly lockPath: string, readonly holderPid: number | undefined) {
     super(`${lockPath} is held by another ainecto${holderPid !== undefined ? ` (pid ${holderPid})` : ""} — try again in a moment.`);

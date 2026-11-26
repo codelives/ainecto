@@ -4,7 +4,7 @@ import type { DaemonLog } from "../term/daemonLog";
 import { AGENT_CALL_TIMEOUT_MS } from "./limits";
 import type { AgentLogRecord } from "./log";
 
-export type AgentOp = "open" | "poll" | "reply" | "close";
+export type AgentOp = "open" | "poll" | "reply" | "turn-context" | "close";
 
 /** 내 PC Agent 의 서버 호출 실패 — 판정(retryable 등)은 공용 {@link PcCallError} 그대로. */
 export class AgentCallError extends PcCallError<AgentOp> {

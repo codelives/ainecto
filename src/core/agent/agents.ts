@@ -98,6 +98,12 @@ export interface AgentSession {
   readonly agentName: string | undefined;
   /** 저장해 두면 재개되는 값(Claude session_id · Codex threadId). 아직 모르면 undefined. */
   readonly sessionRef: string | undefined;
+  /**
+   * ★«확인된 세션»(설계 connect-agent-dedicated-session r3 §3-4) — 다음 입력을 넣기 **전에** Agent 가 직접 밝힌 이 세션의 id. 밝히기 전이면 undefined.
+   * 앞 차례에서 받은 id(살아 있는 세션) · Codex 는 {@code thread/resume}·{@code thread/start} 응답의 thread id(준비를 기다린다).
+   * 새로 띄운 Claude({@code --resume})·Antigravity({@code --conversation})는 첫 입력 뒤에야 밝히므로 undefined 다(넘긴 재개 값을 믿지 않는다).
+   */
+  confirmedRef(): Promise<string | undefined>;
   /** 한 차례 — 기한 안에 끝나지 않으면 «timeout»(세션은 부른 쪽이 멈추고 내린다). */
   send(text: string, timeoutMs: number): Promise<TurnOutcome>;
   /** 진행 중인 차례만 멈춘다(세션은 살아 있다). 진행 중이 아니면 아무것도 하지 않는다. */

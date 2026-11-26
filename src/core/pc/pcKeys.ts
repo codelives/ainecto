@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { withFileLock, type FileLockOptions } from "../fs/fileLock";
+import { SHORT_WRITE_LOCK, withFileLock, type FileLockOptions } from "../fs/fileLock";
 import { isNodeError, writePrivateFileAtomic } from "../fs/privateFiles";
 import { asPrivateJwk, asPublicJwk, type EcPrivateJwk, type EcPublicJwk } from "../term/e2e";
 import { isEndpointAccount } from "./pcSettings";
@@ -150,18 +150,13 @@ export async function loadPcKeys(path: string): Promise<PcKeys> {
   }
 }
 
-/**
- * 잠금 대기 5 s · 다시 보기 50 ms — 사용자 결재 2026-11-21 «이 값으로 승인 (추천)»(설계 §14-7 C-E10). 쓰기 하나는 수 ms 라, 이만큼 못 잡으면 다른 실행이 멈춰 있는 것이다.
- * 죽은 잠금(pid 가 없음)은 기다리지 않고 바로 치운다.
- */
-const PC_KEYS_LOCK: FileLockOptions = { waitMs: 5_000, pollMs: 50 };
 
 /**
  * 잠금 안에서 읽고 → change → 쓴다. change 가 undefined 를 돌려주면 쓰지 않는다(파일을 새로 만들지 않는다). 쓴 값(또는 읽은 값)을 돌려준다.
  * change 가 던지면 아무것도 쓰지 않고 잠금을 푼다.
  */
 export async function updatePcKeys(path: string, change: (keys: PcKeys) => PcKeys | undefined | Promise<PcKeys | undefined>,
-  lock: FileLockOptions = PC_KEYS_LOCK): Promise<PcKeys> {
+  lock: FileLockOptions = SHORT_WRITE_LOCK): Promise<PcKeys> {
   return await withFileLock(`${path}.lock`, lock, async () => {
     const current = await loadPcKeys(path);
     const next = await change(current);

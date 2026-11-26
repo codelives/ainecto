@@ -22,7 +22,7 @@ import { agentPaths } from "../../core/agent/paths";
 import { AgentRunLog } from "../../core/agent/runs";
 import { checkAgents, openAgents } from "../../core/agent/readiness";
 import { AGENT_MISSING_LINE, runAgentServe } from "../../core/agent/serve";
-import { AgentSessionMap } from "../../core/agent/sessions";
+import { agentOwner, AgentSessionMap } from "../../core/agent/sessions";
 import { CLI_BUILD, CLI_RELEASE, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
 import type { LaunchFlags } from "../../core/pc/pcSession";
 import { launchSwapHelper, upgradeWatch } from "./pcAutoUpgrade";
@@ -152,12 +152,12 @@ export async function executeAgentServe(input: {
     const adapters = new Map<AgentId, AgentAdapter>(all.filter((adapter) => agents.some((a) => a.id === adapter.id))
       .map((adapter) => [adapter.id, adapter]));
     const sessions = new AgentSessionMap(paths.sessions);
-    await sessions.load();
     // ★pc 프로세스 = Agent + 원격 다리(KAN-738 next.10) — Agent 가 끝나도 원격은 계속, Agent 가 시작부터 던지면 다리도 멈춘다(runPcParts).
     const agent = runAgentServe({
       http: createAgentHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),
       log,
       sessions,
+      owner: async () => agentOwner(input.endpoint, await input.auth.getAccessToken()),
       adapters,
       agents,
       hostName: host,

@@ -81,34 +81,30 @@ describe("세션 값 — (대화, Agent) 마다 · 옛 파일과 같이 읽힌�
     const path = join(dir(), "sessions.json");
     writeFileSync(path, JSON.stringify({ version: 1, conversations: { "conv-a": { sessionId: "sess-1", updatedAt: "x" } } }));
     const map = new AgentSessionMap(path);
-    await map.load();
-    expect(map.get("conv-a", "claude-code")).toBe("sess-1");
-    expect(map.get("conv-a", "codex")).toBeUndefined();
+    expect((await map.read("conv-a", "claude-code"))?.sessionId).toBe("sess-1");
+    expect(await map.read("conv-a", "codex")).toBeUndefined();
 
-    await map.set("conv-a", "codex", "thr-1");
+    expect(await map.write("conv-a", "codex", 0, { sessionId: "thr-1" })).toBe("written");
     const file = JSON.parse(readFileSync(path, "utf8"));
     expect(file.conversations["conv-a"].sessionId).toBe("sess-1");
     expect(file.byAgent.codex["conv-a"].sessionId).toBe("thr-1");
 
     const again = new AgentSessionMap(path);
-    await again.load();
-    expect(again.get("conv-a", "codex")).toBe("thr-1");
-    await again.forget("conv-a", "codex");
-    expect(again.get("conv-a", "codex")).toBeUndefined();
-    expect(again.get("conv-a", "claude-code")).toBe("sess-1");
+    expect((await again.read("conv-a", "codex"))?.sessionId).toBe("thr-1");
+    expect(await again.write("conv-a", "codex", 1, undefined)).toBe("written");
+    expect(await again.read("conv-a", "codex")).toBeUndefined();
+    expect((await again.read("conv-a", "claude-code"))?.sessionId).toBe("sess-1");
   });
 
   it("깨진 파일 · 모양이 다른 칸은 버리고 돈다", async () => {
     const path = join(dir(), "sessions.json");
     writeFileSync(path, "{not json");
     const broken = new AgentSessionMap(path);
-    await broken.load();
-    expect(broken.get("conv-a", "claude-code")).toBeUndefined();
+    expect(await broken.read("conv-a", "claude-code")).toBeUndefined();
 
     writeFileSync(path, JSON.stringify({ conversations: { a: { sessionId: 3 }, b: "x" }, byAgent: { codex: { c: { sessionId: "thr" } }, other: {} } }));
     const odd = new AgentSessionMap(path);
-    await odd.load();
-    expect(odd.get("a", "claude-code")).toBeUndefined();
-    expect(odd.get("c", "codex")).toBe("thr");
+    expect(await odd.read("a", "claude-code")).toBeUndefined();
+    expect((await odd.read("c", "codex"))?.sessionId).toBe("thr");
   });
 });

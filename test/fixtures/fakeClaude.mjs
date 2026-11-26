@@ -51,41 +51,43 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   const raw = message.message.content;
   const text = raw.replace(/^\[AiNecto rule\][^\n]*\n\n?/, "");
+  // 새 글 알림 줄([AiNecto chat] — 설계 connect C2)이 있으면 그 뒤가 명령이다. 답 글(got …)에는 받은 글을 그대로 싣는다.
+  const command = text.replace(/^\[AiNecto chat\][^\n]*\n\n?/, "");
   seen += 1;
   if (!started) {
     started = true;
     out({ type: "system", subtype: "init", session_id: sessionId, tools: ["StructuredOutput"],
       apiKeySource: process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : "none" });
   }
-  if (text === "crash") process.exit(3);
-  if (text === "hang" || text.includes("\n@hang\n")) {
+  if (command === "crash") process.exit(3);
+  if (command === "hang" || text.includes("\n@hang\n")) {
     hanging = true;
     return;
   }
-  if (text === "write-then-hang") {
+  if (command === "write-then-hang") {
     tool("w1", "mcp__ainecto__create_documents", [`{"count":1,"created":[{"uuid":"${"c".repeat(32)}","type":"markdown","title":"반쯤"}]}`, doc("c")]);
     hanging = true;
     return;
   }
-  if (text === "write-card") {
+  if (command === "write-card") {
     tool("r1", "mcp__ainecto__list_documents", ['{"documents":[]}', doc("a")]);
     tool("w1", "mcp__ainecto__create_documents", [`{"count":1,"created":[{"uuid":"${"c".repeat(32)}","type":"markdown","title":"새 문서"}]}`, doc("c")]);
     tool("w2", "mcp__ainecto__update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
     tool("w3", "mcp__ainecto__kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")]);
   }
-  if (text === "write-failed") {
+  if (command === "write-failed") {
     tool("w1", "mcp__ainecto__kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")], true);
     tool("w2", "mcp__ainecto__update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
   }
-  if (text === "write-doc") {
+  if (command === "write-doc") {
     out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "mcp__ainecto__list_documents", input: {} }] } });
     out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "{}" }, { type: "text", text: "📄 다른 문서: https://dev.ainecto.com/app/docs/" + "a".repeat(32) }] }] } });
     out({ type: "assistant", message: { content: [{ type: "tool_use", id: "t2", name: "mcp__ainecto__create_documents", input: {} }] } });
     out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t2", content: [{ type: "text", text: "{}" }, { type: "text", text: "📄 Open in AiNecto: https://dev.ainecto.com/app/docs/" + "b".repeat(32) }] }] } });
   }
-  let structured = text === "bad-schema" ? { reply: "x", documents: [] }
+  let structured = command === "bad-schema" ? { reply: "x", documents: [] }
     : { reply: `got ${text} #${seen} in ${sessionId}`, openDocumentUuids: [], openCardUuids: [] };
-  if (text === "find-open") {
+  if (command === "find-open") {
     tool("r1", "mcp__ainecto__search_documents", [`{"documents":[{"uuid":"${"a".repeat(32)}","title":"찾은 문서"}]}`, doc("a")]);
     tool("r2", "mcp__ainecto__kanban_list_cards", [`{"cards":[{"card":{"uuid":"${"f".repeat(32)}","key":"KAN-1"}}]}`]);
     tool("r3", "mcp__ainecto__get_document", [`{"uuid":"${"b".repeat(32)}"}`, doc("b")], true);

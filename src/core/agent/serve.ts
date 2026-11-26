@@ -4,9 +4,9 @@ import { DEFAULT_AGENT, isAgentId, type AgentAdapter, type AgentId, type AgentSe
 import { AgentCallError, type AgentHttp } from "./http";
 import { AGENT_TURN_TIMEOUT_MS, nextRetryDelay } from "./limits";
 import type { AgentLogRecord } from "./log";
-import { agentPromptText, type AgentTurnContext } from "./prompt";
+import { agentPromptText, turnContextIn, unreadLine, type AgentTurnContext, type TurnContextReply } from "./prompt";
 import { clip, replyForOutcome, stoppedReply, type AgentReply } from "./reply";
-import type { AgentSessionMap } from "./sessions";
+import { usableEntry, type AgentSessionEntry, type AgentSessionMap, type AgentSessionWrite } from "./sessions";
 import type { AgentRunLog } from "./runs";
 import { claimTodo, closeTodo, keepLease, resumeTodo, runTodo, TODO_KINDS, todosIn, type AgentTodo, type ClaimedTodo, type LeaseKeeper,
   type TodoOutcome } from "./todoRun";
@@ -20,12 +20,16 @@ export interface AgentOffer {
   agent: string;
   /** 서버가 아는 맥락(대화의 프로젝트·열린 문서). */
   context?: AgentTurnContext;
+  /** 이 서버가 turn-context(새 글 알림)를 안다 — 없으면(옛 API) 부르지 않는다. 404 로 짐작하지 않는다. */
+  turnContextAvailable?: boolean;
 }
 
 export interface ServeDeps {
   http: AgentHttp;
   log: DaemonLog<AgentLogRecord>;
   sessions: AgentSessionMap;
+  /** sessions.json 칸의 주인(서버 주소 + 사용자 id — {@code agentOwner}) · 차례마다 묻는다(로그인이 바뀌면 바뀐다). 모르면 undefined. */
+  owner(): Promise<string | undefined>;
   /** 이 PC 에 설치된 Agent 의 어댑터. */
   adapters: ReadonlyMap<AgentId, AgentAdapter>;
   /** open 에 알릴 Agent(설치된 것 · ready = 로그인 확인 · auth = 과금 주체). */
@@ -96,6 +100,7 @@ interface TurnJob {
   agent: string;
   text: string;
   context?: AgentTurnContext;
+  turnContextAvailable?: boolean;
   /** ★누구로 부르나 — 할 일 차례는 이 serve 의 이름 붙은 에이전트, Chat 차례는 없음(이름 없는 연결 — 지금과 같다). */
   agentName?: string;
 }
@@ -294,17 +299,37 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
    * 그 Agent 의 이 대화 세션 — 다른 대화·다른 연결 이름의 세션이거나 끝났으면 내리고 새로(재개 값이 있으면 재개 — 이름이 바뀌어도
    * 같은 대화의 맥락은 잇는다).
    */
-  const sessionFor = async (adapter: AgentAdapter, conversationUuid: string, agentName: string | undefined): Promise<AgentSession> => {
+  const sessionFor = async (adapter: AgentAdapter, conversationUuid: string, agentName: string | undefined,
+    resumeRef: string | undefined): Promise<AgentSession> => {
     const existing = live.get(adapter.id);
     if (existing && existing.conversationUuid === conversationUuid && existing.agentName === agentName && existing.alive) return existing;
     if (existing) {
       live.delete(adapter.id);
       await existing.close();
     }
-    const session = adapter.open({ conversationUuid, resumeRef: deps.sessions.get(conversationUuid, adapter.id),
+    const session = adapter.open({ conversationUuid, resumeRef,
       textMaxCharacters: limits.textMaxCharacters, documentsMax: limits.documentsMax, ...(agentName ? { agentName } : {}) });
     live.set(adapter.id, session);
     return session;
+  };
+
+  /**
+   * 새 글 알림(turn-context) 한 번 — 커서는 «확인된 세션»일 때만 싣는다(첫 입력 전에 Agent 가 밝힌 세션 id = 칸의 sessionId · 같은 주인).
+   * 아니면 null(처음 규칙). 거절(4xx)이면 그 차례를 돌리지 않는다 — 401/403·link 를 잊음은 답 보내기가 기존대로 처리한다.
+   * 네트워크·5xx·꼴이 어긋남이면 알림 줄 없이 돌린다(next 가 없으니 커서는 그대로).
+   */
+  const askTurnContext = async (turnUuid: string, session: AgentSession, entry: AgentSessionEntry | undefined,
+    owner: string | undefined): Promise<{ kind: "ok"; reply: TurnContextReply | undefined } | { kind: "refused"; code: string }> => {
+    const confirmed = await session.confirmedRef();
+    const cursor = entry?.cursor !== undefined && owner !== undefined && entry.owner === owner && confirmed === entry.sessionId
+      ? entry.cursor : null;
+    try {
+      const res = await deps.http.call("turn-context", { linkId, turnUuid, cursor }, { turnUuid, signal: stopController.signal });
+      return { kind: "ok", reply: turnContextIn(res) };
+    } catch (error) {
+      if (error instanceof AgentCallError && !error.retryable) return { kind: "refused", code: error.code ?? String(error.status) };
+      return { kind: "ok", reply: undefined };
+    }
   };
 
   const runTurn = async (offer: TurnJob): Promise<AgentReply> => {
@@ -314,9 +339,19 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     let outcome: TurnOutcome | undefined;
     let reply: AgentReply | undefined;
     let failure: string | undefined;
+    /** 이 차례가 읽은 sessions.json 칸(주인이 다르면 없음)과 그 rev — 끝의 쓰기는 이 rev 로만(CAS). */
+    let entry: AgentSessionEntry | undefined;
+    let entryRev = 0;
+    let owner: string | undefined;
     try {
       try {
-        session = adapter ? await sessionFor(adapter, offer.conversationUuid, offer.agentName) : undefined;
+        if (adapter) {
+          owner = await deps.owner();
+          const stored = await deps.sessions.read(offer.conversationUuid, adapter.id);
+          entryRev = stored?.rev ?? 0;
+          entry = usableEntry(stored, owner);
+        }
+        session = adapter ? await sessionFor(adapter, offer.conversationUuid, offer.agentName, entry?.sessionId) : undefined;
       } finally {
         deps.log.write({ event: "agent_request", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: offer.agent,
           conversationUuid: offer.conversationUuid, pid: session?.pid ?? -1, textLength: offer.text.length });
@@ -332,9 +367,26 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         return reply;
       }
       current = { key: offer.key, session };
+      let turnContext: TurnContextReply | undefined;
       try {
+        if (offer.turnUuid !== undefined && offer.todoId === undefined && offer.turnContextAvailable === true) {
+          const asked = await askTurnContext(offer.turnUuid, session, entry, owner);
+          if (asked.kind === "refused") {
+            failure = `turn-context refused: ${asked.code}`;
+            reply = { status: "FAILED", errorCode: "AGENT_INTERNAL", documentUuids: [],
+              reply: clip(`AiNecto refused this request's conversation context (${asked.code}), so it did not run on this PC.`, limits.textMaxCharacters) };
+            return reply;
+          }
+          turnContext = asked.reply;
+        }
+        if (stopping.has(offer.key)) {
+          reply = stoppedReply(undefined, limits);   // 알림을 묻는 사이에 멈춤 — 돌리지 않는다
+          return reply;
+        }
         // 할 일 차례의 답 글은 카드 실행 대화로만 간다(«열기» 단추 없음) — 지시문 그대로.
-        const text = offer.todoId === undefined ? agentPromptText(offer.text, offer.context) : offer.text;
+        const text = offer.todoId === undefined
+          ? agentPromptText(offer.text, offer.context, turnContext && offer.turnUuid ? unreadLine(offer.turnUuid, turnContext) : undefined)
+          : offer.text;
         outcome = await session.send(text, deps.turnTimeoutMs ?? AGENT_TURN_TIMEOUT_MS);
       } finally {
         current = undefined;
@@ -346,13 +398,18 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       }
       if (outcome.kind === "timeout" || outcome.kind === "exited") {
         if (live.get(adapter.id) === session) live.delete(adapter.id);
-        // 이어 붙인 세션으로 떴다가 끝났다 — 다음 요청은 새 세션으로(같은 실패를 되풀이하지 않게).
-        if (session.resumed) await deps.sessions.forget(offer.conversationUuid, adapter.id);
-      } else if (outcome.kind === "result" && session.sessionRef) {   // «refused»(돌리지 않음)는 세션·재개 값을 그대로 둔다
-        await deps.sessions.set(offer.conversationUuid, adapter.id, session.sessionRef);
       }
-      // 멈춘 차례 — 세션은 살아 있고(재개 값도 위에서 저장) 다음 요청은 같은 세션으로 «이어서» 간다.
+      // 멈춘 차례 — 세션은 살아 있고(재개 값도 아래에서 저장) 다음 요청은 같은 세션으로 «이어서» 간다.
       reply = stopping.has(offer.key) ? stoppedReply(outcome, limits) : replyForOutcome(outcome, limits, adapter.displayName);
+      const change = sessionChange({ outcome: outcome.kind, resumed: session.resumed, sessionRef: session.sessionRef, status: reply.status,
+        next: turnContext?.next, entry, owner });
+      if (change.kind === "write") {
+        const written = await deps.sessions.write(offer.conversationUuid, adapter.id, entryRev, change.next);
+        if (written === "stale") {
+          deps.log.write({ event: "agent_session_stale", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: adapter.id,
+            conversationUuid: offer.conversationUuid, expectedRev: entryRev, change: change.next === undefined ? "forget" : "set" });
+        }
+      }
       return reply;
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
@@ -658,7 +715,34 @@ function offersIn(res: Record<string, unknown>): AgentOffer[] {
         text: offer.text,
         agent: offer.agent === undefined || offer.agent === null ? DEFAULT_AGENT : String(offer.agent),
         context: offer.context && typeof offer.context === "object" ? (offer.context as AgentTurnContext) : undefined,
+        ...(offer.turnContextAvailable === true ? { turnContextAvailable: true } : {}),
       }]
       : [];
   });
+}
+
+/**
+ * 한 차례가 끝난 뒤 sessions.json 칸을 어떻게 바꾸나(순수 — 설계 connect-agent-dedicated-session r3 §3-1 6 · §3-4).
+ *   이어 붙인 세션이 기한 초과·끝남 → 칸을 지운다(같은 실패를 되풀이하지 않게 · 예전과 같다). 새 세션이 끝남 → 그대로.
+ *   결과(result)·세션 id 있음 → 그 id 를 재개 값으로. 커서: ★DONE 이고 서버가 next 를 줬을 때만 next(그 세션 id 와 짝).
+ *     아니면(FAILED·STOPPED) 같은 세션 id 일 때만 읽은 커서를 지킨다 — 다른 세션의 기억에는 그 커서가 없다.
+ *   그 밖(refused · id 모름) → 그대로.
+ */
+export function sessionChange(input: {
+  outcome: TurnOutcome["kind"];
+  resumed: boolean;
+  sessionRef: string | undefined;
+  status: AgentReply["status"];
+  next: string | undefined;
+  entry: AgentSessionEntry | undefined;
+  owner: string | undefined;
+}): { kind: "keep" } | { kind: "write"; next: AgentSessionWrite } {
+  if (input.outcome === "timeout" || input.outcome === "exited") {
+    return input.resumed ? { kind: "write", next: undefined } : { kind: "keep" };
+  }
+  if (input.outcome !== "result" || !input.sessionRef) return { kind: "keep" };
+  const cursor = input.status === "DONE" && input.next !== undefined ? input.next
+    : input.entry?.sessionId === input.sessionRef ? input.entry.cursor : undefined;
+  return { kind: "write", next: { sessionId: input.sessionRef, ...(cursor !== undefined ? { cursor } : {}),
+    ...(input.owner !== undefined ? { owner: input.owner } : {}) } };
 }

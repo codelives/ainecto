@@ -1,7 +1,7 @@
 // 시험용 «codex app-server» — 진짜 자식 프로세스, 줄 하나 = JSON-RPC 메시지 하나(실측 모양: jsonrpc 칸 없음).
 // 받은 인자를 FAKE_CODEX_ARGS_LOG 에 한 줄씩 남긴다. `--version` 은 한 줄 출력하고 끝난다.
 // account/read 는 FAKE_CODEX_ACCOUNT=none 이면 로그인 안 됨. config/read 는 사용자 설정의 MCP 서버 셋(ainecto·node_repl·openaiDeveloperDocs)을 돌려주고,
-// thread/start·resume 은 config 칸에서 `mcp_servers.<이름>.enabled=false` 로 끄지 않은 서버만 띄운다(startupStatus). thread/resume 의 threadId 가 "thr-gone" 이면 오류.
+// FAKE_CODEX_RESUME_AS 가 있으면 thread/resume 이 그 id 를 돌려준다(다른 thread 로 이어짐). thread/start·resume 은 config 칸에서 `mcp_servers.<이름>.enabled=false` 로 끄지 않은 서버만 띄운다(startupStatus). thread/resume 의 threadId 가 "thr-gone" 이면 오류.
 // turn/start 의 글로 동작을 고른다:
 //   "write-card" → 읽기 하나 · 만들기(created) · 고치기 · 칸반 카드 · 다른 MCP 서버 도구 결과 뒤 답
 //   "write-failed" → 실패한 쓰기(status failed — 결과 글에 📄·카드가 있어도) + 성공한 고치기 하나 뒤 답
@@ -51,37 +51,39 @@ function startServers(config = {}) {
 
 function act(turnId, raw) {
   const text = raw.replace(/^\[AiNecto rule\][^\n]*\n\n?/, "");
-  if (text === "crash") process.exit(3);
-  if (text === "hang") {
+  // 새 글 알림 줄([AiNecto chat] — 설계 connect C2)이 있으면 그 뒤가 명령이다. 답 글(got …)에는 받은 글을 그대로 싣는다.
+  const command = text.replace(/^\[AiNecto chat\][^\n]*\n\n?/, "");
+  if (command === "crash") process.exit(3);
+  if (command === "hang") {
     hangingTurn = turnId;
     return;
   }
-  if (text === "fail") {
+  if (command === "fail") {
     complete(turnId, "failed", undefined, { message: "model said no" });
     return;
   }
-  if (text === "bad-schema") {
+  if (command === "bad-schema") {
     complete(turnId, "completed", "not json at all");
     return;
   }
-  if (text === "approval") {
+  if (command === "approval") {
     answerWaiter = (answer) => complete(turnId, "completed", reply(`answer ${JSON.stringify(answer)}`));
     out({ id: 900, method: "mcpServer/elicitation/request",
       params: { threadId: thread, turnId, serverName: "ainecto", message: "Allow create_documents?" } });
     return;
   }
-  if (text === "write-card") {
+  if (command === "write-card") {
     toolCall(turnId, "ainecto", "list_documents", ['{"documents":[]}', doc("a")]);
     toolCall(turnId, "ainecto", "create_documents", [`{"count":1,"created":[{"uuid":"${"c".repeat(32)}","type":"markdown","title":"새 문서"}]}`, doc("c")]);
     toolCall(turnId, "ainecto", "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
     toolCall(turnId, "ainecto", "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")]);
     toolCall(turnId, "other", "create_documents", [`{"created":[{"uuid":"${"9".repeat(32)}","type":"x","title":"y"}]}`, doc("9")]);
   }
-  if (text === "write-failed") {
+  if (command === "write-failed") {
     toolCall(turnId, "ainecto", "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")], "failed");
     toolCall(turnId, "ainecto", "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
   }
-  if (text === "find-open") {
+  if (command === "find-open") {
     toolCall(turnId, "ainecto", "search_documents", [`{"documents":[{"uuid":"${"a".repeat(32)}","title":"찾은 문서"}]}`, doc("a")]);
     toolCall(turnId, "ainecto", "kanban_list_cards", [`{"cards":[{"card":{"uuid":"${"f".repeat(32)}","key":"KAN-1"}}]}`]);
     toolCall(turnId, "ainecto", "get_document", [`{"uuid":"${"b".repeat(32)}"}`, doc("b")], "failed");
@@ -128,7 +130,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         out({ id, error: { code: -32600, message: "thread not found: thr-gone" } });
         return;
       }
-      thread = params.threadId;
+      thread = process.env.FAKE_CODEX_RESUME_AS || params.threadId;   // 시험: 재개가 다른 thread 로 이어짐
       startServers(params.config);
       out({ id, result: { thread: { id: thread } } });
       return;

@@ -109,6 +109,11 @@ class ClaudeCodeSession implements AgentSession {
     return this.child.alive;
   }
 
+  /** init·result 의 session_id 를 받은 뒤에만 — 새로 띄운 프로세스는 첫 입력 뒤에야 init 을 낸다. */
+  async confirmedRef(): Promise<string | undefined> {
+    return this.sessionRef;
+  }
+
   async send(text: string, timeoutMs: number): Promise<TurnOutcome> {
     const exit = this.child.exit;
     if (exit) return { kind: "exited", ...exit };
