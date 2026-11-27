@@ -6,7 +6,7 @@ import { accountKey } from "../src/core/pc/pcSettings";
 import type { RemoteResult } from "../src/core/term/remote";
 import { termPaths } from "../src/core/term/paths";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
-import { LONG, ok, oldPcSession, rig, until, useTermRig } from "./termRig";
+import { LONG, ok, pcBridgeSession, rig, until, useTermRig } from "./termRig";
 
 describe("pc 프로세스 = Agent + 원격 다리(runPcParts)", () => {
   it("무엇을 돌리나 — Agent 가 없어도 원격이 허용이면 다리만 · 둘 다 없으면 시작하지 않는다", () => {
@@ -106,7 +106,7 @@ describe("pc run 의 원격 다리 — pc.json(pcId·계정별 원격 허용) �
 
   it("허용한 계정 → pc.json 의 pcId 로 remoteEnabled=true · 목록에서 자기 pc 세션은 뺀다", async () => {
     await ok("term", "new", "work", "--", "cat");
-    await oldPcSession();   // 옛 CLI 가 만든 PC 연결 세션 흉내(종류 칸 없음 — 이름 + pc run)
+    await pcBridgeSession();   // PC 연결 세션(종류 pc-bridge — holder 는 종류 없는 요청을 user 로 적는다)
     const path = writeSettings({ [accountKey(fake.endpoint, "u1")]: { consentedAt: "2026-11-17T00:00:00Z", remoteTerminal: true } });
     const bridge = run(path, async () => ({ userId: "u1" }));
     await until(() => fake.ops().includes("open"), "open");

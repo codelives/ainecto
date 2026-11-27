@@ -30,7 +30,7 @@ import {
   signBytes,
   verifyBytes,
 } from "../src/core/term/e2e";
-import { cli, json, LONG, ok, oldPcSession, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
+import { cli, json, LONG, ok, pcBridgeSession, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
 const PROJECT = "0b9a8c7d-1111-4222-8333-444455556666";
 const USER_ID = "5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10";
@@ -241,7 +241,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
   it("open 에 e2e:1 · 짝지은 브라우저 hello → welcome(서명 검증) → confirm 뒤 보는 세션만 봉인 화면 · 세션별 입력 · 선 위 본문에 표지 없음 · 멈춤 → close", async () => {
     await ok("term", "new", "a", "--", "cat");
     await ok("term", "new", "b", "--", "cat");
-    await oldPcSession();   // 옛 CLI 가 만든 PC 연결 세션 흉내(종류 칸 없음 — 이름 + pc run)
+    await pcBridgeSession();   // PC 연결 세션(종류 pc-bridge — holder 는 종류 없는 요청을 user 로 적는다)
     const browser = await web();
     const run = start();
     await until(() => fake.ops().includes("open"), "open");
@@ -742,7 +742,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
 
   it("장부 끝 기록 — 다리가 없던 사이 끝난 세션은 그 수신처의 다음 open 에 실린다(원격을 끈 채여도 · 목록은 안 싣는다) · 201 뒤 책이 빈다 · PC 연결 세션의 끝과 아무 서버도 못 본 세션의 끝은 올리지 않고 지운다", async () => {
     await ok("term", "new", "keep", "--", "cat");
-    await oldPcSession();
+    await pcBridgeSession();
     await ok("term", "new", "done", "--", "cat");
     const pc = await instanceOf("ainecto-pc");
     const done = await instanceOf("done");

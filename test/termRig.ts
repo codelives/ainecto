@@ -213,3 +213,15 @@ export async function oldPcSession(command: string[] = ["/bin/sh", "-c", "sleep 
   await termRequest(termPaths(rig.home), { op: "new", name: "ainecto-pc", cwd: rig.home, command, env }, { start: false });
   await ok("term", "kill", "pc-fixture-warm");
 }
+
+/**
+ * PC 연결 세션 — 이 판 CLI 의 launchPc 처럼 종류 `pc-bridge` 를 실어 만든다(세션 유지 구조: holder 는 종류 없는 요청을 user 로 적는다 —
+ * 이름·명령으로 짐작하지 않는다. 설계 원칙 1·2). 진짜 브리지 대신 같은 이름·명령의 잠자는 셸.
+ */
+export async function pcBridgeSession(command: string[] = ["/bin/sh", "-c", "sleep 600", "pc", "run"]): Promise<void> {
+  // 시험 프로세스는 CLI 진입이 아니라 데몬을 못 띄운다 — CLI 로 잠깐 세션 하나를 만들어 데몬을 띄우고 지운다(oldPcSession 과 같다).
+  await ok("term", "new", "pc-fixture-warm", "--", "/bin/sh", "-c", "sleep 600");
+  const env = Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string"));
+  await termRequest(termPaths(rig.home), { op: "new", name: "ainecto-pc", cwd: rig.home, command, env, kind: "pc-bridge" }, { start: false });
+  await ok("term", "kill", "pc-fixture-warm");
+}

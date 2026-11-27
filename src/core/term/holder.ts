@@ -3,7 +3,6 @@ import { stat } from "node:fs/promises";
 import { unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { ensurePrivateDir, isNodeError, writePrivateFileAtomic } from "../fs/privateFiles";
-import { bridgeKind } from "../pc/bridgeKind";
 import { endedFromOutside } from "../os/launch";
 import { acquireDaemonLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
@@ -384,12 +383,12 @@ class Holder {
         throw new TermError("TERM_BAD_REQUEST", "handover is for a term daemon, not the holder.");
       case "new": {
         assertSessionName(request.name);
-        // ★종류는 만드는 요청이 정하고 holder 가 그대로 적는다. 비었으면(구판 CLI) 여기서 한 번 bridgeKind 로 정해 적는다 —
-        //   이름 ainecto-pc + 명령 pc run 일 때만 pc-bridge, 그 밖은 user(설계 원칙 1). holder 가 만든 세션은 모두 종류를 가진다.
+        // ★종류는 만드는 요청이 정하고 holder 가 그대로 적는다 — 비었으면(구판 CLI) user(설계 원칙 1 «출처를 확인하지 못한 세션은 사용자 세션으로»).
+        //   이름·명령으로 짐작하지 않는다(원칙 2). holder 가 만든 세션은 모두 종류를 가진다.
         const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString(),
           ...(request.project !== undefined ? { project: request.project } : {}),
           ...(request.input !== undefined ? { input: request.input } : {}),
-          kind: request.kind ?? bridgeKind({ name: request.name, command: request.command }) };
+          kind: request.kind ?? "user" };
         const session = await this.startSession(entry, request.env, request.cols, request.rows);
         this.updateManifest((entries) => [...entries.filter((item) => item.name !== entry.name), { ...entry, instance: session.instance }]);
         return { data: session.info() };
@@ -577,8 +576,8 @@ class Holder {
         continue;
       }
       try {
-        // 매니페스트 줄의 종류가 비었으면(옛 파일) 여기서 한 번 bridgeKind 로 정해 적는다 — holder 가 만든 세션은 모두 종류를 가진다.
-        const kind = entry.kind ?? bridgeKind(entry);
+        // 매니페스트 줄의 종류가 비었으면(옛 파일) user — 이름·명령으로 짐작하지 않는다(설계 원칙 1·2). holder 가 만든 세션은 모두 종류를 가진다.
+        const kind = entry.kind ?? "user";
         const session = await this.startSession({ ...entry, kind }, env);
         // 되살린 세션은 새 인스턴스다 — 줄의 열쇠(uuid)를 바꿔 단다(G6).
         this.updateManifest((entries) => entries.map((item) => item.name === entry.name ? { ...item, kind, instance: session.instance } : item));
