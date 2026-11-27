@@ -282,6 +282,30 @@ class Holder {
     });
   }
 
+  /** 끄는 요청(kill-server·retire)이 겨눈 holder 가 이 holder 인가 — 칸 없음은 구판 CLI, 다름은 그 사이 갈린 holder. */
+  private assertHolder(holder: string | undefined): void {
+    if (holder === undefined) {
+      throw new TermError(CLI_OUTDATED_CODE, "This CLI is older than the term holder, so it cannot stop it. Run the latest CLI "
+        + "(npx -y ainecto@latest term kill-server) and try again.");
+    }
+    if (holder !== this.info.holder) {
+      throw new TermError("TERM_HOLDER_CHANGED", "The term holder changed since this CLI looked; nothing was stopped. Try again.");
+    }
+  }
+
+  /** 모든 세션을 끝낸다(끝 기록 · 매니페스트 비움) — 끝낸 이름들. */
+  private endAll(): string[] {
+    const names = [...this.sessions.keys()];
+    for (const session of this.sessions.values()) {
+      // 사람이 세션마다 지운 것이 아니다 — killed(서버가 줄을 숨김)가 아니라 exited(«끝났습니다» + 지우기).
+      this.recordEnd(session, "exited");
+      session.kill();
+    }
+    this.sessions.clear();
+    this.updateManifest(() => []);
+    return names;
+  }
+
   /** holder.json 을 지금 임대로 다시 쓴다(차례대로 — 늦게 끝난 쓰기가 새 값을 덮지 않게). 못 쓰면 남기고 간다(안내용 파일). */
   private writeInfo(): void {
     const { lease } = this;
@@ -426,7 +450,7 @@ class Holder {
       }
       case "read": {
         // ★화면과 인스턴스 id 는 같은 세션 객체에서(§14-6 4) — 웹은 이 값으로 다음 명령을 겨눈다.
-        const session = this.session(request.name);
+        const session = this.session(request.name, request.instance);
         const range = { scrollback: request.scrollback, lines: request.lines };
         if (request.styles) {
           const screen = await session.readStyled(range, connection);
@@ -447,30 +471,28 @@ class Holder {
       }
       case "kill-server": {
         // ★끌 holder 의 uuid 를 실어야 받는다(설계 3-4 · G4) — 구판 CLI(칸 없음)·다른 holder 를 본 CLI 는 거절.
-        if (request.holder === undefined) {
-          throw new TermError(CLI_OUTDATED_CODE, "This CLI is older than the term holder, so it cannot stop it. Run the latest CLI "
-            + "(npx -y ainecto@latest term kill-server) and try again.");
-        }
-        if (request.holder !== this.info.holder) {
-          throw new TermError("TERM_HOLDER_CHANGED", "The term holder changed since this CLI looked; nothing was stopped. Try again.");
-        }
+        this.assertHolder(request.holder);
         // ★먼저 새 요청을 막고, 이미 받은 생성(new·restore)을 마치게 한 «뒤» 일괄로 끝낸다(리뷰 #81 T7). 남은 처리 중 요청은 이 요청 하나다.
         this.stopAccepting();
         await this.inflightAtMost(1);
-        const names = [...this.sessions.keys()];
-        for (const session of this.sessions.values()) {
-          // 사람이 세션마다 지운 것이 아니다 — killed(서버가 줄을 숨김)가 아니라 exited(«끝났습니다» + 지우기).
-          this.recordEnd(session, "exited");
-          session.kill();
+        return { data: { killed: this.endAll() }, after: () => void this.shutdown("kill-server") };
+      }
+      case "retire": {
+        // holder 갈기(설계 3-6) — 사용자 세션이 0 일 때만 PC 연결 세션째 끝내고 holder 가 끝난다. 다음 연결 명령이 새 판 holder 를 띄운다.
+        // ★«0 인지 보고 끈다»를 한 번에: 세기와 새 요청 막기가 같은 동기 구간이다 — 그 사이 새 세션이 생길 수 없다(이름 예약의 주인이 여기).
+        this.assertHolder(request.holder);
+        const users = [...this.sessions.values()].filter((session) => (session.info().kind ?? "user") === "user").map((session) => session.name);
+        if (users.length > 0 || this.starting.size > 0) {
+          return { data: { retired: false, users: [...users, ...this.starting] } };
         }
-        this.sessions.clear();
-        this.updateManifest(() => []);
-        return { data: { killed: names }, after: () => void this.shutdown("kill-server") };
+        this.stopAccepting();
+        await this.inflightAtMost(1);
+        return { data: { retired: true, killed: this.endAll() }, after: () => void this.shutdown("retire") };
       }
       case "restore":
         return { data: await this.restore(request.env) };
       case "attach": {
-        const session = this.session(request.name);
+        const session = this.session(request.name, request.instance);
         connection.attachedTo = session;
         this.log.write({ event: "attach", conn: connection.id, name: session.name });
         return { data: { name: session.name }, after: () => session.attach(connection, request.cols, request.rows) };
@@ -485,7 +507,7 @@ class Holder {
         return { data: { name: session.name, reset: Buffer.from(session.detach(connection), "utf8").toString("base64") } };
       }
       case "watch":
-        this.session(request.name).watch(connection);
+        this.session(request.name, request.instance).watch(connection);
         return { data: { name: request.name } };
       case "watch-sessions":
         this.listWatchers.add(connection);

@@ -121,4 +121,28 @@ describe("term holder — 바깥 없이 세션을 쥔다(U1)", () => {
     await until(() => holderPids().length === 0, "holder gone");
     second.close();
   }, LONG);
+
+  it("retire(설계 3-6): 사용자 세션이 있으면 아무것도 안 함 · 이름·인스턴스로 겨눈 read · 사용자 세션 0 이면 PC 연결 세션째 끝나고 holder 가 끝남", async () => {
+    expect(await startHolder()).toEqual({ status: "ready" });
+    const control = await holderClient();
+    await control.request({ op: "lease", outer: randomUUID(), version: "0.0.1", pid: process.pid });
+    const { holder } = holderCaps(await control.request({ op: "caps" }))!;
+    const bridge = await control.request({ op: "new", name: "ainecto-pc", cwd: rig.home, command: ["cat"], env: env(), kind: "pc-bridge" }) as
+      { instance: string; pid: number };
+    const user = await control.request({ op: "new", name: "work", cwd: rig.home, command: ["cat"], env: env() }) as { instance: string; pid: number };
+
+    // read·watch·attach 의 instance — 지금 그 이름의 세션이 그 인스턴스일 때만
+    expect(await control.request({ op: "read", name: "work", scrollback: false, instance: user.instance })).toMatchObject({ instance: user.instance });
+    await expect(control.request({ op: "read", name: "work", scrollback: false, instance: bridge.instance })).rejects.toMatchObject({ code: "SESSION_REPLACED" });
+
+    await expect(control.request({ op: "retire", holder: randomUUID() })).rejects.toMatchObject({ code: "TERM_HOLDER_CHANGED" });
+    expect(await control.request({ op: "retire", holder })).toEqual({ retired: false, users: ["work"] });
+    expect(alive(bridge.pid) && alive(user.pid)).toBe(true);
+
+    await control.request({ op: "kill", name: "work", instance: user.instance });
+    expect(await control.request({ op: "retire", holder })).toEqual({ retired: true, killed: ["ainecto-pc"] });
+    await until(() => holderPids().length === 0, "holder gone");
+    await until(() => !alive(bridge.pid), "bridge pty gone");
+    control.close();
+  }, LONG);
 });

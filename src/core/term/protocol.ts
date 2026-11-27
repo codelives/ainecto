@@ -60,17 +60,22 @@ export type TermRequestBody =
   | { op: "send"; name: string; text: string; paste: boolean; instance?: string }
   | { op: "key"; name: string; key: string; instance?: string }
   /** styles = 글자 속성·커서까지(원격 화면) — 옛 데몬은 버리고 글자만 준다. */
-  | { op: "read"; name: string; scrollback: boolean; lines?: number; styles?: boolean }
+  | { op: "read"; name: string; scrollback: boolean; lines?: number; styles?: boolean; instance?: string }
   | { op: "kill"; name: string; instance?: string }
   /**
    * 세션을 모두 끝내고 holder 를 끈다. ★holder = 끌 holder 의 uuid(기능 묻기 caps 로 받은 값) — 없거나 다르면 거절한다(설계 3-4 · G4).
    * 구판 CLI(0.16.x)의 kill-server 는 이 칸이 없어 «최신 CLI 로 다시»로 거절된다 — 남은 daemon.json 으로 새 구조 세션을 닫지 못한다.
    */
   | { op: "kill-server"; holder?: string }
+  /**
+   * holder 갈기(설계 3-6) — 사용자 세션(종류 user)이 0 이면 PC 연결 세션째 끝내고 holder 가 끝난다({retired:true, killed}).
+   * 사용자 세션이 있거나 만드는 중이면 아무것도 하지 않는다({retired:false, users}). 끌 holder 의 uuid 를 실어야 받는다(kill-server 와 같다).
+   */
+  | { op: "retire"; holder: string }
   | { op: "restore"; env: Record<string, string> }
-  | { op: "attach"; name: string; cols: number; rows: number }
+  | { op: "attach"; name: string; cols: number; rows: number; instance?: string }
   | { op: "detach" }
-  | { op: "watch"; name: string }
+  | { op: "watch"; name: string; instance?: string }
   /**
    * 붙지 않은 쪽(원격 웹 패널 — 원격 다리)이 세션 크기를 정한다. ★attach 흐름의 `resize`(id 없는 줄)와 이름을 나눈다 — 옛 데몬은
    * id 붙은 `resize` 를 흐름 줄로 읽어 답하지 않는다(10초 뒤 연결이 끊김). 모르는 op 면 옛 데몬이 연결을 바로 끊어 빨리 안다.
@@ -207,6 +212,8 @@ export function parseClientMessage(line: string): TermClientMessage {
       return { id, op };
     case "kill-server":
       return record.holder === undefined ? { id, op } : { id, op, holder: uuidField(record, "holder") };
+    case "retire":
+      return { id, op, holder: uuidField(record, "holder") };
     case "lease":
       return { id, op, outer: uuidField(record, "outer"), version: stringField(record, "version"), pid: sizeField(record, "pid") };
     case "via":
@@ -226,17 +233,17 @@ export function parseClientMessage(line: string): TermClientMessage {
       return { id, op, name: stringField(record, "name"), key: stringField(record, "key"), ...optionalInstance(record) };
     case "read":
       return { id, op, name: stringField(record, "name"), scrollback: record.scrollback === true, lines: optionalSize(record, "lines"),
-        ...(record.styles === true ? { styles: true } : {}) };
+        ...(record.styles === true ? { styles: true } : {}), ...optionalInstance(record) };
     case "kill":
       return { id, op, name: stringField(record, "name"), ...optionalInstance(record) };
     case "watch":
-      return { id, op, name: stringField(record, "name") };
+      return { id, op, name: stringField(record, "name"), ...optionalInstance(record) };
     case "restore":
       return { id, op, env: stringMapField(record, "env") };
     case "hello":
       return { id, op, nonce: stringField(record, "nonce") };
     case "attach":
-      return { id, op, name: stringField(record, "name"), cols: sizeField(record, "cols"), rows: sizeField(record, "rows") };
+      return { id, op, name: stringField(record, "name"), cols: sizeField(record, "cols"), rows: sizeField(record, "rows"), ...optionalInstance(record) };
     case "set-size":
       return { id, op, name: stringField(record, "name"), cols: sizeField(record, "cols"), rows: sizeField(record, "rows"), ...optionalInstance(record) };
     default:

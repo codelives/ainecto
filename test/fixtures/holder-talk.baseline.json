@@ -47,7 +47,8 @@
       "name",
       "scrollback",
       "lines",
-      "styles"
+      "styles",
+      "instance"
     ],
     "kill": [
       "name",
@@ -56,17 +57,22 @@
     "kill-server": [
       "holder"
     ],
+    "retire": [
+      "holder"
+    ],
     "restore": [
       "env"
     ],
     "attach": [
       "name",
       "cols",
-      "rows"
+      "rows",
+      "instance"
     ],
     "detach": [],
     "watch": [
-      "name"
+      "name",
+      "instance"
     ],
     "watch-sessions": [],
     "set-size": [

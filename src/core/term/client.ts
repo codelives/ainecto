@@ -177,7 +177,8 @@ export class TermClient {
  * ★클라이언트는 소켓 파일을 «절대» 지우지 않는다. `ENOENT`·`ECONNREFUSED` 면 데몬을 띄울 뿐이고, 그 데몬이
  *   잠금을 못 잡으면(다른 데몬이 살아 있거나 뜨는 중) 다시 붙어 본다. 하나만 뜨는 것은 잠금이 보장한다.
  *   띄우기는 {@link DAEMON_START_ATTEMPTS} 번까지 — 잠금을 쥔 데몬이 bind 전에 멈춰 있으면 그 pid 를 알려 주고 끝난다.
- * `start` 가 false 면(ls·read 등) 데몬이 없을 때 undefined — 세션이 없다는 뜻이다.
+ * `start` 가 false 면(ls·read 등) 데몬이 없을 때 undefined — 세션이 없다는 뜻이다. ★단 holder 가 살아 답하면(바깥만 죽음) 바깥을 다시 띄운다
+ *   — 세션은 holder 에 있다(세션 유지 구조).
  *   `resetFails` 면 붙다가 끊긴 연결(ECONNRESET)은 «없음»으로 보지 않고 던진다 — «없음»이 곧 «다 꺼졌다»가 되는 끄기 확인(`pair --remove`)이 쓴다.
  *   데몬이 있는지 모르는 채 끝나기 때문이다. ENOENT·ECONNREFUSED 는 그대로 «없음».
  */
@@ -187,6 +188,7 @@ export interface TermConnectOptions {
 }
 
 export async function openTermClient(paths: TermPaths, options: TermConnectOptions): Promise<TermClient | undefined> {
+  let start = options.start;
   for (let started = 0; ; started += 1) {
     try {
       return await TermClient.connect(paths);
@@ -200,9 +202,11 @@ export async function openTermClient(paths: TermPaths, options: TermConnectOptio
         // ★사칭(강제 종료 뒤 옛 이름 재점유 등) — 남기고 «데몬 없음»처럼 띄운다. 잠금을 빼앗지 않는다: 살아 있는 내 데몬이면 새 데몬은 locked.
         new DaemonLog(paths.log, paths.previousLog).write({ event: "ipc_impostor", pid: process.pid, message: error.message });
       }
-      if (!options.start) {
+      if (!start) {
         if (options.resetFails && isNodeError(error, "ECONNRESET")) throw error;
-        return undefined;
+        // ★바깥이 없어도 holder 가 살아 있으면 세션이 있다(세션 유지 구조 G5 — «데몬 연결 없음 = 세션 0» 이 아니다) → 바깥을 다시 띄운다.
+        if (!(await holderAnswers(paths))) return undefined;
+        start = true;
       }
     }
     if (started === DAEMON_START_ATTEMPTS) {
@@ -215,6 +219,17 @@ export async function openTermClient(paths: TermPaths, options: TermConnectOptio
     if (readiness.status === "error") {
       throw new TermError("TERM_DAEMON_START", `The term daemon did not start: ${readiness.message}`);
     }
+  }
+}
+
+/** holder 가 자기 주소에서 답하는가(증명까지) — 살아 있는 상대에게 묻는다(G4). 바깥이 없을 때만 부른다. */
+async function holderAnswers(paths: TermPaths): Promise<boolean> {
+  try {
+    (await TermClient.connect(paths, paths.holderSocket)).close();
+    return true;
+  } catch {
+    // 없음·거절·사칭 — 어느 쪽이든 «세션을 쥔 holder 가 없다».
+    return false;
   }
 }
 

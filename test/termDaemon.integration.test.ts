@@ -8,6 +8,7 @@ import {
   attachInPty,
   cli,
   daemonPids,
+  holderPids,
   exited,
   json,
   LONG,
@@ -182,10 +183,11 @@ describe("ainecto term — real daemon and PTY", () => {
     await ok("term", "new", "r2", "--", "/bin/sh", "-c", "trap '' HUP; while :; do sleep 1; done");
     const before = await sessions();
     const survivor = before.find((session) => session.name === "r2")?.pid ?? 0;
-    for (const pid of daemonPids()) {
+    // 세션 유지 구조: 세션을 쥔 것은 holder — 바깥과 함께 죽인다(바깥만 죽으면 세션은 산다 — termHandover 시험)
+    for (const pid of [...daemonPids(), ...holderPids()]) {
       process.kill(pid, "SIGKILL");
     }
-    await until(() => daemonPids().length === 0, "daemon killed");
+    await until(() => daemonPids().length + holderPids().length === 0, "daemon killed");
     expect(await ok("term", "ls")).toBe("No term sessions.\n");
 
     try {

@@ -93,4 +93,21 @@ describe("바깥 넘기기 — 판이 바뀌어도 PTY 가 산다(U2)", () => {
     expect(alive(before!.pid)).toBe(false);
     expect(existsSync(paths.socket)).toBe(false);
   }, LONG);
+
+  it("바깥만 죽으면(SIGKILL) 세션은 holder 에 산다 — 띄우지 않는 명령(term ls)도 holder 가 답하면 바깥을 다시 띄워 같은 세션을 보인다(G5)", async () => {
+    await ok("term", "new", "orphan", "--", "cat");
+    const [before] = await listed();
+    const [outer] = daemonPids();
+    process.kill(outer!, "SIGKILL");
+    await until(() => !alive(outer!), "outer killed");
+    expect(holderPids()).toHaveLength(1);
+
+    const [after] = await listed();
+    expect(after).toEqual(before);
+    expect(daemonPids()).toHaveLength(1);
+    expect(daemonPids()[0]).not.toBe(outer);
+    await ok("term", "send", "orphan", "still-here");
+    await ok("term", "key", "orphan", "Enter");
+    await until(async () => (await screenText("orphan")).split("still-here").length === 3, "echo after revive");
+  }, LONG);
 });
