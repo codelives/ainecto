@@ -1,3 +1,5 @@
+import { McpRpcError } from "./rpcClient";
+
 /**
  * ★«읽기 도구»의 한 판정 — 서버 tools/list 의 {@code annotations.readOnlyHint === true} 만 읽기다. 표시가 없거나 거짓이면 쓰기(막는다).
  * 읽기만 세션(Room 차례)의 보장은 브리지(stdioBridge)가 이 판정으로 지킨다. serve 의 엔진별 인자(Claude 허용 목록 · Antigravity 거절 ·
@@ -16,8 +18,8 @@ export function readOnlyToolsResult(result: unknown): Record<string, unknown> & 
 
 /**
  * ★지금 서버 목록에서 이 이름이 읽기 도구인가 — 그 이름을 찾거나 마지막 쪽에 이를 때까지 {@code nextCursor} 를 따라간다(MCP 목록 쪽 나눔 ·
- * 재리뷰 r2 P1). 찾은 도구는 그 표시대로, 끝까지 없으면 아니다. 같은 커서가 다시 오면(서버 고장) 거기서 멈추고 아니다. 목록 읽기 실패는 던진다
- * (부른 쪽이 막는다).
+ * 재리뷰 r2 P1). 찾은 도구는 그 표시대로, 끝까지 없으면 아니다. 같은 커서가 다시 오면(서버 고장) 거기서 멈추고 아니다. 목록 읽기 실패와
+ * 필수 {@code tools} 배열이 없는 쪽(MCP ListToolsResult 위반 — 재리뷰 r3 P1)은 던진다(부른 쪽이 막는다 · 다음 쪽도 읽지 않는다).
  * @param page 그 커서의 tools/list 결과(첫 쪽은 undefined)
  */
 export async function isReadOnlyToolNow(page: (cursor: string | undefined) => Promise<unknown>, name: string): Promise<boolean> {
@@ -25,10 +27,10 @@ export async function isReadOnlyToolNow(page: (cursor: string | undefined) => Pr
   let cursor: string | undefined;
   for (;;) {
     const result = await page(cursor);
-    const tools = isRecord(result) && Array.isArray(result.tools) ? result.tools : [];
-    const found = tools.find((tool) => isRecord(tool) && tool.name === name);
+    if (!isRecord(result) || !Array.isArray(result.tools)) throw new McpRpcError("tools/list response did not include a tools array.", "MCP_PROTOCOL_ERROR", result);
+    const found = result.tools.find((tool) => isRecord(tool) && tool.name === name);
     if (found !== undefined) return isReadOnlyTool(found);
-    const next = isRecord(result) && typeof result.nextCursor === "string" && result.nextCursor !== "" ? result.nextCursor : undefined;
+    const next = typeof result.nextCursor === "string" && result.nextCursor !== "" ? result.nextCursor : undefined;
     if (next === undefined || seen.has(next)) return false;
     seen.add(next);
     cursor = next;

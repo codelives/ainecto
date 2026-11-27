@@ -206,7 +206,7 @@ describe("stdio bridge — read-only session (project room)", () => {
   });
 
   /** 쪽 나눈 목록(MCP 규약) — 쪽마다 tools + nextCursor. 실패할 커서·되풀이 커서를 줄 수 있다. */
-  const pagedServer = (pages: Record<string, { tools: unknown[]; nextCursor?: string } | "fail">) => {
+  const pagedServer = (pages: Record<string, { tools?: unknown; nextCursor?: string } | "fail">) => {
     const handled: string[] = [];
     const cursors: Array<string | undefined> = [];
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -253,6 +253,18 @@ describe("stdio bridge — read-only session (project room)", () => {
     expect(looped[0]!.error?.code).toBe(-32602);
     expect(looping.handled).toEqual([]);
     expect(looping.cursors).toEqual([undefined, "p2"]);
+  });
+
+  it("★Room: 필수 tools 배열이 없거나 잘못된 쪽이면 거기서 멈춘다 — 다음 쪽 · 도구 호출 0(재리뷰 r3 P1) · 빈 배열 쪽은 지나간다", async () => {
+    const read = { tools: [{ name: "execute_read", annotations: { readOnlyHint: true } }] };
+    for (const [broken, at] of [[{ nextCursor: "p2" }, ""], [{ tools: null, nextCursor: "p3" }, "p2"]] as const) {
+      const server = pagedServer({ "": { tools: [], nextCursor: "p2" }, p2: read, p3: read, [at]: broken });
+      const answers = await run(server.client, true, [call(1, "execute_read")]);
+      expect(answers[0]!.id).toBe(1);
+      expect(answers[0]!.error).toBeDefined();
+      expect(server.handled).toEqual([]);
+      expect(server.cursors).toEqual(at === "" ? [undefined] : [undefined, "p2"]);
+    }
   });
 
   it("Connect(읽기만 아님)는 예전 그대로 — 목록은 거르지 않고 쓰기 호출도 서버로, 호출 전 목록 조회도 없다", async () => {
