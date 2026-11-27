@@ -217,8 +217,9 @@ async function withRegistration(deps: PcDeps, key: string, userId: string, code:
 }
 
 /**
- * 브라우저 자동 등록(설계 auto-register-0.15.2 §1·§1-1·§2·§4·§11) — 대화형 · 터미널 세션 밖 · 원격 허용일 때. 이 PC 에 등록한 브라우저가 0 이면
- * 묻지 않고, 이미 있으면 «지금 열리는 브라우저도 등록할까요? [y/N]»(기본 N — 0.15.3 · Ryan 결재 c8558683)에 y 일 때만.
+ * 브라우저 자동 등록(설계 auto-register-0.15.2 §1·§1-1·§2·§4·§11) — 대화형 · 터미널 세션 밖 · 원격 허용일 때. 이 PC 에 등록한 브라우저가 0 일 때만.
+ * 이미 있으면 묻지 않고 안내 한 줄(«다른 브라우저는 등록된 브라우저에서 허용») — KAN-1615, Ryan 11-27 «묻지 않고 안내»
+ * (0.15.3 결재 c8558683 의 «[y/N] 기본 N» 질문을 바꿈).
  * ssh 처럼 브라우저를 못 여는 곳에서는 등록한 브라우저가 0 일 때만 안내 한 줄(이미 있으면 조용히 끝낸다).
  * 일회용 비밀 S(32바이트)를 만들어 `https://<엔드포인트 origin>/api/v1/public/term-register#1.<pcId>.<tag>.<S>` 를 기본 브라우저로 열고
  * (분석 도구 없는 api 페이지 — S 를 앱 주소에 싣지 않는다), 같은 S 로
@@ -245,8 +246,8 @@ export async function registerBrowserOnStart(
     return;
   }
   if (registered > 0) {
-    const question = `This PC already has ${registered} registered browser${registered === 1 ? "" : "s"}. Register the browser that opens now too? [y/N]: `;
-    if (!yes(await promptLine(deps.io, question), false)) return;
+    note(`This PC trusts ${registered} browser${registered === 1 ? "" : "s"}. To use another browser, allow it from a registered browser.`);
+    return;
   }
   const userId = transcriptUserId(account.userId);
   const secret = randomBytes(NONCE_SEED_BYTES);

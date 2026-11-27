@@ -166,24 +166,24 @@ describe("브라우저 자동 등록 — registerBrowserOnStart(§1-1 조건 넷
     await nothing(deps());
   });
 
-  it("0.15.3 결재 — 등록한 브라우저가 이미 있으면 «지금 열리는 브라우저도 등록할까요? [y/N]» · 기본(빈 줄·입력 끝) N 이면 열지 않음 · y 면 같은 자동 등록으로 하나 더", async () => {
+  it("KAN-1615(Ryan 11-27 «묻지 않고 안내» — 0.15.3 결재 c8558683 의 [y/N] 질문을 바꿈) — 등록한 브라우저가 이미 있으면 묻지 않고 안내 한 줄 · 열지 않음", async () => {
     await approve();
     const pcKey = await generateSigningJwk();
     await updatePcKeys(keysPath(), (keys) => withBrowser(keys, KEY, pcKey,
       { keyId: "c0495cf983e314e307b0406063614409", publicJwk: publicJwkOf(pcKey), name: "Safari · macOS", pairedAt: "2026-11-22T00:00:00Z" }));
-    const question = "This PC already has 1 registered browser. Register the browser that opens now too? [y/N]: ";
-    for (const answer of [undefined, "", "n", "no"]) {
-      const skip = deps({}, {}, answer);
-      await registerBrowserOnStart(skip.deps, { key: KEY, userId: USER_ID });
-      expect(skip.err()).toBe(question);
-      expect(skip.opened, `답 ${String(answer)}`).toEqual([]);
-    }
-    const more = deps({}, {}, "y");
-    await registerBrowserOnStart(more.deps, { key: KEY, userId: USER_ID });
-    expect(more.err()).toContain(question);
-    expect(more.opened).toHaveLength(1);
-    expect(more.browser.state.done).toBe(true);
-    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.map((item) => item.name)).toEqual(["Safari · macOS", "Chrome · macOS"]);
+    const one = deps({}, {}, "y");
+    await registerBrowserOnStart(one.deps, { key: KEY, userId: USER_ID });
+    expect(one.err(), "입력을 읽지 않는다 — y 를 쳐도 열지 않음").toBe("This PC trusts 1 browser. To use another browser, allow it from a registered browser.\n");
+    expect(one.opened).toEqual([]);
+
+    const pcKey2 = await generateSigningJwk();
+    await updatePcKeys(keysPath(), (keys) => withBrowser(keys, KEY, pcKey2,
+      { keyId: "d0495cf983e314e307b0406063614409", publicJwk: publicJwkOf(pcKey2), name: "Chrome · Windows", pairedAt: "2026-11-23T00:00:00Z" }));
+    const two = deps();
+    await registerBrowserOnStart(two.deps, { key: KEY, userId: USER_ID });
+    expect(two.err()).toBe("This PC trusts 2 browsers. To use another browser, allow it from a registered browser.\n");
+    expect(two.opened).toEqual([]);
+    expect((await loadPcKeys(keysPath())).accounts[KEY]?.browsers.map((item) => item.name)).toEqual(["Safari · macOS", "Chrome · Windows"]);
   });
 
   it("ssh 이거나 브라우저를 못 열면 — «PC 화면의 터미널에서 npx 다시» 한 줄만(pair 아님 · 종료 없음 · 던지지 않음)", async () => {
