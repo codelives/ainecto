@@ -1,8 +1,9 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { imageFiles, imageFingerprint } from "../src/core/term/holderImage";
+import { imageFiles, imageFingerprint, imageOf } from "../src/core/term/holderImage";
 import { nodePtyNativeDirs } from "../src/core/term/paths";
 
 /**
@@ -40,6 +41,28 @@ describe("holder 사본 파일 목록(imageFiles) · 지문", () => {
       expect(await imageFingerprint(await imageFiles(bundle, NODE_PTY))).not.toBe(first);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * 지금 도는 사본 알아보기(imageOf) — holder 는 뜰 때 이것만 남기고 나머지 사본을 지운다(sweepHolderImages).
+ * ★HOME 경로에 링크가 끼면(macOS 임시 폴더 /var → /private/var) 실행 파일 경로(실경로)와 HOME 기준 경로가 글자로 달라,
+ * 자기 사본을 «안 쓰는 사본»으로 지우고 새 PTY 를 못 띄웠다(첫 전환 리허설 11-27).
+ */
+describe("지금 도는 사본(imageOf)", () => {
+  it("사본 폴더 바로 안이면 지문 · 밖이면 undefined · ★HOME 이 링크를 거쳐도 같은 사본으로 본다", async () => {
+    const real = realpathSync(await mkdtemp(join(tmpdir(), "aterm-image-")));
+    try {
+      await mkdir(join(real, "home", ".ainecto", "term", "holder", "abc123"), { recursive: true });
+      const bundle = join(real, "home", ".ainecto", "term", "holder", "abc123", "ainecto.js");
+      await writeFile(bundle, "");
+      await symlink(join(real, "home"), join(real, "linked-home"));
+      expect(imageOf(bundle, join(real, "home", ".ainecto", "term", "holder"))).toBe("abc123");
+      expect(imageOf(join(real, "elsewhere", "dist", "bin", "ainecto.js"), join(real, "home", ".ainecto", "term", "holder"))).toBeUndefined();
+      expect(imageOf(bundle, join(real, "linked-home", ".ainecto", "term", "holder"))).toBe("abc123");
+    } finally {
+      await rm(real, { recursive: true, force: true });
     }
   });
 });

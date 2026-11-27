@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join, relative } from "node:path";
@@ -52,8 +52,26 @@ export async function prepareHolderImage(paths: TermPaths): Promise<HolderImage 
 /** 지금 이 프로세스가 도는 사본의 지문 — 사본 폴더 밖에서 돌면 undefined. */
 export function runningImage(paths: TermPaths): string | undefined {
   if (!CLI_BUNDLED) return undefined;
-  const folder = dirname(fileURLToPath(import.meta.url));
-  return dirname(folder) === paths.holderImages ? basename(folder) : undefined;
+  return imageOf(fileURLToPath(import.meta.url), paths.holderImages);
+}
+
+/**
+ * `file` 이 `<images>/<지문>/` 바로 안에 있으면 그 지문 — 아니면 undefined. ★실경로로 견준다 — 실행 파일 경로는 실경로인데 `images` 는
+ * HOME 기준이라, HOME 경로에 링크가 끼면(macOS /var → /private/var 등) 글자로는 달라 holder 가 자기 사본을 지우고 새 PTY 를 못 띄웠다.
+ */
+export function imageOf(file: string, images: string): string | undefined {
+  const folder = dirname(realOrAsIs(file));
+  return dirname(folder) === realOrAsIs(images) ? basename(folder) : undefined;
+}
+
+/** 실경로 — 아직 없는 경로(ENOENT)는 그대로(없는 사본 폴더와는 어차피 견줄 것이 없다). */
+function realOrAsIs(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return path;
+    throw error;
+  }
 }
 
 /**
