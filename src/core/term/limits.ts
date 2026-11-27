@@ -12,7 +12,10 @@
  */
 export const DAEMON_RESPONSE_TIMEOUT_MS = 10_000;
 
-/** 데몬에 못 붙을 때 데몬을 띄워 보는 횟수. 잠금을 쥔 데몬이 bind 전에 멈춘 경우에도 이 횟수 뒤 오류로 끝난다. */
+/**
+ * 데몬에 못 붙을 때 데몬을 띄워 보는 횟수. 잠금을 쥔 데몬이 bind 전에 멈춘 경우에도 이 횟수 뒤 오류로 끝난다.
+ * 한 요청이 연달아 RETRY 를 받는 상한도 이 값이다(holder 가 살아 있는데 못 붙을 때 — client.termRequest · Ryan 11-27).
+ */
 export const DAEMON_START_ATTEMPTS = 3;
 
 /** daemon.log 가 이 크기를 넘으면 daemon.log.1 하나만 남기고 새로 쓴다. */

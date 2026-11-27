@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, renameSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "../src/core/term/limits";
@@ -127,6 +127,27 @@ describe("ainecto term — real daemon and PTY", () => {
       process.kill(daemon ?? 0, "SIGCONT");
     }
     expect((await sessions()).map((session) => session.name)).toEqual(["c"]);
+  }, LONG);
+
+  it("while the holder can't be reached, a command gives up after the daemon asks to retry DAEMON_START_ATTEMPTS times — with the holder pid (Ryan 11-27)", async () => {
+    await ok("term", "new", "h", "--", "/bin/sh");
+    const [holder] = holderPids();
+    // holder 는 살아 있고 바깥의 임대 연결도 그대로 — 새 연결만 못 붙는다. 바깥은 요청 줄을 보내기 전이라 RETRY 로 답한다.
+    const address = join(rig.home, ".ainecto/term/holder.sock");
+    renameSync(address, `${address}.away`);
+    try {
+      const run = await Promise.race([cli("term", "ls", "--json"), sleep(2 * DAEMON_RESPONSE_TIMEOUT_MS).then(() => undefined)]);
+      expect(run, "term ls still retrying").toBeDefined();
+      expect(run?.code).toBe(1);
+      const error = (JSON.parse(run?.stderr ?? "{}") as { error: { code: string; message: string } }).error;
+      expect(error.code).toBe("TERM_DAEMON_NO_RESPONSE");
+      expect(error.message).toContain(`holder pid ${holder}`);
+      expect(error.message).toContain(`${DAEMON_START_ATTEMPTS} times`);
+      expect(holderPids()).toEqual([holder]);
+    } finally {
+      renameSync(`${address}.away`, address);
+    }
+    expect((await sessions()).map((session) => session.name)).toEqual(["h"]);
   }, LONG);
 
   it("a daemon that holds the lock but never binds: new gives up after 3 starts and names its pid", async () => {

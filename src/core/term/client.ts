@@ -242,13 +242,17 @@ export function resultUnknown(code: string): boolean {
   return code === "TERM_DAEMON_GONE" || code === "TERM_DAEMON_NO_RESPONSE";
 }
 
-/** 요청 하나를 보내고 답을 받는다. 데몬이 끝나는 중이라 RETRY 를 답하면 다음 데몬에 다시 보낸다. */
+/**
+ * 요청 하나를 보내고 답을 받는다. 데몬이 끝나는 중이거나 holder 에 닿지 못해 RETRY 를 답하면(요청은 실행되지 않았다) 다음 데몬에 다시 보낸다.
+ * ★연달아 {@link DAEMON_START_ATTEMPTS} 번 RETRY 면 끝낸다 — holder 가 살아 있는데 못 붙으면 끝없이 돌았다(Ryan 11-27 · 새 상수 없음).
+ *   평소 바깥 넘기기는 1~2번이면 다음 바깥에 닿는다.
+ */
 export async function termRequest(
   paths: TermPaths,
   body: TermRequestBody,
   options: TermConnectOptions,
 ): Promise<{ daemon: true; data: unknown } | { daemon: false }> {
-  for (;;) {
+  for (let retries = 0; ; ) {
     const client = await openTermClient(paths, options);
     if (!client) {
       return { daemon: false };
@@ -257,7 +261,12 @@ export async function termRequest(
       return { daemon: true, data: await client.request(body) };
     } catch (error) {
       if (error instanceof TermError && error.code === RETRY_CODE) {
-        continue;
+        retries += 1;
+        if (retries < DAEMON_START_ATTEMPTS) continue;
+        const { label, hint } = residentHint(paths);
+        throw new TermError("TERM_DAEMON_NO_RESPONSE",
+          `The term daemon${label} asked to retry "${body.op}" ${DAEMON_START_ATTEMPTS} times in a row — the term holder is not answering `
+            + `(last: ${error.message}). It may be stopped or hung; the request was not run and nothing was cleaned up. ${hint}See ${paths.holderLog}.`);
       }
       throw error;
     } finally {
