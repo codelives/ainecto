@@ -25,7 +25,7 @@ export interface AgentSessionSlot {
 
 /**
  * 칸이 가리키는 대화 — ★종류로 가른다(리뷰 R2-b P0-1): Connect 대화와 Room 대화는 서버의 다른 저장소라 UUID 가 같을 수 있다.
- * {@code kind} 가 ROOM 이면 Room 칸 묶음({@code rooms.<agent>}), 없으면 예전 그대로의 Connect 칸. serve 의 offer 가 이 꼴을 그대로 든다.
+ * {@code kind} 가 ROOM 이면 Room 파일의 칸, 없으면 예전 그대로의 Connect 칸. serve 의 offer 가 이 꼴을 그대로 든다.
  */
 export interface SessionConversation {
   conversationUuid: string;
@@ -35,21 +35,31 @@ export interface SessionConversation {
 /** 바꿀 값 — {@code undefined} 면 그 칸을 지운다. */
 export type AgentSessionWrite = { sessionId: string; cursor?: string; owner?: string } | undefined;
 
+/** 두 파일 — {@code connect} = 옛 CLI 와 함께 쓰는 {@code sessions.json} · {@code room} = Room 대화만({@code room-sessions.json} · agentPaths). */
+export interface AgentSessionFiles {
+  connect: string;
+  room: string;
+}
+
 /**
- * (대화 종류·uuid, Agent) → 그 Agent 의 세션 칸({@code ~/.ainecto/agent/sessions.json}). ★파일이 진실원이다 — 메모리 사본을 두지 않고 매번 읽는다.
- * ★파일 꼴은 옛 CLI(0.14.0-next.1~)와 같이 읽힌다: Connect 대화는 Claude Code 가 예전 그대로 {@code conversations} 칸, 다른 Agent 는 {@code byAgent.<id>}.
- * Room 대화는 Agent 마다 {@code rooms.<id>} — 옛 CLI 는 이 묶음을 모른다(Room 차례도 받지 않는다).
- * 옛 CLI 는 {@code sessionId}·{@code updatedAt} 만 읽고 다시 쓰므로 그 칸의 {@code cursor}·{@code owner}·{@code rev} 는 사라진다(→ 처음 규칙).
+ * (대화 종류·uuid, Agent) → 그 Agent 의 세션 칸. ★파일이 진실원이다 — 메모리 사본을 두지 않고 매번 읽는다.
+ * <ul>
+ *   <li>Connect 대화 = {@code sessions.json} — 꼴은 옛 CLI(0.14.0-next.1~)와 같이 읽힌다: Claude Code 는 예전 그대로 {@code conversations} 칸,
+ *       다른 Agent 는 {@code byAgent.<id>}. 옛 CLI 는 {@code sessionId}·{@code updatedAt} 만 읽고 다시 쓰므로 그 칸의 {@code cursor}·{@code owner}·
+ *       {@code rev} 는 사라진다(→ 처음 규칙).</li>
+ *   <li>Room 대화 = ★따로 {@code room-sessions.json} 의 {@code byAgent.<id>} — 옛 CLI(0.16.3 등)는 {@code sessions.json} 을 두 묶음으로 통째로 다시
+ *       쓰므로 같은 파일에 두면 Room 칸 전부가 사라진다(재리뷰 r2 P0). 옛 CLI 는 이 파일을 모른다(Room 차례도 받지 않는다).</li>
+ * </ul>
  *
- * <p>★쓰기·지우기는 {@link write} 하나 — 잠금(`sessions.json.lock`) 안에서 파일을 다시 읽고, 그 칸의 {@code rev} 가 부른 쪽이 읽은 값과 같을 때만
- * 그 칸 하나를 바꾼다(CAS). 다르면 늦은 결과로 보고 버린다. 다른 칸·모르는 칸은 읽은 그대로 둔다.
+ * <p>★쓰기·지우기는 {@link write} 하나 — 그 파일의 잠금({@code <파일>.lock}) 안에서 파일을 다시 읽고, 그 칸의 {@code rev} 가 부른 쪽이 읽은 값과
+ * 같을 때만 그 칸 하나를 바꾼다(CAS). 다르면 늦은 결과로 보고 버린다. 다른 칸·모르는 칸은 읽은 그대로 둔다.
  */
 export class AgentSessionMap {
-  constructor(private readonly path: string, private readonly lock: FileLockOptions = SHORT_WRITE_LOCK) {}
+  constructor(private readonly files: AgentSessionFiles, private readonly lock: FileLockOptions = SHORT_WRITE_LOCK) {}
 
   /** 그 자리 — 파일이 없거나 깨졌으면 빈 자리(rev 0). 그 밖의 읽기 오류는 던진다(부른 쪽이 재개 없이 돈다). */
   async read(conversation: SessionConversation, agent: AgentId): Promise<AgentSessionSlot> {
-    return slotOf(slot(await this.readFile(), conversation, agent)?.[conversation.conversationUuid]);
+    return slotOf(slot(await this.readFile(this.fileOf(conversation)), conversation, agent)?.[conversation.conversationUuid]);
   }
 
   /**
@@ -59,11 +69,12 @@ export class AgentSessionMap {
    */
   async write(conversation: SessionConversation, agent: AgentId, expectedRev: number, next: AgentSessionWrite): Promise<"written" | "stale"> {
     const { conversationUuid } = conversation;
-    return await withFileLock(`${this.path}.lock`, this.lock, async () => {
-      const file = (await this.readFile()) ?? {};
+    const path = this.fileOf(conversation);
+    const room = conversation.kind === "ROOM";
+    return await withFileLock(`${path}.lock`, this.lock, async () => {
+      const file = (await this.readFile(path)) ?? {};
       if (slotOf(slot(file, conversation, agent)?.[conversationUuid]).rev !== expectedRev) return "stale";
-      const byConversation = conversation.kind === "ROOM" ? objectIn(objectIn(file, "rooms"), agent)
-        : agent === DEFAULT_AGENT ? objectIn(file, "conversations") : objectIn(objectIn(file, "byAgent"), agent);
+      const byConversation = !room && agent === DEFAULT_AGENT ? objectIn(file, "conversations") : objectIn(objectIn(file, "byAgent"), agent);
       if (next === undefined) {
         byConversation[conversationUuid] = { rev: expectedRev + 1 };   // 지운 자리 — 늦은 작성자가 옛 세대로 되살리지 못하게
       } else {
@@ -75,18 +86,26 @@ export class AgentSessionMap {
           rev: expectedRev + 1,
         };
       }
-      file.version = 2;
-      objectIn(file, "conversations");   // 옛 CLI 가 쓰던 꼴 그대로 — Claude Code 칸 묶음은 비어도 둔다
-      await writePrivateFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`);
+      if (room) {
+        file.version = 1;
+      } else {
+        file.version = 2;
+        objectIn(file, "conversations");   // 옛 CLI 가 쓰던 꼴 그대로 — Claude Code 칸 묶음은 비어도 둔다
+      }
+      await writePrivateFileAtomic(path, `${JSON.stringify(file, null, 2)}\n`);
       return "written";
     });
   }
 
+  private fileOf(conversation: SessionConversation): string {
+    return conversation.kind === "ROOM" ? this.files.room : this.files.connect;
+  }
+
   /** 읽은 파일 객체 — 없거나(ENOENT) 깨졌으면 undefined(다음 쓰기가 새로 쓴다). 그 밖의 읽기 오류(권한 등)는 던진다. */
-  private async readFile(): Promise<Record<string, unknown> | undefined> {
+  private async readFile(path: string): Promise<Record<string, unknown> | undefined> {
     let text: string;
     try {
-      text = await readFile(this.path, "utf8");
+      text = await readFile(path, "utf8");
     } catch (error) {
       if (isNodeError(error, "ENOENT")) return undefined;
       throw error;
@@ -124,11 +143,11 @@ export function agentOwner(endpoint: string, accessToken: string | undefined): s
   }
 }
 
-/** 그 대화 종류·Agent 의 칸 묶음 — Room 은 {@code rooms.<id>} · Connect 는 Claude Code 가 {@code conversations}, 다른 Agent 는 {@code byAgent.<id>}. */
+/** 그 파일 안의 그 Agent 칸 묶음 — Room 파일은 모두 {@code byAgent.<id>} · Connect 파일은 Claude Code 가 {@code conversations}, 다른 Agent 는 {@code byAgent.<id>}. */
 function slot(file: Record<string, unknown> | undefined, conversation: SessionConversation, agent: AgentId): Record<string, unknown> | undefined {
   if (!file || !(AGENT_IDS as readonly string[]).includes(agent)) return undefined;
-  const value = conversation.kind === "ROOM" ? (isObject(file.rooms) ? file.rooms[agent] : undefined)
-    : agent === DEFAULT_AGENT ? file.conversations : isObject(file.byAgent) ? file.byAgent[agent] : undefined;
+  const value = conversation.kind !== "ROOM" && agent === DEFAULT_AGENT ? file.conversations
+    : isObject(file.byAgent) ? file.byAgent[agent] : undefined;
   return isObject(value) ? value : undefined;
 }
 

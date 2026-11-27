@@ -80,7 +80,7 @@ describe("세션 값 — (대화, Agent) 마다 · 옛 파일과 같이 읽힌�
   it("옛 파일(conversations)은 Claude Code 세션으로 읽고, 다시 써도 그 칸은 그대로", async () => {
     const path = join(dir(), "sessions.json");
     writeFileSync(path, JSON.stringify({ version: 1, conversations: { "conv-a": { sessionId: "sess-1", updatedAt: "x" } } }));
-    const map = new AgentSessionMap(path);
+    const map = new AgentSessionMap({ connect: path, room: `${path}.room` });
     expect((await map.read({ conversationUuid: "conv-a" }, "claude-code")).entry?.sessionId).toBe("sess-1");
     expect((await map.read({ conversationUuid: "conv-a" }, "codex")).entry).toBeUndefined();
 
@@ -89,7 +89,7 @@ describe("세션 값 — (대화, Agent) 마다 · 옛 파일과 같이 읽힌�
     expect(file.conversations["conv-a"].sessionId).toBe("sess-1");
     expect(file.byAgent.codex["conv-a"].sessionId).toBe("thr-1");
 
-    const again = new AgentSessionMap(path);
+    const again = new AgentSessionMap({ connect: path, room: `${path}.room` });
     expect((await again.read({ conversationUuid: "conv-a" }, "codex")).entry?.sessionId).toBe("thr-1");
     expect(await again.write({ conversationUuid: "conv-a" }, "codex", 1, undefined)).toBe("written");
     expect((await again.read({ conversationUuid: "conv-a" }, "codex")).entry).toBeUndefined();
@@ -99,11 +99,11 @@ describe("세션 값 — (대화, Agent) 마다 · 옛 파일과 같이 읽힌�
   it("깨진 파일 · 모양이 다른 칸은 버리고 돈다", async () => {
     const path = join(dir(), "sessions.json");
     writeFileSync(path, "{not json");
-    const broken = new AgentSessionMap(path);
+    const broken = new AgentSessionMap({ connect: path, room: `${path}.room` });
     expect((await broken.read({ conversationUuid: "conv-a" }, "claude-code")).entry).toBeUndefined();
 
     writeFileSync(path, JSON.stringify({ conversations: { a: { sessionId: 3 }, b: "x" }, byAgent: { codex: { c: { sessionId: "thr" } }, other: {} } }));
-    const odd = new AgentSessionMap(path);
+    const odd = new AgentSessionMap({ connect: path, room: `${path}.room` });
     expect((await odd.read({ conversationUuid: "a" }, "claude-code")).entry).toBeUndefined();
     expect((await odd.read({ conversationUuid: "c" }, "codex")).entry?.sessionId).toBe("thr");
   });

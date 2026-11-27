@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { AGENT_OPEN_RULE, agentRoomRule, unreadLine } from "../src/core/agent/prompt";
 import { codexSpawned, finish, logRecords, spawned, startServe, until } from "./support/agentServeWorld";
 import { FakeTools } from "./support/fakeTools";
+import { LegacySessionMap0163 } from "./support/legacySessions0163";
+
+/** Room 세션 파일(room-sessions.json)의 Claude Code 칸 세션 id. */
+const roomSessionOf = (path: string, conversationUuid: string): string =>
+  (JSON.parse(readFileSync(path, "utf8")) as { byAgent: Record<string, Record<string, { sessionId: string }>> }).byAgent["claude-code"]![conversationUuid]!.sessionId;
 
 const jsonLines = (path: string): Array<Record<string, unknown>> =>
   existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>) : [];
@@ -130,11 +135,38 @@ describe("ainecto agent serve — Room 차례(R2-b)", () => {
     const runs = spawned(w);
     expect(runs[0]).not.toContain("--resume");                     // Room 첫 차례 — Connect 칸(sess-connect)을 잇지 않는다
     expect(runs[1]).toEqual(expect.arrayContaining(["--resume", "sess-connect"]));   // Connect 는 예전 칸 그대로
-    const file = JSON.parse(readFileSync(w.sessionsPath, "utf8")) as {
-      conversations: Record<string, { sessionId: string }>; rooms: Record<string, Record<string, { sessionId: string }>> };
-    const roomSession = file.rooms["claude-code"]!["same-uuid"]!.sessionId;
+    const file = JSON.parse(readFileSync(w.sessionsPath, "utf8")) as { conversations: Record<string, { sessionId: string }> };
+    const roomSession = roomSessionOf(w.roomSessionsPath, "same-uuid");
     expect(roomSession).not.toBe("sess-connect");
     expect(runs[2]).toEqual(expect.arrayContaining(["--resume", roomSession]));       // 다음 Room 차례는 Room 칸의 세션으로
     expect(file.conversations["same-uuid"]!.sessionId).toBe("sess-connect");
+    expect(Object.keys(file)).not.toContain("rooms");                                 // Room 은 sessions.json 에 없다
+  });
+
+  it("★옛 CLI(0.16.3)가 sessions.json 을 통째로 다시 써도 Room 세션은 남는다 — 같은 Room 은 원래 세션으로 재개 · 같은 UUID Connect 는 따로", async () => {
+    const w = startServe();
+    w.server.offerRoom("r1", "room-a", "요약", "라이언");
+    await until(() => w.server.replies()[0]);
+    w.server.offer("c1", "conv-b", "만들어");
+    await until(() => w.server.replies()[1]);
+    // 옛 판의 실제 저장 코드로 — 파일을 새로 읽어 무관한 Connect C 를 저장(두 묶음으로 통째로 다시 쓴다 · 재리뷰 r2 반례)
+    const legacy = new LegacySessionMap0163(w.sessionsPath);
+    await legacy.load();
+    await legacy.set("conv-c", "claude-code", "sess-legacy-c");
+    w.server.offerRoom("r2", "room-a", "하나 더", "라이언");
+    await until(() => w.server.replies()[2]);
+    w.server.offer("c2", "room-a", "같은 UUID 의 Connect");
+    await until(() => w.server.replies()[3]);
+    await finish(w);
+
+    const runs = spawned(w);
+    const roomSession = roomSessionOf(w.roomSessionsPath, "room-a");
+    expect(runs[2]).toEqual(expect.arrayContaining(["--read-only", "--resume", roomSession]));   // 원래 Room 세션으로
+    expect(runs[3]).not.toContain("--resume");                                                   // 같은 UUID Connect 는 새 세션
+    expect(runs[3]).not.toContain("--read-only");
+    const file = JSON.parse(readFileSync(w.sessionsPath, "utf8")) as { conversations: Record<string, { sessionId: string }> };
+    expect(file.conversations["conv-b"]).toBeDefined();                                          // 옛 판이 남긴 Connect 칸도 그대로
+    expect(file.conversations["conv-c"]!.sessionId).toBe("sess-legacy-c");
+    expect(file.conversations["room-a"]!.sessionId).not.toBe(roomSession);
   });
 });

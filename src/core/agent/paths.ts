@@ -8,8 +8,10 @@ export interface AgentPaths {
   work: string;
   /** Antigravity 세션 폴더들의 부모 — 연결 이름마다 한 폴더(그 안엔 우리 {@code .agents/mcp_config.json} 하나만 · 설계 r3). */
   antigravity: string;
-  /** (대화 uuid, Agent) → 세션 값(Claude session_id · Codex threadId). 대화가 바뀌면 재개. */
+  /** Connect 대화의 (대화 uuid, Agent) → 세션 값(Claude session_id · Codex threadId). 대화가 바뀌면 재개. 옛 CLI 와 함께 쓴다. */
   sessions: string;
+  /** Room 대화의 세션 값 — ★옛 CLI 가 통째로 다시 쓰는 {@code sessions.json} 바깥(sessions.AgentSessionMap · 재리뷰 r2 P0). */
+  roomSessions: string;
   /** 이 PC 가 돌던 자동 실행 카드(수락 뒤 끊기면 다음에 켤 때 이어 간다 — runs.ts). */
   runs: string;
   /** JSON 한 줄 로그. */
@@ -24,6 +26,7 @@ export function agentPaths(home: string = homedir()): AgentPaths {
     work: join(dir, "work"),
     antigravity: join(dir, "antigravity"),
     sessions: join(dir, "sessions.json"),
+    roomSessions: join(dir, "room-sessions.json"),
     runs: join(dir, "runs.json"),
     log: join(dir, "agent.log"),
     previousLog: join(dir, "agent.log.1"),

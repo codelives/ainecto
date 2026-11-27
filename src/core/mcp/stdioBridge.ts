@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import { isReadOnlyToolIn, readOnlyToolsResult } from "./readOnlyTools";
+import { isReadOnlyToolNow, readOnlyToolsResult } from "./readOnlyTools";
 import { McpRpcClient, McpRpcError, RateLimitedError, type JsonRpcFailure, type JsonRpcRequest, type JsonRpcResponse } from "./rpcClient";
 
 export interface StdioBridgeOptions {
@@ -10,7 +10,7 @@ export interface StdioBridgeOptions {
   client: McpRpcClient;
   /**
    * ★읽기만 세션(Room 차례 — serve 가 브리지를 {@code --read-only} 로 띄운다) — 세 엔진 공통 보장은 여기 한 곳이다.
-   * tools/list 는 읽기 도구(서버 {@code readOnlyHint === true})만 보이고, tools/call 은 부를 때마다 ★지금 서버 목록을 다시 읽어
+   * tools/list 는 읽기 도구(서버 {@code readOnlyHint === true})만 보이고, tools/call 은 부를 때마다 ★지금 서버 목록을 다시 읽어(그 이름까지 쪽을 따라간다)
    * 그 이름이 읽기 도구일 때만 서버로 보낸다(표시 없음 = 쓰기 = 막음 · 목록을 못 읽으면 보내지 않는다). 엔진별 인자는 겉옷이다.
    */
   readOnly?: boolean;
@@ -38,7 +38,8 @@ export async function runStdioBridge(options: StdioBridgeOptions): Promise<void>
       }
       if (options.readOnly && request.method === "tools/call") {
         const name = toolNameOf(request.params);
-        if (!isReadOnlyToolIn(await options.client.request("tools/list", {}), name)) {
+        const listPage = (cursor: string | undefined) => options.client.request("tools/list", cursor === undefined ? {} : { cursor });
+        if (!await isReadOnlyToolNow(listPage, name)) {
           // 서버에 보내지 않는다 — 호스트에는 «이 세션에 없는 도구»(MCP 규격의 모르는 도구 = invalid params) · 오류 출력에 한 줄.
           options.errorOutput.write(`read-only session refused tools/call ${JSON.stringify(name)}\n`);
           if (request.id !== undefined) writeLine(options.output, readOnlyRefusal(request.id, name));

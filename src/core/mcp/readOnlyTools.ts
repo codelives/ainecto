@@ -14,9 +14,25 @@ export function readOnlyToolsResult(result: unknown): Record<string, unknown> & 
   return { ...base, tools: Array.isArray(base.tools) ? base.tools.filter(isReadOnlyTool) : [] };
 }
 
-/** tools/list 결과에서 이 이름이 읽기 도구인가 — 없거나 표시가 없으면 아니다. */
-export function isReadOnlyToolIn(result: unknown, name: string): boolean {
-  return readOnlyToolsResult(result).tools.some((tool) => isRecord(tool) && tool.name === name);
+/**
+ * ★지금 서버 목록에서 이 이름이 읽기 도구인가 — 그 이름을 찾거나 마지막 쪽에 이를 때까지 {@code nextCursor} 를 따라간다(MCP 목록 쪽 나눔 ·
+ * 재리뷰 r2 P1). 찾은 도구는 그 표시대로, 끝까지 없으면 아니다. 같은 커서가 다시 오면(서버 고장) 거기서 멈추고 아니다. 목록 읽기 실패는 던진다
+ * (부른 쪽이 막는다).
+ * @param page 그 커서의 tools/list 결과(첫 쪽은 undefined)
+ */
+export async function isReadOnlyToolNow(page: (cursor: string | undefined) => Promise<unknown>, name: string): Promise<boolean> {
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  for (;;) {
+    const result = await page(cursor);
+    const tools = isRecord(result) && Array.isArray(result.tools) ? result.tools : [];
+    const found = tools.find((tool) => isRecord(tool) && tool.name === name);
+    if (found !== undefined) return isReadOnlyTool(found);
+    const next = isRecord(result) && typeof result.nextCursor === "string" && result.nextCursor !== "" ? result.nextCursor : undefined;
+    if (next === undefined || seen.has(next)) return false;
+    seen.add(next);
+    cursor = next;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

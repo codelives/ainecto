@@ -195,6 +195,8 @@ export interface World {
   agyArgsLog: string;
   logPath: string;
   sessionsPath: string;
+  /** Room 대화의 세션 파일(room-sessions.json 자리). */
+  roomSessionsPath: string;
   /** serve 가 사람에게 쓴 줄(시작 줄 등). */
   printed: string[];
   /** 이 PC 가 돌던 카드(runs.json) — 할 일을 받을 때만 쓴다. */
@@ -253,6 +255,7 @@ export function startServe(options: WorldOptions = {}): World {
   const agyArgsLog = join(dir, "agy-args.jsonl");
   const logPath = join(dir, "agent.log");
   const sessionsPath = join(dir, "sessions.json");
+  const roomSessionsPath = join(dir, "room-sessions.json");
   const runsPath = join(dir, "runs.json");
   if (options.runsFile !== undefined) writeFileSync(runsPath, options.runsFile);
   if (options.sessionsFile) writeFileSync(sessionsPath, JSON.stringify(options.sessionsFile));
@@ -286,7 +289,7 @@ export function startServe(options: WorldOptions = {}): World {
   ];
   const installed = options.installed ?? ["claude-code"];
   const adapters = new Map(all.filter((a) => installed.includes(a.id)).map((a) => [a.id, a] as const));
-  const sessions = new AgentSessionMap(sessionsPath);
+  const sessions = new AgentSessionMap({ connect: sessionsPath, room: roomSessionsPath });
   const printed: string[] = [];
   const busy: { probe: () => boolean } = { probe: () => false };
   const done = Promise.resolve().then(() => runAgentServe({
@@ -308,7 +311,7 @@ export function startServe(options: WorldOptions = {}): World {
     turnTimeoutMs: options.turnTimeoutMs,
     todos: options.todos ? { ...options.todos, runs: new AgentRunLog(runsPath, log) } : undefined,
   }));
-  return { server, stop, done, argsLog, codexArgsLog, agyArgsLog, logPath, sessionsPath, printed, runsPath, busy: () => busy.probe() };
+  return { server, stop, done, argsLog, codexArgsLog, agyArgsLog, logPath, sessionsPath, roomSessionsPath, printed, runsPath, busy: () => busy.probe() };
 }
 
 export async function until<T>(read: () => T | undefined, ms = 10_000): Promise<T> {

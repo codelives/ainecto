@@ -145,7 +145,7 @@ export async function executeAgentServe(input: {
     }
     const adapters = new Map<AgentId, AgentAdapter>(all.filter((adapter) => agents.some((a) => a.id === adapter.id))
       .map((adapter) => [adapter.id, adapter]));
-    const sessions = new AgentSessionMap(paths.sessions);
+    const sessions = new AgentSessionMap({ connect: paths.sessions, room: paths.roomSessions });
     // ★pc 프로세스 = Agent + 원격 다리(KAN-738 next.10) — Agent 가 끝나도 원격은 계속, Agent 가 시작부터 던지면 다리도 멈춘다(runPcParts).
     const agent = runAgentServe({
       http: createAgentHttp({ endpoint: input.endpoint, tokenProvider: input.auth, log }),

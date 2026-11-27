@@ -205,6 +205,56 @@ describe("stdio bridge — read-only session (project room)", () => {
     expect(answers[0]!.error).toBeDefined();
   });
 
+  /** 쪽 나눈 목록(MCP 규약) — 쪽마다 tools + nextCursor. 실패할 커서·되풀이 커서를 줄 수 있다. */
+  const pagedServer = (pages: Record<string, { tools: unknown[]; nextCursor?: string } | "fail">) => {
+    const handled: string[] = [];
+    const cursors: Array<string | undefined> = [];
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { id: number; method: string; params?: { name?: string; cursor?: string } };
+      if (body.method === "tools/list") {
+        cursors.push(body.params?.cursor);
+        const page = pages[body.params?.cursor ?? ""];
+        if (page === undefined || page === "fail") return new Response("upstream down", { status: 503 });
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: page }));
+      }
+      if (body.method === "tools/call") handled.push(String(body.params?.name));
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "ok" }] } }));
+    });
+    return { client: new McpRpcClient({ endpoint: "https://dev.ainecto.com/mcp", fetchImpl, channel: "mcp" }), handled, cursors };
+  };
+
+  it("★Room: 목록 둘째 쪽의 읽기 도구도 부른다 — 그 이름까지 nextCursor 를 따라간다 · 둘째 쪽의 쓰기·끝까지 없는 이름은 막는다(재리뷰 r2 P1)", async () => {
+    const server = pagedServer({
+      "": { tools: [{ name: "search", annotations: { readOnlyHint: true } }], nextCursor: "p2" },
+      p2: { tools: [{ name: "execute_read", annotations: { readOnlyHint: true } }, { name: "execute_edit", annotations: { readOnlyHint: false } }] },
+    });
+    const answers = await run(server.client, true, [
+      { jsonrpc: "2.0", id: 1, method: "tools/list", params: { cursor: "p2" } },
+      call(2, "execute_read"),
+      call(3, "execute_edit"),
+      call(4, "nowhere"),
+      call(5, "search"),
+    ]);
+    expect(answers[0]!.result!.tools!.map((t) => t.name)).toEqual(["execute_read"]);
+    expect(answers.map((a) => a.error?.code ?? "ok")).toEqual(["ok", "ok", -32602, -32602, "ok"]);
+    expect(server.handled).toEqual(["execute_read", "search"]);
+    // 호스트의 목록(p2) · execute_read(첫 쪽 → p2) · execute_edit(첫 쪽 → p2) · nowhere(첫 쪽 → p2) · search(첫 쪽에서 찾음)
+    expect(server.cursors).toEqual(["p2", undefined, "p2", undefined, "p2", undefined, "p2", undefined]);
+  });
+
+  it("Room: 다음 쪽을 못 읽거나 같은 커서가 되풀이되면 보내지 않는다", async () => {
+    const failing = pagedServer({ "": { tools: [], nextCursor: "p2" }, p2: "fail" });
+    const failed = await run(failing.client, true, [call(1, "execute_read")]);
+    expect(failed[0]!.error).toBeDefined();
+    expect(failing.handled).toEqual([]);
+
+    const looping = pagedServer({ "": { tools: [], nextCursor: "p2" }, p2: { tools: [], nextCursor: "p2" } });
+    const looped = await run(looping.client, true, [call(1, "execute_read")]);
+    expect(looped[0]!.error?.code).toBe(-32602);
+    expect(looping.handled).toEqual([]);
+    expect(looping.cursors).toEqual([undefined, "p2"]);
+  });
+
   it("Connect(읽기만 아님)는 예전 그대로 — 목록은 거르지 않고 쓰기 호출도 서버로, 호출 전 목록 조회도 없다", async () => {
     const server = fakeServer(SERVER_TOOLS());
     const answers = await run(server.client, false, [

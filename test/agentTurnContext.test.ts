@@ -236,8 +236,8 @@ describe("sessions.json 칸 — 잠금 안 CAS(rev)", () => {
     const p = path();
     writeFileSync(p, JSON.stringify({ version: 2, extra: { keep: true }, conversations: { "conv-b": { sessionId: "sess-b", updatedAt: "x" } },
       byAgent: { codex: { "conv-a": { sessionId: "S", cursor: "10", owner: OWNER, rev: 1 } } } }));
-    const a = new AgentSessionMap(p);
-    const b = new AgentSessionMap(p);
+    const a = new AgentSessionMap({ connect: p, room: `${p}.room` });
+    const b = new AgentSessionMap({ connect: p, room: `${p}.room` });
     const seenA = await a.read({ conversationUuid: "conv-a" }, "codex");
     const seenB = await b.read({ conversationUuid: "conv-a" }, "codex");
     expect(seenA).toEqual({ entry: { sessionId: "S", cursor: "10", owner: OWNER }, rev: 1 });
@@ -253,8 +253,8 @@ describe("sessions.json 칸 — 잠금 안 CAS(rev)", () => {
   it("★지워도 세대가 남는다 — 옛 칸(rev 1)을 읽은 늦은 작성자는 지운 뒤 새로 쓴 칸(rev 1 아님)을 덮지도 지우지도 못한다(코드 리뷰 C2 P1-2)", async () => {
     const p = path();
     writeFileSync(p, JSON.stringify({ version: 2, conversations: { "conv-a": { sessionId: "OLD", cursor: "10", owner: OWNER, rev: 1 } } }));
-    const late = new AgentSessionMap(p);
-    const other = new AgentSessionMap(p);
+    const late = new AgentSessionMap({ connect: p, room: `${p}.room` });
+    const other = new AgentSessionMap({ connect: p, room: `${p}.room` });
     const seenLate = await late.read({ conversationUuid: "conv-a" }, "claude-code");
     expect(await other.write({ conversationUuid: "conv-a" }, "claude-code", 1, undefined)).toBe("written");
     expect(await other.read({ conversationUuid: "conv-a" }, "claude-code")).toEqual({ rev: 2 });
@@ -270,14 +270,14 @@ describe("sessions.json 칸 — 잠금 안 CAS(rev)", () => {
     writeFileSync(p, original);
     chmodSync(p, 0o000);
     try {
-      const map = new AgentSessionMap(p);
+      const map = new AgentSessionMap({ connect: p, room: `${p}.room` });
       await expect(map.read({ conversationUuid: "conv-new" }, "claude-code")).rejects.toThrow();
       await expect(map.write({ conversationUuid: "conv-new" }, "claude-code", 0, { sessionId: "S" })).rejects.toThrow();
     } finally {
       chmodSync(p, 0o600);
     }
     expect(readFileSync(p, "utf8")).toBe(original);
-    expect(await new AgentSessionMap(join(p, "..", "missing.json")).read({ conversationUuid: "c" }, "claude-code")).toEqual({ rev: 0 });
+    expect(await new AgentSessionMap({ connect: join(p, "..", "missing.json"), room: join(p, "..", "missing-room.json") }).read({ conversationUuid: "c" }, "claude-code")).toEqual({ rev: 0 });
   });
 });
 
