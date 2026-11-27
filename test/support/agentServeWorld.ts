@@ -259,9 +259,10 @@ export function startServe(options: WorldOptions = {}): World {
     // 가짜 Agent 가 받은 인자 = 브리지 이름(할 일 차례만) + 재개 값 — 시험이 «누구로 붙었나»를 본다.
     claudeCodeAdapter({ ...shared, args: ({ resumeSessionId, agentName }) =>
       [...(agentName ? ["--agent", agentName] : []), ...(resumeSessionId ? ["--resume", resumeSessionId] : [])] }),
-    // 실제 고정 설정 그대로(브리지 이름 포함 — 가짜 Codex 가 진짜처럼 사용자 설정과 합친다, KAN-1617).
-    codexAdapter({ ...shared, appServerArgs: (agentName) => [...codexAppServerArgs(ainectoBridge("node", "/x/ainecto.js", "https://dev.ainecto.com/mcp"), []),
-      ...(agentName ? ["--agent", agentName] : [])], clientVersion: "0.0.0" }),
+    // 운영(agentCommand)과 같은 인자 — 할 일 차례의 이름은 브리지 인자 안 «--agent»(Codex 명령 끝에 붙이면 실제 codex 0.171.0 이 거절한다).
+    // 가짜 Codex 가 진짜처럼 사용자 설정과 합친다(KAN-1617).
+    codexAdapter({ ...shared, appServerArgs: (agentName) =>
+      codexAppServerArgs(ainectoBridge("node", "/x/ainecto.js", "https://dev.ainecto.com/mcp", agentName), []), clientVersion: "0.0.0" }),
     antigravityAdapter({ spawnImpl: options.unkillableAgy ? unkillableAgySpawn(options.unkillableAgy) : fakeSpawn, env: shared.env, home: join(dir, "home"), log, writeTools: WRITE_TOOLS,
       tools: [...WRITE_TOOLS, "search"].map((name) => ({ name })), workDir: (name) => join(dir, "app", "antigravity", name ?? "chat"),
       mcpConfig: () => ({ mcpServers: { "ainecto-pc": { command: "node", args: [] } } }), schema: agentReplySchema }),

@@ -194,12 +194,13 @@ describe("PC Agent Codex 승인 — 공개면 8개", () => {
     const args = codexAppServerArgs({ command: "ainecto-mcp", args: [] }, writeToolNames(eight));
     const approvals = args.filter((arg) => arg.endsWith('.approval_mode="approve"'));
 
+    // 승인 키는 Codex 브리지 이름(ainecto_cli — KAN-1617) 아래.
     expect(approvals).toEqual([
-      'mcp_servers.ainecto.tools.execute_access.approval_mode="approve"',
-      'mcp_servers.ainecto.tools.execute_collaborate.approval_mode="approve"',
-      'mcp_servers.ainecto.tools.execute_edit.approval_mode="approve"',
-      'mcp_servers.ainecto.tools.execute_publish.approval_mode="approve"',
-      'mcp_servers.ainecto.tools.execute_replace_remove.approval_mode="approve"',
+      'mcp_servers.ainecto_cli.tools.execute_access.approval_mode="approve"',
+      'mcp_servers.ainecto_cli.tools.execute_collaborate.approval_mode="approve"',
+      'mcp_servers.ainecto_cli.tools.execute_edit.approval_mode="approve"',
+      'mcp_servers.ainecto_cli.tools.execute_publish.approval_mode="approve"',
+      'mcp_servers.ainecto_cli.tools.execute_replace_remove.approval_mode="approve"',
     ]);
   });
 });

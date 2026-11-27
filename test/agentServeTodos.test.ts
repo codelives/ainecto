@@ -270,7 +270,10 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     expect([...asOf(CARD)]).toEqual(["claude-code/tester"]);
     expect([...asOf(CARD_B)]).toEqual(["codex/codex"]);
     expect(spawned(w)).toEqual([["--agent", "tester"]]);
-    expect(codexSpawned(w)).toEqual([["app-server", "--agent", "codex"]]);
+    // Codex 의 신원은 브리지 인자 배열 안(운영 ainectoBridge 와 같다) — 명령 끝에 «--agent» 를 붙이지 않는다.
+    expect(codexSpawned(w)).toHaveLength(1);
+    expect(codexSpawned(w)[0]).toContain('mcp_servers.ainecto_cli.args=["/x/ainecto.js","--endpoint","https://dev.ainecto.com/mcp","mcp","--agent","codex"]');
+    expect(codexSpawned(w)[0]).not.toContain("--agent");
     expect(String(named(tools, "send_auto_run_message").find((c) => c.args.cardUuid === CARD_B && String(c.args.body).startsWith("got "))
       ?.args.body)).toMatch(/^got \[AiNecto auto-run\] /);
   });

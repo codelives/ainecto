@@ -144,6 +144,7 @@ export const AINECTO_MCP_SERVER = "ainecto";
  * {@code [mcp_servers.ainecto] url} 과 같은 이름이면 Codex 가 {@code -c} 를 깊게 합쳐 url·command 가 한 항목에 생기고
  * «url is not supported for stdio» 로 거절한다(표 통째로 줘도 같음 — 실측 codex 0.171.0, 증적 .role/claude-dev/evidence/kan1617/).
  * 사용자 {@code ainecto} 는 대화 안에서 다른 서버처럼 끈다({@link ./codexArgs codexOtherMcpServersOff}).
+ * 한계: 사용자가 ainecto_cli 를 이미 쓰면 충돌 — 드묾, 이름을 바꾸면 된다(리뷰 r1 P0-1 · 루트 판정 한계).
  */
 export const AINECTO_CODEX_MCP_SERVER = "ainecto_cli";
 
