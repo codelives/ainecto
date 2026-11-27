@@ -1,37 +1,14 @@
-import { spawn } from "node:child_process";
-import { existsSync, lstatSync, readlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
-import { cli, daemonPids, holderPids, json, LONG, ok, rig, sleep, TSX, until, useTermRig } from "./termRig";
+import { cli, daemonPids, holderPids, json, LONG, ok, rig, sleep, startOuterAt as startOuter, until, useTermRig } from "./termRig";
 
 /**
  * 바깥 넘기기(세션 유지 구조 설계 3-4 · 단위 U2) — ★핵심 인수: 바깥 N → N+1 뒤 PTY PID·화면·uuid 그대로 · 구판 CLI kill-server 거절.
  * 진짜 바깥 두 벌(같은 소스 · 판만 파일로 다르게 — fixtures/termAt.ts)·진짜 holder·진짜 PTY. 세션은 보통 CLI(`ainecto term …`)로 만든다.
  */
 useTermRig();
-
-const AT = join(__dirname, "fixtures/termAt.ts");
-
-/** 판 `version` 의 바깥을 띄우고 준비 한 줄과 pid 를 받는다. */
-async function startOuter(version: string): Promise<{ status: string; pid: number }> {
-  writeFileSync(join(rig.home, "term-version"), `${version}\n`);
-  const child = spawn(process.execPath, ["--import", TSX, `--conditions=${rig.marker}`, AT, "term", "daemon", "--ready-fd", "3"], {
-    cwd: rig.home, env: rig.env, stdio: ["ignore", "ignore", "pipe", "pipe"], detached: true,
-  });
-  let stderr = "";
-  child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-  const line = await new Promise<string>((resolve, reject) => {
-    let text = "";
-    child.stdio[3]!.on("data", (chunk: Buffer) => {
-      text += chunk.toString("utf8");
-      if (text.includes("\n")) resolve(text.split("\n")[0]!);
-    });
-    child.once("exit", (code) => reject(new Error(`outer ${version} exited ${code} before ready: ${stderr}`)));
-  });
-  child.unref();
-  return { ...(JSON.parse(line) as { status: string }), pid: child.pid! };
-}
 
 const alive = (pid: number): boolean => {
   try {

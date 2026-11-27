@@ -88,3 +88,22 @@ export function outerCaps(data: unknown): OuterCaps | undefined {
       talk: talk as Record<string, string[]> }
     : undefined;
 }
+
+/** 이 판(a)이 다른 판(b)보다 높은가 — `x.y.z` 셋을 숫자로 견준다. 어느 쪽이든 그 모양이 아니면(로컬 «dev») 거짓 — 넘기지 않는다. 순수 함수. */
+export function newerVersion(a: string, b: string): boolean {
+  const parse = (value: string): number[] | undefined => {
+    const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value);
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
+  };
+  const [left, right] = [parse(a), parse(b)];
+  if (!left || !right) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index]! > right[index]!;
+  }
+  return false;
+}
+
+/** holder 말이 이 CLI 의 말보다 모자란가 — 이 CLI 가 아는 op·칸 가운데 holder 가 모르는 것이 하나라도 있으면(설계 3-6 holder 갈기의 조건). 순수 함수. */
+export function talkLacking(holder: Readonly<Record<string, readonly string[]>>, cli: Readonly<Record<string, readonly string[]>> = HOLDER_TALK): boolean {
+  return Object.entries(cli).some(([op, fields]) => holder[op] === undefined || fields.some((field) => !holder[op]!.includes(field)));
+}

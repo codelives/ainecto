@@ -2,7 +2,8 @@ import { AGENT_CALL_TIMEOUT_MS, AGENT_STOP_WAIT_MS } from "../agent/limits";
 import { AGENT_MISSING_LINE, SERVE_CONNECTED_PREFIX, SERVE_RECONNECTED_LINE } from "../agent/serve";
 import { NO_AGENTS_REASON, type LastUpgrade } from "../agent/log";
 import { ERROR_LINE_PREFIX } from "../output/render";
-import type { ListedSession } from "../term/protocol";
+import { newerVersion, talkLacking, type OuterCaps } from "../term/holderTalk";
+import type { ListedSession, SessionKind } from "../term/protocol";
 import { CALL_TIMEOUT_MS } from "../term/remoteLimits";
 import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../term/remote";
 import { bridgePackageSpec, CLI_VERSION, PACKAGE_NAME } from "../version";
@@ -97,25 +98,40 @@ export function pcAction(running: readonly RunningPc[], cliVersion: string): PcA
   return { kind: "replace", pcs: [...running] };
 }
 
-export type DaemonUpgrade = { kind: "keep" } | { kind: "restart" } | { kind: "ask"; sessions: string[] };
+export type DaemonPlan =
+  | { kind: "keep" }
+  /** 새 구조 · 바깥이 이 CLI 보다 낮은 판 — 새 바깥을 띄워 넘겨받는다(세션은 닫히지 않는다 · 묻지 않는다). */
+  | { kind: "handover" }
+  /** 새 구조 · holder 말이 이 CLI 보다 모자라고 사용자 세션 0 — holder 를 갈아 끼운다(PC 연결 세션째 · 다음 시작이 새 판). */
+  | { kind: "retire"; holder: string }
+  /** 옛 구조(0.16.x 데몬) — 첫 전환. 세션이 있으면 한 번 묻는다(모두 닫힌다 — 종류로 가려내지 않는다). */
+  | { kind: "switch"; sessions: Array<{ name: string; kind?: SessionKind }> };
 
 /**
- * term 데몬 판 판정(KAN-1348 · 11-23 Ryan 운영 시험) — 옛 판 데몬은 새 요청 칸(프로젝트 묶음 등)을 모르고 버린다.
- * 데몬은 세션이 하나라도 있으면 끝나지 않아, PC 연결 세션만 갈아끼우면 11-17 데몬이 계속 남았다.
- * 같은 판·판 모름·이 CLI 가 터미널 세션 안에서 돌고 있음(내리면 자기 셸이 죽는다) → keep.
- * 사용자 세션(PC 연결 세션 말고)이 0 → restart(잃을 것 없음). 있으면 ask(내리면 그 세션들이 끝난다).
+ * term 데몬 판정(세션 유지 구조 설계 3-4·3-6·5절) — 무엇이 떠 있는지는 살아 있는 바깥의 기능 묻기로 안다(G4 — 남은 파일로 짐작하지 않는다).
+ *   새 구조: holder 말 모자람 + 사용자 세션(종류 user — 비면 user) 0 → retire · 그 밖에 바깥이 낮은 판 → handover · 아니면 keep.
+ *            넘기기는 세션을 닫지 않아 터미널 세션 안에서도 한다. retire 는 터미널 세션 안에서는 하지 않는다.
+ *   옛 구조: 터미널 세션 안 → keep(끄면 자기 셸이 죽는다) · 그 밖 → switch(모든 세션 이름 — PC 연결 세션 포함).
+ * 순수 함수.
  */
-export function daemonUpgrade(
-  daemonVersion: string | undefined,
-  cliVersion: string,
-  sessions: ReadonlyArray<Pick<ListedSession, "name" | "command" | "kind">>,
-  insideTermSession: boolean,
-): DaemonUpgrade {
-  if (daemonVersion === undefined || daemonVersion === cliVersion || insideTermSession) {
-    return { kind: "keep" };
+export function daemonPlan(input: {
+  /** 새 구조면 바깥의 기능 묻기 답 · 옛 구조(기능 묻기에 답하지 않음)면 "old". */
+  structure: OuterCaps | "old";
+  cliVersion: string;
+  sessions: ReadonlyArray<Pick<ListedSession, "name" | "kind">>;
+  insideTermSession: boolean;
+  /** 이 CLI 의 holder 말(시험이 바꿔 끼운다). */
+  cliTalk?: Readonly<Record<string, readonly string[]>>;
+}): DaemonPlan {
+  const { structure, sessions, insideTermSession } = input;
+  if (structure === "old") {
+    return insideTermSession ? { kind: "keep" } : { kind: "switch", sessions: sessions.map(({ name, kind }) => ({ name, ...(kind ? { kind } : {}) })) };
   }
-  const user = sessions.filter((session) => bridgeKind(session) !== "pc-bridge").map((session) => session.name);
-  return user.length === 0 ? { kind: "restart" } : { kind: "ask", sessions: user };
+  const users = sessions.filter((session) => (session.kind ?? "user") === "user");
+  if (!insideTermSession && users.length === 0 && talkLacking(structure.talk, input.cliTalk)) {
+    return { kind: "retire", holder: structure.holder };
+  }
+  return newerVersion(input.cliVersion, structure.version) ? { kind: "handover" } : { kind: "keep" };
 }
 
 /**

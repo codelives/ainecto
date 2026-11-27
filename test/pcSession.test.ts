@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runAinectoCli } from "../src/adapters/cli/ainectoCli";
 import {
-  daemonUpgrade,
+  daemonPlan,
   npxCliCommand,
   pcAction,
   pcOutcome,
@@ -17,6 +17,7 @@ import {
   remoteOffByWeb,
   runningPcs,
 } from "../src/core/pc/pcSession";
+import { HOLDER_TALK } from "../src/core/term/holderTalk";
 import { REMOTE_OFF_BY_WEB_LINE, REMOTE_STATE_PREFIX } from "../src/core/term/remote";
 import { agentMissing, lastServeStop } from "../src/core/agent/log";
 import { AGENT_MISSING_LINE } from "../src/core/agent/serve";
@@ -187,25 +188,35 @@ describe("CLI 입구 — 인자 없음·start·agent serve", () => {
   });
 });
 
-describe("daemonUpgrade — 옛 판 term 데몬 교체 판정(KAN-1348 · 11-23 Ryan 운영 시험)", () => {
-  const pc = { name: "ainecto-pc", command: ["npx", "-y", "--package", "@ainecto/mcp@0.15.3", "ainecto", "pc", "run"] };
-  const shell = { name: "work", command: ["/bin/zsh"] };
+describe("daemonPlan — term 데몬을 이 판으로(세션 유지 구조 3-4·3-6·5절)", () => {
+  const caps = (version: string, talk: Record<string, string[]> = { ...HOLDER_TALK } as Record<string, string[]>) =>
+    ({ outer: "o", version, holder: "h", holderVersion: version, holderPid: 1, talk });
+  const pc = { name: "ainecto-pc", kind: "pc-bridge" as const };
+  const shell = { name: "work", kind: "user" as const };
+  const plan = (structure: ReturnType<typeof caps> | "old", sessions: Array<{ name: string; kind?: "user" | "pc-bridge" }>, inside = false) =>
+    daemonPlan({ structure, cliVersion: "0.16.8", sessions, insideTermSession: inside });
 
-  it("같은 판 · 판 모름 → keep", () => {
-    expect(daemonUpgrade("0.15.4", "0.15.4", [pc, shell], false)).toEqual({ kind: "keep" });
-    expect(daemonUpgrade(undefined, "0.15.4", [pc], false)).toEqual({ kind: "keep" });
+  it("새 구조: 바깥이 낮은 판 → handover(사용자 세션이 있어도 · 터미널 세션 안에서도 — 닫히지 않는다) · 같은/높은 판·판 모름 → keep", () => {
+    expect(plan(caps("0.16.7"), [pc, shell])).toEqual({ kind: "handover" });
+    expect(plan(caps("0.16.7"), [pc, shell], true)).toEqual({ kind: "handover" });
+    expect(plan(caps("0.16.8"), [pc, shell])).toEqual({ kind: "keep" });
+    expect(plan(caps("0.16.9"), [shell])).toEqual({ kind: "keep" });
+    expect(plan(caps("dev"), [shell])).toEqual({ kind: "keep" });
   });
 
-  it("옛 판 + PC 연결 세션뿐 → restart(잃을 사용자 세션 없음)", () => {
-    expect(daemonUpgrade("0.14.0-next.9.1", "0.15.4", [pc], false)).toEqual({ kind: "restart" });
-    expect(daemonUpgrade("0.14.0-next.9.1", "0.15.4", [], false)).toEqual({ kind: "restart" });
+  it("새 구조: holder 말이 모자람 + 사용자 세션 0 → retire(그 holder) · 사용자 세션이 있거나(종류 비면 user) 터미널 세션 안이면 retire 하지 않음", () => {
+    const older = caps("0.16.7", { ...HOLDER_TALK, retire: [] } as Record<string, string[]>);   // retire 의 holder 칸을 모르는 holder
+    expect(plan(older, [pc])).toEqual({ kind: "retire", holder: "h" });
+    expect(plan(older, [])).toEqual({ kind: "retire", holder: "h" });
+    expect(plan(older, [pc, shell])).toEqual({ kind: "handover" });
+    expect(plan(older, [pc, { name: "no-kind" }])).toEqual({ kind: "handover" });
+    expect(plan(older, [pc], true)).toEqual({ kind: "handover" });
   });
 
-  it("옛 판 + 사용자 세션 → ask(그 이름들)", () => {
-    expect(daemonUpgrade("0.14.0-next.9.1", "0.15.4", [pc, shell], false)).toEqual({ kind: "ask", sessions: ["work"] });
-  });
-
-  it("터미널 세션 안에서 실행 → keep(내리면 자기 셸이 죽는다)", () => {
-    expect(daemonUpgrade("0.14.0-next.9.1", "0.15.4", [pc], true)).toEqual({ kind: "keep" });
+  it("옛 구조: 모든 세션(PC 연결 세션 포함 · 종류로 가려내지 않는다)으로 switch · 세션 0 도 switch · 터미널 세션 안 → keep", () => {
+    expect(plan("old", [pc, shell, { name: "old-cli" }])).toEqual({ kind: "switch",
+      sessions: [{ name: "ainecto-pc", kind: "pc-bridge" }, { name: "work", kind: "user" }, { name: "old-cli" }] });
+    expect(plan("old", [])).toEqual({ kind: "switch", sessions: [] });
+    expect(plan("old", [shell], true)).toEqual({ kind: "keep" });
   });
 });

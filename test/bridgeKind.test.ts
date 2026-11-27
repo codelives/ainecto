@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { startPcSession, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
 import { bridgeKind, PC_SESSION_NAME } from "../src/core/pc/bridgeKind";
-import { daemonUpgrade, runningPcs } from "../src/core/pc/pcSession";
+import { runningPcs } from "../src/core/pc/pcSession";
 import { termPaths } from "../src/core/term/paths";
 import { waitForMatch } from "../src/core/term/wait";
 import { json, LONG, ok, rig, useTermRig } from "./termRig";
@@ -27,12 +27,11 @@ describe("bridgeKind — 종류 판정 한 곳", () => {
     expect(bridgeKind({ name: PC_SESSION_NAME, command: ["/bin/zsh"] })).toBe("user");
   });
 
-  it("runningPcs·daemonUpgrade 가 같은 판정 — 사용자 `pc run` 작업을 PC 연결로 세지 않는다(stopPc 가 끄지 않는다)", () => {
+  it("runningPcs — 사용자 `pc run` 작업을 PC 연결로 세지 않는다(stopPc 가 끄지 않는다)", () => {
     const pc = { name: PC_SESSION_NAME, cwd: "/w", command: PC_RUN };
     const job = { name: "job", cwd: "/w", command: ["node", "tasks.js", "pc", "run"] };
     const stamped = { name: "renamed", cwd: "/w", command: PC_RUN, kind: "pc-bridge" as const };
     expect(runningPcs([pc, job, stamped]).map((item) => item.session)).toEqual([PC_SESSION_NAME, "renamed"]);
-    expect(daemonUpgrade("0.16.3", "0.16.5", [pc, job], false)).toEqual({ kind: "ask", sessions: ["job"] });
   });
 });
 

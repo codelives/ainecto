@@ -10,7 +10,7 @@ import {
 import { PC_SESSION_NAME } from "../../core/pc/bridgeKind";
 import {
   PC_OUTCOME_PATTERN,
-  daemonUpgrade,
+  daemonPlan,
   pcAction,
   remoteOffByWeb,
   pcOutcome,
@@ -24,10 +24,11 @@ import type { AccountSummary } from "../../core/setup/accountSummary";
 import { lastLine, type CommandRunner } from "../../core/setup/commandRunner";
 import { doctorChecks } from "../../core/setup/doctorChecks";
 import type { MachineStatus } from "../../core/setup/machineStatus";
-import { openTermClient, termRequest, type TermConnectOptions } from "../../core/term/client";
+import { daemonCaps, openTermClient, spawnResident, termRequest, type TermConnectOptions } from "../../core/term/client";
 import { readDaemonInfo } from "../../core/term/residentInfo";
 import { waitForDaemonLockFree } from "../../core/term/daemonLock";
 import { TermError } from "../../core/term/errors";
+import { unlinkIfPresent } from "../../core/term/ipc";
 import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, sessionInstance, type ListedSession } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
@@ -187,28 +188,66 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
 }
 
 /**
- * 옛 판 term 데몬을 이 판으로 바꾼다({@link daemonUpgrade}) — 끄면 PC 연결 세션도 같이 끝나고, 뒤의 pcAction 이 start 로 새 데몬에서 다시 띄운다.
- * 사용자 세션이 있으면 사람에게 한 번 묻는다(기본 N — 그 세션들이 끝난다). 비대화면 묻지 않고 그대로 둔다.
+ * term 데몬을 이 판으로 맞춘다({@link daemonPlan} — 세션 유지 구조 3-4·3-6·5절). 판·구조는 살아 있는 바깥에게 묻는다(G4).
+ *   handover — 이 판의 바깥을 띄우면 옛 바깥에게서 넘겨받는다. 세션은 닫히지 않아 묻지 않는다.
+ *   retire   — holder 말이 모자라고 사용자 세션 0: PC 연결 세션째 holder 를 끝낸다. 뒤의 pcAction 이 새 판으로 다시 띄운다.
+ *   switch   — 옛 구조 첫 전환: 열린 세션이 모두 한 번 닫힌다. 세션이 있으면 사람에게 한 번 묻고(기본 N) 비대화면 그대로 둔다.
+ *              세션이 0 이면 닫힐 것이 없어 묻지 않는다. 옛 데몬이 끝나고 잠금이 풀린 뒤 daemon.json 을 지운다.
  */
 export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void): Promise<void> {
-  const info = readDaemonInfo(deps.paths);
-  if (!info) return;
-  const plan = daemonUpgrade(info.version, deps.cliVersion, await listed(deps), deps.register?.insideTermSession ?? false);
-  if (plan.kind === "keep") return;
-  if (plan.kind === "ask") {
-    if (!deps.interactive) return;
-    note(`This PC's terminal service is from an older AiNecto (${info.version}). Updating it to ${deps.cliVersion} closes `
-      + `${plan.sessions.length} open terminal session(s): ${plan.sessions.join(", ")}.`);
-    if (!yes(await promptLine(deps.io, "Update it now? [y/N]: "), false)) return;
+  const found = await daemonCaps(deps.paths);
+  if (!found.daemon) return;
+  const plan = daemonPlan({
+    structure: found.caps ?? "old",
+    cliVersion: deps.cliVersion,
+    sessions: await listed(deps),
+    insideTermSession: deps.register?.insideTermSession ?? false,
+  });
+  switch (plan.kind) {
+    case "keep":
+      return;
+    case "handover": {
+      // 새 바깥이 넘겨받고 준비를 알린 뒤에 돌아온다 — 넘기기가 안 끝나면 옛 바깥이 그대로 받는다(세션 그대로). 연결은 그대로 이어 간다.
+      const readiness = await spawnResident(deps.paths, "daemon");
+      if (readiness.status === "ready") note(`Updated the AiNecto terminal service on this PC to ${deps.cliVersion} — open sessions stay open.`);
+      // 넘기기가 안 됐다 — 옛 바깥이 그대로 받는다(세션 그대로). 이유는 daemon.log 에 있고, 여기서는 한 줄만.
+      if (readiness.status === "error") note(`The AiNecto terminal service was not updated this time (sessions are unchanged): ${readiness.message}`);
+      return;
+    }
+    case "retire": {
+      const result = await termRequest(deps.paths, { op: "retire", holder: plan.holder }, { start: false });
+      const retired = result.daemon && (result.data as { retired?: unknown }).retired === true;
+      if (retired) note("Updating the AiNecto terminal service on this PC (no open terminal sessions)…");
+      return;
+    }
+    case "switch": {
+      if (plan.sessions.length > 0) {
+        if (!deps.interactive) return;
+        const names = plan.sessions.map((session) => (session.kind === "pc-bridge" ? `${session.name} (PC connection)` : session.name));
+        note(`The terminal structure on this PC changed, so this one time the ${plan.sessions.length} open terminal session(s) will close: `
+          + `${names.join(", ")}. From the next update on they stay open.`);
+        if (!yes(await promptLine(deps.io, "Switch now? [y/N]: "), false)) return;
+      }
+      await endOldDaemon(deps, note);
+      return;
+    }
   }
-  note("Updating the AiNecto terminal service on this PC…");
-  // 이미 끝난 데몬이면(daemon.json 만 남음) 받을 쪽이 없다 — 그래도 판정은 아래 잠금 하나로 한다.
+}
+
+/** 옛 구조 데몬(0.16.x)을 끝낸다 — kill-server(칸 없이 — 옛 데몬은 holder uuid 를 모른다) → 잠금이 풀릴 때까지 → daemon.json 을 지운다. */
+async function endOldDaemon(deps: PcDeps, note: (line: string) => void): Promise<void> {
+  const info = readDaemonInfo(deps.paths);
+  note("Switching the AiNecto terminal service on this PC to the new structure…");
+  // 이미 끝난 데몬이면 받을 쪽이 없다 — 그래도 판정은 아래 잠금 하나로 한다.
   await termRequest(deps.paths, { op: "kill-server" }, { start: false });
   if (!(await waitForDaemonLockFree(deps.paths, deps.stopDeadlineMs))) {
-    throw new CliCommandError("PC_START_FAILED", `The old AiNecto terminal service (${info.version}, started as pid ${info.pid}) is still running and did not stop `
+    const pid = info ? ` (${info.version ?? "unknown version"}, started as pid ${info.pid})` : "";
+    throw new CliCommandError("PC_START_FAILED", `The old AiNecto terminal service${pid} is still running and did not stop `
       + `within ${Math.round(deps.stopDeadlineMs / 1000)} s. End it — on Windows: Task Manager › Details › the node.exe whose command line has `
-      + `"term daemon"; on macOS/Linux: \`kill ${info.pid}\` if that pid is still the daemon — or restart this PC, then run \`npx -y ainecto@latest\` again.`);
+      + `"term daemon"; on macOS/Linux: \`kill ${info?.pid ?? "<pid>"}\` if that pid is still the daemon — or restart this PC, then run \`npx -y ainecto@latest\` again.`);
   }
+  // ★옛 데몬이 끝나고 잠금이 풀린 «뒤»에만 — 구판 CLI 가 남은 파일의 판으로 업데이트 길에 들어가지 않게(설계 3-4).
+  await unlinkIfPresent(deps.paths.daemonInfo);
 }
 
 /** 연결 결과를 찍은 «뒤» 브라우저 자동 등록 — 종료 코드는 그대로(등록이 안 돼도 연결은 이미 됐다). */

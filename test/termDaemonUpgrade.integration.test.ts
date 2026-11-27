@@ -1,78 +1,105 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
-import { upgradeDaemon, type PcDeps } from "../src/adapters/cli/pcCommand";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { daemonCaps } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
-import { CLI_VERSION } from "../src/core/version";
-import { daemonPids, LONG, ok, oldPcSession, rig, sessions, until, useTermRig } from "./termRig";
+import { daemonPids, holderPids, json, LONG, ok, rig, ROOT, sessions, startOuterAt, TERM_AT, TSX, until, useTermRig } from "./termRig";
 
 /**
- * KAN-1348(11-23 Ryan 운영 시험) — 11-17 판 term 데몬이 남아 0.15.3 의 프로젝트 묶음을 버렸다.
- * 진짜 CLI·데몬으로: 옛 판 데몬은 PC 연결 세션뿐이면 내리고, 사용자 세션이 있으면(비대화) 그대로 둔다.
+ * term 데몬을 이 판으로 맞추기(upgradeDaemon — 연결 명령·자동 업데이트의 앞단계 · 세션 유지 구조 3-4·5절) — 실물.
+ *   새 구조: 바깥이 낮은 판이면 묻지 않고 넘겨받는다 — 세션(PTY PID·uuid) 그대로.
+ *   옛 구조(진짜 0.16.6 — 이 가지의 바탕 커밋 코드를 꺼내 돌린다): 세션이 있으면 첫 전환은 대화형 «예» 한 번으로만 · 비대화면 그대로 ·
+ *   바꾸면 옛 데몬이 끝나고 daemon.json 이 지워지고 다음 명령이 새 구조로 띄운다.
+ * 이 시험의 «CLI» 는 fixtures/termAt.ts upgrade(판은 $HOME/term-version) — 넘기기에서 띄우는 바깥도 같은 진입·같은 판이다.
  */
 useTermRig();
 
-/** 데몬을 «옛 판»으로 보이게 — daemon.json 의 판만 바꾼다(데몬이 시작할 때 쓴 파일). */
-function makeDaemonOld(): number {
-  const file = termPaths(rig.home).daemonInfo;
-  const info = JSON.parse(readFileSync(file, "utf8")) as { pid: number; version: string };
-  writeFileSync(file, `${JSON.stringify({ ...info, version: "0.14.0-next.9.1" })}\n`);
-  return info.pid;
+/** 바탕 커밋(origin/release/latest-0.16.6) — 옛 구조 데몬의 실제 코드. */
+const OLD_COMMIT = "15b49077bbf18ccb62e809264e6ee40fd2fcab51";
+let oldRoot = "";
+
+beforeAll(async () => {
+  // git 작업 트리를 만들지 않고 파일만 꺼낸다(저장소 메타데이터를 건드리지 않는다). 의존성은 지금 것을 링크 — 0.16.6 과 package.json 이 같다.
+  oldRoot = await mkdtemp(join(tmpdir(), "aterm-old-"));
+  execFileSync("/bin/sh", ["-c", `git -C "${ROOT}" archive ${OLD_COMMIT} | tar -x -C "${oldRoot}"`]);
+  symlinkSync(join(ROOT, "node_modules"), join(oldRoot, "node_modules"));
+});
+
+afterAll(async () => {
+  if (oldRoot) await rm(oldRoot, { recursive: true, force: true });
+});
+
+/** 옛 판(0.16.6) CLI 로 한 번 — 그 CLI 가 옛 구조 데몬을 띄운다(표지가 붙어 시험 정리가 그 데몬도 거둔다). */
+function oldCli(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((done) => {
+    execFile(process.execPath, ["--import", TSX, `--conditions=${rig.marker}`, join(oldRoot, "src/bin/ainecto.ts"), ...args],
+      { env: rig.env, cwd: rig.home }, (error, stdout, stderr) => done({ code: error && typeof error.code === "number" ? error.code : 0, stdout, stderr }));
+  });
 }
 
-function deps(): PcDeps {
-  const stdin = new PassThrough();
-  stdin.end();
-  return {
-    io: {
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      stdout: { write: () => true } as unknown as NodeJS.WriteStream,
-      stderr: { write: () => true } as unknown as NodeJS.WriteStream,
-    },
-    interactive: false,
-    paths: termPaths(rig.home),
-    cliVersion: CLI_VERSION,
-    stopDeadlineMs: 10_000,
-  } as unknown as PcDeps;
+/** 판 `version` 의 CLI 로 upgradeDaemon 하나 — 안내 줄들. `answer` 가 있으면 대화형으로 그 답을 준다. */
+function upgradeAt(version: string, answer?: string): Promise<string[]> {
+  writeFileSync(join(rig.home, "term-version"), `${version}\n`);
+  return new Promise((done, fail) => {
+    const child = execFile(process.execPath, ["--import", TSX, `--conditions=${rig.marker}`, TERM_AT, "upgrade", ...(answer !== undefined ? ["--interactive"] : [])],
+      { env: rig.env, cwd: rig.home }, (error, stdout, stderr) => {
+        if (error) fail(new Error(`upgrade ${version} failed: ${stderr}`));
+        else done((JSON.parse(stdout.trim().split("\n").pop()!) as { notes: string[] }).notes);
+      });
+    child.stdin?.end(answer !== undefined ? `${answer}\n` : "");
+  });
 }
 
-describe("옛 판 term 데몬 교체(upgradeDaemon) — 실물", () => {
-  it("PC 연결 세션뿐 → 옛 데몬을 내린다(다음 start 가 이 판으로 새로 띄운다)", async () => {
-    // pc run 을 도는 세션 흉내 — 명령 단어에 «pc run» 이 있으면 PC 연결 세션이다(runningPcs 와 같은 판정).
-    await oldPcSession(["/bin/sh", "-c", "sleep 300", "pc", "run"]);
-    const oldPid = makeDaemonOld();
-    const notes: string[] = [];
-    await upgradeDaemon(deps(), (line) => notes.push(line));
-    await until(() => !daemonPids().includes(oldPid), "old daemon gone");
-    expect(notes).toEqual(["Updating the AiNecto terminal service on this PC…"]);
-    await ok("term", "new", "after", "--", "/bin/sh");
-    const info = JSON.parse(readFileSync(termPaths(rig.home).daemonInfo, "utf8")) as { pid: number; version: string };
-    expect(info.version).toBe(CLI_VERSION);
-    expect(info.pid).not.toBe(oldPid);
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const ASK = "The terminal structure on this PC changed, so this one time the 1 open terminal session(s) will close: legacy. From the next update on they stay open.";
+
+describe("term 데몬을 이 판으로(upgradeDaemon) — 실물", () => {
+  it("새 구조 · 바깥이 낮은 판 → 묻지 않고 넘겨받는다(비대화 · 사용자 세션이 있어도) — PTY PID·uuid 그대로 · 같은 판이면 아무것도 안 함", async () => {
+    const first = await startOuterAt("0.16.7");
+    await ok("term", "new", "work", "--", "cat");
+    const before = await sessions();
+
+    expect(await upgradeAt("0.16.7")).toEqual([]);
+    expect(alive(first.pid)).toBe(true);
+
+    expect(await upgradeAt("0.16.8")).toEqual(["Updated the AiNecto terminal service on this PC to 0.16.8 — open sessions stay open."]);
+    await until(() => !alive(first.pid), "old outer ended");
+    expect(await sessions()).toEqual(before);
+    const found = await daemonCaps(termPaths(rig.home));
+    expect(found.daemon && found.caps?.version).toBe("0.16.8");
   }, LONG);
 
-  it("KAN-1375 — 데몬은 이미 끝났고 daemon.json 의 pid 를 다른 프로세스가 쓰고 있어도(Windows pid 재사용) 멈추지 않는다 · 판정은 잠금", async () => {
-    await oldPcSession(["/bin/sh", "-c", "sleep 300", "pc", "run"]);
-    const oldPid = makeDaemonOld();
-    await ok("term", "kill-server");
-    await until(() => !daemonPids().includes(oldPid), "daemon gone");
-    // 끝난 데몬의 daemon.json 은 남는다 — 그 pid 를 살아 있는 다른 프로세스(이 시험 프로세스)가 쓰는 Windows 상황을 만든다.
-    const file = termPaths(rig.home).daemonInfo;
-    writeFileSync(file, `${JSON.stringify({ pid: process.pid, version: "0.15.4" })}\n`);
-    const notes: string[] = [];
-    const started = Date.now();
-    await upgradeDaemon(deps(), (line) => notes.push(line));
-    expect(notes).toEqual(["Updating the AiNecto terminal service on this PC…"]);
-    expect(Date.now() - started, "잠금이 비어 있으면 기한까지 기다리지 않는다").toBeLessThan(5_000);
-  }, LONG);
+  it("옛 구조(진짜 0.16.6) · 세션이 있으면 비대화는 그대로 · 대화형 «아니오»도 그대로 · «예»면 한 번 닫히고 daemon.json 을 지운 뒤 새 구조로", async () => {
+    expect((await oldCli("term", "new", "legacy", "--", "/bin/sh")).code).toBe(0);
+    const paths = termPaths(rig.home);
+    expect(existsSync(paths.daemonInfo)).toBe(true);
+    const [oldDaemon] = daemonPids();
+    expect(await daemonCaps(paths)).toEqual({ daemon: true, caps: undefined });
 
-  it("사용자 세션이 있으면(비대화) 묻지 않고 그대로 둔다 — 세션이 살아 있다", async () => {
-    await ok("term", "new", "work", "--", "/bin/sh");
-    const oldPid = makeDaemonOld();
-    const notes: string[] = [];
-    await upgradeDaemon(deps(), (line) => notes.push(line));
-    expect(notes).toEqual([]);
-    expect(daemonPids()).toContain(oldPid);
-    expect((await sessions()).map((item) => item.name)).toContain("work");
+    expect(await upgradeAt("0.16.8")).toEqual([]);
+    expect(await upgradeAt("0.16.8", "n")).toEqual([ASK]);
+    expect(alive(oldDaemon!)).toBe(true);
+    expect((await sessions()).map((session) => session.name)).toEqual(["legacy"]);
+
+    expect(await upgradeAt("0.16.8", "y")).toEqual([ASK, "Switching the AiNecto terminal service on this PC to the new structure…"]);
+    await until(() => !alive(oldDaemon!), "old daemon gone");
+    expect(existsSync(paths.daemonInfo)).toBe(false);
+
+    // 다음 명령은 새 구조 — 세션은 uuid·종류를 가진다
+    await ok("term", "new", "fresh", "--", "/bin/sh");
+    expect(holderPids()).toHaveLength(1);
+    const listed = (await json("term", "ls")).data as { sessions: Array<{ name: string; instance?: string; kind?: string }> };
+    expect(listed.sessions).toEqual([expect.objectContaining({ name: "fresh", kind: "user", instance: expect.stringMatching(/^[0-9a-f-]{36}$/) })]);
   }, LONG);
 });

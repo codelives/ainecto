@@ -1,6 +1,7 @@
-import { execFile, execFileSync, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import headless from "@xterm/headless";
@@ -204,24 +205,36 @@ export function attachInPty(name: string, cols: number, rows: number) {
 }
 
 /**
- * 옛 CLI 가 만든 PC 연결 세션 흉내 — 종류 칸 없이 이름 ainecto-pc + 명령 «pc run»(bridgeKind 의 옛 줄 규칙). `term new` 는 이제 kind user 를
- * 찍어(리뷰 0.16.6 P1-4) 이 흉내를 못 만든다 — 데몬에 직접 new 를 보낸다. 데몬을 띄우려고 잠깐 세션 하나를 만들었다 지운다.
- */
-export async function oldPcSession(command: string[] = ["/bin/sh", "-c", "sleep 600", "pc", "run"]): Promise<void> {
-  await ok("term", "new", "pc-fixture-warm", "--", "/bin/sh", "-c", "sleep 600");
-  const env = Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string"));
-  await termRequest(termPaths(rig.home), { op: "new", name: "ainecto-pc", cwd: rig.home, command, env }, { start: false });
-  await ok("term", "kill", "pc-fixture-warm");
-}
-
-/**
  * PC 연결 세션 — 이 판 CLI 의 launchPc 처럼 종류 `pc-bridge` 를 실어 만든다(세션 유지 구조: holder 는 종류 없는 요청을 user 로 적는다 —
  * 이름·명령으로 짐작하지 않는다. 설계 원칙 1·2). 진짜 브리지 대신 같은 이름·명령의 잠자는 셸.
  */
 export async function pcBridgeSession(command: string[] = ["/bin/sh", "-c", "sleep 600", "pc", "run"]): Promise<void> {
-  // 시험 프로세스는 CLI 진입이 아니라 데몬을 못 띄운다 — CLI 로 잠깐 세션 하나를 만들어 데몬을 띄우고 지운다(oldPcSession 과 같다).
+  // 시험 프로세스는 CLI 진입이 아니라 데몬을 못 띄운다 — CLI 로 잠깐 세션 하나를 만들어 데몬을 띄우고 지운다.
   await ok("term", "new", "pc-fixture-warm", "--", "/bin/sh", "-c", "sleep 600");
   const env = Object.fromEntries(Object.entries(rig.env).filter((e): e is [string, string] => typeof e[1] === "string"));
   await termRequest(termPaths(rig.home), { op: "new", name: "ainecto-pc", cwd: rig.home, command, env, kind: "pc-bridge" }, { start: false });
   await ok("term", "kill", "pc-fixture-warm");
+}
+
+/** 판을 파일로 고르는 시험 진입(fixtures/termAt.ts) — 같은 소스로 판 N·N+1 의 바깥을 띄운다. */
+export const TERM_AT = join(ROOT, "test/fixtures/termAt.ts");
+
+/** 판 `version` 의 바깥을 띄우고 준비 한 줄과 pid 를 받는다(바깥이 holder 도 같은 진입·같은 판으로 띄운다). */
+export async function startOuterAt(version: string): Promise<{ status: string; pid: number }> {
+  writeFileSync(join(rig.home, "term-version"), `${version}\n`);
+  const child = spawn(process.execPath, ["--import", TSX, `--conditions=${rig.marker}`, TERM_AT, "term", "daemon", "--ready-fd", "3"], {
+    cwd: rig.home, env: rig.env, stdio: ["ignore", "ignore", "pipe", "pipe"], detached: true,
+  });
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+  const line = await new Promise<string>((resolve, reject) => {
+    let text = "";
+    child.stdio[3]!.on("data", (chunk: Buffer) => {
+      text += chunk.toString("utf8");
+      if (text.includes("\n")) resolve(text.split("\n")[0]!);
+    });
+    child.once("exit", (code) => reject(new Error(`outer ${version} exited ${code} before ready: ${stderr}`)));
+  });
+  child.unref();
+  return { ...(JSON.parse(line) as { status: string }), pid: child.pid! };
 }

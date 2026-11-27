@@ -8,7 +8,7 @@ import { acquireOuterStartLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { errorCode, errorMessage, TermError } from "./errors";
 import { NO_LEASE_CODE, requestMeta, type DaemonReadiness } from "./holder";
-import { holderCaps, type HolderCaps, type OuterCaps } from "./holderTalk";
+import { holderCaps, newerVersion, type HolderCaps, type OuterCaps } from "./holderTalk";
 import {
   afterListen,
   connectAddress,
@@ -91,20 +91,6 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
   });
   notify({ status: "ready" });
   return await running.finished;
-}
-
-/** 이 판(a)이 다른 판(b)보다 높은가 — `x.y.z` 셋을 숫자로 견준다. 어느 쪽이든 그 모양이 아니면(로컬 «dev») 거짓 — 넘기지 않는다. 순수 함수. */
-export function newerVersion(a: string, b: string): boolean {
-  const parse = (value: string): number[] | undefined => {
-    const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value);
-    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
-  };
-  const [left, right] = [parse(a), parse(b)];
-  if (!left || !right) return false;
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index]! > right[index]!;
-  }
-  return false;
 }
 
 /** ①② — 임대를 쥐거나 넘겨받은 바깥, 또는 undefined(다른 바깥이 이미 이 판 이상). 실패는 던진다(띄운 CLI 에 오류 한 줄). */
