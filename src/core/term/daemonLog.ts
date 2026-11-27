@@ -27,6 +27,9 @@ export type DaemonLogRecord =
   | { event: "lease_granted"; conn: number; outer: string; version: string }
   | { event: "lease_released"; conn: number; outer: string }
   | { event: "holder_info_error"; message: string }
+  /** holder 자기 사본(설계 3-1) — 뜰 때 도는 사본의 지문(사본 밖이면 없음) · 지운 옛 사본 폴더. */
+  | { event: "holder_image"; fingerprint?: string; removed: string[] }
+  | { event: "holder_image_error"; message: string }
   /** 계산 모듈(설계 3-2) — 바꿈 · 안 바꿈(이유) · 모듈이 던짐/사본 치우기 실패. 바깥은 알리기 실패를 compute_offer_error 로. */
   | { event: "compute_switched"; file: string; version: string; digest: string }
   | { event: "compute_kept"; file: string; version: string; reason: string }

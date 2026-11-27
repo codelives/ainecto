@@ -45,6 +45,8 @@ export interface TermPaths {
   /** 바깥이 뜨는 동안 쥐는 잠금 — 바깥 시작·넘기기를 한 줄로 세운다(두 바깥이 동시에 포인터를 바꾸지 않게). */
   outerLockFile: string;
   outerAbstractLockName: string;
+  /** holder 자기 사본 폴더들 `<holderImages>/<지문>/`(세션 유지 구조 3-1 · holderImage.ts) — holder 가 뜰 때 자기 것만 남긴다. */
+  holderImages: string;
   /** holder 가 불러온 계산 모듈 사본 `<computeDir>/<내용 지문>/compute.mjs`(세션 유지 구조 3-2) — holder 가 뜰 때 비운다. */
   computeDir: string;
 }
@@ -112,6 +114,7 @@ export function termPaths(home: string = homedir(), platform: NodeJS.Platform = 
     holderLog: join(dir, "holder.log"),
     previousHolderLog: join(dir, "holder.log.1"),
     outerLockFile: join(dir, "outer.lock"),
+    holderImages: join(dir, "holder"),
     computeDir: join(dir, "compute"),
     outerAbstractLockName: `\0ainecto-term-${process.getuid?.() ?? "na"}-${createHash("sha256").update(dir).digest("hex")}-outer.lock`,
   };

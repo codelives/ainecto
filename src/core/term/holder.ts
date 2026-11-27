@@ -26,6 +26,7 @@ import {
 } from "./protocol";
 import { assertSessionName } from "./sessionName";
 import { ComputeSlot } from "./computeSlot";
+import { runningImage, sweepHolderImages } from "./holderImage";
 import { TermSession, type SessionCompute, type SessionSink } from "./session";
 
 /** 띄운 쪽(바깥)에게 «준비됨/이미 있음/실패»를 알리는 한 줄 — 바깥·holder 가 같은 모양을 쓴다. */
@@ -99,6 +100,13 @@ export async function runHolder(options: HolderOptions): Promise<number> {
     endedUnread = true;
   }
   ended = mergeEnded(ended, pending, new Set());
+  const image = runningImage(paths);
+  try {
+    log.write({ event: "holder_image", ...(image !== undefined ? { fingerprint: image } : {}), removed: await sweepHolderImages(paths, image) });
+  } catch (error) {
+    // 옛 사본이 남을 뿐이다(지문마다 폴더가 달라 새 holder 를 막지 않는다) — 이유는 남긴다.
+    log.write({ event: "holder_image_error", message: errorMessage(error) });
+  }
   const compute = new ComputeSlot(paths.computeDir);
   try {
     await compute.clear();

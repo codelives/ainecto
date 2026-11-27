@@ -9,6 +9,7 @@ import type { DaemonReadiness } from "./holder";
 import { assertTermRuntime } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
+import { prepareHolderImage } from "./holderImage";
 import { outerCaps, type OuterCaps } from "./holderTalk";
 import { connectAddress, IMPOSTOR_CODE, newNonce, NO_ADDRESS_CODE, proofMatches, type IpcAddress } from "./ipc";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "./limits";
@@ -287,7 +288,9 @@ export type SpawnOutcome = DaemonReadiness | { status: "silent" };
  * 상주 프로세스 하나를 띄운다 — CLI 가 바깥(`term daemon`)을, 바깥이 holder(`term holder`)를. 같은 node·같은 실행 인자·같은 진입 파일.
  */
 export async function spawnResident(paths: TermPaths, role: "daemon" | "holder"): Promise<SpawnOutcome> {
-  const entry = process.argv[1];
+  // holder 는 자기 사본에서(설계 3-1 — 설치본·npx 캐시가 지워져도 새 PTY) · 번들 밖 실행은 지금 진입 그대로.
+  const image = role === "holder" ? await prepareHolderImage(paths) : undefined;
+  const entry = image?.entry ?? process.argv[1];
   if (!entry) {
     throw new TermError("TERM_DAEMON_START", `Cannot find the ainecto entry script to start the term ${role}.`);
   }

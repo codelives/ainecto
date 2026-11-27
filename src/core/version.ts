@@ -11,6 +11,9 @@ const UNBUNDLED_VERSION = "dev";
 export const CLI_VERSION: string =
   typeof __AINECTO_CLI_VERSION__ === "string" ? __AINECTO_CLI_VERSION__ : UNBUNDLED_VERSION;
 
+/** 번들(tsup)로 도는가 — 배포물·로컬 빌드는 참, vitest·tsx 의 소스 실행은 거짓. holder 자기 사본(term holderImage)은 번들일 때만 만든다. */
+export const CLI_BUNDLED: boolean = typeof __AINECTO_CLI_VERSION__ === "string";
+
 declare const __AINECTO_CLI_BUILD__: string | undefined;
 declare const __AINECTO_CLI_RELEASE__: boolean | undefined;
 
