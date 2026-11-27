@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
-import { daemonPids, holderPids, json, LONG, ok, rig, TSX, until, useTermRig } from "./termRig";
+import { cli, daemonPids, holderPids, json, LONG, ok, rig, sleep, TSX, until, useTermRig } from "./termRig";
 
 /**
  * 바깥 넘기기(세션 유지 구조 설계 3-4 · 단위 U2) — ★핵심 인수: 바깥 N → N+1 뒤 PTY PID·화면·uuid 그대로 · 구판 CLI kill-server 거절.
@@ -109,5 +109,26 @@ describe("바깥 넘기기 — 판이 바뀌어도 PTY 가 산다(U2)", () => {
     await ok("term", "send", "orphan", "still-here");
     await ok("term", "key", "orphan", "Enter");
     await until(async () => (await screenText("orphan")).split("still-here").length === 3, "echo after revive");
+  }, LONG);
+
+  it("G7: 명령은 <uuid|이름> · ls 에 uuid·종류 · term wait 는 바깥 넘기기로 연결이 끊겨도 처음 푼 uuid 로 다시 붙어 이어 기다린다", async () => {
+    const first = await startOuter("0.16.7");
+    await ok("term", "new", "w", "--", "cat");
+    const [session] = await listed();
+    expect(await ok("term", "ls")).toMatch(new RegExp(`w\\s+${session!.instance}\\s+user\\s`));
+    await ok("term", "send", session!.instance, "by-uuid");
+    await ok("term", "key", session!.instance, "Enter");
+    await until(async () => (await ok("term", "read", session!.instance)).split("by-uuid").length === 3, "echo by uuid");
+    expect((await cli("term", "read", "00000000-0000-4000-8000-00000000dead")).code).toBe(1);
+
+    const waiting = cli("term", "wait", "w", "--match", "^after-switch$", "--timeout", "30");
+    await sleep(500);   // wait 가 watch 를 건 뒤 넘긴다
+    await startOuter("0.16.8");
+    await until(() => !alive(first.pid), "old outer ended");
+    await ok("term", "send", "w", "after-switch");
+    await ok("term", "key", "w", "Enter");
+    const done = await waiting;
+    expect([done.code, done.stderr]).toEqual([0, ""]);
+    expect(done.stdout).toContain("after-switch");
   }, LONG);
 });

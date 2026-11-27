@@ -9,6 +9,7 @@ import { noSession, TermError } from "../../core/term/errors";
 import { KEY_NAMES } from "../../core/term/keys";
 import { isUuid, termPaths, type TermPaths } from "../../core/term/paths";
 import { listedSessions, type TermRequestBody } from "../../core/term/protocol";
+import { lookupTarget } from "../../core/term/target";
 import { waitForMatch } from "../../core/term/wait";
 import { renderSuccess } from "../../core/output/render";
 import { renderTable } from "../../core/output/table";
@@ -19,13 +20,13 @@ import { CliCommandError } from "./errors";
 /** 도움말 — 전역 도움말이 이 줄들을 싣는다. */
 export const TERM_HELP_LINES: readonly string[] = [
   "  ainecto term new <name> [--cwd DIR] [--project UUID] [-- command args…]   start a session (default: your login shell); AINECTO_TERM_SESSION=<name> inside; --project files it under that AiNecto project on the web",
-  "  ainecto term ls [--json]                                  list sessions",
-  "  ainecto term send <name> [--paste] [--] <text>            type text (no Enter; --paste wraps it as a bracketed paste when the app asked for it)",
-  `  ainecto term key <name> <key>                             press one key: ${KEY_NAMES.join(", ")}`,
-  "  ainecto term read <name> [--lines N] [--scrollback] [--json]   the screen as text",
-  "  ainecto term wait <name> --match REGEX [--timeout SECONDS] [--lines N] [--scrollback]   until a screen line matches",
-  `  ainecto term attach <name>                                watch and type in your terminal; detach with ${DETACH_HINT}`,
-  "  ainecto term kill <name> · ainecto term kill-server",
+  "  ainecto term ls [--json]                                  list sessions (name · uuid · kind …)",
+  "  ainecto term send <uuid|name> [--paste] [--] <text>       type text (no Enter; --paste wraps it as a bracketed paste when the app asked for it)",
+  `  ainecto term key <uuid|name> <key>                        press one key: ${KEY_NAMES.join(", ")}`,
+  "  ainecto term read <uuid|name> [--lines N] [--scrollback] [--json]   the screen as text",
+  "  ainecto term wait <uuid|name> --match REGEX [--timeout SECONDS] [--lines N] [--scrollback]   until a screen line matches",
+  `  ainecto term attach <uuid|name>                           watch and type in your terminal; detach with ${DETACH_HINT}`,
+  "  ainecto term kill <uuid|name> · ainecto term kill-server   (a name must match exactly one session; otherwise use its uuid)",
   "  ainecto term restore [--json]                             start again the sessions that were running when the daemon or the machine stopped",
 ];
 
@@ -48,35 +49,39 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
       return await listSessions(paths, rest, input);
     case "send": {
       const args = parseArgs(rest, { paste: "boolean" });
-      const [name, ...words] = args.positionals;
+      const [ref, ...words] = args.positionals;
       const text = [...words, ...args.afterDashes].join(" ");
-      if (!name || text.length === 0) {
-        throw usage("term send <name> [--paste] [--] <text>");
+      if (!ref || text.length === 0) {
+        throw usage("term send <uuid|name> [--paste] [--] <text>");
       }
-      const data = await onSession(paths, name, { op: "send", name, text, paste: args.flags.paste === true });
-      return print(input, data, `Sent ${text.length} characters to ${name}.`);
+      const target = await lookupTarget(paths, ref);
+      const data = await onSession(paths, ref, { op: "send", ...target, text, paste: args.flags.paste === true });
+      return print(input, data, `Sent ${text.length} characters to ${target.name}.`);
     }
     case "key": {
       const { positionals } = parseArgs(rest, {});
-      const [name, key] = positionals;
-      if (!name || !key || positionals.length > 2) {
-        throw usage(`term key <name> <key>   (${KEY_NAMES.join(", ")})`);
+      const [ref, key] = positionals;
+      if (!ref || !key || positionals.length > 2) {
+        throw usage(`term key <uuid|name> <key>   (${KEY_NAMES.join(", ")})`);
       }
-      const data = await onSession(paths, name, { op: "key", name, key });
-      return print(input, data, `Pressed ${key} in ${name}.`);
+      const target = await lookupTarget(paths, ref);
+      const data = await onSession(paths, ref, { op: "key", ...target, key });
+      return print(input, data, `Pressed ${key} in ${target.name}.`);
     }
     case "read": {
       const args = parseArgs(rest, { lines: "count", scrollback: "boolean" });
-      const name = singleName(args.positionals, "term read <name> [--lines N] [--scrollback]");
-      const data = await onSession(paths, name, { op: "read", name, scrollback: args.flags.scrollback === true, lines: countFlag(args.flags.lines) });
+      const ref = singleName(args.positionals, "term read <uuid|name> [--lines N] [--scrollback]");
+      const target = await lookupTarget(paths, ref);
+      const data = await onSession(paths, ref, { op: "read", ...target, scrollback: args.flags.scrollback === true, lines: countFlag(args.flags.lines) });
       return print(input, data, linesField(data).join("\n"));
     }
     case "wait":
       return await waitCommand(paths, rest, input);
     case "kill": {
-      const name = singleName(parseArgs(rest, {}).positionals, "term kill <name>");
-      const data = await onSession(paths, name, { op: "kill", name });
-      return print(input, data, `Killed ${name}.`);
+      const ref = singleName(parseArgs(rest, {}).positionals, "term kill <uuid|name>");
+      const target = await lookupTarget(paths, ref);
+      const data = await onSession(paths, ref, { op: "kill", ...target });
+      return print(input, data, `Killed ${target.name}.`);
     }
     case "kill-server": {
       // ★끌 holder 의 uuid 를 기능 묻기로 받아 싣는다(설계 3-4) — 옛 구조 데몬(첫 전환 전)은 칸 없이 그대로.
@@ -91,7 +96,7 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
       return print(input, result.daemon ? result.data : undefined, restoreSummary(result.daemon ? result.data : undefined));
     }
     case "attach":
-      return await attach(paths, singleName(parseArgs(rest, {}).positionals, "term attach <name>"), input.io);
+      return await attach(paths, singleName(parseArgs(rest, {}).positionals, "term attach <uuid|name>"), input.io);
     case "daemon":
       return await residentCommand(paths, rest, runDaemon);
     case "holder":
@@ -150,21 +155,24 @@ async function listSessions(paths: TermPaths, argv: string[], input: TermCommand
     ? "No term sessions."
     : renderTable(sessions.map((session) => ({
       name: session.name,
+      // uuid·종류(세션 유지 구조 원칙 1) — 명령은 uuid 로도 겨눈다. 옛 구조 데몬이면 칸이 비어 있다.
+      uuid: session.instance ?? "",
+      kind: session.kind ?? "",
       label: session.label ?? "",
       pid: session.pid,
       clients: session.clients,
       size: `${session.cols}x${session.rows}`,
       cwd: session.cwd,
       command: session.command ? session.command.join(" ") : "(login shell)",
-    })), { columns: ["name", "label", "pid", "clients", "size", "cwd", "command"] }) ?? "";
+    })), { columns: ["name", "uuid", "kind", "label", "pid", "clients", "size", "cwd", "command"] }) ?? "";
   return print(input, data, human);
 }
 
 async function waitCommand(paths: TermPaths, argv: string[], input: TermCommandInput): Promise<number> {
   const args = parseArgs(argv, { match: "string", timeout: "count", lines: "count", scrollback: "boolean" });
-  const name = singleName(args.positionals, "term wait <name> --match REGEX [--timeout SECONDS]");
+  const ref = singleName(args.positionals, "term wait <uuid|name> --match REGEX [--timeout SECONDS]");
   if (typeof args.flags.match !== "string") {
-    throw usage("term wait <name> --match REGEX [--timeout SECONDS]");
+    throw usage("term wait <uuid|name> --match REGEX [--timeout SECONDS]");
   }
   let pattern: RegExp;
   try {
@@ -173,12 +181,15 @@ async function waitCommand(paths: TermPaths, argv: string[], input: TermCommandI
     throw new TermError("TERM_USAGE", `--match is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`);
   }
   const timeout = countFlag(args.flags.timeout);
+  // ★처음 푼 인스턴스만 본다 — 기다리는 사이 같은 이름 새 세션이 생겨도 그것을 보지 않는다(G7). 넘기기로 연결이 끊겨도 그 인스턴스로 다시 붙는다.
+  const target = await lookupTarget(paths, ref);
   const result = await waitForMatch(
     paths,
-    name,
+    target.name,
     pattern,
     { scrollback: args.flags.scrollback === true, lines: countFlag(args.flags.lines) },
     timeout === undefined ? undefined : timeout * 1000,
+    target.instance,
   );
   return print(input, result, result.line);
 }
@@ -188,10 +199,12 @@ async function waitCommand(paths: TermPaths, argv: string[], input: TermCommandI
  * 처음에 화면을 지우고 직렬화 화면을 한 번 그린 뒤 원시 출력만 흘린다. 떼거나 세션이 끝나면 세션 앱이 켜 둔
  * 모드(마우스·alternate 화면 등)를 데몬이 알려 준 글자로 되돌린다.
  */
-async function attach(paths: TermPaths, name: string, io: CliIO): Promise<number> {
+async function attach(paths: TermPaths, ref: string, io: CliIO): Promise<number> {
   if (!io.stdin.isTTY || !io.stdout.isTTY) {
     throw new TermError("TERM_NOT_A_TTY", "term attach needs an interactive terminal. Use term read / term send from scripts.");
   }
+  const target = await lookupTarget(paths, ref);
+  const { name } = target;
   const client = await openTermClient(paths, { start: false });
   if (!client) {
     throw noSession(name);
@@ -243,7 +256,7 @@ async function attach(paths: TermPaths, name: string, io: CliIO): Promise<number
   });
   client.onClose(() => finish(1, undefined, "lost the connection to the term daemon"));
   try {
-    await client.request({ op: "attach", name, cols: io.stdout.columns, rows: io.stdout.rows });
+    await client.request({ op: "attach", ...target, cols: io.stdout.columns, rows: io.stdout.rows });
   } catch (error) {
     client.close();
     throw error;
