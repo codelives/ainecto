@@ -7,13 +7,13 @@ import { fileURLToPath } from "node:url";
 import { ensurePrivateDir, isNodeError } from "../fs/privateFiles";
 import { CLI_BUNDLED } from "../version";
 import { TermError } from "./errors";
-import type { TermPaths } from "./paths";
+import { nodePtyNativeDirs, type TermPaths } from "./paths";
 
 /**
  * holder 자기 사본(세션 유지 구조 설계 3-1) — holder 는 처음 뜰 때 자기에게 필요한 파일을 `<holderImages>/<지문>/` 에 복사하고 거기서 돈다.
  * npx 캐시(설치본)를 지워도 holder 가 새 PTY 를 띄우고(spawn-helper·pty.node 는 사본에) Windows 끄기 경로의 helper(node-pty conpty 몫)도 사본에 있다.
  *   사본 = CLI 번들 하나(holder 코드 · @xterm/headless · addon-serialize 가 그 안에 묶여 있다) + `{"type":"module"}` + node-pty 의
- *          package.json · lib · 이 플랫폼 네이티브 폴더(node-pty 가 불러오는 순서 그대로: build/Release → build/Debug → prebuilds/<os>-<arch>).
+ *          package.json · lib · 이 플랫폼 네이티브 폴더(paths.nodePtyNativeDirs 중 처음 있는 것).
  *   지문 = 복사할 파일들의 경로·내용 해시 — 같은 설치본이면 같은 폴더(다시 쓰지 않는다), 다른 판이면 다른 폴더.
  * 번들 밖 실행(vitest·tsx 의 소스)은 사본을 만들지 않는다 — 소스 트리 그대로 돈다.
  */
@@ -86,10 +86,10 @@ function nodePtyDir(bundle: string): string | undefined {
 }
 
 /** 사본에 넣을 파일 목록(정렬) — 번들 · type module · node-pty(package.json · lib · 이 플랫폼 네이티브 폴더). */
-export async function imageFiles(bundle: string, nodePty: string | undefined, platform: string = process.platform, arch: string = process.arch): Promise<ImageFile[]> {
+export async function imageFiles(bundle: string, nodePty: string | undefined, nativeDirs: readonly string[] = nodePtyNativeDirs()): Promise<ImageFile[]> {
   const files: ImageFile[] = [{ to: "ainecto.js", from: bundle }, { to: "package.json", text: `${JSON.stringify({ type: "module" })}\n` }];
   if (nodePty) {
-    const native = ["build/Release", "build/Debug", `prebuilds/${platform}-${arch}`].find((dir) => existsSync(join(nodePty, dir)));
+    const native = nativeDirs.find((dir) => existsSync(join(nodePty, dir)));
     files.push({ to: "node_modules/node-pty/package.json", from: join(nodePty, "package.json") });
     for (const dir of ["lib", ...(native ? [native] : [])]) {
       for (const file of await filesUnder(join(nodePty, dir))) {

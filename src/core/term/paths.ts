@@ -60,6 +60,14 @@ export function outerSocketPath(paths: Pick<TermPaths, "dir" | "socket">, outer:
 }
 
 /**
+ * 이 플랫폼의 node-pty 네이티브 폴더 후보 — node-pty 가 불러오는 순서 그대로(build/Release → build/Debug → prebuilds/<os>-<arch>).
+ * holder 사본(holderImage.ts)이 이 중 처음 있는 것을 복사한다.
+ */
+export function nodePtyNativeDirs(platform: string = process.platform, arch: string = process.arch): string[] {
+  return ["build/Release", "build/Debug", `prebuilds/${platform}-${arch}`];
+}
+
+/**
  * 앱 홈 — ★OS 가 앱 자료를 두라고 정한 곳 아래 `ainecto`(경로 규칙은 여기 한 곳, 사용자 결재 «추천대로»).
  * macOS `~/Library/Application Support` · Windows `%LOCALAPPDATA%` · 그 밖 `${XDG_DATA_HOME:-~/.local/share}`(XDG: 절대 경로만).
  * 데몬 파일 자리({@link termPaths} — `~/.ainecto`)는 옮기지 않는다.
