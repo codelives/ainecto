@@ -137,6 +137,14 @@ export class WebChannel {
     return { opId, requestId, meta: { session, opId } };
   }
 
+  /** 이미지 붙여넣기(계약 §1) — kill 과 같은 선 위 칸 · 봉인 본문 {opId, session, instance, mime, d}. */
+  async image(session: string, instance: string, mime: string, bytes: Uint8Array): Promise<Crud> {
+    const opId = randomUUID();
+    const requestId = randomUUID();
+    await this.send("image", { opId, session, instance, mime, d: Buffer.from(bytes).toString("base64") }, { session, opId }, requestId);
+    return { opId, requestId, meta: { session, opId } };
+  }
+
   /** 기기 관리(approve-new-device §3-4) — 세션 없음 · 봉인 안 action. */
   async device(body: Record<string, unknown>): Promise<Crud> {
     const opId = randomUUID();

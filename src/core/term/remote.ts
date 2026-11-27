@@ -20,6 +20,7 @@ import {
   type HelloTrust,
   type WireCommand,
 } from "./remoteChannel";
+import { pruneImages, saveImage, type ImagePrune } from "./remoteImage";
 import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
 import { endedThatFit, listing, sessionsKey, type Listing, type WireEnded } from "./remoteSessions";
 import { PC_SESSION_NAME } from "./protocol";
@@ -93,7 +94,8 @@ export type RemoteLogRecord =
   | { event: "remote_channel"; channelId: string; state: "active" | "closed"; by?: "pc" | "web" | "local"; reason?: string; browserKeyId?: string }
   /** 같은 번호·같은 암호문 재도착(확인만) · 모르는 채널의 명령(실행 안 함). */
   | { event: "remote_command_skipped"; channelId: string; n: number; why: "duplicate" | "unknown-channel" | "malformed" }
-  | { event: "remote_command"; type: string; channelId: string; n: number; session?: string; opId?: string; requestId?: string; bytes?: number }
+  | { event: "remote_command"; type: string; channelId: string; n: number; session?: string; opId?: string; requestId?: string; bytes?: number;
+      mime?: string }
   | { event: "remote_command_result"; type: string; channelId: string; n: number; session?: string; requestId?: string; ok: boolean; code?: string;
       executedThrough?: number }
   /** 화면 루프의 데몬 연결이 끊겨(바깥이 갈림) 같은 세션에 다시 붙는다 — 세션 끝이 아니다(설계 4절 규칙 2). */
@@ -121,7 +123,9 @@ export type RemoteLogRecord =
   | { event: "pc_notify_result"; kind: string; ok: boolean; tool: string; reason?: string }
   /** 새 기기 허용·기기 관리(approve-new-device) — 단계 하나. 키·숫자·T 는 남기지 않는다(keyId 는 지문이라 남긴다). */
   | { event: "pc_device"; step: string; requestId?: string; keyId?: string; result?: string; reason?: string }
-  | { event: "remote_open_without_devices"; reason: string };
+  | { event: "remote_open_without_devices"; reason: string }
+  /** 붙여넣은 이미지 정리(24시간 — 다리 시작·저장 때) — 지운 수·못 지운 수. 경로·이름은 남기지 않는다. */
+  | { event: "remote_images_pruned"; when: "start" | "save"; removed: number; failed: number; code?: string };
 
 export function openRemoteLog(paths: TermPaths): DaemonLog<RemoteLogRecord> {
   const log = new DaemonLog<RemoteLogRecord>(paths.remoteLog, paths.previousRemoteLog);
@@ -249,12 +253,18 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
   let listWatch: TermClient | undefined;
   /** 지금 PC 연결(pc-bridge) 세션 이름 — 마지막 ls 의 것. 웹 명령이 그 세션을 겨누면 거절한다. */
   let bridges: readonly string[] = [];
+  /** 마지막 ls 의 올릴 세션(PC 연결 세션 뺌) — 이미지 붙여넣기가 겨눈 세션·instance 를 여기서 본다. */
+  let listed: Listing["sessions"] = [];
   const list = async (): Promise<Listing | undefined> => {
     const current = await currentListing(deps);
-    if (current) bridges = current.bridges;
+    if (current) {
+      bridges = current.bridges;
+      listed = current.sessions;
+    }
     return current;
   };
   try {
+    await pruneAtStart(deps);
     // 열 때 답한 데몬이 없으면 빈 목록으로 연다(올릴 세션을 모른다 — 서버 장부는 목록에 없는 세션을 «미확인»으로 둔다 · 4-1).
     //   그때는 «올린 목록» 표를 두지 않는다 — 데몬이 답하면 다음 견주기가 진짜 목록을 올린다.
     const firstAnswer = await list();
@@ -533,6 +543,17 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
     const commands = new CommandRunner(deps, control, book, () => remote, () => link.linkId, stopper.signal, {
       // 지금 PC 연결 세션 · 만들기는 그 이름 자체도(startPcSession 이 늘 그 이름으로 띄운다 — 웹이 먼저 차지하면 PC 연결이 못 뜬다)
       refuses: (session, create) => bridges.includes(session) || (create && session === PC_SESSION_NAME),
+      listed: async (session, instance) => {
+        const found = (): boolean => listed.some((item) => item.name === session && item.instance === instance);
+        if (found()) return true;
+        try {
+          await list();   // 방금 만든 세션 — 마지막 목록이 아직 모른다
+        } catch (error) {
+          daemonFailed(deps, "ls", session, error);
+          return false;
+        }
+        return found();
+      },
       devices: () => devices,
       trusted: async (keyId) => (await loadTrust(deps))?.browsers.some((item) => item.keyId === keyId) === true,
       closeChannel,
@@ -677,21 +698,22 @@ async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boo
   signal: AbortSignal | undefined, bodyMax: number | undefined): Promise<Link> {
   const base = { pcId: deps.pcId, hostName: deps.hostName, cliVersion: deps.cliVersion, remoteEnabled,
     sessions: remoteEnabled ? current.sessions : [], e2e: E2E_VERSION };
-  // 새 기기 허용·기기 관리를 안다(approve-new-device §3-4) — 서버는 이 표시가 있는 링크에만 pair-request·device 를 보낸다.
-  const devices = deps.trust !== undefined && deps.pairRelay !== undefined;
+  // 능력 표시 — 서버는 표시가 있는 링크에만 그 명령을 보낸다. devices: 새 기기 허용·기기 관리(approve-new-device §3-4) ·
+  // images: 이미지 붙여넣기(계약 §2 — 이 다리는 늘 안다).
+  const features = { ...(deps.trust !== undefined && deps.pairRelay !== undefined ? { devices: true } : {}), images: true };
   const call = async (ended: WireEnded[]): Promise<Record<string, unknown>> => {
     const body = ended.length > 0 ? { ...base, ended } : base;
     try {
-      return await deps.http.call("open", devices ? { ...body, devices: true } : body, signal ? { signal } : undefined);
+      return await deps.http.call("open", { ...body, ...features }, signal ? { signal } : undefined);
     } catch (error) {
-      // ★옛 서버는 모르는 칸을 400 INVALID 로 거절한다 — 표시 없이 한 번 더(기존 터미널은 그대로 열린다 · 새 기기 허용만 없다).
-      if (!devices || !(error instanceof PcCallError && error.status === 400 && error.code === "INVALID")) throw error;
-      deps.log.write({ event: "remote_open_without_devices", reason: "server refused the devices field" });
+      // ★옛 서버는 모르는 칸을 400 INVALID 로 거절한다 — 표시 없이 한 번 더(기존 터미널은 그대로 열린다 · 새 기기 허용·이미지 붙여넣기만 없다).
+      if (!(error instanceof PcCallError && error.status === 400 && error.code === "INVALID")) throw error;
+      deps.log.write({ event: "remote_open_without_devices", reason: `server refused the ${Object.keys(features).join("/")} field` });
       return await deps.http.call("open", body, signal ? { signal } : undefined);
     }
   };
   const fit = (max: number | undefined): WireEnded[] =>
-    current.ended.slice(0, endedThatFit(devices ? { ...base, devices: true } : base, current.ended, max));
+    current.ended.slice(0, endedThatFit({ ...base, ...features }, current.ended, max));
   if (remoteEnabled) await markListed(deps, current);
   let sent = fit(bodyMax);
   let opened: Record<string, unknown>;
@@ -774,6 +796,20 @@ async function loadTrust(deps: BridgeDeps): Promise<HelloTrust | undefined> {
   }
 }
 
+/** 다리 시작 때 붙여넣은 이미지 정리(24시간) — 실패해도 다리는 연다(한 줄 남긴다). */
+async function pruneAtStart(deps: BridgeDeps): Promise<void> {
+  try {
+    logPruned(deps, "start", await pruneImages(deps.paths.images));
+  } catch (error) {
+    deps.log.write({ event: "remote_images_pruned", when: "start", removed: 0, failed: 1, code: errorCode(error) });   // 코드만(경로 없음)
+  }
+}
+
+/** 정리한 것이 있을 때만 한 줄. */
+function logPruned(deps: BridgeDeps, when: "start" | "save", pruned: ImagePrune): void {
+  if (pruned.removed > 0 || pruned.failed > 0) deps.log.write({ event: "remote_images_pruned", when, ...pruned });
+}
+
 /** 다시 하지 않을 서버 거절 — 사유와 함께 1. 새 CLI 가 아직 옛 서버를 만나면(open 400 INVALID — §11-6) 그렇게 말한다. */
 function refused(error: unknown): RemoteEnd {
   if (error instanceof PcCallError && error.op === "open" && error.status === 400 && error.code === "INVALID") {
@@ -830,6 +866,8 @@ class DaemonControl {
 interface RunnerHooks {
   /** 웹 명령이 그 세션에 가면 안 되나(PC 연결 세션) — create 면 만들 이름. */
   refuses(session: string, create: boolean): boolean;
+  /** 그 세션·instance 가 지금 목록(PC 연결 세션 뺌)에 있나 — 마지막 ls 에 없으면 한 번 다시 본다(이미지 붙여넣기). */
+  listed(session: string, instance: string): Promise<boolean>;
   /** 기기 관리 — 없으면 device 명령은 거절 답. */
   devices(): DeviceManager | undefined;
   /** 그 브라우저 키가 지금 핀에 있나(confirm 때 다시 본다 — hello 뒤 지운 키가 활성되지 않게). */
@@ -896,6 +934,7 @@ class CommandRunner {
         return;
       case "command":
         if (outcome.command.kind === "device") await this.device(wire, outcome.command, outcome.browser);
+        else if (outcome.command.kind === "image") await this.image(wire, outcome.command);
         else await this.execute(wire, outcome.command, outcome.browser);
         return;
     }
@@ -919,19 +958,55 @@ class CommandRunner {
         failure = { code: errorCode(error), message: error instanceof Error ? error.message : String(error) };
       }
     }
+    await this.reply(wire, "device", "", command.opId, failure, result);
+  }
+
+  /**
+   * 이미지 붙여넣기(계약 §1·§4) — 데몬에 보내지 않고 PC 에 저장한다. 답 result {path}(실패면 {}).
+   * 거절: 원격 꺼짐 REMOTE_OFF · PC 연결 세션·목록에 없는 세션/instance TERM_NO_SESSION · 모양·크기·magic TERM_BAD_REQUEST.
+   * ★로그는 바이트 수·종류만 — 경로·내용은 봉인 답에만.
+   */
+  private async image(wire: WireCommand, command: Extract<ChannelCommand, { kind: "image" }>): Promise<void> {
+    this.deps.log.write({ event: "remote_command", type: "image", channelId: wire.channelId, n: wire.n, session: command.session,
+      opId: command.opId, ...(wire.requestId ? { requestId: wire.requestId } : {}), bytes: command.bytes.length, mime: command.mime });
+    let failure: { code: string; message: string } | undefined;
+    let result: Record<string, unknown> = {};
+    if (this.remote() !== "on") {
+      failure = { code: "REMOTE_OFF", message: "Terminals from the web are turned off on this PC." };
+    } else if (this.hooks.refuses(command.session, false) || !(await this.hooks.listed(command.session, command.instance))) {
+      failure = { code: "TERM_NO_SESSION", message: `No session named "${command.session}" with that instance.` };
+    } else {
+      try {
+        const saved = await saveImage({ dir: this.deps.paths.images, opId: command.opId, mime: command.mime, bytes: command.bytes });
+        logPruned(this.deps, "save", saved.pruned);
+        result = { path: saved.path };
+      } catch (error) {
+        failure = { code: errorCode(error), message: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    await this.reply(wire, "image", command.session, command.opId, failure, result);
+  }
+
+  /**
+   * 결과 있는 답(device·image) — 봉인 본문 {opId, kind, session?, ok, detail?, result} · AAD {answer, session, opId} · 바깥 code 는 허용 목록만(A7).
+   * 답을 보낸 뒤 실행 확인 지점을 올린다.
+   */
+  private async reply(wire: WireCommand, kind: "device" | "image", session: string, opId: string,
+    failure: { code: string; message: string } | undefined, result: Record<string, unknown>): Promise<void> {
     let box: { n: number; c: string };
     try {
-      box = await this.book.seal(wire.channelId, { kind: "answer", session: "", opId: command.opId }, {
-        opId: command.opId,
-        kind: "device",
+      box = await this.book.seal(wire.channelId, { kind: "answer", session, opId }, {
+        opId,
+        kind,
+        ...(session ? { session } : {}),
         ok: failure === undefined,
         ...(failure ? { detail: `${failure.code}: ${failure.message}` } : {}),
         result,
       });
     } catch (error) {
-      // 자기 키를 지웠으면 채널이 이미 닫혔다 — 답은 못 간다(웹은 «결과 미확정» → 다른 기기의 목록으로 확인).
+      // 채널이 이미 닫혔다(자기 키를 지운 device 등) — 답은 못 간다(웹은 «결과 미확정»).
       const reason = error instanceof ChannelSealError && error.reason !== "CHANNEL_GONE" ? error.reason : undefined;
-      this.logResult(wire, "device", "", false, failure?.code ?? reason ?? "CHANNEL_GONE");
+      this.logResult(wire, kind, session, false, failure?.code ?? reason ?? "CHANNEL_GONE");
       if (reason) await this.hooks.closeChannel(wire.channelId, reason);
       return;
     }
@@ -946,11 +1021,12 @@ class CommandRunner {
       }
     }
     const raised = this.book.executed(wire.channelId, wire.n);
-    this.logResult(wire, "device", "", failure === undefined, failure?.code, raised ? wire.n : undefined);
+    this.logResult(wire, kind, session, failure === undefined, failure?.code, raised ? wire.n : undefined);
     if (raised) this.hooks.refreshChannel(wire.channelId);
   }
 
-  private async execute(wire: WireCommand, command: Exclude<ChannelCommand, { kind: "confirm" | "device" }>, browser: ChannelBrowser): Promise<void> {
+  private async execute(wire: WireCommand, command: Exclude<ChannelCommand, { kind: "confirm" | "device" | "image" }>, browser: ChannelBrowser)
+    : Promise<void> {
     const session = command.kind === "create" ? command.name : command.session;
     const opId = "opId" in command ? command.opId : undefined;
     this.deps.log.write({ event: "remote_command", type: command.kind, channelId: wire.channelId, n: wire.n, session,
@@ -1036,7 +1112,7 @@ class CommandRunner {
    * 명령 하나를 데몬에 — ★세션을 겨누는 명령은 인스턴스를 싣는다. 비교는 데몬이 적용하는 자리에서(§14-6 4 — 여기서 미리 보지 않는다).
    * 데몬 응답에 인스턴스가 없으면 옛 데몬이다(검사를 하지 않았다) — 실패로 친다.
    */
-  private async apply(channelId: string, command: Exclude<ChannelCommand, { kind: "confirm" | "device" }>): Promise<Applied> {
+  private async apply(channelId: string, command: Exclude<ChannelCommand, { kind: "confirm" | "device" | "image" }>): Promise<Applied> {
     switch (command.kind) {
       case "input": {
         const key = `${channelId}\u0000${command.session}`;

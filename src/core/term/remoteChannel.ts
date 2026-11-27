@@ -62,7 +62,7 @@ export function answerCodeOf(code: string): AnswerCode {
   return (ANSWER_CODES as readonly string[]).includes(code) ? code as AnswerCode : "TERM_FAILED";
 }
 
-export const COMMAND_KINDS = ["confirm", "input", "key", "resize", "create", "kill", "label", "device"] as const;
+export const COMMAND_KINDS = ["confirm", "input", "key", "resize", "create", "kill", "label", "device", "image"] as const;
 export type CommandKind = (typeof COMMAND_KINDS)[number];
 
 /** poll 의 cmd 항목(A3) — 봉인 밖 평문 칸. kind·session·opId·projectUuid 는 AAD 칸이고, requestId 는 서버 상관 id(봉인 밖). */
@@ -87,7 +87,9 @@ export type ChannelCommand =
   | { kind: "kill"; opId: string; session: string; instance: string }
   | { kind: "label"; opId: string; session: string; instance: string; label: string }
   /** 기기 관리(approve-new-device §3-4) — 세션 없음 · 답 있음. 무엇을 하는지는 봉인 안에만(서버는 kind 만 본다). */
-  | { kind: "device"; opId: string; action: DeviceAction };
+  | { kind: "device"; opId: string; action: DeviceAction }
+  /** 이미지 붙여넣기(계약 §1) — kill 과 같은 선 위 칸 · 답 result.path. mime·크기·magic 검사는 저장하는 곳(remoteImage)이 한다. */
+  | { kind: "image"; opId: string; session: string; instance: string; mime: string; bytes: Buffer };
 
 /** device 명령의 봉인 안 action. T 는 32바이트. */
 export type DeviceAction =
@@ -386,10 +388,8 @@ export function sealedCommand(wire: WireCommand, plaintext: Uint8Array): Channel
     case "confirm":
       return wire.session === undefined && wire.opId === undefined && wire.projectUuid === undefined ? { kind: "confirm" } : undefined;
     case "input": {
-      const d = body.d;
-      return targets(false) && typeof d === "string" && /^[A-Za-z0-9+/_-]*={0,2}$/.test(d)
-        ? { kind: "input", session: session!, instance: instance!, bytes: Buffer.from(d, "base64") }
-        : undefined;
+      const bytes = base64Bytes(body.d);
+      return targets(false) && bytes ? { kind: "input", session: session!, instance: instance!, bytes } : undefined;
     }
     case "key": {
       const key = text(body.key);
@@ -420,7 +420,17 @@ export function sealedCommand(wire: WireCommand, plaintext: Uint8Array): Channel
       const action = deviceAction(body);
       return action ? { kind: "device", opId, action } : undefined;
     }
+    case "image": {
+      const mime = text(body.mime);
+      const bytes = base64Bytes(body.d);
+      return targets(true) && mime && bytes ? { kind: "image", opId: opId!, session: session!, instance: instance!, mime, bytes } : undefined;
+    }
   }
+}
+
+/** 봉인 본문의 d(표준 base64 — url 글자도 받는다) → 바이트(순수). 문자열이 아니거나 글자가 틀리면 undefined. */
+function base64Bytes(value: unknown): Buffer | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9+/_-]*={0,2}$/.test(value) ? Buffer.from(value, "base64") : undefined;
 }
 
 /** device 본문의 action(순수) — 모양이 틀리면 undefined. */

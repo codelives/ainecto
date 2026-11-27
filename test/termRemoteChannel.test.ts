@@ -173,6 +173,29 @@ describe("E2E 채널 장부 — hello·confirm·순서·봉인", () => {
     expect(sealedCommand({ channelId: "c", n: 0, c: "x", kind: "confirm" }, new Uint8Array([0xff]))).toBeUndefined();
   });
 
+  it("이미지 붙여넣기(계약 §1) — 선 위 session·opId 가 본문과 같아야(kill 규칙) · instance·mime·d 를 읽는다 · 어긋나면 거절 · 봉인 왕복", async () => {
+    const plain = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value));
+    const image = (meta: Partial<WireCommand>) => ({ channelId: "c", n: 1, c: "x", kind: "image" as const, session: "w", opId: OP, ...meta });
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const body = { opId: OP, session: "w", instance: INSTANCE, mime: "image/png", d: bytes.toString("base64") };
+    expect(sealedCommand(image({}), plain(body))).toEqual({ kind: "image", opId: OP, session: "w", instance: INSTANCE, mime: "image/png", bytes });
+    expect(sealedCommand(image({ session: "other" }), plain(body))).toBeUndefined();
+    expect(sealedCommand(image({ opId: INSTANCE }), plain(body))).toBeUndefined();
+    expect(sealedCommand(image({ opId: undefined }), plain(body))).toBeUndefined();
+    expect(sealedCommand(image({ projectUuid: OP }), plain(body))).toBeUndefined();
+    expect(sealedCommand(image({}), plain({ ...body, instance: undefined }))).toBeUndefined();
+    expect(sealedCommand(image({}), plain({ ...body, mime: undefined }))).toBeUndefined();
+    expect(sealedCommand(image({}), plain({ ...body, d: "!!" }))).toBeUndefined();
+    expect(sealedCommand(image({}), plain({ ...body, d: 1 }))).toBeUndefined();
+    expect(wireCommand({ type: "cmd", channelId: "c", n: 3, c: "AA", kind: "image", session: "w", opId: OP, requestId: "r" }))
+      .toEqual({ channelId: "c", n: 3, c: "AA", kind: "image", session: "w", opId: OP, requestId: "r" });
+
+    const { book, browser, trust } = await world();
+    const channel = await open(book, browser, trust, "c1");
+    expect(await book.receive(wire("c1", await channel.seal("image", body, { session: "w", opId: OP }))))
+      .toMatchObject({ type: "command", command: { kind: "image", opId: OP, session: "w", instance: INSTANCE, mime: "image/png", bytes } });
+  });
+
   it("선 위 cmd 모양(순수) · CRUD 바깥 코드는 허용 목록만(A7)", () => {
     expect(wireCommand({ type: "cmd", channelId: "c", n: 3, c: "AA", kind: "label", session: "s", opId: OP, requestId: "r", extra: true }))
       .toEqual({ channelId: "c", n: 3, c: "AA", kind: "label", session: "s", opId: OP, requestId: "r" });

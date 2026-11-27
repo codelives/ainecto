@@ -38,7 +38,7 @@ export class FakeRemoteServer {
   bodyMaxBytes = 64 * 1024;
   /** 다음 open 을 이 오류로 거절한다(옛 서버 흉내 — 400 INVALID). */
   openError: { status: number; code: string } | undefined;
-  /** 옛 서버 흉내 — open 에 모르는 칸 devices 가 있으면 400 INVALID(그 칸이 없으면 받는다). */
+  /** 옛 서버 흉내 — open 에 모르는 칸 devices·images 가 있으면 400 INVALID(그 칸들이 없으면 받는다). */
   refuseDevicesField = false;
   /** npm 꼬리표(계약 1절) — 있으면 OPEN poll 응답에 cli 칸으로. */
   cli: Record<string, string> | undefined;
@@ -128,7 +128,7 @@ export class FakeRemoteServer {
           reply(this.openError.status, { code: this.openError.code, message: "refused" });
           return;
         }
-        if (this.refuseDevicesField && body.devices !== undefined) {
+        if (this.refuseDevicesField && (body.devices !== undefined || body.images !== undefined)) {
           reply(400, { code: "INVALID", message: "Invalid request body." });
           return;
         }

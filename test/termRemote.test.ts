@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
@@ -9,11 +9,11 @@ import { createPcNotifier } from "../src/core/pc/pcNotify";
 import { createRemoteHttp, openRemoteLog, pollItems, remoteStateOf, runRemoteBridge, type BridgeDeps, type RemoteResult } from "../src/core/term/remote";
 import { frameBudget, screenFrame } from "../src/core/term/remoteFrame";
 import type { CellStyle } from "../src/core/term/screen";
-import { CALL_TIMEOUT_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
+import { CALL_TIMEOUT_MS, IMAGE_KEEP_MS, RETRY_MAX_MS, RETRY_MIN_MS, retryWait } from "../src/core/term/remoteLimits";
 import { endedThatFit, listing } from "../src/core/term/remoteSessions";
 import { RemoteViewer } from "../src/core/term/remoteViewer";
 import { FakeRemoteServer } from "./support/fakeRemoteServer";
-import { FakeWeb, WebChannel, type OpenedFrame } from "./support/fakeWeb";
+import { FakeWeb, WebChannel, type Crud, type OpenedFrame } from "./support/fakeWeb";
 import { loadPcKeys } from "../src/core/pc/pcKeys";
 import type { RequestRelay } from "../src/core/pc/pcPairRelay";
 import {
@@ -952,13 +952,14 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     expectLogPairs();
   }, LONG);
 
-  it("새 CLI 가 아직 옛 서버를 만나면(open 400 INVALID) — «서버가 아직 새 판이 아님» 사유로 끝(1) · 다시 하지 않음", async () => {
+  it("새 CLI 가 아직 옛 서버를 만나면(open 400 INVALID) — 능력 표시(images) 없이 한 번 더 · 그래도 거절이면 «서버가 아직 새 판이 아님» 사유로 끝(1)", async () => {
     fake.openError = { status: 400, code: "INVALID" };
     const run = start();
     const result = await run.done;
     expect(result.exitCode).toBe(1);
     expect(result.reason).toContain("not on the new version yet");
-    expect(fake.ops()).toEqual(["open"]);
+    expect(fake.ops()).toEqual(["open", "open"]);
+    expect(fake.calls[1]?.body).not.toHaveProperty("images");
   }, LONG);
 
   it("새 CLI(devices:true)가 옛 서버를 만나면 — 그 칸 없이 한 번 더 open · 기존 터미널은 열린다(새 기기 허용만 없다)", async () => {
@@ -967,12 +968,111 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     const run = start({ pairRelay: () => { throw new Error("no pair relay in this test"); } });
     await until(() => fake.ops().filter((op) => op === "open").length === 2 && fake.ops().includes("poll"), "second open and poll");
     const opens = fake.calls.filter((call) => call.op === "open").map((call) => call.body as Record<string, unknown>);
-    expect(opens[0]).toMatchObject({ devices: true });
+    expect(opens[0]).toMatchObject({ devices: true, images: true });
     expect(opens[1]).not.toHaveProperty("devices");
+    expect(opens[1]).not.toHaveProperty("images");
     expect(remoteLog().some((r) => r.event === "remote_open_without_devices")).toBe(true);
     run.stop.abort();
     expect((await run.done).exitCode).toBe(0);
   }, LONG);
+
+  it("이미지 붙여넣기 표시(계약 §2) — 기기 관리가 없어도 open 에 images:true · 옛 서버(400 INVALID)면 images 를 빼고 한 번 더", async () => {
+    fake.refuseDevicesField = true;
+    const run = start({ trust: false });
+    await until(() => fake.ops().filter((op) => op === "open").length === 2 && fake.ops().includes("poll"), "second open and poll");
+    const opens = fake.calls.filter((call) => call.op === "open").map((call) => call.body as Record<string, unknown>);
+    expect(opens[0]).toMatchObject({ images: true });
+    expect(opens[0]).not.toHaveProperty("devices");
+    expect(opens[1]).not.toHaveProperty("images");
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
+  describe("이미지 붙여넣기(계약 §1·§4) — 봉인 image → PC 에 저장 → 봉인 답 result.path", () => {
+    const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7, 7]);
+    const images = (): string => termPaths(rig.home).images;
+
+    async function sent(channel: WebChannel, crud: Crud): Promise<{ outer: Record<string, unknown>; sealed: Record<string, unknown> }> {
+      await until(async () => (await channel.answer(crud)) !== undefined, "image answer");
+      return (await channel.answer(crud))!;
+    }
+
+    it("저장 성공 — <opId>.png 0600 · 답 {kind:image, session, ok, result.path} · 로그는 bytes·mime 만(경로 없음) · 다리 시작 때 24시간 지난 파일 정리", async () => {
+      mkdirSync(images(), { recursive: true, mode: 0o700 });
+      const stalePath = join(images(), `${randomUUID()}.png`);
+      writeFileSync(stalePath, PNG);
+      const stale = new Date(Date.now() - IMAGE_KEEP_MS - 60_000);
+      utimesSync(stalePath, stale, stale);
+      await ok("term", "new", "a", "--", "cat");
+      const browser = await web();
+      const run = start();
+      await until(() => fake.ops().includes("open"), "open");
+      expect(existsSync(stalePath)).toBe(false);
+      expect(remoteLog()).toContainEqual(expect.objectContaining({ event: "remote_images_pruned", removed: 1, failed: 0 }));
+      const channel = await browser.connect();
+      channel.watch("a");
+      const { instance } = await frameWhere(channel, "a", () => true, "frame of a");
+      const crud = await channel.image("a", instance, "image/png", PNG);
+      const answered = await sent(channel, crud);
+      const path = join(images(), `${crud.opId}.png`);
+      expect(answered.outer).toMatchObject({ ok: true });
+      expect(answered.sealed).toEqual({ opId: crud.opId, kind: "image", session: "a", ok: true, result: { path } });
+      expect(readFileSync(path)).toEqual(PNG);
+      if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(remoteLog()).toContainEqual(expect.objectContaining({ event: "remote_command", type: "image", session: "a", opId: crud.opId,
+        bytes: PNG.length, mime: "image/png" }));
+      expect(remoteLog()).toContainEqual(expect.objectContaining({ event: "remote_command_result", type: "image", ok: true }));
+      expect(readFileSync(termPaths(rig.home).remoteLog, "utf8")).not.toContain(path);
+      run.stop.abort();
+      await run.done;
+      expectLogPairs();
+    }, LONG);
+
+    it("거절 답 — magic 틀림 TERM_BAD_REQUEST · 모르는 세션·instance 불일치·PC 연결 세션 TERM_NO_SESSION · 파일 없음 · 채널은 계속", async () => {
+      await ok("term", "new", "a", "--", "cat");
+      await pcBridgeSession();   // PC 연결 세션(종류 pc-bridge — 0.16.8 합본: holder 는 종류 없는 PC 연결을 거절)
+      const browser = await web();
+      const run = start();
+      await until(() => fake.ops().includes("open"), "open");
+      const channel = await browser.connect();
+      channel.watch("a");
+      const { instance } = await frameWhere(channel, "a", () => true, "frame of a");
+      const cases: Array<[Crud, string]> = [
+        [await channel.image("a", instance, "image/jpeg", PNG), "TERM_BAD_REQUEST"],
+        [await channel.image("nope", instance, "image/png", PNG), "TERM_NO_SESSION"],
+        [await channel.image("a", randomUUID(), "image/png", PNG), "TERM_NO_SESSION"],
+        [await channel.image("ainecto-pc", instance, "image/png", PNG), "TERM_NO_SESSION"],
+      ];
+      for (const [crud, code] of cases) {
+        const answered = await sent(channel, crud);
+        expect(answered.outer).toMatchObject({ ok: false, code });
+        expect(answered.sealed).toMatchObject({ opId: crud.opId, kind: "image", ok: false, result: {} });
+        expect(String(answered.sealed.detail)).toMatch(new RegExp(`^${code}: `));
+      }
+      expect(existsSync(images()) ? readdirSync(images()) : []).toEqual([]);
+      expect(channel.closedReason()).toBeUndefined();
+      run.stop.abort();
+      await run.done;
+      expectLogPairs();
+    }, LONG);
+
+    it("원격 꺼짐(웹 끊기) — 채널이 REMOTE_OFF 로 닫혀 그 뒤 image 는 실행하지 않는다(파일 없음)", async () => {
+      await ok("term", "new", "a", "--", "cat");
+      const browser = await web();
+      const run = start();
+      await until(() => fake.ops().includes("open"), "open");
+      const channel = await browser.connect();
+      channel.watch("a");
+      const { instance } = await frameWhere(channel, "a", () => true, "frame of a");
+      fake.webOff();
+      await until(() => channel.closedReason() === "REMOTE_OFF", "channel closed by remote off");
+      await channel.image("a", instance, "image/png", PNG);
+      await until(() => remoteLog().some((r) => r.event === "remote_command_skipped" && r.why === "unknown-channel"), "image skipped");
+      expect(existsSync(images()) ? readdirSync(images()) : []).toEqual([]);
+      run.stop.abort();
+      await run.done;
+    }, LONG);
+  });
 
   it("poll 기한 초과 → 기한 줄 남기고 같은 링크로 다시 poll · poll 401(로그인 거절) → 끝(1)", async () => {
     await ok("term", "new", "a", "--", "cat");
