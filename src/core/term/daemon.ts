@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { ensurePrivateDir, isNodeError } from "../fs/privateFiles";
+import { stuckProcessHint } from "../os/launch";
 import { spawnResident, TermClient } from "./client";
 import { acquireOuterStartLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
@@ -22,6 +23,7 @@ import {
 } from "./ipc";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "./limits";
 import { outerSocketPath, type TermPaths } from "./paths";
+import { isAlive, readDaemonInfo, readHolderInfo } from "./residentInfo";
 import { encodeLine, LineDecoder, parseClientMessage, parseDaemonMessage, RETRY_CODE, type TermRequest, type TermResponse } from "./protocol";
 
 export type { DaemonReadiness } from "./holder";
@@ -114,7 +116,7 @@ async function startOuter(paths: TermPaths, version: string, log: DaemonLog): Pr
     throw new TermError("TERM_DAEMON_START", `The term holder did not describe itself — see ${paths.holderLog}.`);
   }
   const uuid = freshOuterUuid(paths);
-  const lease = await control.request({ op: "lease", outer: uuid, version }) as { granted: boolean; outer?: string; version?: string };
+  const lease = await control.request({ op: "lease", outer: uuid, version, pid: process.pid }) as { granted: boolean; outer?: string; version?: string };
   const previous = lease.granted ? undefined : { outer: String(lease.outer), version: String(lease.version) };
   if (previous && !newerVersion(version, previous.version)) {
     control.close();
@@ -144,15 +146,33 @@ async function connectHolder(paths: TermPaths): Promise<TermClient> {
       }
     }
     if (started === DAEMON_START_ATTEMPTS) {
-      throw new TermError(OLD_DAEMON_CODE, "Another process holds the term daemon lock but no term holder answers — an older term daemon "
-        + "(ainecto 0.16.x or earlier) is probably still running. Run `npx -y ainecto@latest` once in a terminal to switch to the new "
-        + `terminal structure. See ${paths.holderLog}.`);
+      throw holderUnreachable(paths);
     }
     const readiness = await spawnResident(paths, "holder");
     if (readiness.status === "error") {
       throw new TermError("TERM_DAEMON_START", `The term holder did not start: ${readiness.message}`);
     }
   }
+}
+
+/**
+ * holder 를 {@link DAEMON_START_ATTEMPTS} 번 띄워도 못 붙었다 — 잠금을 쥔 쪽을 안내한다(안내용 파일 — residentInfo).
+ *   holder 가 살아 있음(잠금을 쥐고 bind 전·뒤에 멈춤) → 그 pid · 옛 구조 데몬(daemon.json)이 살아 있음 → {@link OLD_DAEMON_CODE} · 그 밖 → 아무도 답하지 않음.
+ */
+function holderUnreachable(paths: TermPaths): TermError {
+  const tried = `Could not reach the term holder after starting it ${DAEMON_START_ATTEMPTS} times.`;
+  const holder = readHolderInfo(paths)?.pid;
+  if (holder !== undefined && holder !== process.pid && isAlive(holder)) {
+    return new TermError("TERM_DAEMON_START", `${tried} Holder pid ${holder} holds the term lock but is not answering on ${paths.holderSocket} `
+      + `— it may be stopped or hung. ${stuckProcessHint(holder)} See ${paths.holderLog}.`);
+  }
+  const old = readDaemonInfo(paths)?.pid;
+  if (old !== undefined && isAlive(old)) {
+    return new TermError(OLD_DAEMON_CODE, `${tried} An older term daemon (ainecto 0.16.x or earlier, pid ${old}) holds the term lock. `
+      + "Run `npx -y ainecto@latest` once in a terminal to switch to the new terminal structure. "
+      + `See ${paths.holderLog}.`);
+  }
+  return new TermError("TERM_DAEMON_START", `${tried} No running holder answered. See ${paths.holderLog}.`);
 }
 
 /** 자기 주소 파일이 아직 없는 uuid — 주소 이름에는 앞 8글자만 쓰므로(paths.ts) 겹치면 다시 뽑는다. */
@@ -244,7 +264,7 @@ class Outer {
     }
     const until = Date.now() + DAEMON_RESPONSE_TIMEOUT_MS;
     for (;;) {
-      const lease = await this.control.request({ op: "lease", outer: this.uuid, version: this.version }) as { granted: boolean };
+      const lease = await this.control.request({ op: "lease", outer: this.uuid, version: this.version, pid: process.pid }) as { granted: boolean };
       if (lease.granted) break;
       if (Date.now() >= until) {
         if (previousAddress) await pointTo(this.paths.socket, previousAddress, previousFile);

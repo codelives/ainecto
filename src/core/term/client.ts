@@ -1,10 +1,10 @@
 import type { ChildProcess } from "node:child_process";
-import { closeSync, openSync, readFileSync } from "node:fs";
+import { closeSync, openSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
-import { spawnDetached, stuckProcessHint } from "../os/launch";
+import { spawnDetached } from "../os/launch";
 import type { DaemonReadiness } from "./holder";
 import { assertTermRuntime } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
@@ -13,6 +13,7 @@ import { outerCaps, type OuterCaps } from "./holderTalk";
 import { connectAddress, IMPOSTOR_CODE, newNonce, NO_ADDRESS_CODE, proofMatches, type IpcAddress } from "./ipc";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "./limits";
 import type { TermPaths } from "./paths";
+import { residentHint } from "./residentInfo";
 import {
   encodeLine,
   LineDecoder,
@@ -111,12 +112,12 @@ export class TermClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        const pid = daemonPid(this.paths);
+        const { label, hint } = residentHint(this.paths);
         reject(new TermError(
           "TERM_DAEMON_NO_RESPONSE",
-          `The term daemon${pid ? ` (pid ${pid})` : ""} did not answer "${body.op}" within ${DAEMON_RESPONSE_TIMEOUT_MS / 1000} s. `
+          `The term daemon${label} did not answer "${body.op}" within ${DAEMON_RESPONSE_TIMEOUT_MS / 1000} s. `
             + "It may be stopped or busy; nothing was cleaned up. "
-            + `${pid ? `${stuckProcessHint(pid)} ` : ""}See ${this.paths.log}.`,
+            + `${hint}See ${this.paths.log}.`,
         ));
         // ★우리 연결만 끊는다 — end() 는 멈춘 데몬이 끝을 받아 줄 때까지 연결을 붙잡아 명령이 끝나지 않는다.
         this.socket.destroy();
@@ -331,37 +332,8 @@ function parseReadiness(line: string): DaemonReadiness {
   return { status: "error", message: `unexpected readiness line: ${line}` };
 }
 
-/** daemon.json — 데몬이 시작할 때 쓴 pid·판. 없거나 못 읽으면 undefined. */
-export function readDaemonInfo(paths: TermPaths): { pid: number; version?: string } | undefined {
-  try {
-    const value: unknown = JSON.parse(readFileSync(paths.daemonInfo, "utf8"));
-    const pid = value && typeof value === "object" && "pid" in value ? value.pid : undefined;
-    const version = value && typeof value === "object" && "version" in value ? value.version : undefined;
-    return typeof pid === "number" ? { pid, ...(typeof version === "string" ? { version } : {}) } : undefined;
-  } catch {
-    // 판정 재료가 없을 뿐이다 — 안내·판 비교를 건너뛴다. 오류 자체는 호출한 쪽이 낸다.
-    return undefined;
-  }
-}
-
-function daemonPid(paths: TermPaths): number | undefined {
-  return readDaemonInfo(paths)?.pid;
-}
-
 function notListening(paths: TermPaths): string {
-  const pid = daemonPid(paths);
-  const holder = pid !== undefined && isAlive(pid)
-    ? `Daemon pid ${pid} holds the lock but is not listening on ${paths.socket} — it may be stopped or hung. ${stuckProcessHint(pid)}`
-    : "No running daemon answered.";
-  return `Could not reach the term daemon after starting it ${DAEMON_START_ATTEMPTS} times. ${holder} See ${paths.log}.`;
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM = 살아 있지만 남의 프로세스(같은 사용자 폴더라 드물다).
-    return isNodeError(error, "EPERM");
-  }
+  const { label, hint } = residentHint(paths);
+  const stuck = label ? `The term daemon${label} is running but not answering on ${paths.socket} — it may be stopped or hung. ${hint}` : "No running daemon answered. ";
+  return `Could not reach the term daemon after starting it ${DAEMON_START_ATTEMPTS} times. ${stuck}See ${paths.log}.`;
 }

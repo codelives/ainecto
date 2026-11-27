@@ -131,11 +131,11 @@ describe("ainecto term — real daemon and PTY", () => {
   it("a daemon that holds the lock but never binds: new gives up after 3 starts and names its pid", async () => {
     const holder = spawn(process.execPath, ["--import", TSX, "--input-type=module", "-e", [
       `import { mkdirSync } from "node:fs";`,
-      `const { claimDaemon } = await import(${JSON.stringify(join(ROOT, "src/core/term/daemon.ts"))});`,
+      `const { claimHolder } = await import(${JSON.stringify(join(ROOT, "src/core/term/holder.ts"))});`,
       `const { termPaths } = await import(${JSON.stringify(join(ROOT, "src/core/term/paths.ts"))});`,
       `const paths = termPaths(${JSON.stringify(rig.home)});`,
       `mkdirSync(paths.dir, { recursive: true, mode: 0o700 });`,
-      `process.stdout.write((await claimDaemon(paths, "test")) ? "held\\n" : "locked\\n");`,
+      `process.stdout.write((await claimHolder(paths, "test", "00000000-0000-4000-8000-000000000009")) ? "held\\n" : "locked\\n");`,
       `process.stdin.resume();`,
     ].join("\n")], { cwd: ROOT, stdio: ["pipe", "pipe", "inherit"] });
     try {
@@ -148,7 +148,8 @@ describe("ainecto term — real daemon and PTY", () => {
       expect(error.code).toBe("TERM_DAEMON_START");
       expect(error.message).toContain(`pid ${holder.pid}`);
       expect(error.message).toContain(`${DAEMON_START_ATTEMPTS} times`);
-      const locked = (await readFile(join(rig.home, ".ainecto/term/daemon.log"), "utf8"))
+      // 세션 유지 구조: 잠금을 다투는 것은 holder — 그 기록은 holder.log 에
+      const locked = (await readFile(join(rig.home, ".ainecto/term/holder.log"), "utf8"))
         .split("\n").filter((line) => line.includes('"daemon_locked"'));
       expect(locked).toHaveLength(DAEMON_START_ATTEMPTS);
       expect(daemonPids()).toEqual([]);

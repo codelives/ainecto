@@ -11,7 +11,7 @@ const baseline = (JSON.parse(readFileSync(join(__dirname, "fixtures/holder-talk.
 
 /** op 마다 모든 칸을 채운 요청 한 줄 — 선 위 모양(protocol.ts)이 그 칸을 읽는지 본다. */
 const SAMPLE: Record<string, unknown> = {
-  nonce: "n", outer: "00000000-0000-4000-8000-000000000001", version: "0.16.7", name: "a", cwd: "/", command: ["sh"], env: {}, cols: 80, rows: 24,
+  nonce: "n", outer: "00000000-0000-4000-8000-000000000001", version: "0.16.7", pid: 4242, name: "a", cwd: "/", command: ["sh"], env: {}, cols: 80, rows: 24,
   project: "00000000-0000-4000-8000-000000000002", input: "none", kind: "user", instances: ["i"], to: "t", text: "x", paste: true,
   instance: "i", key: "Enter", scrollback: true, lines: 3, styles: true, holder: "00000000-0000-4000-8000-000000000003", label: "L", d: "eA==",
 };

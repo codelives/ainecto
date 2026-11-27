@@ -7,7 +7,8 @@
     "caps": [],
     "lease": [
       "outer",
-      "version"
+      "version",
+      "pid"
     ],
     "via": [
       "outer"

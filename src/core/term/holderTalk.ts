@@ -7,7 +7,7 @@
 export const HOLDER_TALK: Readonly<Record<string, readonly string[]>> = {
   hello: ["nonce"],
   caps: [],
-  lease: ["outer", "version"],
+  lease: ["outer", "version", "pid"],
   via: ["outer"],
   new: ["name", "cwd", "command", "env", "cols", "rows", "project", "input", "kind"],
   ls: [],

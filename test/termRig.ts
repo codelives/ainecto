@@ -46,10 +46,11 @@ export function useTermRig(): void {
   });
 
   afterEach(async () => {
-    for (const pid of daemonPids()) {
+    // 바깥과 holder 둘 다 — holder 가 남으면 세션(PTY)이 시험 HOME 을 붙잡는다.
+    for (const pid of [...daemonPids(), ...holderPids()]) {
       process.kill(pid, "SIGKILL");
     }
-    await until(() => daemonPids().length === 0, "daemons gone");
+    await until(() => daemonPids().length + holderPids().length === 0, "daemons gone");
     await rm(rig.home, { recursive: true, force: true });
   });
 }
@@ -86,11 +87,20 @@ export async function screen(name: string): Promise<string[]> {
   return (result.data as { lines: string[] }).lines;
 }
 
-/** 이 시험의 데몬 pid — 실행 인자에 표지와 `term daemon`(바깥) 또는 `term holder` 가 있는 프로세스. */
+/** 이 시험의 데몬(바깥) pid — 실행 인자에 표지와 `term daemon` 이 있는 프로세스. */
 export function daemonPids(): number[] {
+  return markedPids("term daemon");
+}
+
+/** 이 시험의 holder pid — 실행 인자에 표지와 `term holder` 가 있는 프로세스(세션 유지 구조 — 세션은 여기 산다). */
+export function holderPids(): number[] {
+  return markedPids("term holder");
+}
+
+function markedPids(role: string): number[] {
   const table = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
   return table.split("\n")
-    .filter((line) => line.includes(rig.marker) && (line.includes("term daemon") || line.includes("term holder")))
+    .filter((line) => line.includes(rig.marker) && line.includes(role))
     .map((line) => Number(line.trim().split(/\s+/)[0]));
 }
 

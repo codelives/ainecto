@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { stat, writeFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
+import { ensurePrivateDir, isNodeError, writePrivateFileAtomic } from "../fs/privateFiles";
+import { bridgeKind } from "../pc/bridgeKind";
 import { endedFromOutside } from "../os/launch";
 import { acquireDaemonLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
@@ -66,8 +67,8 @@ export async function runHolder(options: HolderOptions): Promise<number> {
       return false;
     }
   };
-  const uuid = randomUUID();
-  if (!(await claimHolder(paths, options.version, uuid))) {
+  const info = await claimHolder(paths, options.version, randomUUID());
+  if (!info) {
     log.write({ event: "daemon_locked", pid: process.pid });
     notify({ status: "locked" });
     return 1;
@@ -98,9 +99,9 @@ export async function runHolder(options: HolderOptions): Promise<number> {
     endedUnread = true;
   }
   ended = mergeEnded(ended, pending, new Set());
-  const holder = new Holder(paths, log, uuid, options.version, manifest, ended, endedUnread, pending.length > 0);
+  const holder = new Holder(paths, log, info, manifest, ended, endedUnread, pending.length > 0);
   await holder.listen();
-  log.write({ event: "holder_start", pid: process.pid, version: options.version, holder: uuid, socket: holder.address });
+  log.write({ event: "holder_start", pid: process.pid, version: options.version, holder: info.holder, socket: holder.address });
   process.on("SIGTERM", () => void holder.shutdown("SIGTERM"));
   process.on("SIGINT", () => void holder.shutdown("SIGINT"));
   process.on("uncaughtException", (error) => {
@@ -115,18 +116,33 @@ export async function runHolder(options: HolderOptions): Promise<number> {
 }
 
 /**
- * holder 자리를 차지한다 — 옛 데몬 잠금을 잡고, 잡았으면 holder.json 에 pid·판·uuid 를 쓴다. 못 잡으면 false.
+ * holder 자리를 차지한다 — 옛 데몬 잠금을 잡고, 잡았으면 holder.json 에 pid·판·uuid 를 쓴다. 못 잡으면 undefined.
  * ★daemon.json 은 쓰지 않는다 — 구판 CLI 가 그 파일의 판으로 업데이트 길(kill-server)에 들어가지 않게(설계 3-4 · r3 P1-1).
  */
-export async function claimHolder(paths: TermPaths, version: string, holder: string): Promise<boolean> {
+export async function claimHolder(paths: TermPaths, version: string, holder: string): Promise<HolderInfo | undefined> {
   const lock = await acquireDaemonLock(paths);
   if (!lock.held) {
-    return false;
+    return undefined;
   }
-  await writeFile(paths.holderInfo, `${JSON.stringify({ pid: process.pid, version, holder, startedAt: new Date().toISOString() })}\n`, {
-    mode: PRIVATE_FILE_MODE,
-  });
-  return true;
+  const info: HolderInfo = { pid: process.pid, version, holder, startedAt: new Date().toISOString() };
+  await writeHolderInfo(paths, info);
+  return info;
+}
+
+/**
+ * holder.json — holder 하나만 쓴다(시작 · 임대가 바뀔 때). 지금 임대를 쥔 바깥의 pid 를 함께 적는다.
+ * ★안내용이다 — CLI 가 «멈춘 데몬»의 pid 를 대는 데만 읽는다(client.readHolderInfo). 판·구조 판정은 살아 있는 바깥의 caps 로(설계 G4).
+ */
+export interface HolderInfo {
+  pid: number;
+  version: string;
+  holder: string;
+  startedAt: string;
+  outer?: { outer: string; version: string; pid: number };
+}
+
+function writeHolderInfo(paths: TermPaths, info: HolderInfo): Promise<void> {
+  return writePrivateFileAtomic(paths.holderInfo, `${JSON.stringify(info)}\n`);
 }
 
 interface Handled {
@@ -139,6 +155,7 @@ interface Handled {
 interface Lease {
   outer: string;
   version: string;
+  pid: number;
   connection: HolderConnection;
 }
 
@@ -158,6 +175,7 @@ class Holder {
   private stopping = false;
   private lease: Lease | undefined;
   private manifestWrite: Promise<void> = Promise.resolve();
+  private infoWrite: Promise<void> = Promise.resolve();
   private endedWrite: Promise<void> = Promise.resolve();
   /** 책을 못 읽은 동안 ack 한 instance — 다시 읽은 파일에서 되살리지 않는다. */
   private readonly endedAcked = new Set<string>();
@@ -170,9 +188,8 @@ class Holder {
   constructor(
     private readonly paths: TermPaths,
     private readonly log: DaemonLog,
-    /** holder uuid — kill-server 가 실어야 하는 값(caps 로 알린다). */
-    private readonly uuid: string,
-    private readonly version: string,
+    /** holder.json 에 쓴 것 — uuid(kill-server 가 실어야 하는 값 · caps 로 알린다)·판. 임대 바깥 칸은 {@link writeInfo} 가 채운다. */
+    private readonly info: HolderInfo,
     private manifest: ManifestEntry[],
     /** 끝 기록 책(endedBook.ts) — 서버가 받았다고 다리가 ended-ack 하기 전까지. */
     private ended: EndedRecord[],
@@ -260,9 +277,19 @@ class Holder {
       if (this.lease?.connection === connection) {
         this.log.write({ event: "lease_released", conn: connection.id, outer: this.lease.outer });
         this.lease = undefined;
+        this.writeInfo();
       }
       this.stopIfIdle();
     });
+  }
+
+  /** holder.json 을 지금 임대로 다시 쓴다(차례대로 — 늦게 끝난 쓰기가 새 값을 덮지 않게). 못 쓰면 남기고 간다(안내용 파일). */
+  private writeInfo(): void {
+    const { lease } = this;
+    const info: HolderInfo = { ...this.info, ...(lease ? { outer: { outer: lease.outer, version: lease.version, pid: lease.pid } } : {}) };
+    this.infoWrite = this.infoWrite
+      .then(() => writeHolderInfo(this.paths, info))
+      .catch((error: unknown) => this.log.write({ event: "holder_info_error", message: errorMessage(error) }));
   }
 
   /** 이 연결의 요청을 적용해도 되나 — 임대를 쥔 연결, 또는 임대를 쥔 바깥이 이은 연결(via)만(설계 3-4 «그 전 쓰기는 적용하지 않음»). */
@@ -322,9 +349,9 @@ class Holder {
 
   private caps(): HolderCaps {
     return {
-      holder: this.uuid,
+      holder: this.info.holder,
       pid: process.pid,
-      version: this.version,
+      version: this.info.version,
       talk: Object.fromEntries(Object.entries(HOLDER_TALK).map(([op, fields]) => [op, [...fields]])),
       lease: this.lease ? { outer: this.lease.outer, version: this.lease.version } : null,
     };
@@ -342,9 +369,10 @@ class Holder {
         return { data: this.caps() };
       case "lease": {
         if (!this.lease) {
-          this.lease = { outer: request.outer, version: request.version, connection };
+          this.lease = { outer: request.outer, version: request.version, pid: request.pid, connection };
           connection.outer = request.outer;
           this.log.write({ event: "lease_granted", conn: connection.id, outer: request.outer, version: request.version });
+          this.writeInfo();
         }
         const mine = this.lease.connection === connection;
         return { data: mine ? { granted: true, holder: this.caps() } : { granted: false, outer: this.lease.outer, version: this.lease.version } };
@@ -356,11 +384,12 @@ class Holder {
         throw new TermError("TERM_BAD_REQUEST", "handover is for a term daemon, not the holder.");
       case "new": {
         assertSessionName(request.name);
-        // ★종류는 만드는 요청이 정하고 holder 가 그대로 적는다 — 비었으면 user(설계 원칙 1). holder 가 만든 세션은 모두 종류를 가진다.
+        // ★종류는 만드는 요청이 정하고 holder 가 그대로 적는다. 비었으면(구판 CLI) 여기서 한 번 bridgeKind 로 정해 적는다 —
+        //   이름 ainecto-pc + 명령 pc run 일 때만 pc-bridge, 그 밖은 user(설계 원칙 1). holder 가 만든 세션은 모두 종류를 가진다.
         const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString(),
           ...(request.project !== undefined ? { project: request.project } : {}),
           ...(request.input !== undefined ? { input: request.input } : {}),
-          kind: request.kind ?? "user" };
+          kind: request.kind ?? bridgeKind({ name: request.name, command: request.command }) };
         const session = await this.startSession(entry, request.env, request.cols, request.rows);
         this.updateManifest((entries) => [...entries.filter((item) => item.name !== entry.name), { ...entry, instance: session.instance }]);
         return { data: session.info() };
@@ -423,7 +452,7 @@ class Holder {
           throw new TermError(CLI_OUTDATED_CODE, "This CLI is older than the term holder, so it cannot stop it. Run the latest CLI "
             + "(npx -y ainecto@latest term kill-server) and try again.");
         }
-        if (request.holder !== this.uuid) {
+        if (request.holder !== this.info.holder) {
           throw new TermError("TERM_HOLDER_CHANGED", "The term holder changed since this CLI looked; nothing was stopped. Try again.");
         }
         // ★먼저 새 요청을 막고, 이미 받은 생성(new·restore)을 마치게 한 «뒤» 일괄로 끝낸다(리뷰 #81 T7). 남은 처리 중 요청은 이 요청 하나다.
@@ -548,10 +577,11 @@ class Holder {
         continue;
       }
       try {
-        // 매니페스트 줄의 종류가 비었으면(옛 파일) user — holder 가 만든 세션은 모두 종류를 가진다(설계 원칙 1).
-        const session = await this.startSession({ ...entry, kind: entry.kind ?? "user" }, env);
+        // 매니페스트 줄의 종류가 비었으면(옛 파일) 여기서 한 번 bridgeKind 로 정해 적는다 — holder 가 만든 세션은 모두 종류를 가진다.
+        const kind = entry.kind ?? bridgeKind(entry);
+        const session = await this.startSession({ ...entry, kind }, env);
         // 되살린 세션은 새 인스턴스다 — 줄의 열쇠(uuid)를 바꿔 단다(G6).
-        this.updateManifest((entries) => entries.map((item) => item.name === entry.name ? { ...item, kind: entry.kind ?? "user", instance: session.instance } : item));
+        this.updateManifest((entries) => entries.map((item) => item.name === entry.name ? { ...item, kind, instance: session.instance } : item));
         restored.push(entry.name);
       } catch (error) {
         failed.push({ name: entry.name, code: errorCode(error), message: errorMessage(error) });

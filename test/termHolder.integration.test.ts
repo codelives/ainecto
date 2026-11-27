@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { TermClient } from "../src/core/term/client";
 import { holderCaps } from "../src/core/term/holderTalk";
 import { termPaths } from "../src/core/term/paths";
-import { daemonPids, LONG, rig, until, useTermRig } from "./termRig";
+import { holderPids, LONG, rig, until, useTermRig } from "./termRig";
 
 /**
  * holder 한 벌(세션 유지 구조 설계 3-1 · 단위 U1) — 바깥 없이 holder 에 직접 붙어 세션을 만들고 읽고 쓴다. 진짜 holder 프로세스·진짜 PTY.
@@ -58,7 +58,11 @@ describe("term holder — 바깥 없이 세션을 쥔다(U1)", () => {
     // 임대 없이는 세션 요청을 적용하지 않는다
     await expect(control.request({ op: "ls" })).rejects.toMatchObject({ code: "TERM_HOLDER_NO_LEASE" });
     const outer = randomUUID();
-    expect(await control.request({ op: "lease", outer, version: "0.0.1" })).toMatchObject({ granted: true, holder: { holder: info.holder } });
+    expect(await control.request({ op: "lease", outer, version: "0.0.1", pid: process.pid })).toMatchObject({ granted: true, holder: { holder: info.holder } });
+    // holder.json 은 임대 바깥의 pid 를 안내용으로 적는다(멈춘 데몬 안내 — 판정에는 안 쓴다)
+    await until(() => (JSON.parse(readFileSync(paths.holderInfo, "utf8")) as { outer?: { outer: string; pid: number } }).outer?.outer === outer,
+      "holder.json names the lease outer");
+    expect((JSON.parse(readFileSync(paths.holderInfo, "utf8")) as { outer: { pid: number } }).outer.pid).toBe(process.pid);
 
     const created = await control.request({ op: "new", name: "a", cwd: rig.home, command: ["cat"], env: env() }) as
       { name: string; instance: string; kind: string; pid: number };
@@ -75,7 +79,7 @@ describe("term holder — 바깥 없이 세션을 쥔다(U1)", () => {
     const stranger = await holderClient();
     await stranger.request({ op: "via", outer: randomUUID() });
     await expect(stranger.request({ op: "ls" })).rejects.toMatchObject({ code: "TERM_HOLDER_NO_LEASE" });
-    expect(await stranger.request({ op: "lease", outer: randomUUID(), version: "9.9.9" })).toEqual({ granted: false, outer, version: "0.0.1" });
+    expect(await stranger.request({ op: "lease", outer: randomUUID(), version: "9.9.9", pid: process.pid })).toEqual({ granted: false, outer, version: "0.0.1" });
     const piped = await holderClient();
     await piped.request({ op: "via", outer });
     const listed = await piped.request({ op: "ls" }) as { sessions: Array<{ instance: string; pid: number; kind: string }> };
@@ -90,7 +94,7 @@ describe("term holder — 바깥 없이 세션을 쥔다(U1)", () => {
     expect(await startHolder()).toEqual({ status: "locked" });
 
     expect(await piped.request({ op: "kill-server", holder: info.holder })).toEqual({ killed: ["a"] });
-    await until(() => daemonPids().length === 0, "holder gone");
+    await until(() => holderPids().length === 0, "holder gone");
     await until(() => !alive(created.pid), "pty gone");
     for (const client of [control, stranger, piped]) client.close();
   }, LONG);
@@ -99,14 +103,14 @@ describe("term holder — 바깥 없이 세션을 쥔다(U1)", () => {
     expect(await startHolder()).toEqual({ status: "ready" });
     const first = await holderClient();
     const one = randomUUID();
-    await first.request({ op: "lease", outer: one, version: "0.0.1" });
+    await first.request({ op: "lease", outer: one, version: "0.0.1", pid: process.pid });
     const created = await first.request({ op: "new", name: "keep", cwd: rig.home, command: ["cat"], env: env() }) as { instance: string; pid: number };
     await first.request({ op: "send", name: "keep", text: "before-switch", paste: false });
     first.close();
 
     const two = randomUUID();
     const second = await holderClient();
-    await until(async () => ((await second.request({ op: "lease", outer: two, version: "0.0.2" })) as { granted: boolean }).granted, "lease free");
+    await until(async () => ((await second.request({ op: "lease", outer: two, version: "0.0.2", pid: process.pid })) as { granted: boolean }).granted, "lease free");
     const listed = await second.request({ op: "ls" }) as { sessions: Array<{ instance: string; pid: number }> };
     expect(listed.sessions).toEqual([expect.objectContaining({ instance: created.instance, pid: created.pid })]);
     const screen = await second.request({ op: "read", name: "keep", scrollback: false }) as { lines: string[]; instance: string };
@@ -114,7 +118,7 @@ describe("term holder — 바깥 없이 세션을 쥔다(U1)", () => {
     expect(screen.lines.join("\n")).toContain("before-switch");
     const caps = holderCaps(await second.request({ op: "caps" }));
     await second.request({ op: "kill-server", holder: caps!.holder });
-    await until(() => daemonPids().length === 0, "holder gone");
+    await until(() => holderPids().length === 0, "holder gone");
     second.close();
   }, LONG);
 });

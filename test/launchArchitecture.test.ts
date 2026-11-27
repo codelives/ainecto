@@ -31,9 +31,9 @@ const KILL_ALLOWED: ReadonlyArray<{ file: string; receiver: string; args?: RegEx
   { file: "core/os/launch.ts", receiver: "*" },
   { file: "core/term/session.ts", receiver: "this.pty", count: 1 },
   { file: "core/term/client.ts", receiver: "child", count: 1 },
-  { file: "core/term/client.ts", receiver: "process", args: /^pid, 0$/, count: 1 },
+  { file: "core/term/residentInfo.ts", receiver: "process", args: /^pid, 0$/, count: 1 },
   // ★도메인 진입점 TermSession.kill() — kill·kill-server 요청 처리(raw 프로세스 kill 이 아니다).
-  { file: "core/term/daemon.ts", receiver: "session", count: 2 },
+  { file: "core/term/holder.ts", receiver: "session", count: 2 },
 ];
 
 export function killViolations(file: string, text: string): string[] {
@@ -86,11 +86,12 @@ describe("아키텍처 검사기 자체 — 통과·실패 둘 다", () => {
   });
 
   it("A3: 정해진 짝은 통과 · 다른 파일의 child.kill()·daemon.ts 의 proc.kill()·횟수 초과는 실패", () => {
-    expect(killViolations("core/term/daemon.ts", "session.kill();\nsession.kill();")).toEqual([]);
-    expect(killViolations("core/term/client.ts", "child.kill();\nprocess.kill(pid, 0);")).toEqual([]);
+    expect(killViolations("core/term/holder.ts", "session.kill();\nsession.kill();")).toEqual([]);
+    expect(killViolations("core/term/client.ts", "child.kill();")).toEqual([]);
+    expect(killViolations("core/term/residentInfo.ts", "process.kill(pid, 0);")).toEqual([]);
     expect(killViolations("core/agent/child.ts", "this.child.kill(\"SIGKILL\");")).toEqual(['core/agent/child.ts: this.child.kill("SIGKILL")']);
-    expect(killViolations("core/term/daemon.ts", "proc.kill();")).toEqual(["core/term/daemon.ts: proc.kill()"]);
+    expect(killViolations("core/term/holder.ts", "proc.kill();")).toEqual(["core/term/holder.ts: proc.kill()"]);
     expect(killViolations("core/term/client.ts", "process.kill(pid, \"SIGTERM\");")).toHaveLength(1);
-    expect(killViolations("core/term/daemon.ts", "session.kill();session.kill();session.kill();")).toEqual(["core/term/daemon.ts: session.kill — 3 calls, at most 2"]);
+    expect(killViolations("core/term/holder.ts", "session.kill();session.kill();session.kill();")).toEqual(["core/term/holder.ts: session.kill — 3 calls, at most 2"]);
   });
 });

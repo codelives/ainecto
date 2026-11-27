@@ -78,7 +78,7 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
     expect((await listed()).ended?.map((r) => r.instance).sort()).toEqual([a, b].sort());
   }, LONG);
 
-  it("종류 — new 의 kind 를 ls·매니페스트·끝 기록이 그대로 · 없이 만든 세션(옛 CLI)은 칸 없음 · 로컬 term new 는 user 를 찍는다(리뷰 P1-4) · 모르는 값은 요청 거절", async () => {
+  it("종류 — new 의 kind 를 ls·매니페스트·끝 기록이 그대로 · 없이 만든 세션(옛 CLI)도 holder 가 정해 적음 · 로컬 term new 는 user 를 찍는다(리뷰 P1-4) · 모르는 값은 요청 거절", async () => {
     await ok("term", "new", "plain", "--", "cat");
     // 이름·인자가 옛 판별식(ainecto-pc + pc run)에 걸려도 사람이 만든 세션은 user
     await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600", "pc", "run");
@@ -89,7 +89,8 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
     expect(sessions.find((s) => s.name === "bridge")?.kind).toBe("pc-bridge");
     expect(sessions.find((s) => s.name === "plain")?.kind).toBe("user");
     expect(sessions.find((s) => s.name === "ainecto-pc")?.kind).toBe("user");
-    expect(sessions.find((s) => s.name === "old-cli")).not.toHaveProperty("kind");
+    // 세션 유지 구조: 종류 없이 온 요청(구판 CLI)도 holder 가 만들 때 한 번 정해 적는다(이름·명령이 PC 연결이 아니면 user)
+    expect(sessions.find((s) => s.name === "old-cli")?.kind).toBe("user");
     const manifest = JSON.parse(readFileSync(paths.manifest, "utf8")) as { sessions: Array<{ name: string; kind?: string }> };
     expect(manifest.sessions.find((s) => s.name === "bridge")?.kind).toBe("pc-bridge");
     await ok("term", "kill", "bridge");
@@ -131,7 +132,7 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
     await ok("term", "kill", "two");
     await until(() => book().some((r) => r.name === "two"), "two written");
     expect(book().map((r) => r.instance)).toContain(one);
-    const log = readFileSync(termPaths(rig.home).log, "utf8");
+    const log = readFileSync(termPaths(rig.home).holderLog, "utf8");
     expect(log).toContain("ended_book_error");
     expect(log).toContain("ended_book_recovered");
   }, LONG);

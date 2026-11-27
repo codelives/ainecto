@@ -3,7 +3,7 @@ import { existsSync, lstatSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
-import { daemonPids, json, LONG, ok, rig, TSX, until, useTermRig } from "./termRig";
+import { daemonPids, holderPids, json, LONG, ok, rig, TSX, until, useTermRig } from "./termRig";
 
 /**
  * 바깥 넘기기(세션 유지 구조 설계 3-4 · 단위 U2) — ★핵심 인수: 바깥 N → N+1 뒤 PTY PID·화면·uuid 그대로 · 구판 CLI kill-server 거절.
@@ -89,7 +89,7 @@ describe("바깥 넘기기 — 판이 바뀌어도 PTY 가 산다(U2)", () => {
     expect(existsSync(paths.daemonInfo)).toBe(false);
 
     await ok("term", "kill-server");
-    await until(() => daemonPids().length === 0, "outer and holder gone");
+    await until(() => daemonPids().length + holderPids().length === 0, "outer and holder gone");
     expect(alive(before!.pid)).toBe(false);
     expect(existsSync(paths.socket)).toBe(false);
   }, LONG);

@@ -3,9 +3,10 @@ import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { openTermClient, type TermClient } from "../src/core/term/client";
+import { outerCaps } from "../src/core/term/holderTalk";
 import { TERM_STRING_HOLD_MAX_CHARS } from "../src/core/term/limits";
 import { termPaths } from "../src/core/term/paths";
-import { attachInPty, cli, daemonPids, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
+import { attachInPty, cli, daemonPids, holderPids, LONG, ok, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
 
 /**
  * 리뷰 #81 T1–T7 — 순서·경계 조건을 실물로 고정한다(진짜 CLI·데몬·PTY).
@@ -179,9 +180,11 @@ describe("ainecto term — review #81 edge cases", () => {
   it("T7: kill-server that arrives while a new is starting kills that session too and leaves an empty manifest", async () => {
     await ok("term", "new", "base", "--", "/bin/sh");
     const client = await rawClient();
+    // 세션 유지 구조: kill-server 는 holder uuid 를 실어야 받는다(바깥 caps 로 안다)
+    const { holder } = outerCaps(await client.request({ op: "caps" }))!;
     const [created, stopped] = await Promise.all([
       client.request({ op: "new", name: "late", cwd: rig.home, command: marked("late"), env: env() }),
-      client.request({ op: "kill-server" }),
+      client.request({ op: "kill-server", holder }),
     ]);
     client.close();
     expect(created).toMatchObject({ name: "late" });
@@ -347,15 +350,16 @@ describe("ainecto term — review #82 follow-ups", () => {
     const failed = await cli("term", "new", "s1", "--json", "--", "/bin/sh");
     expect(failed.code).toBe(1);
     expect((JSON.parse(failed.stderr) as { error: { code: string } }).error.code).toBe("TERM_DAEMON_START");
-    const [stuck] = daemonPids();
+    // 세션 유지 구조: 잠금을 쥐고 매니페스트에서 멈춘 것은 holder
+    const [stuck] = holderPids();
     expect(stuck).toBeDefined();
     expect(failed.stderr).toContain(`pid ${stuck}`);
 
     // 다시 움직이게 한다 — 기다리던 부모는 이미 떠났다.
     writeFileSync(join(dir, "sessions.json"), '{"sessions":[]}\n');
-    await until(() => daemonPids().length === 0, "the resumed daemon stops on its own");
+    await until(() => daemonPids().length + holderPids().length === 0, "the resumed daemon stops on its own");
     expect(existsSync(join(dir, "ctl.sock"))).toBe(false);
-    const log = await readFile(join(dir, "daemon.log"), "utf8");
+    const log = await readFile(join(dir, "holder.log"), "utf8");
     expect(log).toContain('"event":"ready_unread"');
     expect(log).toContain('"reason":"no sessions"');
 

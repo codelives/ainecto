@@ -91,7 +91,7 @@ export type TermRequestBody =
    * holder 쓰기 임대(바깥 → holder · 설계 3-4) — 임대를 쥔 바깥과 그 바깥이 이은 연결({@link via})의 요청만 holder 가 적용한다.
    * 비어 있으면 이 연결이 쥔다. 다른 바깥이 쥐고 있으면 그 바깥의 uuid·판을 답한다(넘기기는 판이 더 높은 쪽이 당긴다). 연결이 끊기면 풀린다.
    */
-  | { op: "lease"; outer: string; version: string }
+  | { op: "lease"; outer: string; version: string; /** 바깥 pid — holder 가 holder.json 에 적어 «멈춘 데몬» 안내가 그 pid 를 댄다(판정에는 안 쓴다). */ pid: number }
   /** 이 연결은 그 바깥이 CLI 연결 하나를 이은 것이다(바깥 → holder). 그 바깥이 임대를 쥔 동안만 요청이 적용된다. */
   | { op: "via"; outer: string }
   /** 바깥 넘기기(새 바깥 → 옛 바깥의 자기 주소 · 설계 3-4) — 옛 바깥은 새 요청을 받지 않고, 처리 중인 것을 마친 뒤 답하고 임대를 놓고 끝난다. */
@@ -208,7 +208,7 @@ export function parseClientMessage(line: string): TermClientMessage {
     case "kill-server":
       return record.holder === undefined ? { id, op } : { id, op, holder: uuidField(record, "holder") };
     case "lease":
-      return { id, op, outer: uuidField(record, "outer"), version: stringField(record, "version") };
+      return { id, op, outer: uuidField(record, "outer"), version: stringField(record, "version"), pid: sizeField(record, "pid") };
     case "via":
       return { id, op, outer: uuidField(record, "outer") };
     case "handover":
