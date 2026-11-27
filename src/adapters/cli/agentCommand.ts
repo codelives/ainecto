@@ -94,20 +94,21 @@ export async function executeAgentServe(input: {
   const cliScript = process.argv[1];
   if (!cliScript) throw new Error("Cannot find the path of this CLI to start the AiNecto bridge for the agents.");
   // Chat 차례 = 이름 없는 연결(지금과 같다) · 할 일 차례 = 이 serve 의 이름(세션을 열 때 agentName).
-  const bridge = (agentName: string | undefined) => ainectoBridge(process.execPath, cliScript, input.endpoint, agentName);
+  // ★Room 차례(읽기만 세션)의 브리지는 --read-only — 쓰기 차단의 보장은 브리지 한 곳(세 엔진 공통). 아래 엔진별 인자는 겉옷이다.
+  const bridge = (agentName: string | undefined, readOnly: boolean) => ainectoBridge(process.execPath, cliScript, input.endpoint, agentName, readOnly);
   const shared = { spawnImpl: spawnAgent, cwd: paths.work, env: agentEnv(process.env), log, writeTools };
   const all: AgentAdapter[] = [
     claudeCodeAdapter({ ...shared, args: ({ textMaxCharacters, documentsMax, resumeSessionId, agentName, readOnly }) =>
-      claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters, documentsMax), mcpConfig: claudeMcpConfig(bridge(agentName)), resumeSessionId,
+      claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters, documentsMax), mcpConfig: claudeMcpConfig(bridge(agentName, readOnly === true)), resumeSessionId,
         ...(readOnly ? { readTools } : {}) }) }),
-    codexAdapter({ ...shared, appServerArgs: (agentName, readOnly) => codexAppServerArgs(bridge(agentName), readOnly ? [] : writeTools),
+    codexAdapter({ ...shared, appServerArgs: (agentName, readOnly) => codexAppServerArgs(bridge(agentName, readOnly), readOnly ? [] : writeTools),
       clientVersion: CLI_VERSION }),
     antigravityAdapter({ spawnImpl: spawnAgent, env: shared.env, home: homedir(), log, writeTools,
       tools: serverTools,
       // 연결 이름마다 한 폴더 — 이름 글자를 폴더 이름에 쓰지 않는다(해시).
       workDir: (agentName) => join(paths.antigravity,
         agentName ? `agent-${createHash("sha256").update(agentName).digest("hex").slice(0, 16)}` : "chat"),
-      mcpConfig: (agentName) => antigravityMcpConfig(bridge(agentName)),
+      mcpConfig: (agentName, readOnly) => antigravityMcpConfig(bridge(agentName, readOnly)),
       schema: agentReplySchema }),
   ];
   const checks = await checkAgents(all, log);

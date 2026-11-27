@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AgentAdapter, AgentId } from "../../src/core/agent/agents";
 import type { AgentSpawn } from "../../src/core/agent/child";
 import { agentReplySchema, ainectoBridge } from "../../src/core/agent/agents";
+import { antigravityMcpConfig } from "../../src/core/agent/antigravityArgs";
 import { codexAppServerArgs } from "../../src/core/agent/codexArgs";
 import { antigravityAdapter } from "../../src/core/agent/antigravity";
 import { claudeCodeAdapter } from "../../src/core/agent/claudeCode";
@@ -74,9 +75,9 @@ export class FakeServer implements AgentHttp {
     this.push({ state: "OPEN", offers: [{ turnUuid, conversationUuid, text, context, ...(agent ? { agent } : {}) }] });
   }
 
-  /** Room 차례 offer(서버 R1 · kind ROOM · requester) — 맥락·새 글 알림은 Connect 와 같은 칸. */
+  /** Room 차례 offer(서버 R1 · kind ROOM · requester) — 실제 서버처럼 새 글 알림 칸({@code turnContextAvailable})도 싣는다(AgentLinkPcController). */
   offerRoom(turnUuid: string, conversationUuid: string, text: string, requesterName: string | undefined, agent?: string): void {
-    this.push({ state: "OPEN", offers: [{ turnUuid, kind: "ROOM", conversationUuid, text,
+    this.push({ state: "OPEN", offers: [{ turnUuid, kind: "ROOM", conversationUuid, text, turnContextAvailable: true,
       requester: requesterName === undefined ? null : { userId: "u-1", name: requesterName }, ...(agent ? { agent } : {}) }] });
   }
 
@@ -274,13 +275,14 @@ export function startServe(options: WorldOptions = {}): World {
     // 읽기만 세션(Room 차례)이면 «--read-only» 를 싣는다 — 시험이 «어느 세션이 읽기만인가»를 본다(실제 인자는 agentAdapterArgs 시험).
     claudeCodeAdapter({ ...shared, args: ({ resumeSessionId, agentName, readOnly }) =>
       [...(agentName ? ["--agent", agentName] : []), ...(resumeSessionId ? ["--resume", resumeSessionId] : []), ...(readOnly ? ["--read-only"] : [])] }),
-    // 운영(agentCommand)과 같은 인자 — 할 일 차례의 이름은 브리지 인자 안 «--agent»(Codex 명령 끝에 붙이면 실제 codex 0.171.0 이 거절한다).
+    // 운영(agentCommand)과 같은 인자 — 할 일 차례의 이름·읽기만은 브리지 인자 안 «--agent»·«--read-only»(Codex 명령 끝에 붙이면 실제 codex 0.171.0 이 거절한다).
     // 가짜 Codex 가 진짜처럼 사용자 설정과 합친다(KAN-1617).
-    codexAdapter({ ...shared, appServerArgs: (agentName) =>
-      codexAppServerArgs(ainectoBridge("node", "/x/ainecto.js", "https://dev.ainecto.com/mcp", agentName), []), clientVersion: "0.0.0" }),
+    codexAdapter({ ...shared, appServerArgs: (agentName, readOnly) =>
+      codexAppServerArgs(ainectoBridge("node", "/x/ainecto.js", "https://dev.ainecto.com/mcp", agentName, readOnly), []), clientVersion: "0.0.0" }),
     antigravityAdapter({ spawnImpl: options.unkillableAgy ? unkillableAgySpawn(options.unkillableAgy) : fakeSpawn, env: shared.env, home: join(dir, "home"), log, writeTools: WRITE_TOOLS,
       tools: [...WRITE_TOOLS, "search"].map((name) => ({ name })), workDir: (name) => join(dir, "app", "antigravity", name ?? "chat"),
-      mcpConfig: () => ({ mcpServers: { "ainecto-pc": { command: "node", args: [] } } }), schema: agentReplySchema }),
+      // 브리지 설정은 운영 함수 그대로(읽기만 세션이면 --read-only) — 가짜 agy 가 차례마다 받은 설정을 남긴다.
+      mcpConfig: (name, readOnly) => antigravityMcpConfig(ainectoBridge("node", "ainecto.js", "http://127.0.0.1/mcp", name, readOnly)), schema: agentReplySchema }),
   ];
   const installed = options.installed ?? ["claude-code"];
   const adapters = new Map(all.filter((a) => installed.includes(a.id)).map((a) => [a.id, a] as const));

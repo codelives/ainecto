@@ -238,12 +238,12 @@ describe("sessions.json 칸 — 잠금 안 CAS(rev)", () => {
       byAgent: { codex: { "conv-a": { sessionId: "S", cursor: "10", owner: OWNER, rev: 1 } } } }));
     const a = new AgentSessionMap(p);
     const b = new AgentSessionMap(p);
-    const seenA = await a.read("conv-a", "codex");
-    const seenB = await b.read("conv-a", "codex");
+    const seenA = await a.read({ conversationUuid: "conv-a" }, "codex");
+    const seenB = await b.read({ conversationUuid: "conv-a" }, "codex");
     expect(seenA).toEqual({ entry: { sessionId: "S", cursor: "10", owner: OWNER }, rev: 1 });
-    expect(await a.write("conv-a", "codex", seenA.rev, { sessionId: "S", cursor: "30", owner: OWNER })).toBe("written");
-    expect(await b.write("conv-a", "codex", seenB.rev, { sessionId: "S", cursor: "20", owner: OWNER })).toBe("stale");
-    expect(await b.write("conv-a", "codex", seenB.rev, undefined)).toBe("stale");
+    expect(await a.write({ conversationUuid: "conv-a" }, "codex", seenA.rev, { sessionId: "S", cursor: "30", owner: OWNER })).toBe("written");
+    expect(await b.write({ conversationUuid: "conv-a" }, "codex", seenB.rev, { sessionId: "S", cursor: "20", owner: OWNER })).toBe("stale");
+    expect(await b.write({ conversationUuid: "conv-a" }, "codex", seenB.rev, undefined)).toBe("stale");
     const after = JSON.parse(readFileSync(p, "utf8"));
     expect(after.byAgent.codex["conv-a"]).toMatchObject({ sessionId: "S", cursor: "30", rev: 2 });
     expect(after.conversations["conv-b"]).toEqual({ sessionId: "sess-b", updatedAt: "x" });
@@ -255,12 +255,12 @@ describe("sessions.json 칸 — 잠금 안 CAS(rev)", () => {
     writeFileSync(p, JSON.stringify({ version: 2, conversations: { "conv-a": { sessionId: "OLD", cursor: "10", owner: OWNER, rev: 1 } } }));
     const late = new AgentSessionMap(p);
     const other = new AgentSessionMap(p);
-    const seenLate = await late.read("conv-a", "claude-code");
-    expect(await other.write("conv-a", "claude-code", 1, undefined)).toBe("written");
-    expect(await other.read("conv-a", "claude-code")).toEqual({ rev: 2 });
-    expect(await other.write("conv-a", "claude-code", 2, { sessionId: "NEW", cursor: "30", owner: OWNER })).toBe("written");
-    expect(await late.write("conv-a", "claude-code", seenLate.rev, { sessionId: "OLD", cursor: "20", owner: OWNER })).toBe("stale");
-    expect(await late.write("conv-a", "claude-code", seenLate.rev, undefined)).toBe("stale");
+    const seenLate = await late.read({ conversationUuid: "conv-a" }, "claude-code");
+    expect(await other.write({ conversationUuid: "conv-a" }, "claude-code", 1, undefined)).toBe("written");
+    expect(await other.read({ conversationUuid: "conv-a" }, "claude-code")).toEqual({ rev: 2 });
+    expect(await other.write({ conversationUuid: "conv-a" }, "claude-code", 2, { sessionId: "NEW", cursor: "30", owner: OWNER })).toBe("written");
+    expect(await late.write({ conversationUuid: "conv-a" }, "claude-code", seenLate.rev, { sessionId: "OLD", cursor: "20", owner: OWNER })).toBe("stale");
+    expect(await late.write({ conversationUuid: "conv-a" }, "claude-code", seenLate.rev, undefined)).toBe("stale");
     expect(JSON.parse(readFileSync(p, "utf8")).conversations["conv-a"]).toMatchObject({ sessionId: "NEW", cursor: "30", rev: 3 });
   });
 
@@ -271,13 +271,13 @@ describe("sessions.json 칸 — 잠금 안 CAS(rev)", () => {
     chmodSync(p, 0o000);
     try {
       const map = new AgentSessionMap(p);
-      await expect(map.read("conv-new", "claude-code")).rejects.toThrow();
-      await expect(map.write("conv-new", "claude-code", 0, { sessionId: "S" })).rejects.toThrow();
+      await expect(map.read({ conversationUuid: "conv-new" }, "claude-code")).rejects.toThrow();
+      await expect(map.write({ conversationUuid: "conv-new" }, "claude-code", 0, { sessionId: "S" })).rejects.toThrow();
     } finally {
       chmodSync(p, 0o600);
     }
     expect(readFileSync(p, "utf8")).toBe(original);
-    expect(await new AgentSessionMap(join(p, "..", "missing.json")).read("c", "claude-code")).toEqual({ rev: 0 });
+    expect(await new AgentSessionMap(join(p, "..", "missing.json")).read({ conversationUuid: "c" }, "claude-code")).toEqual({ rev: 0 });
   });
 });
 

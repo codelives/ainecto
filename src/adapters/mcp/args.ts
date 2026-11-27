@@ -11,11 +11,13 @@ export interface McpBinArgs {
   legacyRole?: string;
   /** {@code --agent <이름>} — 이 연결의 에이전트 이름. 없으면 브리지가 {@code .ainecto/agent.local} 을 본다. */
   agent?: string;
+  /** {@code --read-only} — 읽기만 세션(serve 가 Room 차례 Agent 에 붙이는 브리지). 읽기 도구만 보이고 부른다(stdioBridge). */
+  readOnly: boolean;
   help: boolean;
 }
 
 export function parseMcpArgs(argv: string[]): McpBinArgs {
-  const result: McpBinArgs = { help: false };
+  const result: McpBinArgs = { readOnly: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (!arg) {
@@ -31,6 +33,8 @@ export function parseMcpArgs(argv: string[]): McpBinArgs {
         throw new Error(`${arg} requires a value.`);
       }
       result.agent = name;
+    } else if (arg === "--read-only") {
+      result.readOnly = true;
     } else if (arg === "--role") {
       const value = argv[index + 1];
       if (value !== undefined && !value.startsWith("--")) {

@@ -119,6 +119,7 @@ export async function runAinectoCli(argv: string[], io: CliIO): Promise<number> 
         endpoint: resolved.endpoint,
         legacyRoleFlag: parsed.legacyRole,
         agentFlag: bridgeArgs.agent,
+        readOnly: bridgeArgs.readOnly,
         input: io.stdin,
         output: io.stdout,
         errorOutput: io.stderr,

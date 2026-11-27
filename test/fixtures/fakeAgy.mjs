@@ -11,7 +11,7 @@
 // FAKE_AGY_LIFE_LOG 가 있으면 -p 프로세스의 «start <pid>» · «end <pid>» 를 한 줄씩 남긴다.
 //   그 밖       → reply «got <글>»
 // `--version`(FAKE_AGY_VERSION) · `models`(FAKE_AGY_AUTH=out 이면 1) · `plugin list --json`(FAKE_AGY_PLUGINS · FAKE_AGY_PLUGINS_FAIL) 은 한 번 출력하고 끝난다.
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -38,7 +38,10 @@ if (args[0] === "plugin" && args[1] === "list") {
   process.stdout.write(`${process.env.FAKE_AGY_PLUGINS ?? "[]"}\n`);
   process.exit(0);
 }
-if (process.env.FAKE_AGY_ARGS_LOG) appendFileSync(process.env.FAKE_AGY_ARGS_LOG, `${JSON.stringify({ args, cwd: process.cwd() })}\n`);
+// 작업 폴더의 MCP 설정(serve 가 차례마다 쓴다)도 함께 — 시험이 «이 차례의 브리지가 읽기만인가»를 본다.
+const mcpConfigPath = `${process.cwd()}/.agents/mcp_config.json`;
+const mcpConfig = existsSync(mcpConfigPath) ? JSON.parse(readFileSync(mcpConfigPath, "utf8")) : null;
+if (process.env.FAKE_AGY_ARGS_LOG) appendFileSync(process.env.FAKE_AGY_ARGS_LOG, `${JSON.stringify({ args, cwd: process.cwd(), mcpConfig })}\n`);
 const life = process.env.FAKE_AGY_LIFE_LOG;
 if (life) {
   appendFileSync(life, `start ${process.pid}\n`);

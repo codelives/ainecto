@@ -21,8 +21,8 @@ export interface AntigravityDeps {
   tools: ReadonlyArray<AgyToolDefinition>;
   /** 세션 폴더(연결 이름마다 하나 · 저장소 밖 앱 데이터 아래 · 우리 파일만 둔다). */
   workDir(agentName: string | undefined): string;
-  /** 작업 폴더 {@code .agents/mcp_config.json} 내용(브리지 하나). */
-  mcpConfig(agentName: string | undefined): Record<string, unknown>;
+  /** 작업 폴더 {@code .agents/mcp_config.json} 내용(브리지 하나 — 읽기만 세션이면 읽기만 브리지 · 차례마다 다시 쓴다). */
+  mcpConfig(agentName: string | undefined, readOnly: boolean): Record<string, unknown>;
   schema(textMaxCharacters: number, documentsMax: number): Record<string, unknown>;
 }
 
@@ -237,7 +237,7 @@ class AntigravitySession implements AgentSession {
     let policy: McpPolicy;
     try {
       await mkdir(this.cwd, { recursive: true, mode: 0o700 });
-      await writeWorkspaceMcpConfig(this.cwd, this.deps.mcpConfig(this.agentName));
+      await writeWorkspaceMcpConfig(this.cwd, this.deps.mcpConfig(this.agentName, this.readOnly));
       policy = await antigravityMcpPolicy({ cwd: this.cwd, home: this.deps.home, pluginList: () => this.pluginList() });
     } catch (error) {
       policy = { ok: false, reason: `could not prepare the work folder: ${error instanceof Error ? error.message : String(error)}` };

@@ -15,6 +15,8 @@ export interface ConnectorOptions {
   /** agent.local 을 찾을 폴더. 기본은 프로세스 cwd(에이전트가 브리지를 띄운 저장소). */
   cwd?: string;
   envVars?: NodeJS.ProcessEnv;
+  /** 브리지 인자 {@code --read-only} — 읽기만 세션(stdioBridge). */
+  readOnly?: boolean;
   input: Readable;
   output: Writable;
   errorOutput: Writable;
@@ -41,5 +43,6 @@ export async function runConnector(options: ConnectorOptions): Promise<void> {
     output: options.output,
     errorOutput: options.errorOutput,
     client,
+    ...(options.readOnly ? { readOnly: true } : {}),
   });
 }

@@ -7,7 +7,7 @@ import { parseMcpArgs } from "../adapters/mcp/args";
 try {
   const args = parseMcpArgs(process.argv.slice(2));
   if (args.help) {
-    process.stdout.write("Usage: mcp [--env prod|dev] [--endpoint URL] [--agent NAME]\n");
+    process.stdout.write("Usage: mcp [--env prod|dev] [--endpoint URL] [--agent NAME] [--read-only]\n");
     process.exit(0);
   }
   const resolved = resolveEndpoint({ env: args.env, endpoint: args.endpoint });
@@ -15,6 +15,7 @@ try {
     endpoint: resolved.endpoint,
     legacyRoleFlag: args.legacyRole,
     agentFlag: args.agent,
+    readOnly: args.readOnly,
     input: process.stdin,
     output: process.stdout,
     errorOutput: process.stderr,

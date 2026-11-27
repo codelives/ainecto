@@ -151,8 +151,9 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
     + `(${error instanceof Error ? error.message : String(error)}). `
     + "Set a valid name with `ainecto init --agent NAME` (or delete .ainecto/agent.local), then run `ainecto start` again.";
   let opened: Record<string, unknown>;
+  let roomAccepted: boolean;
   try {
-    opened = await openLink(deps, openAgentsBody(deps.agents, folderName));
+    ({ opened, room: roomAccepted } = await openLink(deps, openAgentsBody(deps.agents, folderName)));
   } catch (error) {
     if (nameRefused(error)) {
       deps.print(nameRefusedMessage(error));
@@ -166,8 +167,11 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   const limits = serverLimits(opened.limits);
   const displayName = (id: AgentId) => deps.adapters.get(id)?.displayName ?? id;
   const names = deps.agents.map((a) => displayName(a.id)).join(" / ");
-  deps.print(`${SERVE_CONNECTED_PREFIX}${deps.hostName}. Requests to «My agent» in AiNecto Chat and in project rooms now run in ${names} on this machine`
-    + " (in rooms the agent can only read AiNecto). Press Ctrl+C to stop.");
+  // Room 문장은 ★서버가 받은 open 의 기능에 room 이 있을 때만(옛 서버는 room 을 빼고 연다 — 그 서버는 Room 차례를 보내지 않는다).
+  deps.print(roomAccepted
+    ? `${SERVE_CONNECTED_PREFIX}${deps.hostName}. Requests to «My agent» in AiNecto Chat and in project rooms now run in ${names} on this machine`
+      + " (in rooms the agent can only read AiNecto). Press Ctrl+C to stop."
+    : `${SERVE_CONNECTED_PREFIX}${deps.hostName}. Requests to «My agent» in AiNecto Chat now run in ${names} on this machine. Press Ctrl+C to stop.`);
   // ★할 일 신원 = open 응답의 종류별 신원(이 PC 에 어댑터가 있는 것만). 신원이 없는 종류(준비 안 됨·AGENT_LIMIT)는 받지 않는다.
   const { identities, refused } = identitiesIn(opened.agents, deps.adapters);
   for (const r of refused) {
@@ -258,7 +262,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       reopenAttempts += 1;
       let again: Record<string, unknown>;
       try {
-        again = await openLink(deps, openAgentsBody(deps.agents, folderName));
+        again = (await openLink(deps, openAgentsBody(deps.agents, folderName))).opened;
       } catch (error) {
         if (stopReason) return;
         if (error instanceof AgentCallError && !error.retryable) {
@@ -424,7 +428,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
           }
           try {
             if (asked.known) {   // 주인을 모르면 읽지도 쓰지도 않는다(entryRev 없음 = 쓰기 0)
-              const stored = await deps.sessions.read(offer.conversationUuid, adapter.id);
+              const stored = await deps.sessions.read(offer, adapter.id);
               entryRev = stored.rev;
               entry = usableEntry(stored.entry, owner);
             }
@@ -433,7 +437,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
               conversationUuid: offer.conversationUuid, reason: `read failed: ${error instanceof Error ? error.message : String(error)}` });
           }
         }
-        // ★Room 차례는 읽기만 세션(결재 11-27) — 세션 칸은 (대화, Agent) 라 Room 대화의 세션이 Connect 와 섞이지 않는다.
+        // ★Room 차례는 읽기만 세션(결재 11-27) — 세션 칸도 대화 종류로 가른다(sessions.SessionConversation · 같은 UUID 의 Connect 칸을 잇지 않는다).
         session = adapter ? await sessionFor(adapter, offer.conversationUuid, offer.agentName, offer.kind === "ROOM", entry, owner) : undefined;
       } finally {
         deps.log.write({ event: "agent_request", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: offer.agent,
@@ -515,7 +519,7 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         // ★쓰기 실패는 답을 바꾸지 않는다 — 이어 붙이기만 못 한다(로그 한 줄).
         let reason: string | undefined;
         try {
-          if (await deps.sessions.write(offer.conversationUuid, adapter.id, entryRev, change.next) === "stale") reason = "stale";
+          if (await deps.sessions.write(offer, adapter.id, entryRev, change.next) === "stale") reason = "stale";
         } catch (error) {
           reason = `write failed: ${error instanceof Error ? error.message : String(error)}`;
         }
@@ -748,8 +752,9 @@ function serverLimits(value: unknown): ServerLimits {
  * features 없이 한 번 더 연다(옛 서버는 멈춤 지시를 보내지 않는다).
  * ★가장 새 칸 room(Room R1 전 서버는 모른다)을 맨 먼저 뺀다 — 아니면 그 서버에서 stop·todos 까지 빠진다. room 을 뺀 연결에는 서버가
  * Room 차례를 넘기지 않는다(그 서버에는 Room 차례가 없다).
+ * @return 서버의 open 응답 + {@code room} = 받아 준 시도의 기능에 room 이 있었나(시작 줄이 서버 응답과 맞게).
  */
-async function openLink(deps: ServeDeps, allAgents: ReadonlyArray<Record<string, unknown>>): Promise<Record<string, unknown>> {
+async function openLink(deps: ServeDeps, allAgents: ReadonlyArray<Record<string, unknown>>): Promise<{ opened: Record<string, unknown>; room: boolean }> {
   const base = { hostName: deps.hostName, cliVersion: deps.cliVersion };
   // ★open 본문의 agents[].id 는 서버가 닫힌 목록(AgentKind)으로 거른다 — 이 종류를 모르는 서버는 open 전체를 400 INVALID 로 거절한다.
   //   그래서 맨 처음 한 번만 다 싣고, 거절되면 이 종류를 빼고 아래 단계를 밟는다(그 서버는 이 종류의 요청을 보내지 않는다).
@@ -779,7 +784,9 @@ async function openLink(deps: ServeDeps, allAgents: ReadonlyArray<Record<string,
     const attempt = attempts[i]!;
     if (attempt.dropped) deps.log.write({ event: "open_without_features", features: [attempt.dropped] });
     try {
-      return await deps.http.call("open", attempt.body);
+      const opened = await deps.http.call("open", attempt.body);
+      const sent = attempt.body.features;
+      return { opened, room: Array.isArray(sent) && sent.includes("room") };
     } catch (error) {
       const old = error instanceof AgentCallError && error.status === 400 && error.code === "INVALID";
       if (!old || i === attempts.length - 1) throw error;

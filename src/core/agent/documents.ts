@@ -1,3 +1,5 @@
+import { isReadOnlyTool } from "../mcp/readOnlyTools";
+
 /**
  * 답에 붙일 문서·카드 — ★모델 말이 아니라 «쓰기 도구» 결과에서 뽑는다(설계 1절). ★두 Agent 가 이 한 곳을 쓴다.
  * 서버는 읽기 도구(list_documents 등) 결과에도 {@code 📄 …/app/docs/<uuid>} 줄을 붙이므로(K5 실측), 쓰기 도구인지는 서버 {@code tools/list} 의
@@ -84,9 +86,9 @@ export class TurnFactsCollector {
   }
 }
 
-/** 서버 tools/list 결과에서 쓰기 도구 이름(readOnlyHint 가 참이 아닌 것). */
+/** 서버 tools/list 결과에서 쓰기 도구 이름(읽기 표시가 없는 것 — 판정은 readOnlyTools.isReadOnlyTool 한 곳). */
 export function writeToolNames(tools: ReadonlyArray<{ name: string; annotations?: { readOnlyHint?: boolean } }>): Set<string> {
-  return new Set(tools.filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name));
+  return new Set(tools.filter((tool) => !isReadOnlyTool(tool)).map((tool) => tool.name));
 }
 
 function texts(content: unknown): string[] {
