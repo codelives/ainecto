@@ -31,6 +31,7 @@ export function replyForOutcome(
     case "timeout":
       return failed("TURN_TIMEOUT", "제한 시간 안에 끝나지 않아 멈췄어요. 다시 보내 주세요.");
     case "exited":
+      if (outcome.configError) return failed("AGENT_EXITED", `${agentName} 설정 오류로 시작하지 못했어요: ${outcome.configError}`);
       return failed("AGENT_EXITED", `${agentName} 가 끝났어요(code ${outcome.code ?? "-"}${outcome.signal ? `, ${outcome.signal}` : ""}).`
         + (outcome.stderrTail ? `\n${outcome.stderrTail}` : ""));
     case "refused":

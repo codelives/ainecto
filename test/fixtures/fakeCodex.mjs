@@ -126,6 +126,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         : { type: "chatgpt", email: "someone@example.com", planType: "pro" } } });
       return;
     case "config/read":
+      // FAKE_CODEX_CONFIG_ERROR — 사용자 설정이 깨진 PC(KAN-1617: url 항목 위에 command)처럼 config/read 가 그 글로 실패한다.
+      if (process.env.FAKE_CODEX_CONFIG_ERROR) {
+        out({ id, error: { code: -32603, message: process.env.FAKE_CODEX_CONFIG_ERROR } });
+        return;
+      }
       out({ id, result: { config: { mcp_servers: { ainecto: { command: "node" }, node_repl: { command: "node" }, openaiDeveloperDocs: { url: "https://x" } } } } });
       return;
     case "thread/start":

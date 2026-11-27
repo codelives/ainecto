@@ -212,6 +212,17 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     expectPairedLines(w);
   });
 
+  it("Codex 설정을 못 읽으면 «설정 오류로 시작하지 못했어요: <원문>» — «끝났어요(code 0)» 가 아니다(KAN-1617)", async () => {
+    const w = startServe({ installed: ["codex"], env: { FAKE_CODEX_CONFIG_ERROR: "invalid configuration: url is not supported for stdio\nin `mcp_servers.ainecto`" } });
+    w.server.offer("t1", "conv-cfg", "hello", undefined, "codex");
+    const bad = await until(() => w.server.replies()[0]);
+    await finish(w);
+
+    expect(bad).toMatchObject({ status: "FAILED", errorCode: "AGENT_EXITED" });
+    expect(String(bad.reply)).toBe("Codex 설정 오류로 시작하지 못했어요: invalid configuration: url is not supported for stdio\nin `mcp_servers.ainecto`");
+    expectPairedLines(w);
+  });
+
   it("Codex 재개가 실패하면(없는 thread) AGENT_EXITED 로 답하고 그 값을 버린다 — 다음 요청은 새 thread", async () => {
     const w = startServe({ installed: ["codex"], sessionsFile: { version: 2, conversations: {},
       byAgent: { codex: { "conv-x": { sessionId: "thr-gone", updatedAt: "2026-11-13T00:00:00Z" } } } } });

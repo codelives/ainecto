@@ -58,6 +58,9 @@ export function codexAdapter(deps: CodexDeps): AgentAdapter {
   };
 }
 
+/** config/read 실패 = 사용자 Codex 설정이 깨졌다(예: 같은 MCP 항목에 url·command — KAN-1617). 메시지는 Codex 원문 그대로. */
+class CodexConfigError extends Error {}
+
 interface Waiting {
   method: string;
   started: number;
@@ -248,7 +251,8 @@ class CodexSession implements AgentSession {
         await this.child.stop();
         const exit = this.child.exit;
         return { kind: "exited", code: exit?.code ?? null, signal: exit?.signal ?? null,
-          stderrTail: [failed.message, exit?.stderrTail].filter(Boolean).join("\n") };
+          stderrTail: [failed.message, exit?.stderrTail].filter(Boolean).join("\n"),
+          ...(failed instanceof CodexConfigError ? { configError: failed.message } : {}) };
       }
       const exit = this.child.exit;
       if (exit || !this.sessionRef) return { kind: "exited", code: exit?.code ?? null, signal: exit?.signal ?? null, stderrTail: exit?.stderrTail ?? "" };
@@ -304,7 +308,9 @@ class CodexSession implements AgentSession {
     await this.rpc.request("initialize", codexInitializeParams(this.deps.clientVersion));
     this.rpc.notify("initialized");
     // 사용자 설정의 다른 MCP 서버(컴퓨터 조작 등)는 이 대화에서 끈다 — 이름은 이 프로세스가 읽은 설정에서.
-    const read = await this.rpc.request("config/read", { cwd: this.deps.cwd });
+    const read = await this.rpc.request("config/read", { cwd: this.deps.cwd }).catch((error: unknown) => {
+      throw new CodexConfigError(toError(error).message);
+    });
     const off = codexOtherMcpServersOff(read.config);
     this.deps.log.write({ event: "agent_mcp_servers_off", pid: this.child.pid, agent: this.agent, names: off.names });
     const method = resumeRef ? "thread/resume" : "thread/start";

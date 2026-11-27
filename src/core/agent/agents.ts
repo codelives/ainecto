@@ -47,7 +47,8 @@ export interface AgentTurnResult {
 export type TurnOutcome =
   | { kind: "result"; result: AgentTurnResult; facts: TurnFacts }
   | { kind: "timeout" }
-  | { kind: "exited"; code: number | null; signal: string | null; stderrTail: string }
+  /** {@code configError} = 준비 단계에서 Agent 가 자기 설정을 못 읽었다(그 원문 · KAN-1617) — 답 글이 «끝났어요» 대신 «설정 오류». */
+  | { kind: "exited"; code: number | null; signal: string | null; stderrTail: string; configError?: string }
   /**
    * 돌리지 않았다 — 세션·재개 값은 그대로 둔다. AGENT_POLICY_UNVERIFIED = 이 PC 의 Agent 설정을 다 확인하지 못했다(Antigravity 이름 모으기 · 설계 r3).
    * AGENT_PREVIOUS_RUNNING = 앞 차례 프로세스를 끄지 못했다(그것이 끝날 때까지 다음 차례도 막는다 · 구현 리뷰 2차 P1).
