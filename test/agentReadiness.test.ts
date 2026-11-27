@@ -110,23 +110,47 @@ describe("세션 값 — (대화, Agent) 마다 · 옛 파일과 같이 읽힌�
 });
 
 describe("agentStartLine — serve 시작 글(KAN-1613)", () => {
-  it("이 PC 에서 못 찾은 Agent 도 한 줄 — 이유(ENOENT·timed out)를 그대로 싣는다", async () => {
+  it("이 PC 에서 못 찾았거나 실행이 안 된 Agent 도 한 줄 — 이유(ENOENT·timed out·exit 1)를 그대로 싣고, 설치·PATH 확인을 안내한다", async () => {
     const { agentStartLine } = await import("../src/core/agent/readiness");
     const missing = agentStartLine({ id: "claude-code", installed: false, ready: false, detail: "spawn claude ENOENT" }, "Claude Code", "Anthropic");
-    expect(missing).toContain("Claude Code was not found on this PC (spawn claude ENOENT)");
+    expect(missing).toContain("Claude Code was not found on this PC, or did not run (spawn claude ENOENT)");
+    expect(missing).toContain("check that it is installed where this PC's `ainecto` can run it (PATH)");
     expect(missing).toContain("`ainecto stop`, then `ainecto start`");
     expect(agentStartLine({ id: "claude-code", installed: false, ready: false, detail: "timed out" }, "Claude Code", "Anthropic"))
       .toContain("(timed out)");
   });
 
-  it("준비됨·로그인 안 됨 줄은 전과 같다", async () => {
+  it("준비됨 줄은 전과 같고, 준비 안 됨은 «로그인 안 됨»으로 단정하지 않고 요청은 준비될 때까지 기다린다(리뷰 r1 P0-3·P1-2)", async () => {
     const { agentStartLine } = await import("../src/core/agent/readiness");
     expect(agentStartLine({ id: "codex", installed: true, ready: true, auth: "subscription" }, "Codex", "OpenAI"))
       .toBe("Codex: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).");
     expect(agentStartLine({ id: "codex", installed: true, ready: true, auth: "apiKey" }, "Codex", "OpenAI"))
       .toBe("Codex: runs on your own API key (billed to your OpenAI API account; AiNecto credits are not used).");
-    expect(agentStartLine({ id: "claude-code", installed: true, ready: false, detail: "not logged in" }, "Claude Code", "Anthropic"))
-      .toBe("Claude Code is installed but not signed in (not logged in). Requests to Claude Code will be refused until you sign in "
-        + "and reconnect this PC (`ainecto stop`, then `ainecto start`).");
+    const notReady = agentStartLine({ id: "claude-code", installed: true, ready: false, detail: "auth status timed out" }, "Claude Code", "Anthropic");
+    expect(notReady).toBe("Claude Code is installed, but it could not be confirmed as ready (auth status timed out). Requests to Claude Code "
+      + "wait until it is ready — check its sign-in on this PC, then reconnect this PC (`ainecto stop`, then `ainecto start`).");
+    expect(notReady).not.toContain("refused");
+  });
+
+  it("serve_start 의 Agent 칸은 검사 결과 + 같은 줄 — `ainecto start` 터미널은 이번 시작 뒤의 serve_start 줄만 옮긴다(리뷰 r1 P0-1)", async () => {
+    const { agentStartRecords } = await import("../src/core/agent/readiness");
+    const { serveStartLines } = await import("../src/core/agent/log");
+    const records = agentStartRecords([
+      { id: "claude-code", installed: false, ready: false, detail: "spawn claude ENOENT" },
+      { id: "codex", installed: true, ready: true, auth: "subscription", version: "0.9" },
+    ], (id) => (id === "codex" ? "Codex" : "Claude Code"), () => "Anthropic");
+    expect(records.map(({ id, installed, detail }) => ({ id, installed, detail }))).toEqual([
+      { id: "claude-code", installed: false, detail: "spawn claude ENOENT" }, { id: "codex", installed: true, detail: undefined },
+    ]);
+    expect(records[0]?.line).toContain("Claude Code was not found on this PC, or did not run (spawn claude ENOENT)");
+    const log = [
+      JSON.stringify({ ts: "2026-11-27T01:00:00.000Z", event: "serve_start", agents: [{ id: "codex", line: "old run" }] }),
+      JSON.stringify({ ts: "2026-11-27T02:00:00.000Z", event: "serve_start", agents: records }),
+      JSON.stringify({ ts: "2026-11-27T02:00:01.000Z", event: "serve_stop", reason: "no_agents" }),
+      "{half a line",
+    ].join("\n");
+    expect(serveStartLines(log, "2026-11-27T01:30:00.000Z")).toEqual(records.map((r) => r.line));
+    expect(serveStartLines(log, "2026-11-27T03:00:00.000Z"), "이번 시작 전 기록은 옮기지 않는다").toEqual([]);
+    expect(serveStartLines("", "2026-11-27T00:00:00.000Z")).toEqual([]);
   });
 });

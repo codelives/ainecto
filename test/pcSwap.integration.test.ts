@@ -117,7 +117,7 @@ describe("자동 업그레이드 도우미 — 실 데몬", () => {
 
   it("성공 — 확인 1·2 통과 → 옛 pc 끄고 새 판(@TO 고정)으로 띄움 · 시작·끝 이벤트", async () => {
     const { deps, records } = swap();
-    expect(await startPcSession(deps.pc(FROM))).toEqual({ kind: "connected", agentMissing: false });
+    expect(await startPcSession(deps.pc(FROM))).toEqual({ kind: "connected", agentMissing: false, agentLines: [] });
     expect(await executePcSwap(deps)).toBe(0);
     const command = await pcCommand();
     expect(command).toContain(`@ainecto/mcp@${TO}`);

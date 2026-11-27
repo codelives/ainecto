@@ -20,7 +20,7 @@ import { createAgentTools } from "../../core/agent/tools";
 import { NO_AGENTS_REASON, openAgentLog } from "../../core/agent/log";
 import { agentPaths } from "../../core/agent/paths";
 import { AgentRunLog } from "../../core/agent/runs";
-import { agentStartLine, checkAgents, openAgents } from "../../core/agent/readiness";
+import { agentStartRecords, checkAgents, openAgents } from "../../core/agent/readiness";
 import { AGENT_MISSING_LINE, runAgentServe } from "../../core/agent/serve";
 import { agentOwner, AgentSessionMap } from "../../core/agent/sessions";
 import { CLI_BUILD, CLI_RELEASE, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
@@ -107,9 +107,10 @@ export async function executeAgentServe(input: {
       schema: agentReplySchema }),
   ];
   const checks = await checkAgents(all, log);
-  log.write({ event: "serve_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: input.endpoint, host,
-    agents: checks.map(({ id, installed, ready, auth, version }) =>
-      ({ id, installed, ready, ...(auth ? { auth } : {}), ...(version ? { version } : {}) })) });
+  const started = agentStartRecords(checks, (id) => all.find((adapter) => adapter.id === id)?.displayName ?? id, (id) => BILLED_TO[id]);
+  log.write({ event: "serve_start", pid: process.pid, version: CLI_VERSION_LABEL, endpoint: input.endpoint, host, agents: started });
+  // Agent 마다 한 줄 — 어느 길(Agent·다리만·아무것도 없음)로 가든 먼저 찍는다. `ainecto start` 를 친 터미널은 serve_start 의 같은 줄을 옮긴다.
+  for (const agent of started) input.io.stderr.write(`${agent.line}\n`);
   const agents = openAgents(checks);
   // ★Agent 가 없어도 원격이 허용이면 다리만 돈다(KAN-738 next.10) — 둘 다 없을 때만 시작하지 않는다(pcPlan).
   const remote = await pcRemoteSetup({ endpoint: input.endpoint, auth: input.auth, account: () => readAccount(client()), io: input.io });
@@ -136,10 +137,6 @@ export async function executeAgentServe(input: {
       log.write({ event: "serve_stop", pid: process.pid, reason: NO_AGENTS_REASON });
       input.io.stderr.write(`${AGENT_MISSING_LINE}\n`);
       return await runPcParts(Promise.resolve(0), (stop) => runPcRemote(remote, stop, upgrades), controller.signal);
-    }
-    for (const check of checks) {
-      const name = all.find((adapter) => adapter.id === check.id)?.displayName ?? check.id;
-      input.io.stderr.write(`${agentStartLine(check, name, BILLED_TO[check.id])}\n`);
     }
     const adapters = new Map<AgentId, AgentAdapter>(all.filter((adapter) => agents.some((a) => a.id === adapter.id))
       .map((adapter) => [adapter.id, adapter]));

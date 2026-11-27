@@ -31,6 +31,7 @@ import type { TermPaths } from "../../core/term/paths";
 import { listedSessions, readLines, sessionInstance, type ListedSession } from "../../core/term/protocol";
 import { waitForMatch } from "../../core/term/wait";
 import { isNodeError } from "../../core/fs/privateFiles";
+import { serveStartLines } from "../../core/agent/log";
 import { loadPcKeys, updatePcKeys, withoutBrowser, withoutEndpointKeys, type PcGroup } from "../../core/pc/pcKeys";
 import { runPairing, type PairOutcome, type PairTransport } from "../../core/pc/pcPairing";
 import {
@@ -319,8 +320,11 @@ async function launchPc(deps: PcDeps): Promise<number> {
   return reportOutcome(deps, await startPcSession(deps));
 }
 
-/** 띄운 pc 세션의 결과 — 연결됨(다리만이면 agentMissing) · 기한 안에 아직(connecting). 끝남·오류 줄이면 PC_START_FAILED 로 던진다. */
-export type PcStartOutcome = { kind: "connected"; agentMissing: boolean } | { kind: "connecting" };
+/**
+ * 띄운 pc 세션의 결과 — 연결됨(다리만이면 agentMissing) · 기한 안에 아직(connecting). 끝남·오류 줄이면 PC_START_FAILED 로 던진다.
+ * agentLines = pc 세션이 이번 시작에 찍은 Agent 마다 한 줄(serve_start — 못 찾음·준비 안 됨의 이유) — 이 터미널에도 옮긴다(KAN-1613 리뷰 r1 P0-1).
+ */
+export type PcStartOutcome = { kind: "connected"; agentMissing: boolean; agentLines: string[] } | { kind: "connecting"; agentLines: string[] };
 
 /**
  * pc 세션을 띄우고 «연결됨»을 기다린다(★틀린 «Connected» 를 찍지 않으려고) — start·갈아끼우기·원격 설정 반영·자동 업그레이드가 같은 길.
@@ -346,10 +350,11 @@ export async function startPcSession(deps: PcDeps): Promise<PcStartOutcome> {
     line = (await waitForMatch(deps.paths, PC_SESSION_NAME, PC_OUTCOME_PATTERN, { scrollback: true }, deps.readyDeadlineMs, instance)).line;
   } catch (error) {
     if (error instanceof TermError && error.code === "TERM_WAIT_TIMEOUT") {
-      return { kind: "connecting" };
+      return { kind: "connecting", agentLines: await agentLinesSince(deps.agentLog, startedAt) };
     }
     // 끝남 — 기다리는 동안(SESSION_ENDED) 또는 기다리기 전에 이미(NO_SESSION: 바로 끝나 데몬 표에서 빠졌다) · 같은 이름의 다른 세션으로 바뀜(SESSION_REPLACED).
     if (error instanceof TermError && (error.code === "TERM_SESSION_ENDED" || error.code === "TERM_NO_SESSION" || error.code === "SESSION_REPLACED")) {
+      writeAgentLines(deps, await agentLinesSince(deps.agentLog, startedAt));
       const last = await lastLogLineSince(deps.agentLog, startedAt);
       throw new CliCommandError("PC_START_FAILED", `The PC connection stopped right after it started (${error.message})`
         + `${last ? ` Last log line: ${last}` : ""} Log: ${deps.agentLog}`);
@@ -357,12 +362,30 @@ export async function startPcSession(deps: PcDeps): Promise<PcStartOutcome> {
     throw error;
   }
   const outcome = pcOutcome([line]);
+  const agentLines = await agentLinesSince(deps.agentLog, startedAt);
   if (outcome?.kind === "failed") {
+    // 아무 Agent 도 없고 원격도 꺼져 끝남 — 왜 Agent 가 없는지(종류마다)를 먼저 찍는다.
+    writeAgentLines(deps, agentLines);
     throw new CliCommandError("PC_START_FAILED", `The PC connection could not start — ${outcome.line} Log: ${deps.agentLog}`);
   }
   // 무엇이 붙었는지 그대로 — 화면 전체로 본다(Agent 없음 줄은 다리 연결 줄보다 앞에 찍힌다).
   const screen = pcOutcome(await screenLines(deps, PC_SESSION_NAME));
-  return { kind: "connected", agentMissing: screen?.kind === "connected" && screen.agentMissing === true };
+  return { kind: "connected", agentMissing: screen?.kind === "connected" && screen.agentMissing === true, agentLines };
+}
+
+/** 이번 시작 뒤 agent.log 의 serve_start Agent 줄 — 파일이 없으면 빈 목록. */
+async function agentLinesSince(path: string, since: string): Promise<string[]> {
+  try {
+    return serveStartLines(await readFile(path, "utf8"), since);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return [];
+    throw error;
+  }
+}
+
+/** 실패로 끝날 때 Agent 줄 — 오류 줄보다 먼저(stderr). */
+function writeAgentLines(deps: PcDeps, lines: readonly string[]): void {
+  for (const line of lines) deps.io.stderr.write(`${line}\n`);
 }
 
 /** pc 세션 화면(스크롤백 포함) — 없으면 빈 목록. */
@@ -382,16 +405,18 @@ async function screenLines(deps: PcDeps, session: string): Promise<string[]> {
  */
 /** 띄운 결과를 사람에게 — 무엇이 붙었는지 그대로. */
 function reportOutcome(deps: PcDeps, outcome: PcStartOutcome): number {
-  const base = { session: PC_SESSION_NAME, folder: deps.cwd, log: deps.agentLog };
+  // Agent 마다 한 줄(pc 세션 화면과 같은 글)은 결과 단락 바로 뒤에 — 이 터미널에서 왜 Agent 가 안 붙었는지 보인다.
+  const base = { session: PC_SESSION_NAME, folder: deps.cwd, log: deps.agentLog, agents: outcome.agentLines };
+  const human = (result: string) => [result, ...outcome.agentLines].join("\n");
   if (outcome.kind === "connecting") {
-    return print(deps, { ...base, connected: false, connecting: true }, pcResultText({ kind: "connecting", log: deps.agentLog }));
+    return print(deps, { ...base, connected: false, connecting: true }, human(pcResultText({ kind: "connecting", log: deps.agentLog })));
   }
   if (outcome.agentMissing) {
     return print(deps, { ...base, connected: true, already: false, agent: false, remote: true },
-      pcResultText({ kind: "connected", agentMissing: true, log: deps.agentLog }));
+      human(pcResultText({ kind: "connected", agentMissing: true, log: deps.agentLog })));
   }
   return print(deps, { ...base, connected: true, already: false },
-    pcResultText({ kind: "connected", agentMissing: false, log: deps.agentLog }));
+    human(pcResultText({ kind: "connected", agentMissing: false, log: deps.agentLog })));
 }
 
 /** agent.log 의 마지막 줄 — 이번 시작 뒤에 쓴 것만(옛 실행의 줄로 사유를 꾸미지 않는다). */

@@ -39,23 +39,39 @@ export async function checkAgents(adapters: readonly AgentAdapter[], log: Daemon
 }
 
 /**
- * serve 시작 때 Agent 마다 사람이 보는 한 줄 — 준비됨(누가 내나) · 설치됐지만 로그인 안 됨 · ★이 PC 에서 못 찾음(이유 — ENOENT·timed out·exit N).
+ * serve 시작 때 Agent 마다 사람이 보는 한 줄 — 준비됨(누가 내나) · 설치됐지만 준비 확인 안 됨 · ★이 PC 에서 못 찾았거나 실행이 안 됨(이유 — ENOENT·timed out·exit N).
  * 못 찾음 줄이 없으면 Connect 에서 «현재 사용할 수 없음»만 보여 왜인지 알 길이 없었다(KAN-1613 — Terminal 에서는 되는데 Connect 는 미연결).
+ * ★단정하지 않는다(리뷰 r1 P0-3·P1-2): `--version` 이 0 이 아니어도 «못 찾음»이고, 인증 조회 실패·시간 초과도 «준비 안 됨»이다 —
+ *   다음 행동은 «확인»으로 안내한다. 준비 안 된 Agent 로 온 요청은 거절되지 않고 준비될 때까지 기다린다(서버 202 WAITING).
  * 순수 함수 — {@code billedTo} = API 키 모드의 과금처(Anthropic·OpenAI·Google).
  */
 export function agentStartLine(check: AgentCheck, name: string, billedTo: string): string {
   const reconnect = "(`ainecto stop`, then `ainecto start`)";
   if (!check.installed) {
-    return `${name} was not found on this PC${check.detail ? ` (${check.detail})` : ""}. To use it from AiNecto, install it `
-      + `where this PC's \`ainecto\` can run it, sign in, then reconnect this PC ${reconnect}.`;
+    return `${name} was not found on this PC, or did not run${check.detail ? ` (${check.detail})` : ""}. To use it from AiNecto, `
+      + `check that it is installed where this PC's \`ainecto\` can run it (PATH), then reconnect this PC ${reconnect}.`;
   }
   if (check.ready) {
     return check.auth === "apiKey"
       ? `${name}: runs on your own API key (billed to your ${billedTo} API account; AiNecto credits are not used).`
       : `${name}: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).`;
   }
-  return `${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
-    + `Requests to ${name} will be refused until you sign in and reconnect this PC ${reconnect}.`;
+  return `${name} is installed, but it could not be confirmed as ready${check.detail ? ` (${check.detail})` : ""}. `
+    + `Requests to ${name} wait until it is ready — check its sign-in on this PC, then reconnect this PC ${reconnect}.`;
+}
+
+/** serve_start 기록의 Agent 칸 — 검사 결과 그대로 + 사람이 볼 한 줄(line). ★`ainecto start` 를 친 터미널도 이 줄을 그대로 옮긴다(리뷰 r1 P0-1). */
+export type AgentStartRecord = Omit<AgentCheck, "auth"> & { auth?: AgentAuthMode; line: string };
+
+/** 검사 결과 → serve_start 의 Agent 칸(순수 함수). 이름·과금처는 부르는 쪽(어댑터)이 준다. */
+export function agentStartRecords(checks: readonly AgentCheck[], nameOf: (id: AgentId) => string,
+                                  billedTo: (id: AgentId) => string): AgentStartRecord[] {
+  return checks.map((check) => ({
+    id: check.id, installed: check.installed, ready: check.ready,
+    ...(check.auth ? { auth: check.auth } : {}), ...(check.version ? { version: check.version } : {}),
+    ...(check.detail ? { detail: check.detail } : {}),
+    line: agentStartLine(check, nameOf(check.id), billedTo(check.id)),
+  }));
 }
 
 /** open 본문의 {@code agents} — 설치된 Agent 만. */

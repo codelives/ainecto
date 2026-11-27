@@ -369,6 +369,32 @@ describe("이 PC 연결 — 실 데몬", () => {
     expect(start.out()).toContain("install one, then run `ainecto` again");
   }, LONG);
 
+  it("KAN-1613 리뷰 r1 P0-1 — pc 세션이 찍은 Agent 마다의 이유가 `ainecto start` 를 친 터미널에도 온다(다리만 · 아무것도 없음 두 길 모두)", async () => {
+    const log = join(rig.home, ".ainecto/agent/agent.log");
+    // pc run 처럼: 검사 결과를 serve_start 에 남기고(같은 줄을 화면에도) 그다음 길로 간다.
+    const lines = ["Claude Code was not found on this PC, or did not run (spawn claude ENOENT). reason-cc",
+      "Codex is installed, but it could not be confirmed as ready (account read failed). reason-codex"];
+    const startRecord = "require('node:fs').mkdirSync(require('node:path').dirname(" + JSON.stringify(log) + "), { recursive: true });"
+      + "require('node:fs').appendFileSync(" + JSON.stringify(log) + ", JSON.stringify({ ts: new Date().toISOString(), event: 'serve_start',"
+      + ` agents: ${JSON.stringify(lines.map((line, i) => ({ id: i === 0 ? "claude-code" : "codex", installed: i === 1, ready: false, line })))} }) + '\\n');`
+      + ` for (const l of ${JSON.stringify(lines)}) console.error(l);`;
+    const remoteOnly = harness({ script: "if (process.argv.includes('--version')) process.exit(0);"
+      + `process.on('SIGINT', () => process.exit(0)); ${startRecord} console.error(${JSON.stringify(AGENT_MISSING_LINE)});`
+      + ` console.error(${JSON.stringify(`${REMOTE_STATE_PREFIX}on — 1 session(s) from test-host are listed in AiNecto on the web.`)});`
+      + " setInterval(() => undefined, 1000);" });
+    const done = executePcStart(remoteOnly.deps);
+    await remoteOnly.answer("Connect this PC?", "y");
+    await remoteOnly.answer("Also allow terminals", "y");
+    expect(await done).toBe(0);
+    for (const line of lines) expect(remoteOnly.out(), "다리만 — 호출한 터미널(stdout)").toContain(line);
+    await executePcStop(harness().deps, []);
+
+    const noRunner = async () => ({ exitCode: 0, stdout: "", stderr: "", missing: false });
+    const nothing = harness({ runner: noRunner, script: `${startRecord} console.error('Error: None of Claude Code is on PATH.'); setTimeout(() => process.exit(1), 300);` });
+    await expect(executePcStart(nothing.deps)).rejects.toThrow("The PC connection could not start — Error: None of Claude Code is on PATH.");
+    for (const line of lines) expect(nothing.err(), "아무것도 없음 — 오류 앞에 이유").toContain(line);
+  }, LONG);
+
   it("ainecto 재실행 — 원격이 웹에서 꺼진 pc 는(같은 판이어도) «Already» 대신 다시 띄워 원격을 켠다", async () => {
     const first = harness({ script: OFF_BY_WEB });
     const done = executePcStart(first.deps);

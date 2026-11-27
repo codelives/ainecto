@@ -9,7 +9,7 @@ import type { AgentPaths } from "./paths";
  */
 export type AgentLogRecord =
   | { event: "serve_start"; pid: number; version: string; endpoint: string; host: string;
-      agents: Array<{ id: string; installed: boolean; ready: boolean; auth?: string; version?: string }> }
+      agents: Array<{ id: string; installed: boolean; ready: boolean; auth?: string; version?: string; detail?: string; line?: string }> }
   | { event: "serve_stop"; pid: number; reason: string }
   /** {@code op: "tool"} = 서버 MCP 도구(tools.ts) — {@code tool} 은 앞머리 없는 도구 이름. */
   | { event: "agent_call"; callId: string; op: string; tool?: string; agent?: string; agentName?: string; turnUuid?: string; bytes: number }
@@ -89,7 +89,7 @@ export function openAgentLog(paths: AgentPaths): DaemonLog<AgentLogRecord> {
 export const NO_AGENTS_REASON = "no_agents";
 
 /** agent.log 글을 끝에서부터 — 받아들인 첫 레코드. 쓰다 만 줄(회전·동시 쓰기)은 건너뛴다. 순수 함수. */
-type LoggedRecord = { event?: unknown; ts?: unknown; reason?: unknown; from?: unknown; to?: unknown };
+type LoggedRecord = { event?: unknown; ts?: unknown; reason?: unknown; from?: unknown; to?: unknown; agents?: unknown };
 
 function lastRecord<T>(text: string, accept: (record: LoggedRecord) => T | undefined): T | undefined {
   const lines = text.split("\n");
@@ -144,4 +144,18 @@ export function agentMissing(text: string): boolean {
   return lastRecord(text, (record) => record.event === "serve_start" || record.event === "serve_stop"
     ? record.event === "serve_stop" && record.reason === NO_AGENTS_REASON
     : undefined) ?? false;
+}
+
+/**
+ * 이번 pc 실행의 Agent 줄 — 마지막 serve_start 가 {@code since} 뒤에 쓰였으면 그 Agent 칸의 line 들(옛 실행의 줄은 싣지 않는다).
+ * `ainecto start` 를 친 터미널이 pc 세션(자식) 화면에만 찍힌 Agent 줄을 그대로 옮긴다(KAN-1613 리뷰 r1 P0-1). 순수 함수.
+ */
+export function serveStartLines(text: string, since: string): string[] {
+  return lastRecord(text, (record) => {
+    if (record.event !== "serve_start") return undefined;
+    if (typeof record.ts !== "string" || record.ts < since || !Array.isArray(record.agents)) return [];
+    return record.agents.flatMap((agent: unknown) =>
+      typeof agent === "object" && agent !== null && typeof (agent as { line?: unknown }).line === "string"
+        ? [(agent as { line: string }).line] : []);
+  }) ?? [];
 }
