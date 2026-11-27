@@ -1093,6 +1093,28 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
       expectLogPairs();
     }, LONG);
 
+    it("방금 끝난 세션 — 다리의 마지막 목록에 남아 있어도 저장 직전 데몬에 다시 물어 TERM_NO_SESSION(파일 없음)", async () => {
+      await ok("term", "new", "a", "--", "cat");
+      const browser = await web();
+      const run = start();
+      await until(() => fake.ops().includes("poll"), "poll");
+      const channel = await browser.connect();
+      channel.watch("a");
+      const { instance } = await frameWhere(channel, "a", () => true, "frame of a");
+      // 목록 올리기를 붙잡는다 — 그 뒤 목록 알림은 줄을 서서 다리의 마지막 목록이 «a 있음» 그대로 남는다
+      fake.hangSessions = 1;
+      const before = fake.ops().filter((op) => op === "sessions").length;
+      await ok("term", "new", "b", "--", "cat");
+      await until(() => fake.ops().filter((op) => op === "sessions").length > before, "held sessions upload");
+      await ok("term", "kill", "a");
+      const crud = await channel.image("a", instance, "image/png", PNG);
+      const answered = await sent(channel, crud);
+      expect(answered.outer).toMatchObject({ ok: false, code: "TERM_NO_SESSION" });
+      expect(existsSync(images()) ? readdirSync(images()) : []).toEqual([]);
+      run.stop.abort();
+      await run.done;
+    }, LONG);
+
     it("원격 꺼짐(웹 끊기) — 채널이 REMOTE_OFF 로 닫혀 그 뒤 image 는 실행하지 않는다(파일 없음)", async () => {
       await ok("term", "new", "a", "--", "cat");
       const browser = await web();

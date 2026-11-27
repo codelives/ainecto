@@ -34,6 +34,8 @@ export class FakeRemoteServer {
   pollError: { status: number; code: string } | undefined;
   /** 있으면 sessions 를 이 오류로 거절한다(일시 장애 흉내 — 끝 기록은 책에 남아야 한다). */
   sessionsError: { status: number; code: string } | undefined;
+  /** 이 수만큼 sessions 를 답 없이 붙잡는다(목록 올리기가 막힌 동안 다리의 마지막 목록이 낡은 채로 남게). */
+  hangSessions = 0;
   /** 화면 밖 본문 상한(api C4) — open 답 limits.bodyMaxBytes 로 알리고, 넘으면 413 BODY_TOO_LARGE {maxBytes}. */
   bodyMaxBytes = 64 * 1024;
   /** 다음 open 을 이 오류로 거절한다(옛 서버 흉내 — 400 INVALID). */
@@ -146,6 +148,11 @@ export class FakeRemoteServer {
           limits: { pollHoldSeconds: 1, frameMaxBytes: 1024 * 1024, bodyMaxBytes: this.bodyMaxBytes } });
         return;
       case "sessions":
+        if (this.hangSessions > 0) {
+          this.hangSessions -= 1;
+          this.hanging.push(res);
+          return;
+        }
         if (this.sessionsError) {
           reply(this.sessionsError.status, { code: this.sessionsError.code, message: "unavailable" });
           return;

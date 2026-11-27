@@ -253,14 +253,9 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
   let listWatch: TermClient | undefined;
   /** 지금 PC 연결(pc-bridge) 세션 이름 — 마지막 ls 의 것. 웹 명령이 그 세션을 겨누면 거절한다. */
   let bridges: readonly string[] = [];
-  /** 마지막 ls 의 올릴 세션(PC 연결 세션 뺌) — 이미지 붙여넣기가 겨눈 세션·instance 를 여기서 본다. */
-  let listed: Listing["sessions"] = [];
   const list = async (): Promise<Listing | undefined> => {
     const current = await currentListing(deps);
-    if (current) {
-      bridges = current.bridges;
-      listed = current.sessions;
-    }
+    if (current) bridges = current.bridges;
     return current;
   };
   try {
@@ -543,16 +538,16 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
     const commands = new CommandRunner(deps, control, book, () => remote, () => link.linkId, stopper.signal, {
       // 지금 PC 연결 세션 · 만들기는 그 이름 자체도(startPcSession 이 늘 그 이름으로 띄운다 — 웹이 먼저 차지하면 PC 연결이 못 뜬다)
       refuses: (session, create) => bridges.includes(session) || (create && session === PC_SESSION_NAME),
+      // ★마지막 목록(알림으로 갱신)을 믿지 않고 그때 데몬에 묻는다 — 방금 끝났거나 같은 이름으로 다시 만든 세션의 옛 instance 에
+      //   파일·성공 답이 생기지 않게(이미지는 데몬을 거치지 않으므로 데몬의 instance 검사가 없다).
       listed: async (session, instance) => {
-        const found = (): boolean => listed.some((item) => item.name === session && item.instance === instance);
-        if (found()) return true;
         try {
-          await list();   // 방금 만든 세션 — 마지막 목록이 아직 모른다
+          // 데몬이 답하지 않으면(바깥이 갈리는 중 — holder 합본) 세션을 확인 못 한 것 — 승인하지 않는다.
+          return (await list())?.sessions.some((item) => item.name === session && item.instance === instance) === true;
         } catch (error) {
           daemonFailed(deps, "ls", session, error);
           return false;
         }
-        return found();
       },
       devices: () => devices,
       trusted: async (keyId) => (await loadTrust(deps))?.browsers.some((item) => item.keyId === keyId) === true,
@@ -872,7 +867,7 @@ class DaemonControl {
 interface RunnerHooks {
   /** 웹 명령이 그 세션에 가면 안 되나(PC 연결 세션) — create 면 만들 이름. */
   refuses(session: string, create: boolean): boolean;
-  /** 그 세션·instance 가 지금 목록(PC 연결 세션 뺌)에 있나 — 마지막 ls 에 없으면 한 번 다시 본다(이미지 붙여넣기). */
+  /** 그 세션·instance 가 지금 데몬 목록(PC 연결 세션 뺌)에 있나 — 매번 ls(이미지 붙여넣기). */
   listed(session: string, instance: string): Promise<boolean>;
   /** 기기 관리 — 없으면 device 명령은 거절 답. */
   devices(): DeviceManager | undefined;
