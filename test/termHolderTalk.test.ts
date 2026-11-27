@@ -13,7 +13,7 @@ const baseline = (JSON.parse(readFileSync(join(__dirname, "fixtures/holder-talk.
 const SAMPLE: Record<string, unknown> = {
   nonce: "n", outer: "00000000-0000-4000-8000-000000000001", version: "0.16.7", pid: 4242, name: "a", cwd: "/", command: ["sh"], env: {}, cols: 80, rows: 24,
   project: "00000000-0000-4000-8000-000000000002", input: "none", kind: "user", instances: ["i"], to: "t", text: "x", paste: true,
-  instance: "i", key: "Enter", scrollback: true, lines: 3, styles: true, holder: "00000000-0000-4000-8000-000000000003", label: "L", d: "eA==",
+  instance: "i", key: "Enter", scrollback: true, lines: 3, styles: true, holder: "00000000-0000-4000-8000-000000000003", label: "L", d: "eA==", file: "/opt/ainecto/dist/term/compute.js",
 };
 
 describe("holder 말 — 기준 파일보다 줄지 않는다", () => {

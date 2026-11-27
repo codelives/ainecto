@@ -25,7 +25,8 @@ import {
   type TermResponse,
 } from "./protocol";
 import { assertSessionName } from "./sessionName";
-import { TermSession, type SessionSink } from "./session";
+import { ComputeSlot } from "./computeSlot";
+import { TermSession, type SessionCompute, type SessionSink } from "./session";
 
 /** 띄운 쪽(바깥)에게 «준비됨/이미 있음/실패»를 알리는 한 줄 — 바깥·holder 가 같은 모양을 쓴다. */
 export type DaemonReadiness = { status: "ready" } | { status: "locked" } | { status: "error"; message: string };
@@ -98,7 +99,14 @@ export async function runHolder(options: HolderOptions): Promise<number> {
     endedUnread = true;
   }
   ended = mergeEnded(ended, pending, new Set());
-  const holder = new Holder(paths, log, info, manifest, ended, endedUnread, pending.length > 0);
+  const compute = new ComputeSlot(paths.computeDir);
+  try {
+    await compute.clear();
+  } catch (error) {
+    // 옛 사본이 남을 뿐이다(내용마다 경로가 달라 새 모듈을 막지 않는다) — 이유는 남긴다.
+    log.write({ event: "compute_error", what: "clear", message: errorMessage(error) });
+  }
+  const holder = new Holder(paths, log, info, manifest, ended, endedUnread, pending.length > 0, compute);
   await holder.listen();
   log.write({ event: "holder_start", pid: process.pid, version: options.version, holder: info.holder, socket: holder.address });
   process.on("SIGTERM", () => void holder.shutdown("SIGTERM"));
@@ -196,6 +204,8 @@ class Holder {
     private endedUnread: boolean,
     /** 병합 대기 파일(paths.endedPending)이 있다 — 원본에 합쳐 쓴 뒤 지운다. */
     private endedPendingFile: boolean,
+    /** 계산 모듈 자리(설계 3-2) — 열린 세션이 계산할 때마다 지금 모듈을 쓴다. */
+    private readonly compute: ComputeSlot,
   ) {
     this.server = createServer((socket) => this.accept(socket));
   }
@@ -377,6 +387,7 @@ class Holder {
       version: this.info.version,
       talk: Object.fromEntries(Object.entries(HOLDER_TALK).map(([op, fields]) => [op, [...fields]])),
       lease: this.lease ? { outer: this.lease.outer, version: this.lease.version } : null,
+      compute: this.compute.describe(),
     };
   }
 
@@ -405,6 +416,17 @@ class Holder {
         return { data: { via: request.outer } };
       case "handover":
         throw new TermError("TERM_BAD_REQUEST", "handover is for a term daemon, not the holder.");
+      case "compute": {
+        // ★쓰기 임대를 쥔 그 연결만(설계 3-2 신뢰 경계) — 바깥이 이은 CLI 연결(via)은 계산 모듈을 바꾸지 못한다.
+        if (this.lease?.connection !== connection) {
+          throw new TermError("TERM_BAD_REQUEST", "Only the term daemon holding the holder lease announces the compute module.");
+        }
+        const offer = await this.compute.offer(request.file);
+        this.log.write(offer.switched
+          ? { event: "compute_switched", file: request.file, version: offer.version, digest: offer.digest }
+          : { event: "compute_kept", file: request.file, version: offer.version, reason: offer.reason });
+        return { data: offer };
+      }
       case "new": {
         assertSessionName(request.name);
         // ★종류는 만드는 요청이 정하고 holder 가 그대로 적는다 — 비었으면(구판 CLI) user(설계 원칙 1 «출처를 확인하지 못한 세션은 사용자 세션으로»).
@@ -555,9 +577,14 @@ class Holder {
     this.starting.add(entry.name);
     try {
       await assertDirectory(entry.cwd);
+      const computing: SessionCompute = {
+        module: () => this.compute.module,
+        failed: (what, error) => this.log.write({ event: "compute_error", what: `${entry.name}: ${what}`, message: errorMessage(error) }),
+      };
       const session = await TermSession.start(
         { ...entry, env, cols, rows },
         (ended, exitCode, signal) => this.sessionEnded(ended, exitCode, signal),
+        computing,
       );
       this.sessions.set(entry.name, session);
       this.notifySessions();

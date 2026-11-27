@@ -27,6 +27,11 @@ export type DaemonLogRecord =
   | { event: "lease_granted"; conn: number; outer: string; version: string }
   | { event: "lease_released"; conn: number; outer: string }
   | { event: "holder_info_error"; message: string }
+  /** 계산 모듈(설계 3-2) — 바꿈 · 안 바꿈(이유) · 모듈이 던짐/사본 치우기 실패. 바깥은 알리기 실패를 compute_offer_error 로. */
+  | { event: "compute_switched"; file: string; version: string; digest: string }
+  | { event: "compute_kept"; file: string; version: string; reason: string }
+  | { event: "compute_error"; what: string; message: string }
+  | { event: "compute_offer_error"; file: string; code: string; message: string }
   /** 준비 한 줄을 띄운 쪽에 못 전했다 — 띄운 쪽이 이미 떠났다(리뷰 #82 S1). 데몬은 계속 산다. */
   | { event: "ready_unread"; pid: number; status: string; message: string }
   | { event: "daemon_stop"; pid: number; reason: string }

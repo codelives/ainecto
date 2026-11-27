@@ -1,7 +1,7 @@
 import { closeSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { daemonCaps, openTermClient, termRequest } from "../../core/term/client";
-import { runDaemon } from "../../core/term/daemon";
+import { installedComputeFile, runDaemon } from "../../core/term/daemon";
 import { runHolder, type DaemonReadiness } from "../../core/term/holder";
 import { DETACH_HINT, DetachKeyScanner } from "../../core/term/detachKey";
 import { FULL_TERMINAL_RESET } from "../../core/term/screen";
@@ -270,7 +270,7 @@ async function attach(paths: TermPaths, ref: string, io: CliIO): Promise<number>
 
 /** 내부 명령(term daemon · term holder) — 띄운 쪽이 detached 로 띄운다. `--ready-fd` 로 준비 한 줄을 돌려준다. */
 async function residentCommand(paths: TermPaths, argv: string[],
-  run: (options: { paths: TermPaths; version: string; ready: (readiness: DaemonReadiness) => void }) => Promise<number>): Promise<number> {
+  run: (options: { paths: TermPaths; version: string; ready: (readiness: DaemonReadiness) => void; compute?: string }) => Promise<number>): Promise<number> {
   const args = parseArgs(argv, { "ready-fd": "count" });
   const readyFd = countFlag(args.flags["ready-fd"]);
   let channelOpen = readyFd !== undefined;
@@ -292,7 +292,8 @@ async function residentCommand(paths: TermPaths, argv: string[],
   };
   let code: number;
   try {
-    code = await run({ paths, version: CLI_VERSION, ready });
+    const compute = installedComputeFile();
+    code = await run({ paths, version: CLI_VERSION, ready, ...(compute ? { compute } : {}) });
   } catch (error) {
     try {
       ready({ status: "error", message: error instanceof Error ? error.message : String(error) });

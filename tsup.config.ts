@@ -2,7 +2,10 @@ import { defineConfig } from "tsup";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 
-const { version } = createRequire(import.meta.url)("./package.json") as { version: string };
+const require = createRequire(import.meta.url);
+const { version } = require("./package.json") as { version: string };
+/** 묶는 @xterm/headless 판 — holder 와 계산 모듈이 같은 값을 싣는다(src/core/term/xtermVersion.ts). */
+const { version: xtermVersion } = require("@xterm/headless/package.json") as { version: string };
 
 /**
  * 빌드 식별 — 커밋 짧은 SHA(커밋 안 된 변경이 있으면 «-dirty»). 같은 판 번호의 다른 빌드를 가른다(KAN-1113 #1890 D).
@@ -22,6 +25,8 @@ export default defineConfig({
   entry: {
     "bin/mcp": "src/bin/mcp.ts",
     "bin/ainecto": "src/bin/ainecto.ts",
+    // ★계산 모듈(세션 유지 구조 3-2) — 따로 번들한 파일 하나. 바깥이 holder 에 «내 설치본의 이 파일»로 알린다(daemon.installedComputeFile).
+    "term/compute": "src/core/term/compute.ts",
   },
   format: ["esm"],
   target: "node18",
@@ -35,6 +40,7 @@ export default defineConfig({
     __AINECTO_CLI_VERSION__: JSON.stringify(version),
     __AINECTO_CLI_BUILD__: JSON.stringify(gitBuild()),
     __AINECTO_CLI_RELEASE__: JSON.stringify(process.env.AINECTO_RELEASE_BUILD === "1"),
+    __AINECTO_XTERM_VERSION__: JSON.stringify(xtermVersion),
   },
   // ★node-pty 는 네이티브 선택 의존성이라 묶지 않는다 — term 데몬이 실행 때 불러온다(src/core/term/session.ts).
   external: ["node-pty"],

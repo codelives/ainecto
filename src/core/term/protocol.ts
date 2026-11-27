@@ -72,6 +72,11 @@ export type TermRequestBody =
    * 사용자 세션이 있거나 만드는 중이면 아무것도 하지 않는다({retired:false, users}). 끌 holder 의 uuid 를 실어야 받는다(kill-server 와 같다).
    */
   | { op: "retire"; holder: string }
+  /**
+   * 계산 모듈 알림(설계 3-2) — 쓰기 임대를 쥔 바깥이 «내 설치본의 계산 모듈 = 이 파일»을 holder 에 알린다. holder 는 스스로 확인한 뒤에만
+   * 바꾸고 `{switched, version, digest | reason}` 으로 답한다(computeSlot.ComputeOffer). 임대를 쥔 그 연결만 보낼 수 있다(via 연결은 거절).
+   */
+  | { op: "compute"; file: string }
   | { op: "restore"; env: Record<string, string> }
   | { op: "attach"; name: string; cols: number; rows: number; instance?: string }
   | { op: "detach" }
@@ -214,6 +219,11 @@ export function parseClientMessage(line: string): TermClientMessage {
       return record.holder === undefined ? { id, op } : { id, op, holder: uuidField(record, "holder") };
     case "retire":
       return { id, op, holder: uuidField(record, "holder") };
+    case "compute": {
+      const file = stringField(record, "file");
+      if (file === "") throw new TermProtocolError(`"file" must not be empty.`);
+      return { id, op, file };
+    }
     case "lease":
       return { id, op, outer: uuidField(record, "outer"), version: stringField(record, "version"), pid: sizeField(record, "pid") };
     case "via":

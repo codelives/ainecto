@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createServer, type Server, type Socket } from "node:net";
 import { ensurePrivateDir, isNodeError } from "../fs/privateFiles";
 import { stuckProcessHint } from "../os/launch";
@@ -32,6 +33,17 @@ export interface DaemonOptions {
   paths: TermPaths;
   version: string;
   ready: (readiness: DaemonReadiness) => void;
+  /** 이 설치본의 계산 모듈 파일({@link installedComputeFile}) — 임대를 쥔 뒤 holder 에 알린다(설계 3-2). 없으면 알리지 않는다. */
+  compute?: string;
+}
+
+/**
+ * 이 설치본의 계산 모듈 파일 — 배포물에서 bin/ainecto.js 옆 `../term/compute.js`(tsup 진입 `term/compute`). 번들 밖 실행(tsx·vitest)은
+ * 그 파일이 없어 undefined — holder 는 묶여 온 모듈을 쓴다.
+ */
+export function installedComputeFile(): string | undefined {
+  const file = fileURLToPath(new URL("../term/compute.js", import.meta.url));
+  return existsSync(file) ? file : undefined;
 }
 
 /** 데몬 잠금을 holder 가 아닌 누군가가 쥐고 있다 — 옛 구조 데몬(0.16.x 이하)이 살아 있다(첫 전환 전 · 설계 5절). */
@@ -72,6 +84,7 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
   let outer: Outer | undefined;
   try {
     outer = await startOuter(paths, options.version, log);
+    if (outer && options.compute) await outer.announceCompute(options.compute);
   } finally {
     startLock.release();
   }
@@ -220,6 +233,18 @@ class Outer {
     });
     this.ipc = ipc;
     await afterListen(this.ownFile);
+  }
+
+  /**
+   * 임대를 쥔 뒤 — holder 에 «계산 모듈 = 내 설치본의 이 파일»(설계 3-2). holder 가 확인해 바꾸거나 이유와 함께 지금 것을 쓴다(holder.log 한 줄).
+   * 알리지 못해도 바깥은 돈다(열린 세션은 지금 모듈로 계산한다) — 이유는 남긴다.
+   */
+  async announceCompute(file: string): Promise<void> {
+    try {
+      await this.control.request({ op: "compute", file });
+    } catch (error) {
+      this.log.write({ event: "compute_offer_error", file, code: errorCode(error), message: errorMessage(error) });
+    }
   }
 
   /** 임대를 처음부터 쥐었다 — 공용 주소를 이 바깥으로. */

@@ -6,11 +6,11 @@ import type { SerializeAddon } from "@xterm/addon-serialize";
 import type { Terminal } from "@xterm/headless";
 import type { IPty } from "node-pty";
 import { defaultShellCommand, planLaunch } from "../os/launch";
+import { compute as builtInCompute, type ComputeModule, type ComputeView, type ScreenModes } from "./compute";
 import { TermError } from "./errors";
-import { keyBytes, pasteBytes } from "./keys";
 import type { SessionKind, TermEvent } from "./protocol";
 import { QueryFilter } from "./queryFilter";
-import { screenLines, styledScreen, terminalResetSequence, trackScreenFlags, type ReadRange, type ScreenFlags, type StyledScreen } from "./screen";
+import { FULL_TERMINAL_RESET, trackScreenFlags, type ReadRange, type ScreenFlags, type StyledScreen } from "./screen";
 
 /**
  * 세션 안 환경변수 — 에이전트가 «내가 누구인가»를 안다(설계 1-1 `identify` 행). 이름은 세션 수명 동안 바뀌지 않으므로
@@ -37,6 +37,22 @@ export interface SessionSpec {
   kind?: SessionKind;
 }
 
+/** 세션이 계산 모듈을 얻는 곳 — holder 가 자기 자리(computeSlot)를 넘긴다. */
+export interface SessionCompute {
+  /** 지금 모듈 — 계산할 때마다 부른다. */
+  module(): ComputeModule;
+  /** 요청이 아닌 곳(떼기·끝)에서 모듈이 던졌다 — 남긴다(돌려줄 요청이 없다). */
+  failed(what: string, error: unknown): void;
+}
+
+/** holder 없이 쓰는 세션(시험) — 묶여 온 모듈 · 던지면 그대로 던진다. */
+const BUILT_IN_COMPUTE: SessionCompute = {
+  module: () => builtInCompute,
+  failed: (_what, error) => {
+    throw error;
+  },
+};
+
 /** 세션의 출력·이벤트를 받는 쪽(연결 하나). */
 export interface SessionSink {
   send(event: TermEvent): void;
@@ -59,15 +75,6 @@ export interface SessionInfo {
   kind?: SessionKind;
 }
 
-/** 화면의 터미널 모드 — 원격 웹이 «직접 키»로 바꿀지 본다. */
-export interface ScreenModes {
-  altScreen: boolean;
-  appCursor: boolean;
-  bracketedPaste: boolean;
-  /** 앱이 마우스 추적을 켰는가 — 원격 웹이 휠을 앱에 보낼지(`wheel-up`·`wheel-down`) 본다. 옛 데몬은 이 칸이 없다(웹은 휠을 보내지 않는다). */
-  mouse: boolean;
-}
-
 interface AttachState {
   /** 첫 화면을 보내기 전까지 모아 두는 출력. null 이면 바로 흘린다. */
   pending: string[] | null;
@@ -84,6 +91,8 @@ interface AttachState {
  *   그 터미널만 질의를 받아 답하고, 없으면 헤드리스 화면이 답해 PTY 로 돌려준다. 이 판정은 출력 덩어리마다 한 번 —
  *   헤드리스는 쓰기 순서대로 그리므로 덩어리마다 «헤드리스가 답하나»를 줄 세워 두고 그 덩어리를 그리는 동안 본다.
  * ★node-pty 는 스레드 안전하지 않다 — 데몬 메인 스레드에서만 다룬다.
+ * ★화면 읽기·키 바이트 계산은 계산 모듈(compute.ts)이 한다 — holder 가 새 판 모듈로 갈아 끼우면 열린 이 세션도 다음 계산부터 그것을 쓴다(세션 유지 구조 3-2).
+ *   부르는 곳은 {@link view} 를 넘기는 몇 줄뿐이고, 밀린 출력을 다 그린 뒤(settled) 같은 호출 안에서 PTY 에 쓴다(읽기와 쓰기 사이에 틈이 없다).
  */
 export class TermSession {
   private readonly attached = new Map<SessionSink, AttachState>();
@@ -117,9 +126,12 @@ export class TermSession {
     private readonly screen: Terminal,
     private readonly serializer: SerializeAddon,
     private readonly flags: ScreenFlags,
+    private readonly computing: SessionCompute,
   ) {}
 
-  static async start(spec: SessionSpec, onExit: (session: TermSession, exitCode: number, signal: number) => void): Promise<TermSession> {
+  /** `computing` — 계산 모듈을 고르는 쪽(holder). 없으면 묶여 온 모듈. */
+  static async start(spec: SessionSpec, onExit: (session: TermSession, exitCode: number, signal: number) => void,
+    computing: SessionCompute = BUILT_IN_COMPUTE): Promise<TermSession> {
     const ptyModule = await loadNodePty();
     // ★원래 명령(spec.command)은 그대로 둔다 — 매니페스트·ls·runningPcs 판정이 그것을 본다. PTY 에는 실행 계획의 표현만 넘긴다.
     const plan = planLaunch(spec.command ?? defaultShellCommand(spec.env), spec.env, undefined, undefined, spec.input ?? "terminal");
@@ -132,7 +144,7 @@ export class TermSession {
     const serializer = new serializeAddon.SerializeAddon();
     screen.loadAddon(serializer);
     const flags = trackScreenFlags(screen);
-    const session = new TermSession(spec, pty, screen, serializer, flags);
+    const session = new TermSession(spec, pty, screen, serializer, flags, computing);
     session.label = spec.label;
     screen.onData((answer) => session.answerQuery(answer));
     pty.onData((data) => session.handleOutput(data));
@@ -168,31 +180,17 @@ export class TermSession {
   /** 지금까지 받은 출력을 모두 그린 뒤의 모드. */
   async modes(): Promise<ScreenModes> {
     await this.settled();
-    return {
-      altScreen: this.screen.buffer.active.type === "alternate",
-      appCursor: this.screen.modes.applicationCursorKeysMode,
-      bracketedPaste: this.screen.modes.bracketedPasteMode,
-      mouse: this.screen.modes.mouseTrackingMode !== "none",
-    };
+    return this.compute().modes(this.view());
   }
 
   async send(text: string, paste: boolean): Promise<void> {
     await this.settled();
-    this.pty.write(paste ? pasteBytes(text, this.screen.modes.bracketedPasteMode) : text);
+    this.pty.write(paste ? this.compute().paste(this.view(), text) : text);
   }
 
   async key(name: string): Promise<void> {
     await this.settled();
-    const bytes = keyBytes(name, {
-      applicationCursorKeys: this.screen.modes.applicationCursorKeysMode,
-      wheel: {
-        mouseTracking: this.screen.modes.mouseTrackingMode,
-        sgrMouse: this.flags.sgrMouse,
-        altScreen: this.screen.buffer.active.type === "alternate",
-        cols: this.screen.cols,
-        rows: this.screen.rows,
-      },
-    });
+    const bytes = this.compute().key(this.view(), name);
     if (bytes === undefined) {
       throw new TermError("TERM_UNKNOWN_KEY", `Unknown key "${name}".`);
     }
@@ -205,7 +203,7 @@ export class TermSession {
       this.watchers.set(reader, true);
     }
     await this.settled();
-    return screenLines(this.screen.buffer.active, this.screen.rows, range);
+    return this.compute().read(this.view(), range);
   }
 
   /** {@link read} 와 같은 줄에 글자 속성·커서까지(원격 웹 화면 — 색·흐림을 칠한다). */
@@ -214,7 +212,7 @@ export class TermSession {
       this.watchers.set(reader, true);
     }
     await this.settled();
-    return styledScreen(this.screen.buffer.active, this.screen.rows, range, this.flags.cursorVisible);
+    return this.compute().readStyled(this.view(), range);
   }
 
   /**
@@ -363,8 +361,22 @@ export class TermSession {
     this.screen.dispose();
   }
 
+  /** 떼거나 끝날 때 되돌리는 글자 — 계산 모듈이 던지면(요청이 아니라 끝 처리라 오류를 돌려줄 곳이 없다) 남기고 모든 모드를 끄는 글자로. */
   private resetSequence(): string {
-    return terminalResetSequence(this.screen.modes, this.screen.buffer.active.type === "alternate");
+    try {
+      return this.compute().reset(this.view());
+    } catch (error) {
+      this.computing.failed("reset", error);
+      return FULL_TERMINAL_RESET;
+    }
+  }
+
+  private compute(): ComputeModule {
+    return this.computing.module();
+  }
+
+  private view(): ComputeView {
+    return { terminal: this.screen, flags: this.flags };
   }
 
   /** 지금까지 받은 출력을 헤드리스 화면이 다 그릴 때까지 기다린다. */

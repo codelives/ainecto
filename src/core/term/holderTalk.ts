@@ -19,6 +19,7 @@ export const HOLDER_TALK: Readonly<Record<string, readonly string[]>> = {
   kill: ["name", "instance"],
   "kill-server": ["holder"],
   retire: ["holder"],
+  compute: ["file"],
   restore: ["env"],
   attach: ["name", "cols", "rows", "instance"],
   detach: [],
@@ -42,6 +43,8 @@ export interface HolderCaps {
   talk: Record<string, string[]>;
   /** 지금 쓰기 임대를 쥔 바깥 — 없으면 null. */
   lease: { outer: string; version: string } | null;
+  /** 지금 쓰는 계산 모듈(설계 3-2) — 판 · 불러온 파일의 지문(묶여 온 것이면 없음). 이 칸이 없는 holder 는 없다(첫 holder 판부터). */
+  compute?: { version: string; digest?: string };
 }
 
 /** caps 답 → holder 기능. 모양이 틀리면 undefined(옛 구조 데몬은 caps 에 답하지 않고 끊는다). 순수 함수. */
@@ -55,13 +58,22 @@ export function holderCaps(data: unknown): HolderCaps | undefined {
   const talkOk = !!talk && typeof talk === "object" && !Array.isArray(talk)
     && Object.values(talk).every((fields) => Array.isArray(fields) && fields.every((field) => typeof field === "string"));
   if (typeof value.holder !== "string" || typeof value.pid !== "number" || typeof value.version !== "string" || !leaseOk || !talkOk) return undefined;
+  const compute = computeCaps(value.compute);
   return {
     holder: value.holder,
     pid: value.pid,
     version: value.version,
     talk: talk as Record<string, string[]>,
     lease: lease as HolderCaps["lease"],
+    ...(compute ? { compute } : {}),
   };
+}
+
+function computeCaps(data: unknown): HolderCaps["compute"] {
+  if (!data || typeof data !== "object") return undefined;
+  const value = data as Record<string, unknown>;
+  if (typeof value.version !== "string" || (value.digest !== undefined && typeof value.digest !== "string")) return undefined;
+  return { version: value.version, ...(typeof value.digest === "string" ? { digest: value.digest } : {}) };
 }
 
 /** 바깥(`term daemon`)의 기능 묻기 답 — CLI 가 본다. 판·구조·holder uuid 는 살아 있는 바깥에게서(설계 G4 — 남은 파일로 짐작하지 않는다). */

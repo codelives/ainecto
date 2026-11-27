@@ -92,6 +92,9 @@
     "resize": [
       "cols",
       "rows"
+    ],
+    "compute": [
+      "file"
     ]
   }
 }
