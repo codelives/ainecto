@@ -11,7 +11,8 @@ import type { TurnFacts } from "./documents";
  *   <li>세션 시작·재개 — {@link AgentAdapter.open}({@code resumeRef} 가 있으면 재개)</li>
  *   <li>요청 전달 → 응답 반환(닫힌 schema 값) — {@link AgentSession.send}</li>
  *   <li>응답 스트리밍 — 세션 안에서 소비한다(AiNecto 도구 결과만 모은다 — {@link TurnFacts}). 서버로 조각을 보내는 길은 없다.</li>
- *   <li>권한 승인 — 묻지 않는다. 세션을 열 때 «AiNecto MCP 도구만 허용, 나머지는 묻지 않고 거절»로 고정한다.</li>
+ *   <li>권한 승인 — 묻지 않는다. 세션을 열 때 «AiNecto MCP 도구만 허용, 나머지는 묻지 않고 거절»로 고정한다. ★읽기만 세션({@code readOnly} —
+ *       Room 차례 · Ryan 결재 11-27)은 서버가 읽기라고 표시한 도구({@code readOnlyHint})만 허용하고 쓰기 도구도 거절한다.</li>
  *   <li>중단 — {@link AgentSession.interrupt}(그 차례만), 내리기는 {@link AgentSession.close}.</li>
  * </ol>
  */
@@ -85,8 +86,10 @@ export interface AgentAdapter {
   /**
    * 프로세스를 띄운다(동기). 재개할 세션이 있으면 {@code resumeRef}. 준비가 실패하면 첫 {@code send} 가 «exited» 로 답한다.
    * {@code agentName} = 이 세션의 AiNecto 브리지를 그 이름 붙은 에이전트로 붙인다(할 일 차례만 — Chat 차례는 이름 없는 연결).
+   * {@code readOnly} = AiNecto 읽기 도구만(Room 차례 — 방 사람 모두가 답을 본다 · 결재 11-27). 프로세스를 띄울 때 정해지고 바뀌지 않는다.
    */
-  open(input: { conversationUuid: string; resumeRef?: string; textMaxCharacters: number; documentsMax: number; agentName?: string }): AgentSession;
+  open(input: { conversationUuid: string; resumeRef?: string; textMaxCharacters: number; documentsMax: number; agentName?: string;
+    readOnly?: boolean }): AgentSession;
 }
 
 export interface AgentSession {
@@ -97,6 +100,8 @@ export interface AgentSession {
   readonly alive: boolean;
   /** 이 세션의 브리지가 붙은 이름 붙은 에이전트(없으면 이름 없는 연결). */
   readonly agentName: string | undefined;
+  /** 읽기 도구만 허용한 세션인가(Room 차례) — 띄울 때 정해진다. */
+  readonly readOnly: boolean;
   /** 저장해 두면 재개되는 값(Claude session_id · Codex threadId). 아직 모르면 undefined. */
   readonly sessionRef: string | undefined;
   /**

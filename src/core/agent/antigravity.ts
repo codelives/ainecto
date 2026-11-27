@@ -35,7 +35,12 @@ export function antigravityAdapter(deps: AntigravityDeps): AgentAdapter {
   // ★이 PC 의 agy -p 프로세스 전부 — 세션이 아니라 어댑터가 쥔다. serve 가 세션을 바꾸거나 버려도(대화 전환 · exited) 끝나지 않은 프로세스는
   //   여기 남아 다음 차례를 막는다(구현 리뷰 2차 P1).
   const processes = new AgyProcesses();
-  const tools: AgyTools = { names: new Set(deps.tools.map((tool) => tool.name)), preamble: antigravityToolPreamble(deps.tools) };
+  const names = new Set(deps.tools.map((tool) => tool.name));
+  const tools: AgyTools = { names, preamble: antigravityToolPreamble(deps.tools), deny: [] };
+  // ★읽기만 세션(Room 차례) — 쓰기 도구는 정의를 싣지 않고 이름마다 거절 규칙을 더한다(브리지 허용 mcp(ainecto-pc/*) 보다 Deny 가 앞선다).
+  const writes = deps.tools.map((tool) => tool.name).filter((name) => deps.writeTools.has(name));
+  const readOnlyTools: AgyTools = { names, preamble: antigravityToolPreamble(deps.tools.filter((tool) => !deps.writeTools.has(tool.name))),
+    deny: writes };
   return {
     id: "antigravity",
     displayName: "Antigravity",
@@ -51,8 +56,9 @@ export function antigravityAdapter(deps: AntigravityDeps): AgentAdapter {
       if (run.spawnError || run.timedOut) return { ready: false, detail: run.spawnError ?? "timed out" };
       return antigravityAuth(run.code, deps.env, await modelProvider(deps.home));
     },
-    open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName }) =>
-      new AntigravitySession(conversationUuid, resumeRef, agentName, deps.schema(textMaxCharacters, documentsMax), deps, processes, tools),
+    open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName, readOnly = false }) =>
+      new AntigravitySession(conversationUuid, resumeRef, agentName, readOnly, deps.schema(textMaxCharacters, documentsMax), deps, processes,
+        readOnly ? readOnlyTools : tools),
   };
 }
 
@@ -118,6 +124,8 @@ class AgyProcesses {
 interface AgyTools {
   names: ReadonlySet<string>;
   preamble: string;
+  /** 이 세션에서 더 거절할 브리지 도구 이름(읽기만 세션의 쓰기 도구 · 아니면 빈 목록). */
+  deny: readonly string[];
 }
 
 interface Turn {
@@ -154,7 +162,7 @@ class AntigravitySession implements AgentSession {
   private readonly cwd: string;
 
   constructor(readonly conversationUuid: string, resumeRef: string | undefined, readonly agentName: string | undefined,
-    private readonly schema: Record<string, unknown>, private readonly deps: AntigravityDeps,
+    readonly readOnly: boolean, private readonly schema: Record<string, unknown>, private readonly deps: AntigravityDeps,
     private readonly processes: AgyProcesses, private readonly tools: AgyTools) {
     this.resumed = resumeRef !== undefined;
     this.sessionRef = resumeRef;
@@ -241,7 +249,7 @@ class AntigravitySession implements AgentSession {
       this.finish(turn, { kind: "refused", errorCode: "AGENT_POLICY_UNVERIFIED", reason: policy.reason });
       return;
     }
-    const args = antigravityAgentArgs({ schema: this.schema, settings: antigravitySettings(policy.deny), conversationId: this.sessionRef });
+    const args = antigravityAgentArgs({ schema: this.schema, settings: antigravitySettings(policy.deny, this.tools.deny), conversationId: this.sessionRef });
     const child: AgentChild = new AgentChild(this.deps.spawnImpl, AGY, args, { cwd: this.cwd, env: this.deps.env }, {
       line: (line) => this.onLine(turn, child, line),
       exit: (exit) => this.onExit(turn, child, exit),

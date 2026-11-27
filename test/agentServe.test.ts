@@ -243,19 +243,18 @@ describe("ainecto agent serve", () => {
     expect(stopped).toMatchObject({ turnUuid: "t1", status: "STOPPED", documentUuids: [] });
   });
 
-  it("open 에 features(stop)를 알린다 · 옛 서버가 400 INVALID 로 거절하면 features 없이 다시 연다", async () => {
+  it("open 에 features(stop · room)를 알린다 · 옛 서버가 400 INVALID 로 거절하면 room 만 뺀 뒤 features 없이 다시 연다", async () => {
     const w = startServe();
     await until(() => w.server.calls.find((c) => c.op === "poll"));
     await finish(w);
-    expect(w.server.calls[0]).toMatchObject({ op: "open", body: { features: ["stop"] } });
+    expect(w.server.calls[0]).toMatchObject({ op: "open", body: { features: ["stop", "room"] } });
 
     const old = startServe({ oldServer: true });
     old.server.offer("t1", "conv-a", "hello");
     const reply = await until(() => old.server.replies()[0]);
     await finish(old);
     const opens = old.server.calls.filter((c) => c.op === "open");
-    expect(opens).toHaveLength(2);
-    expect(opens[1]?.body.features).toBeUndefined();
+    expect(opens.map((c) => c.body.features)).toEqual([["stop", "room"], ["stop"], undefined]);
     expect(reply.status).toBe("DONE");
     expect(logRecords(old).some((r) => r.event === "open_without_features")).toBe(true);
   });
@@ -264,15 +263,14 @@ describe("ainecto agent serve", () => {
     const w = startServe({ cliBuild: "abc1234" });
     await until(() => w.server.calls.find((c) => c.op === "poll"));
     await finish(w);
-    expect(w.server.calls[0]).toMatchObject({ op: "open", body: { cliVersion: "0.0.0", cliBuild: "abc1234", features: ["stop"] } });
+    expect(w.server.calls[0]).toMatchObject({ op: "open", body: { cliVersion: "0.0.0", cliBuild: "abc1234", features: ["stop", "room"] } });
 
     const before = startServe({ cliBuild: "abc1234", rejectBuild: true });
     await until(() => before.server.calls.find((c) => c.op === "poll"));
     await finish(before);
     const opens = before.server.calls.filter((c) => c.op === "open");
-    expect(opens).toHaveLength(2);
-    expect(opens[1]?.body.cliBuild).toBeUndefined();
-    expect(opens[1]?.body.features).toEqual(["stop"]);
+    // room 이 맨 먼저 빠진다(가장 새 칸) — cliBuild 를 모르는 서버는 room 도 모른다
+    expect(opens.map((c) => [c.body.cliBuild, c.body.features])).toEqual([["abc1234", ["stop", "room"]], ["abc1234", ["stop"]], [undefined, ["stop"]]]);
     expect(logRecords(before).some((r) => r.event === "open_without_features"
       && JSON.stringify(r.features) === JSON.stringify(["cliBuild"]))).toBe(true);
 
@@ -287,10 +285,12 @@ describe("ainecto agent serve", () => {
     await until(() => w.server.calls.find((c) => c.op === "poll"));
     await finish(w);
     const opens = w.server.calls.filter((c) => c.op === "open");
-    expect(opens).toHaveLength(2);
+    expect(opens).toHaveLength(3);   // room 을 먼저 뺀다(가장 새 칸) → 그다음 이 종류
     expect((opens[0]?.body.agents as Array<{ id: string }>).map((a) => a.id)).toEqual(["claude-code", "antigravity"]);
-    expect(opens[1]?.body).toMatchObject({ cliBuild: "abc1234", features: ["stop"], agents: [{ id: "claude-code", ready: true }] });
-    expect((opens[1]?.body.agents as unknown[])).toHaveLength(1);
+    expect(opens[1]?.body).toMatchObject({ cliBuild: "abc1234", features: ["stop"] });
+    expect((opens[1]?.body.agents as unknown[])).toHaveLength(2);
+    expect(opens[2]?.body).toMatchObject({ cliBuild: "abc1234", features: ["stop"], agents: [{ id: "claude-code", ready: true }] });
+    expect((opens[2]?.body.agents as unknown[])).toHaveLength(1);
     expect(logRecords(w).some((r) => r.event === "open_without_features"
       && JSON.stringify(r.features) === JSON.stringify(["agents.newer"]))).toBe(true);
 

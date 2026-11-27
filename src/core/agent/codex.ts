@@ -23,8 +23,11 @@ export interface CodexDeps {
   log: DaemonLog<AgentLogRecord>;
   /** 서버 tools/list 에서 readOnlyHint 가 아닌 도구 이름. */
   writeTools: ReadonlySet<string>;
-  /** 대화용 app-server 인자({@code codexAppServerArgs}) — 브리지를 붙일 이름 붙은 에이전트(없으면 이름 없는 연결)로 만든다. */
-  appServerArgs(agentName: string | undefined): string[];
+  /**
+   * 대화용 app-server 인자({@code codexAppServerArgs}) — 브리지를 붙일 이름 붙은 에이전트(없으면 이름 없는 연결)로 만든다.
+   * {@code readOnly} 면 쓰기 도구 승인 줄을 싣지 않는다(묻지 않는 설정이라 쓰기 도구가 거절된다 — Room 차례).
+   */
+  appServerArgs(agentName: string | undefined, readOnly: boolean): string[];
   /** initialize 의 clientInfo.version. */
   clientVersion: string;
 }
@@ -53,8 +56,8 @@ export function codexAdapter(deps: CodexDeps): AgentAdapter {
         await server.child.stop();
       }
     },
-    open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName }) =>
-      new CodexSession(conversationUuid, resumeRef, agentReplySchema(textMaxCharacters, documentsMax), agentName, deps),
+    open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName, readOnly = false }) =>
+      new CodexSession(conversationUuid, resumeRef, agentReplySchema(textMaxCharacters, documentsMax), agentName, readOnly, deps),
   };
 }
 
@@ -207,10 +210,11 @@ class CodexSession implements AgentSession {
     resumeRef: string | undefined,
     private readonly replySchema: Record<string, unknown>,
     readonly agentName: string | undefined,
+    readonly readOnly: boolean,
     private readonly deps: CodexDeps,
   ) {
     this.resumed = resumeRef !== undefined;
-    const server = startAppServer(deps, deps.appServerArgs(agentName), {
+    const server = startAppServer(deps, deps.appServerArgs(agentName, readOnly), {
       notification: (method, params) => this.onNotification(method, params),
       exit: (exit) => this.onExit(exit),
     });

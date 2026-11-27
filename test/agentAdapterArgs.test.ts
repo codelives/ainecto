@@ -77,6 +77,15 @@ describe("Codex app-server 고정 설정(실측 그대로)", () => {
   });
 });
 
+describe("Codex 읽기만 세션(Room 차례)", () => {
+  it("쓰기 도구 승인 줄이 없다 — 나머지 고정 설정은 같다(묻지 않는 설정이라 쓰기 도구는 거절된다 · 위 실측)", () => {
+    const write = codexAppServerArgs(bridge, new Set(["create_documents"]));
+    const readOnly = codexAppServerArgs(bridge, []);
+    expect(readOnly.join(" ")).not.toContain("approval_mode");
+    expect(write.filter((arg) => !arg.includes("approval_mode")).slice(0, -1)).toEqual(readOnly);
+  });
+});
+
 describe("Claude Code 고정 설정 · 인증 읽기", () => {
   it("K5 인자는 그대로(내장 도구 끔 · MCP 는 브리지 하나 · dontAsk · 설정 끔)", () => {
     expect(claudeAgentArgs({ schema: { type: "object" }, mcpConfig: claudeMcpConfig(bridge), resumeSessionId: "s-1" })).toEqual([
@@ -90,6 +99,16 @@ describe("Claude Code 고정 설정 · 인증 읽기", () => {
       "--setting-sources", "",
       "--resume", "s-1",
     ]);
+  });
+
+  it("★읽기만 세션(Room 차례) — 허용은 서버가 읽기라고 표시한 AiNecto 도구뿐(쓰기 도구는 dontAsk 가 거절) · 읽기 도구가 없으면 허용 0", () => {
+    const readOnly = claudeAgentArgs({ schema: { type: "object" }, mcpConfig: claudeMcpConfig(bridge), readTools: ["search", "execute_read"] });
+    expect(readOnly[readOnly.indexOf("--allowedTools") + 1]).toBe("mcp__ainecto__search,mcp__ainecto__execute_read");
+    expect(readOnly).not.toContain("mcp__ainecto");
+    expect(readOnly.slice(readOnly.indexOf("--permission-mode"), readOnly.indexOf("--permission-mode") + 2)).toEqual(["--permission-mode", "dontAsk"]);
+    const none = claudeAgentArgs({ schema: { type: "object" }, mcpConfig: claudeMcpConfig(bridge), readTools: [] });
+    expect(none).not.toContain("--allowedTools");
+    expect(none).toContain("dontAsk");
   });
 
   it("claude auth status --json → 준비 여부(실측 칸 이름) · 못 읽으면 준비 안 됨", () => {

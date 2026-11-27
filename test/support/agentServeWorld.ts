@@ -64,12 +64,20 @@ export class FakeServer implements AgentHttp {
   rejectBuild = false;
   /** open 의 agents[].id 를 닫힌 목록으로 거르는 서버 — 이 id 들을 모른다(400 INVALID · 서버 AgentKind 스키마). */
   unknownAgentIds: string[] = [];
+  /** features 의 room 을 모르는 서버(400 INVALID — Room R1 전 · 11-27 운영). */
+  rejectRoom = false;
 
   /** @param oldServer 옛 서버 — open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다. */
   constructor(private readonly oldServer = false, private readonly pollHoldSeconds = 20) {}
 
   offer(turnUuid: string, conversationUuid: string, text: string, context?: Record<string, unknown>, agent?: string): void {
     this.push({ state: "OPEN", offers: [{ turnUuid, conversationUuid, text, context, ...(agent ? { agent } : {}) }] });
+  }
+
+  /** Room 차례 offer(서버 R1 · kind ROOM · requester) — 맥락·새 글 알림은 Connect 와 같은 칸. */
+  offerRoom(turnUuid: string, conversationUuid: string, text: string, requesterName: string | undefined, agent?: string): void {
+    this.push({ state: "OPEN", offers: [{ turnUuid, kind: "ROOM", conversationUuid, text,
+      requester: requesterName === undefined ? null : { userId: "u-1", name: requesterName }, ...(agent ? { agent } : {}) }] });
   }
 
   /** turn-context 를 아는 서버의 offer(칸 {@code turnContextAvailable: true} · 설계 connect C2). */
@@ -125,6 +133,9 @@ export class FakeServer implements AgentHttp {
       const sent = (Array.isArray(body.agents) ? body.agents : []) as Array<Record<string, unknown>>;
       if (sent.some((a) => this.unknownAgentIds.includes(String(a.id)))) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       if (this.rejectNames && sent.some((a) => a.name !== undefined)) throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
+      if (this.rejectRoom && Array.isArray(body.features) && body.features.includes("room")) {
+        throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
+      }
       if (this.rejectTodos && Array.isArray(body.features) && body.features.includes("todos")) {
         throw new AgentCallError("Invalid request body.", "open", 400, "INVALID");
       }
@@ -217,6 +228,8 @@ export interface WorldOptions {
   rejectNames?: boolean;
   /** features 의 todos 를 모르는 서버. */
   rejectTodos?: boolean;
+  /** features 의 room 을 모르는 서버(Room R1 전). */
+  rejectRoom?: boolean;
   /** open 에 실을 빌드 식별(없으면 싣지 않는다). */
   cliBuild?: string;
   /** cliBuild 를 모르는 서버. */
@@ -247,6 +260,7 @@ export function startServe(options: WorldOptions = {}): World {
   server.openError = options.openError;
   server.rejectNames = options.rejectNames ?? false;
   server.rejectTodos = options.rejectTodos ?? false;
+  server.rejectRoom = options.rejectRoom ?? false;
   server.rejectBuild = options.rejectBuild ?? false;
   server.unknownAgentIds = options.unknownAgentIds ?? [];
   const stop = new AbortController();
@@ -257,8 +271,9 @@ export function startServe(options: WorldOptions = {}): World {
     log, writeTools: WRITE_TOOLS };
   const all: AgentAdapter[] = [
     // 가짜 Agent 가 받은 인자 = 브리지 이름(할 일 차례만) + 재개 값 — 시험이 «누구로 붙었나»를 본다.
-    claudeCodeAdapter({ ...shared, args: ({ resumeSessionId, agentName }) =>
-      [...(agentName ? ["--agent", agentName] : []), ...(resumeSessionId ? ["--resume", resumeSessionId] : [])] }),
+    // 읽기만 세션(Room 차례)이면 «--read-only» 를 싣는다 — 시험이 «어느 세션이 읽기만인가»를 본다(실제 인자는 agentAdapterArgs 시험).
+    claudeCodeAdapter({ ...shared, args: ({ resumeSessionId, agentName, readOnly }) =>
+      [...(agentName ? ["--agent", agentName] : []), ...(resumeSessionId ? ["--resume", resumeSessionId] : []), ...(readOnly ? ["--read-only"] : [])] }),
     // 운영(agentCommand)과 같은 인자 — 할 일 차례의 이름은 브리지 인자 안 «--agent»(Codex 명령 끝에 붙이면 실제 codex 0.171.0 이 거절한다).
     // 가짜 Codex 가 진짜처럼 사용자 설정과 합친다(KAN-1617).
     codexAdapter({ ...shared, appServerArgs: (agentName) =>

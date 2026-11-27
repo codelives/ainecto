@@ -87,6 +87,8 @@ export async function executeAgentServe(input: {
   });
   const serverTools = (await tools.list()) as Array<{ name: string; description?: unknown; inputSchema?: unknown; annotations?: { readOnlyHint?: boolean } }>;
   const writeTools = writeToolNames(serverTools);
+  // ★읽기만 세션(Room 차례)이 허용하는 도구 — 서버가 읽기라고 표시한 것(같은 tools/list 한 벌).
+  const readTools = serverTools.map((tool) => tool.name).filter((name) => !writeTools.has(name));
 
   // 브리지 = 지금 돌고 있는 이 CLI 그대로(같은 node · 같은 스크립트 · 같은 서버 주소).
   const cliScript = process.argv[1];
@@ -95,9 +97,11 @@ export async function executeAgentServe(input: {
   const bridge = (agentName: string | undefined) => ainectoBridge(process.execPath, cliScript, input.endpoint, agentName);
   const shared = { spawnImpl: spawnAgent, cwd: paths.work, env: agentEnv(process.env), log, writeTools };
   const all: AgentAdapter[] = [
-    claudeCodeAdapter({ ...shared, args: ({ textMaxCharacters, documentsMax, resumeSessionId, agentName }) =>
-      claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters, documentsMax), mcpConfig: claudeMcpConfig(bridge(agentName)), resumeSessionId }) }),
-    codexAdapter({ ...shared, appServerArgs: (agentName) => codexAppServerArgs(bridge(agentName), writeTools), clientVersion: CLI_VERSION }),
+    claudeCodeAdapter({ ...shared, args: ({ textMaxCharacters, documentsMax, resumeSessionId, agentName, readOnly }) =>
+      claudeAgentArgs({ schema: agentReplySchema(textMaxCharacters, documentsMax), mcpConfig: claudeMcpConfig(bridge(agentName)), resumeSessionId,
+        ...(readOnly ? { readTools } : {}) }) }),
+    codexAdapter({ ...shared, appServerArgs: (agentName, readOnly) => codexAppServerArgs(bridge(agentName), readOnly ? [] : writeTools),
+      clientVersion: CLI_VERSION }),
     antigravityAdapter({ spawnImpl: spawnAgent, env: shared.env, home: homedir(), log, writeTools,
       tools: serverTools,
       // 연결 이름마다 한 폴더 — 이름 글자를 폴더 이름에 쓰지 않는다(해시).

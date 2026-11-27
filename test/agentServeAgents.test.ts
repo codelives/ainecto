@@ -27,7 +27,7 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     await finish(w);
 
     expect(w.server.calls[0]).toEqual({ op: "open", body: { hostName: "test-host", cliVersion: "0.0.0",
-      agents: [{ id: "claude-code", ready: true }, { id: "codex", ready: true }], features: ["stop"] } });
+      agents: [{ id: "claude-code", ready: true }, { id: "codex", ready: true }], features: ["stop", "room"] } });
     expect(String(claude.reply)).toMatch(/^got hello #1 in sess-/);
     expect(codex).toMatchObject({ status: "DONE", documentUuids: [] });
     expect(String(codex.reply)).toMatch(/^got hello #1 in thr-\d+$/);

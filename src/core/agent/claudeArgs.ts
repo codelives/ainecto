@@ -11,11 +11,18 @@ export function claudeMcpConfig(bridge: AinectoBridge): Record<string, unknown> 
   return { mcpServers: { [AINECTO_MCP_SERVER]: { command: bridge.command, args: bridge.args } } };
 }
 
+/**
+ * @param readTools 있으면 ★읽기만 세션 — 허용은 이 AiNecto 도구들(서버 readOnlyHint)뿐이고 나머지(쓰기 도구 포함)는 dontAsk 가 묻지 않고 거절한다.
+ *                  비어 있으면 AiNecto 도구를 하나도 허용하지 않는다. 없으면 AiNecto 도구 전부(Connect·할 일).
+ */
 export function claudeAgentArgs(input: {
   schema: Record<string, unknown>;
   mcpConfig: Record<string, unknown>;
   resumeSessionId?: string;
+  readTools?: readonly string[];
 }): string[] {
+  const allowed = input.readTools === undefined ? [`mcp__${AINECTO_MCP_SERVER}`]
+    : input.readTools.map((tool) => `${AINECTO_TOOL_PREFIX}${tool}`);
   const args = [
     "-p",
     "--input-format", "stream-json",
@@ -24,7 +31,7 @@ export function claudeAgentArgs(input: {
     "--json-schema", JSON.stringify(input.schema),
     "--tools", "",                       // 내장 도구(Bash·Read·Write·Edit·Agent·Skill·WebFetch…) 전부 끔
     "--strict-mcp-config", "--mcp-config", JSON.stringify(input.mcpConfig),
-    "--allowedTools", `mcp__${AINECTO_MCP_SERVER}`,
+    ...(allowed.length > 0 ? ["--allowedTools", allowed.join(",")] : []),
     "--permission-mode", "dontAsk",      // 허용 밖은 묻지 않고 바로 거절(헤드리스에서 묻기 = 2분 대기)
     "--setting-sources", "",             // 사용자·프로젝트 설정(플러그인·스킬·훅·권한) 끔
   ];

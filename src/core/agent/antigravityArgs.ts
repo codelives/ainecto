@@ -50,13 +50,16 @@ export function antigravityMcpConfig(bridge: AinectoBridge): Record<string, unkn
  * 이 실행만의 설정({@code --settings} · 사용자 파일에 쓰지 않음). ★보장은 이름 거절이 한다 — 사용자 {@code always-proceed} 는
  * ask/deny 에 걸리지 않는 MCP 호출을 승인하므로, 브리지 밖 서버 이름을 전부 deny 에 싣는다(실측 M5 other 1 → M6 0).
  * {@code deny mcp(*)} 는 Deny 우선이라 브리지까지 막으므로 쓰지 않는다. {@code toolPermission} 은 덧댐(우선순위는 문서에 없다).
+ * {@code denyBridgeTools} = 브리지에서도 거절할 도구(읽기만 세션의 쓰기 도구 — 규칙 꼴 {@code mcp(<서버>/<도구>)} 는 M6 거절 문구
+ * «Permission denied for mcp(other/ping)» 그대로 · 도구 하나 단위 거절은 실측하지 않았다).
  */
-export function antigravitySettings(denyServers: readonly string[]): Record<string, unknown> {
+export function antigravitySettings(denyServers: readonly string[], denyBridgeTools: readonly string[] = []): Record<string, unknown> {
   return {
     toolPermission: "request-review",
     permissions: {
       allow: [`mcp(${ANTIGRAVITY_MCP_SERVER}/*)`],
-      deny: [...BUILTIN_DENY, ...denyServers.map((name) => `mcp(${name}/*)`)],
+      deny: [...BUILTIN_DENY, ...denyServers.map((name) => `mcp(${name}/*)`),
+        ...denyBridgeTools.map((tool) => `mcp(${ANTIGRAVITY_MCP_SERVER}/${tool})`)],
     },
   };
 }

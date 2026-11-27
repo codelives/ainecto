@@ -50,6 +50,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   const raw = message.message.content;
+  // FAKE_CLAUDE_INPUT_LOG 가 있으면 받은 글(규칙 줄 포함) 그대로 한 줄 — 시험이 «어느 규칙 줄이 실렸나»를 본다.
+  if (process.env.FAKE_CLAUDE_INPUT_LOG) appendFileSync(process.env.FAKE_CLAUDE_INPUT_LOG, `${JSON.stringify(raw)}\n`);
   const text = raw.replace(/^\[AiNecto rule\][^\n]*\n\n?/, "");
   // 새 글 알림 줄([AiNecto chat] — 설계 connect C2)이 있으면 그 뒤가 명령이다. 답 글(got …)에는 받은 글을 그대로 싣는다.
   const command = text.replace(/^\[AiNecto chat\][^\n]*\n\n?/, "");

@@ -4,7 +4,7 @@ import { DEFAULT_AGENT, isAgentId, type AgentAdapter, type AgentId, type AgentSe
 import { AgentCallError, type AgentHttp } from "./http";
 import { AGENT_TURN_TIMEOUT_MS, nextRetryDelay } from "./limits";
 import type { AgentLogRecord } from "./log";
-import { agentPromptText, turnContextIn, unreadLine, type AgentTurnContext, type TurnContextReply } from "./prompt";
+import { agentPromptText, turnContextIn, unreadLine, type AgentRoomCall, type AgentTurnContext, type TurnContextReply } from "./prompt";
 import { clip, replyForOutcome, stoppedReply, type AgentReply } from "./reply";
 import { usableEntry, type AgentSessionEntry, type AgentSessionMap, type AgentSessionWrite } from "./sessions";
 import { withDeadline } from "./child";
@@ -23,6 +23,13 @@ export interface AgentOffer {
   context?: AgentTurnContext;
   /** 이 서버가 turn-context(새 글 알림)를 안다 — 없으면(옛 API) 부르지 않는다. 404 로 짐작하지 않는다. */
   turnContextAvailable?: boolean;
+  /**
+   * ROOM = Room 에서 부른 차례(서버 R1 · {@code room} 기능을 알린 연결만 받는다) — ★읽기만 세션 · Room 규칙 줄(결재 11-27).
+   * 없으면 Connect(옛 서버는 칸이 없다).
+   */
+  kind?: "ROOM";
+  /** Room 차례를 부른 사람(서버 {@code requester}) — 규칙 줄에 이름을 싣는다. */
+  requester?: AgentRoomCall;
 }
 
 export interface ServeDeps {
@@ -66,8 +73,9 @@ export interface ServeResult {
  * open 에 알리는 이 CLI 의 기능 — 서버 {@code PcFeature} 의 id 와 같은 글(선 위의 계약). stop = poll 의 {@code stops} 를 읽고 STOPPED 로 답한다.
  * todos = 에이전트 할 일(자동 실행 카드)을 가져간다 — 할 일을 받는 serve 만 싣는다({@link pcFeatures}). ★서버는 이것을 알린 연결만 자동 실행의
  * «켜짐»으로 본다(옛 CLI 는 Chat 만 되고 할 일을 안 가져간다 — KAN-1113 Edwin #1890).
+ * room = Room 에서 부른 차례(offer kind ROOM)를 읽기만 세션으로 돌린다 — ★서버는 이것을 알린 연결에만 Room 차례를 넘긴다(옛 CLI 는 대기로 남는다).
  */
-export const PC_FEATURES = ["stop", "todos"] as const;
+export const PC_FEATURES = ["stop", "todos", "room"] as const;
 type PcFeature = (typeof PC_FEATURES)[number];
 
 /** 이 serve 가 open 에 알릴 기능 — 할 일을 받지 않으면 todos 를 싣지 않는다(순수 함수). */
@@ -104,6 +112,9 @@ interface TurnJob {
   turnContextAvailable?: boolean;
   /** ★누구로 부르나 — 할 일 차례는 이 serve 의 이름 붙은 에이전트, Chat 차례는 없음(이름 없는 연결 — 지금과 같다). */
   agentName?: string;
+  /** Room 차례(읽기만 세션 · Room 규칙 줄) — {@link AgentOffer.kind}. */
+  kind?: "ROOM";
+  requester?: AgentRoomCall;
 }
 
 const todoKey = (todoId: string) => `todo:${todoId}`;
@@ -155,7 +166,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
   const limits = serverLimits(opened.limits);
   const displayName = (id: AgentId) => deps.adapters.get(id)?.displayName ?? id;
   const names = deps.agents.map((a) => displayName(a.id)).join(" / ");
-  deps.print(`${SERVE_CONNECTED_PREFIX}${deps.hostName}. Requests to «My agent» in AiNecto Chat now run in ${names} on this machine. Press Ctrl+C to stop.`);
+  deps.print(`${SERVE_CONNECTED_PREFIX}${deps.hostName}. Requests to «My agent» in AiNecto Chat and in project rooms now run in ${names} on this machine`
+    + " (in rooms the agent can only read AiNecto). Press Ctrl+C to stop.");
   // ★할 일 신원 = open 응답의 종류별 신원(이 PC 에 어댑터가 있는 것만). 신원이 없는 종류(준비 안 됨·AGENT_LIMIT)는 받지 않는다.
   const { identities, refused } = identitiesIn(opened.agents, deps.adapters);
   for (const r of refused) {
@@ -311,12 +323,12 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
    * 같은 대화의 맥락은 잇는다). ★살아 있는 세션도 파일 칸과 맞을 때만 다시 쓴다 — 같은 주인이고 세션 id 가 칸의 sessionId 와 같을 때.
    * 다른 작성자가 파일에서 이겼으면(CAS) 그 승자로 다시 연다(옛 자식이 승자를 되돌리지 않게 · 코드 리뷰 C2 P1-3).
    */
-  const sessionFor = async (adapter: AgentAdapter, conversationUuid: string, agentName: string | undefined,
+  const sessionFor = async (adapter: AgentAdapter, conversationUuid: string, agentName: string | undefined, readOnly: boolean,
     entry: AgentSessionEntry | undefined, owner: string | undefined): Promise<AgentSession> => {
     const existing = live.get(adapter.id);
     const s = existing?.session;
     const sameOwner = existing?.owner === undefined || owner === undefined || existing.owner === owner;   // 둘 다 알려지고 다를 때만 다르다
-    if (s && s.conversationUuid === conversationUuid && s.agentName === agentName && s.alive && sameOwner
+    if (s && s.conversationUuid === conversationUuid && s.agentName === agentName && s.readOnly === readOnly && s.alive && sameOwner
       && s.sessionRef === entry?.sessionId) {
       if (owner !== undefined) existing.owner = owner;
       return s;
@@ -326,7 +338,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
       await existing.session.close();
     }
     const session = adapter.open({ conversationUuid, resumeRef: entry?.sessionId,
-      textMaxCharacters: limits.textMaxCharacters, documentsMax: limits.documentsMax, ...(agentName ? { agentName } : {}) });
+      textMaxCharacters: limits.textMaxCharacters, documentsMax: limits.documentsMax, ...(agentName ? { agentName } : {}),
+      ...(readOnly ? { readOnly } : {}) });
     live.set(adapter.id, { session, owner });
     return session;
   };
@@ -420,7 +433,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
               conversationUuid: offer.conversationUuid, reason: `read failed: ${error instanceof Error ? error.message : String(error)}` });
           }
         }
-        session = adapter ? await sessionFor(adapter, offer.conversationUuid, offer.agentName, entry, owner) : undefined;
+        // ★Room 차례는 읽기만 세션(결재 11-27) — 세션 칸은 (대화, Agent) 라 Room 대화의 세션이 Connect 와 섞이지 않는다.
+        session = adapter ? await sessionFor(adapter, offer.conversationUuid, offer.agentName, offer.kind === "ROOM", entry, owner) : undefined;
       } finally {
         deps.log.write({ event: "agent_request", turnUuid: offer.turnUuid, todoId: offer.todoId, agent: offer.agent,
           conversationUuid: offer.conversationUuid, pid: session?.pid ?? -1, textLength: offer.text.length });
@@ -462,7 +476,8 @@ export async function runAgentServe(deps: ServeDeps): Promise<ServeResult> {
         if (beforeInput === undefined) {
           // 할 일 차례의 답 글은 카드 실행 대화로만 간다(«열기» 단추 없음) — 지시문 그대로.
           const text = offer.todoId === undefined
-            ? agentPromptText(offer.text, offer.context, turnContext && offer.turnUuid ? unreadLine(offer.turnUuid, turnContext) : undefined)
+            ? agentPromptText(offer.text, offer.context, turnContext && offer.turnUuid ? unreadLine(offer.turnUuid, turnContext) : undefined,
+              offer.kind === "ROOM" ? offer.requester ?? {} : undefined)
             : offer.text;
           // ★보낼지는 입력 직전에 잰 남은 시간 하나로 — 0 이하면 넣지 않는다(입력 전 종료 · 재개 칸 보존 · 재리뷰 r4 P1)
           const remaining = deadlineAt - Date.now();
@@ -731,6 +746,8 @@ function serverLimits(value: unknown): ServerLimits {
 /**
  * link 를 연다 — 이 CLI 의 기능(features)을 알린다. ★옛 서버는 open 본문이 닫혀 있어 features 를 400 INVALID 로 거절한다 → 그때만
  * features 없이 한 번 더 연다(옛 서버는 멈춤 지시를 보내지 않는다).
+ * ★가장 새 칸 room(Room R1 전 서버는 모른다)을 맨 먼저 뺀다 — 아니면 그 서버에서 stop·todos 까지 빠진다. room 을 뺀 연결에는 서버가
+ * Room 차례를 넘기지 않는다(그 서버에는 Room 차례가 없다).
  */
 async function openLink(deps: ServeDeps, allAgents: ReadonlyArray<Record<string, unknown>>): Promise<Record<string, unknown>> {
   const base = { hostName: deps.hostName, cliVersion: deps.cliVersion };
@@ -741,19 +758,23 @@ async function openLink(deps: ServeDeps, allAgents: ReadonlyArray<Record<string,
   const named = agents.some((a) => a.name !== undefined);
   const unnamed = agents.map(({ name: _name, ...rest }) => rest);
   const features = pcFeatures(deps.todos !== undefined);
-  const older = features.filter((f) => f !== "todos");
+  const roomless = features.filter((f) => f !== "room");
+  const older = roomless.filter((f) => f !== "todos");
   // 옛 서버는 open 본문이 닫혀 있다 — 모르는 칸(features 의 todos · agents[].name · features)은 400 INVALID. 새 칸부터 하나씩 덜어 다시 연다.
   // todos 를 모르는 서버는 할 일 신원은 주더라도 자동 실행 대상을 가리지 않는다 — 그때도 할 일은 받는다(그 서버가 예전처럼 맡긴다).
   // cliBuild(KAN-1113 #1890 D)를 모르는 서버는 그 칸만 빼고 다시 연다 — 아래 단계는 모두 cliBuild 없이.
   const build = deps.cliBuild ? { cliBuild: deps.cliBuild } : {};
-  const attempts: Array<{ body: Record<string, unknown>; dropped?: string }> = [
-    ...(newer ? [{ body: { ...base, ...build, agents: allAgents, features } }] : []),
-    ...(deps.cliBuild ? [{ body: { ...base, cliBuild: deps.cliBuild, agents, features }, ...(newer ? { dropped: "agents.newer" } : {}) }] : []),
-    { body: { ...base, agents, features }, ...(deps.cliBuild ? { dropped: "cliBuild" } : newer ? { dropped: "agents.newer" } : {}) },
-    ...(older.length < features.length ? [{ body: { ...base, agents, features: older }, dropped: "features.todos" }] : []),
+  // room 을 모르는 서버부터의 단계(예전 그대로) — 첫 단계는 room 만 뺀 것(그 앞에 room 을 실은 한 번).
+  const steps: Array<{ body: Record<string, unknown>; dropped?: string }> = [
+    ...(newer ? [{ body: { ...base, ...build, agents: allAgents, features: roomless } }] : []),
+    ...(deps.cliBuild ? [{ body: { ...base, cliBuild: deps.cliBuild, agents, features: roomless }, ...(newer ? { dropped: "agents.newer" } : {}) }] : []),
+    { body: { ...base, agents, features: roomless }, ...(deps.cliBuild ? { dropped: "cliBuild" } : newer ? { dropped: "agents.newer" } : {}) },
+    ...(older.length < roomless.length ? [{ body: { ...base, agents, features: older }, dropped: "features.todos" }] : []),
     ...(named ? [{ body: { ...base, agents: unnamed, features: older }, dropped: "agents.name" }] : []),
     { body: { ...base, agents: unnamed }, dropped: "features" },
   ];
+  const [first, ...rest] = steps;
+  const attempts = [{ body: { ...first!.body, features } }, { ...first!, dropped: "features.room" }, ...rest];
   for (let i = 0; ; i += 1) {
     const attempt = attempts[i]!;
     if (attempt.dropped) deps.log.write({ event: "open_without_features", features: [attempt.dropped] });
@@ -820,9 +841,16 @@ function offersIn(res: Record<string, unknown>): AgentOffer[] {
         agent: offer.agent === undefined || offer.agent === null ? DEFAULT_AGENT : String(offer.agent),
         context: offer.context && typeof offer.context === "object" ? (offer.context as AgentTurnContext) : undefined,
         ...(offer.turnContextAvailable === true ? { turnContextAvailable: true } : {}),
+        ...(offer.kind === "ROOM" ? { kind: "ROOM" as const, requester: requesterIn(offer.requester) } : {}),
       }]
       : [];
   });
+}
+
+/** offer 의 requester({userId, name}) → 규칙 줄에 쓸 이름만(꼴이 어긋나면 이름 없음). */
+function requesterIn(value: unknown): AgentRoomCall {
+  const name = value && typeof value === "object" ? (value as { name?: unknown }).name : undefined;
+  return typeof name === "string" ? { requesterName: name } : {};
 }
 
 /**

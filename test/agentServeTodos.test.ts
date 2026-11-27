@@ -325,6 +325,7 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     await finish(w);
     const opens = w.server.calls.filter((c) => c.op === "open").map((c) => c.body);
     expect(opens.map((b) => [b.agents, b.features])).toEqual([
+      [[{ id: "claude-code", ready: true, name: "tester" }], ["stop", "todos", "room"]],
       [[{ id: "claude-code", ready: true, name: "tester" }], ["stop", "todos"]],
       [[{ id: "claude-code", ready: true, name: "tester" }], ["stop"]],
       [[{ id: "claude-code", ready: true }], ["stop"]]]);
@@ -336,7 +337,7 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     const w = startServe({ todos: { tools, agentName: "tester" } });
     await until(() => named(tools, "list_agent_todos")[0]);
     await finish(w);
-    expect(w.server.calls.filter((c) => c.op === "open").map((c) => c.body.features)).toEqual([["stop", "todos"]]);
+    expect(w.server.calls.filter((c) => c.op === "open").map((c) => c.body.features)).toEqual([["stop", "todos", "room"]]);
 
     const oldTools = new FakeTools();
     const old = startServe({ todos: { tools: oldTools, agentName: "tester" }, rejectTodos: true });
@@ -344,8 +345,10 @@ describe("ainecto agent serve — 에이전트 할 일(자동 실행 카드, KAN
     await finish(old);
     const opens = old.server.calls.filter((c) => c.op === "open").map((c) => c.body);
     expect(opens.map((b) => [b.agents, b.features])).toEqual([
+      [[{ id: "claude-code", ready: true, name: "tester" }], ["stop", "todos", "room"]],
       [[{ id: "claude-code", ready: true, name: "tester" }], ["stop", "todos"]],
       [[{ id: "claude-code", ready: true, name: "tester" }], ["stop"]]]);
-    expect(logRecords(old).filter((r) => r.event === "open_without_features").map((r) => r.features)).toEqual([["features.todos"]]);
+    expect(logRecords(old).filter((r) => r.event === "open_without_features").map((r) => r.features))
+      .toEqual([["features.room"], ["features.todos"]]);
   });
 });

@@ -16,7 +16,7 @@ export interface ClaudeCodeDeps {
   /** 서버 tools/list 에서 readOnlyHint 가 아닌 도구 이름. */
   writeTools: ReadonlySet<string>;
   /** K5 고정 인자 — 글·문서 상한(서버 값)과 이어 붙일 세션으로 만든다({@code claudeAgentArgs}). */
-  args(input: { textMaxCharacters: number; documentsMax: number; resumeSessionId?: string; agentName?: string }): string[];
+  args(input: { textMaxCharacters: number; documentsMax: number; resumeSessionId?: string; agentName?: string; readOnly?: boolean }): string[];
 }
 
 /**
@@ -36,9 +36,9 @@ export function claudeCodeAdapter(deps: ClaudeCodeDeps): AgentAdapter {
       }
       return claudeAuthFromJson(run.stdout, run.code, run.stderrTail, hasApiKeyVariable(deps.env));
     },
-    open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName }) =>
-      new ClaudeCodeSession(conversationUuid, resumeRef, agentName,
-        deps.args({ textMaxCharacters, documentsMax, resumeSessionId: resumeRef, agentName }), deps),
+    open: ({ conversationUuid, resumeRef, textMaxCharacters, documentsMax, agentName, readOnly = false }) =>
+      new ClaudeCodeSession(conversationUuid, resumeRef, agentName, readOnly,
+        deps.args({ textMaxCharacters, documentsMax, resumeSessionId: resumeRef, agentName, readOnly }), deps),
   };
 }
 
@@ -90,8 +90,8 @@ class ClaudeCodeSession implements AgentSession {
   private pending: Pending | undefined;
   private interrupts = 0;
 
-  constructor(readonly conversationUuid: string, resumeRef: string | undefined, readonly agentName: string | undefined, args: string[],
-    private readonly deps: ClaudeCodeDeps) {
+  constructor(readonly conversationUuid: string, resumeRef: string | undefined, readonly agentName: string | undefined,
+    readonly readOnly: boolean, args: string[], private readonly deps: ClaudeCodeDeps) {
     this.resumed = resumeRef !== undefined;
     this.child = new AgentChild(deps.spawnImpl, CLAUDE, args, { cwd: deps.cwd, env: deps.env }, {
       line: (line) => this.onLine(line),
