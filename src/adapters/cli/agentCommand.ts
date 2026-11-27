@@ -20,7 +20,7 @@ import { createAgentTools } from "../../core/agent/tools";
 import { NO_AGENTS_REASON, openAgentLog } from "../../core/agent/log";
 import { agentPaths } from "../../core/agent/paths";
 import { AgentRunLog } from "../../core/agent/runs";
-import { checkAgents, openAgents } from "../../core/agent/readiness";
+import { agentStartLine, checkAgents, openAgents } from "../../core/agent/readiness";
 import { AGENT_MISSING_LINE, runAgentServe } from "../../core/agent/serve";
 import { agentOwner, AgentSessionMap } from "../../core/agent/sessions";
 import { CLI_BUILD, CLI_RELEASE, CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
@@ -139,15 +139,7 @@ export async function executeAgentServe(input: {
     }
     for (const check of checks) {
       const name = all.find((adapter) => adapter.id === check.id)?.displayName ?? check.id;
-      if (!check.installed) continue;
-      if (check.ready) {
-        input.io.stderr.write(check.auth === "apiKey"
-          ? `${name}: runs on your own API key (billed to your ${BILLED_TO[check.id]} API account; AiNecto credits are not used).\n`
-          : `${name}: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).\n`);
-      } else {
-        input.io.stderr.write(`${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
-          + `Requests to ${name} will be refused until you sign in and reconnect this PC (\`ainecto stop\`, then \`ainecto start\`).\n`);
-      }
+      input.io.stderr.write(`${agentStartLine(check, name, BILLED_TO[check.id])}\n`);
     }
     const adapters = new Map<AgentId, AgentAdapter>(all.filter((adapter) => agents.some((a) => a.id === adapter.id))
       .map((adapter) => [adapter.id, adapter]));

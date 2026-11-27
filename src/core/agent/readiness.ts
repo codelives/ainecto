@@ -38,6 +38,26 @@ export async function checkAgents(adapters: readonly AgentAdapter[], log: Daemon
   }));
 }
 
+/**
+ * serve 시작 때 Agent 마다 사람이 보는 한 줄 — 준비됨(누가 내나) · 설치됐지만 로그인 안 됨 · ★이 PC 에서 못 찾음(이유 — ENOENT·timed out·exit N).
+ * 못 찾음 줄이 없으면 Connect 에서 «현재 사용할 수 없음»만 보여 왜인지 알 길이 없었다(KAN-1613 — Terminal 에서는 되는데 Connect 는 미연결).
+ * 순수 함수 — {@code billedTo} = API 키 모드의 과금처(Anthropic·OpenAI·Google).
+ */
+export function agentStartLine(check: AgentCheck, name: string, billedTo: string): string {
+  const reconnect = "(`ainecto stop`, then `ainecto start`)";
+  if (!check.installed) {
+    return `${name} was not found on this PC${check.detail ? ` (${check.detail})` : ""}. To use it from AiNecto, install it `
+      + `where this PC's \`ainecto\` can run it, sign in, then reconnect this PC ${reconnect}.`;
+  }
+  if (check.ready) {
+    return check.auth === "apiKey"
+      ? `${name}: runs on your own API key (billed to your ${billedTo} API account; AiNecto credits are not used).`
+      : `${name}: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).`;
+  }
+  return `${name} is installed but not signed in${check.detail ? ` (${check.detail})` : ""}. `
+    + `Requests to ${name} will be refused until you sign in and reconnect this PC ${reconnect}.`;
+}
+
 /** open 본문의 {@code agents} — 설치된 Agent 만. */
 export function openAgents(checks: readonly AgentCheck[]): Array<{ id: AgentId; ready: boolean; auth?: AgentAuthMode }> {
   return checks.filter((check) => check.installed)

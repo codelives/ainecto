@@ -108,3 +108,25 @@ describe("세션 값 — (대화, Agent) 마다 · 옛 파일과 같이 읽힌�
     expect((await odd.read("c", "codex")).entry?.sessionId).toBe("thr");
   });
 });
+
+describe("agentStartLine — serve 시작 글(KAN-1613)", () => {
+  it("이 PC 에서 못 찾은 Agent 도 한 줄 — 이유(ENOENT·timed out)를 그대로 싣는다", async () => {
+    const { agentStartLine } = await import("../src/core/agent/readiness");
+    const missing = agentStartLine({ id: "claude-code", installed: false, ready: false, detail: "spawn claude ENOENT" }, "Claude Code", "Anthropic");
+    expect(missing).toContain("Claude Code was not found on this PC (spawn claude ENOENT)");
+    expect(missing).toContain("`ainecto stop`, then `ainecto start`");
+    expect(agentStartLine({ id: "claude-code", installed: false, ready: false, detail: "timed out" }, "Claude Code", "Anthropic"))
+      .toContain("(timed out)");
+  });
+
+  it("준비됨·로그인 안 됨 줄은 전과 같다", async () => {
+    const { agentStartLine } = await import("../src/core/agent/readiness");
+    expect(agentStartLine({ id: "codex", installed: true, ready: true, auth: "subscription" }, "Codex", "OpenAI"))
+      .toBe("Codex: runs on your subscription login (uses your plan's limits; AiNecto credits are not used).");
+    expect(agentStartLine({ id: "codex", installed: true, ready: true, auth: "apiKey" }, "Codex", "OpenAI"))
+      .toBe("Codex: runs on your own API key (billed to your OpenAI API account; AiNecto credits are not used).");
+    expect(agentStartLine({ id: "claude-code", installed: true, ready: false, detail: "not logged in" }, "Claude Code", "Anthropic"))
+      .toBe("Claude Code is installed but not signed in (not logged in). Requests to Claude Code will be refused until you sign in "
+        + "and reconnect this PC (`ainecto stop`, then `ainecto start`).");
+  });
+});
