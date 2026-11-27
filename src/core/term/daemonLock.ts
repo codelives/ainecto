@@ -110,16 +110,21 @@ export async function acquireOuterStartLock(paths: TermPaths, ms: number): Promi
 }
 
 /**
- * 데몬 잠금이 풀릴 때까지 기다린다(최대 ms) — 풀렸으면 true. 잡아 보고 바로 놓는다(데몬 자리를 차지하지 않는다).
+ * 데몬 잠금이 풀릴 때까지 기다린다(최대 ms) — 풀렸으면 true. 잡아 보고(whileHeld 가 있으면 그것을 한 뒤) 바로 놓는다(데몬 자리를 차지하지 않는다).
  * ★옛 데몬이 «끝났나»는 이 잠금으로만 본다 — daemon.json 의 pid 는 데몬이 끝나도 남고, Windows 는 pid 를 금방 다른 프로세스에
  *   다시 준다(KAN-1375 · 그 pid 가 살아 있다고 보고 매번 «did not stop» 으로 멈췄다).
  */
-export async function waitForDaemonLockFree(paths: TermPaths, ms: number): Promise<boolean> {
+export async function waitForDaemonLockFree(paths: TermPaths, ms: number, whileHeld?: () => Promise<void>): Promise<boolean> {
   const until = Date.now() + ms;
   for (;;) {
     const lock = await acquireProcessLock(paths);
     if (lock) {
-      lock.release();
+      // 잠금을 쥔 동안 할 일(첫 전환의 끝 기록 — 잠금을 쥔 쪽만 책을 쓴다) — 끝나면 바로 놓는다.
+      try {
+        await whileHeld?.();
+      } finally {
+        lock.release();
+      }
       return true;
     }
     if (Date.now() >= until) return false;

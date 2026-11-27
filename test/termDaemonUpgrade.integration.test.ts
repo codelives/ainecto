@@ -102,4 +102,18 @@ describe("term 데몬을 이 판으로(upgradeDaemon) — 실물", () => {
     const listed = (await json("term", "ls")).data as { sessions: Array<{ name: string; instance?: string; kind?: string }> };
     expect(listed.sessions).toEqual([expect.objectContaining({ name: "fresh", kind: "user", instance: expect.stringMatching(/^[0-9a-f-]{36}$/) })]);
   }, LONG);
+
+  it("KAN-1616 — 첫 전환으로 닫힌 세션은 끝 기록을 남긴다(옛 데몬은 남기지 않는다) · 방금 본 uuid · exited · 지금 계정 수신처 → 새 holder 의 책", async () => {
+    expect((await oldCli("term", "new", "legacy", "--", "/bin/sh")).code).toBe(0);
+    const seen = (await sessions()).find((session) => session.name === "legacy") as { instance?: string } | undefined;
+    expect(seen?.instance).toMatch(/^[0-9a-f-]{36}$/);
+    const [oldDaemon] = daemonPids();
+    writeFileSync(join(rig.home, "term-destination"), "https://example.test/mcp#u1\n");
+
+    await upgradeAt("0.16.8", "y");
+    await until(() => !alive(oldDaemon!), "old daemon gone");
+    await ok("term", "new", "fresh", "--", "/bin/sh");
+    const ended = ((await json("term", "ls")).data as { ended?: Array<Record<string, unknown>> }).ended ?? [];
+    expect(ended).toEqual([expect.objectContaining({ instance: seen?.instance, name: "legacy", reason: "exited", to: "https://example.test/mcp#u1" })]);
+  }, LONG);
 });

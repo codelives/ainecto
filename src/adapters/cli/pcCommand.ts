@@ -27,6 +27,7 @@ import type { MachineStatus } from "../../core/setup/machineStatus";
 import { daemonCaps, openTermClient, spawnResident, termRequest, type TermConnectOptions } from "../../core/term/client";
 import { readDaemonInfo } from "../../core/term/residentInfo";
 import { waitForDaemonLockFree } from "../../core/term/daemonLock";
+import { mergeEnded, readEndedBook, switchedOffRecords, withEnded, writeEndedBook } from "../../core/term/endedBook";
 import { TermError } from "../../core/term/errors";
 import { unlinkIfPresent } from "../../core/term/ipc";
 import type { TermPaths } from "../../core/term/paths";
@@ -165,7 +166,7 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
     await savePcSettings(deps.settingsPath, settings);
   }
 
-  await upgradeDaemon(deps, note);
+  await upgradeDaemon(deps, note, key);
   const action = pcAction(runningPcs(await listed(deps)), deps.cliVersion);
   if (action.kind === "already") {
     // ★웹 «원격 터미널 끊기» 뒤 원격은 그 pc 프로세스가 사는 동안 꺼진 채다 — 같은 판이어도 다시 띄워야 원격이 켜진다(R3).
@@ -194,13 +195,14 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
  *   switch   — 옛 구조 첫 전환: 열린 세션이 모두 한 번 닫힌다. 세션이 있으면 사람에게 한 번 묻고(기본 N) 비대화면 그대로 둔다.
  *              세션이 0 이면 닫힐 것이 없어 묻지 않는다. 옛 데몬이 끝나고 잠금이 풀린 뒤 daemon.json 을 지운다.
  */
-export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void): Promise<void> {
+export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void, destination: string | undefined): Promise<void> {
   const found = await daemonCaps(deps.paths);
   if (!found.daemon) return;
+  const sessions = await listed(deps);
   const plan = daemonPlan({
     structure: found.caps ?? "old",
     cliVersion: deps.cliVersion,
-    sessions: await listed(deps),
+    sessions,
     insideTermSession: deps.register?.insideTermSession ?? false,
   });
   switch (plan.kind) {
@@ -228,19 +230,34 @@ export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void):
           + `${names.join(", ")}. From the next update on they stay open.`);
         if (!yes(await promptLine(deps.io, "Switch now? [y/N]: "), false)) return;
       }
-      await endOldDaemon(deps, note);
+      await endOldDaemon(deps, note, sessions, destination);
       return;
     }
   }
 }
 
-/** 옛 구조 데몬(0.16.x)을 끝낸다 — kill-server(칸 없이 — 옛 데몬은 holder uuid 를 모른다) → 잠금이 풀릴 때까지 → daemon.json 을 지운다. */
-async function endOldDaemon(deps: PcDeps, note: (line: string) => void): Promise<void> {
+/**
+ * 옛 구조 데몬(0.16.x)을 끝낸다 — kill-server(칸 없이 — 옛 데몬은 holder uuid 를 모른다) → 잠금이 풀릴 때까지 → daemon.json 을 지운다.
+ * 잠금을 쥔 동안 방금 본 세션들의 끝 기록을 병합 대기 책에 남긴다(KAN-1616 — 새 holder 가 원본 위에 얹고 다리가 그 수신처로 올린다).
+ */
+async function endOldDaemon(deps: PcDeps, note: (line: string) => void, seen: readonly ListedSession[], destination: string | undefined): Promise<void> {
   const info = readDaemonInfo(deps.paths);
   note("Switching the AiNecto terminal service on this PC to the new structure…");
   // 이미 끝난 데몬이면 받을 쪽이 없다 — 그래도 판정은 아래 잠금 하나로 한다.
   await termRequest(deps.paths, { op: "kill-server" }, { start: false });
-  if (!(await waitForDaemonLockFree(deps.paths, deps.stopDeadlineMs))) {
+  const recordEnds = async (): Promise<void> => {
+    try {
+      // 원본 책은 읽기만 한다(못 읽으면 없는 셈) — 쓰는 곳은 병합 대기 책(못 읽으면 덮지 않는다 — 던진다).
+      const stored = await readEndedBook(deps.paths.ended).catch(() => []);
+      const pending = await readEndedBook(deps.paths.endedPending);
+      const records = switchedOffRecords(seen, mergeEnded(stored, pending, new Set()), new Date().toISOString(), destination);
+      if (records.length > 0) await writeEndedBook(deps.paths.endedPending, records.reduce((book, record) => withEnded(book, record), pending));
+    } catch (error) {
+      note(`Could not record that the closed sessions ended (${error instanceof Error ? error.message : String(error)}) — `
+        + "AiNecto on the web may show them as not confirmed.");
+    }
+  };
+  if (!(await waitForDaemonLockFree(deps.paths, deps.stopDeadlineMs, recordEnds))) {
     const pid = info ? ` (${info.version ?? "unknown version"}, started as pid ${info.pid})` : "";
     throw new CliCommandError("PC_START_FAILED", `The old AiNecto terminal service${pid} is still running and did not stop `
       + `within ${Math.round(deps.stopDeadlineMs / 1000)} s. End it — on Windows: Task Manager › Details › the node.exe whose command line has `

@@ -25,7 +25,10 @@ if (process.argv[2] === "upgrade") {
     cliVersion: version,
     stopDeadlineMs: 10_000,
   } as unknown as PcDeps;
-  await upgradeDaemon(deps, (line) => notes.push(line));
+  // 끝 기록의 수신처(연결 명령에서는 서버·계정 열쇠) — 있으면 $HOME/term-destination.
+  const destinationFile = join(homedir(), "term-destination");
+  const destination = existsSync(destinationFile) ? readFileSync(destinationFile, "utf8").trim() : undefined;
+  await upgradeDaemon(deps, (line) => notes.push(line), destination);
   process.stdout.write(`${JSON.stringify({ notes })}\n`);
   process.exit(0);
 }
