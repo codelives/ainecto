@@ -700,16 +700,22 @@ async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boo
     sessions: remoteEnabled ? current.sessions : [], e2e: E2E_VERSION };
   // 능력 표시 — 서버는 표시가 있는 링크에만 그 명령을 보낸다. devices: 새 기기 허용·기기 관리(approve-new-device §3-4) ·
   // images: 이미지 붙여넣기(계약 §2 — 이 다리는 늘 안다).
-  const features = { ...(deps.trust !== undefined && deps.pairRelay !== undefined ? { devices: true } : {}), images: true };
+  // ★칸은 생긴 순서대로 — 옛 서버가 거절하면 가장 새 칸부터 하나씩 뺀다.
+  const features: Record<string, true> = { ...(deps.trust !== undefined && deps.pairRelay !== undefined ? { devices: true } : {}), images: true };
+  let offered = features;   // 이 open 에서 서버가 받는 칸(413 로 다시 보낼 때도 이어 쓴다)
   const call = async (ended: WireEnded[]): Promise<Record<string, unknown>> => {
     const body = ended.length > 0 ? { ...base, ended } : base;
-    try {
-      return await deps.http.call("open", { ...body, ...features }, signal ? { signal } : undefined);
-    } catch (error) {
-      // ★옛 서버는 모르는 칸을 400 INVALID 로 거절한다 — 표시 없이 한 번 더(기존 터미널은 그대로 열린다 · 새 기기 허용·이미지 붙여넣기만 없다).
-      if (!(error instanceof PcCallError && error.status === 400 && error.code === "INVALID")) throw error;
-      deps.log.write({ event: "remote_open_without_devices", reason: `server refused the ${Object.keys(features).join("/")} field` });
-      return await deps.http.call("open", body, signal ? { signal } : undefined);
+    for (;;) {
+      try {
+        return await deps.http.call("open", { ...body, ...offered }, signal ? { signal } : undefined);
+      } catch (error) {
+        // ★옛 서버는 모르는 칸을 400 INVALID 로 거절한다 — 가장 새 칸 하나만 빼고 한 번 더(기존 터미널은 그대로 열린다).
+        //   직전 api 는 devices 는 알고 images 만 모른다 — images 만 빼야 기기 관리가 살아 있다. 그래도 거절이면 devices 도 뺀다.
+        const dropped = Object.keys(offered).at(-1);
+        if (!(error instanceof PcCallError && error.status === 400 && error.code === "INVALID") || dropped === undefined) throw error;
+        deps.log.write({ event: "remote_open_without_devices", reason: `server refused the ${dropped} field` });
+        offered = Object.fromEntries(Object.entries(offered).filter(([key]) => key !== dropped)) as Record<string, true>;
+      }
     }
   };
   const fit = (max: number | undefined): WireEnded[] =>

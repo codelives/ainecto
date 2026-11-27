@@ -962,22 +962,42 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     expect(fake.calls[1]?.body).not.toHaveProperty("images");
   }, LONG);
 
-  it("새 CLI(devices:true)가 옛 서버를 만나면 — 그 칸 없이 한 번 더 open · 기존 터미널은 열린다(새 기기 허용만 없다)", async () => {
+  it("새 CLI(devices:true)가 직전 서버(devices 는 알고 images 만 모름)를 만나면 — images 만 빼고 한 번 더 · devices 는 그대로(기기 관리 유지)", async () => {
     await ok("term", "new", "a", "--", "cat");
-    fake.refuseDevicesField = true;
+    fake.refuseFields = ["images"];
     const run = start({ pairRelay: () => { throw new Error("no pair relay in this test"); } });
     await until(() => fake.ops().filter((op) => op === "open").length === 2 && fake.ops().includes("poll"), "second open and poll");
     const opens = fake.calls.filter((call) => call.op === "open").map((call) => call.body as Record<string, unknown>);
+    expect(opens).toHaveLength(2);
     expect(opens[0]).toMatchObject({ devices: true, images: true });
-    expect(opens[1]).not.toHaveProperty("devices");
+    expect(opens[1]).toMatchObject({ devices: true });
     expect(opens[1]).not.toHaveProperty("images");
-    expect(remoteLog().some((r) => r.event === "remote_open_without_devices")).toBe(true);
+    expect(remoteLog().filter((r) => r.event === "remote_open_without_devices").map((r) => r.reason))
+      .toEqual(["server refused the images field"]);
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
+  it("새 CLI(devices:true)가 그 전 서버(devices·images 둘 다 모름)를 만나면 — images 빼고 · 그래도 거절이면 devices 도 빼고 · 기존 터미널은 열린다", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    fake.refuseFields = ["devices", "images"];
+    const run = start({ pairRelay: () => { throw new Error("no pair relay in this test"); } });
+    await until(() => fake.ops().filter((op) => op === "open").length === 3 && fake.ops().includes("poll"), "third open and poll");
+    const opens = fake.calls.filter((call) => call.op === "open").map((call) => call.body as Record<string, unknown>);
+    expect(opens).toHaveLength(3);
+    expect(opens[0]).toMatchObject({ devices: true, images: true });
+    expect(opens[1]).toMatchObject({ devices: true });
+    expect(opens[1]).not.toHaveProperty("images");
+    expect(opens[2]).not.toHaveProperty("devices");
+    expect(opens[2]).not.toHaveProperty("images");
+    expect(remoteLog().filter((r) => r.event === "remote_open_without_devices").map((r) => r.reason))
+      .toEqual(["server refused the images field", "server refused the devices field"]);
     run.stop.abort();
     expect((await run.done).exitCode).toBe(0);
   }, LONG);
 
   it("이미지 붙여넣기 표시(계약 §2) — 기기 관리가 없어도 open 에 images:true · 옛 서버(400 INVALID)면 images 를 빼고 한 번 더", async () => {
-    fake.refuseDevicesField = true;
+    fake.refuseFields = ["images"];
     const run = start({ trust: false });
     await until(() => fake.ops().filter((op) => op === "open").length === 2 && fake.ops().includes("poll"), "second open and poll");
     const opens = fake.calls.filter((call) => call.op === "open").map((call) => call.body as Record<string, unknown>);
