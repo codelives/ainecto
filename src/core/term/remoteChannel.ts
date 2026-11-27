@@ -420,11 +420,11 @@ export function sealedCommand(wire: WireCommand, plaintext: Uint8Array): Channel
       const action = deviceAction(body);
       return action ? { kind: "device", opId, action } : undefined;
     }
-    case "image": {
-      const mime = text(body.mime);
-      const bytes = base64Bytes(body.d);
-      return targets(true) && mime && bytes ? { kind: "image", opId: opId!, session: session!, instance: instance!, mime, bytes } : undefined;
-    }
+    case "image":
+      // 인증·선 위 칸 대조가 맞으면 이미지 내용 오류(mime 없음·d 형식)는 채널을 닫지 않는다 — 빈 값으로 넘겨
+      // 저장 검사(imageProblem)가 그 요청의 봉인 거절 답(TERM_BAD_REQUEST)으로 돌려준다.
+      return targets(true) ? { kind: "image", opId: opId!, session: session!, instance: instance!, mime: text(body.mime) ?? "",
+        bytes: base64Bytes(body.d) ?? Buffer.alloc(0) } : undefined;
   }
 }
 

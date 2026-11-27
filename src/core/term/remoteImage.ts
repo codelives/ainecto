@@ -55,7 +55,7 @@ function magicMatches(mime: string, bytes: Uint8Array): boolean {
 export function imageProblem(opId: string, mime: string, bytes: Uint8Array): string | undefined {
   if (IMAGE_EXTENSIONS[mime] === undefined) return `The image type "${mime}" is not supported (png, jpeg, gif, webp, heic, heif).`;
   if (!isUuid(opId)) return "The image request id is not a UUID.";
-  if (bytes.length === 0) return "The image is empty.";
+  if (bytes.length === 0) return "The image is empty or its data is not base64.";
   if (bytes.length > IMAGE_MAX_BYTES) return `The image is larger than ${IMAGE_MAX_BYTES} bytes.`;
   if (!magicMatches(mime, bytes)) return `The image bytes are not ${mime}.`;
   return undefined;

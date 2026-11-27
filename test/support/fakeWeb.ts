@@ -139,9 +139,14 @@ export class WebChannel {
 
   /** 이미지 붙여넣기(계약 §1) — kill 과 같은 선 위 칸 · 봉인 본문 {opId, session, instance, mime, d}. */
   async image(session: string, instance: string, mime: string, bytes: Uint8Array): Promise<Crud> {
+    return await this.imageFields(session, instance, { mime, d: Buffer.from(bytes).toString("base64") });
+  }
+
+  /** 봉인 본문의 이미지 칸(mime·d)을 그대로 — 모양이 틀린 본문 시험용. */
+  async imageFields(session: string, instance: string, fields: Record<string, unknown>): Promise<Crud> {
     const opId = randomUUID();
     const requestId = randomUUID();
-    await this.send("image", { opId, session, instance, mime, d: Buffer.from(bytes).toString("base64") }, { session, opId }, requestId);
+    await this.send("image", { opId, session, instance, ...fields }, { session, opId }, requestId);
     return { opId, requestId, meta: { session, opId } };
   }
 

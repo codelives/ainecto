@@ -1065,7 +1065,7 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
       expect((await run.done).exitCode).toBe(0);
     }, LONG);
 
-    it("거절 답 — magic 틀림 TERM_BAD_REQUEST · 모르는 세션·instance 불일치·PC 연결 세션 TERM_NO_SESSION · 파일 없음 · 채널은 계속", async () => {
+    it("거절 답 — magic 틀림·mime 없음·d 형식 오류 TERM_BAD_REQUEST · 모르는 세션·instance 불일치·PC 연결 세션 TERM_NO_SESSION · 파일 없음 · 채널은 계속", async () => {
       await ok("term", "new", "a", "--", "cat");
       await pcBridgeSession();   // PC 연결 세션(종류 pc-bridge — 0.16.8 합본: holder 는 종류 없는 PC 연결을 거절)
       const browser = await web();
@@ -1079,6 +1079,10 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
         [await channel.image("nope", instance, "image/png", PNG), "TERM_NO_SESSION"],
         [await channel.image("a", randomUUID(), "image/png", PNG), "TERM_NO_SESSION"],
         [await channel.image("ainecto-pc", instance, "image/png", PNG), "TERM_NO_SESSION"],
+        // 봉인은 맞고 이미지 내용만 틀림 — 채널은 닫지 않고 그 요청만 거절(mime 없음 · d 가 base64 아님 · d 없음)
+        [await channel.imageFields("a", instance, { d: PNG.toString("base64") }), "TERM_BAD_REQUEST"],
+        [await channel.imageFields("a", instance, { mime: "image/png", d: "!!not base64!!" }), "TERM_BAD_REQUEST"],
+        [await channel.imageFields("a", instance, { mime: "image/png" }), "TERM_BAD_REQUEST"],
       ];
       for (const [crud, code] of cases) {
         const answered = await sent(channel, crud);
