@@ -51,6 +51,8 @@ export function npxCliCommand(args: readonly string[], version: string = CLI_VER
 
 export interface RunningPc {
   session: string;
+  /** 그 세션의 uuid — 끄기·읽기는 이것으로 겨눈다(설계 4절 규칙 5 · 그 사이 같은 이름으로 다시 만든 세션을 끄지 않는다). 칸 없는 옛 데몬이면 없음. */
+  instance?: string;
   cwd: string;
   /** 세션 명령의 `--package` 값(판 고정이면 `@ainecto/mcp@<판>`). 없으면 undefined. */
   packageSpec?: string;
@@ -63,13 +65,13 @@ function packageSpecOf(command: readonly string[]): string | undefined {
 }
 
 /** term ls → PC 연결 세션들(보통 하나 — 종류는 bridgeKind 한 곳). */
-export function runningPcs(sessions: ReadonlyArray<Pick<ListedSession, "name" | "cwd" | "command" | "kind">>): RunningPc[] {
+export function runningPcs(sessions: ReadonlyArray<Pick<ListedSession, "name" | "instance" | "cwd" | "command" | "kind">>): RunningPc[] {
   return sessions.flatMap((session) => {
     if (bridgeKind(session) !== "pc-bridge") {
       return [];
     }
     const packageSpec = packageSpecOf(session.command ?? []);
-    return [{ session: session.name, cwd: session.cwd, ...(packageSpec ? { packageSpec } : {}) }];
+    return [{ session: session.name, ...(session.instance ? { instance: session.instance } : {}), cwd: session.cwd, ...(packageSpec ? { packageSpec } : {}) }];
   });
 }
 

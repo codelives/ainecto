@@ -169,7 +169,7 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
   const action = pcAction(runningPcs(await listed(deps)), deps.cliVersion);
   if (action.kind === "already") {
     // ★웹 «원격 터미널 끊기» 뒤 원격은 그 pc 프로세스가 사는 동안 꺼진 채다 — 같은 판이어도 다시 띄워야 원격이 켜진다(R3).
-    if (!remoteOffByWeb(await screenLines(deps, action.pc.session))) {
+    if (!remoteOffByWeb(await screenLines(deps, action.pc.session, action.pc.instance))) {
       return await withRegistration(deps, key, userId, withNotes(deps, later, print(deps, { connected: true, already: true, ...pcView(deps, action.pc) },
         pcResultText({ kind: "already", folder: action.pc.cwd, version: pcVersionLabel(action.pc), log: deps.agentLog }))));
     }
@@ -447,17 +447,17 @@ export async function startPcSession(deps: PcDeps): Promise<PcStartOutcome> {
     throw startFailed(deps, agents, `The PC connection could not start — ${outcome.line} Log: ${deps.agentLog}`);
   }
   // 무엇이 붙었는지 그대로 — 화면 전체로 본다(Agent 없음 줄은 다리 연결 줄보다 앞에 찍힌다).
-  const screen = pcOutcome(await screenLines(deps, PC_SESSION_NAME));
+  const screen = pcOutcome(await screenLines(deps, PC_SESSION_NAME, instance));
   return { kind: "connected", agentMissing: screen?.kind === "connected" && screen.agentMissing === true, agents };
 }
 
-/** pc 세션 화면(스크롤백 포함) — 없으면 빈 목록. */
-async function screenLines(deps: PcDeps, session: string): Promise<string[]> {
+/** pc 세션 화면(스크롤백 포함 · 방금 만든 그 인스턴스 — 칸 없는 옛 데몬이면 이름만) — 없거나 다른 세션으로 바뀌었으면 빈 목록. */
+async function screenLines(deps: PcDeps, session: string, instance: string | undefined): Promise<string[]> {
   try {
-    const result = await termRequest(deps.paths, { op: "read", name: session, scrollback: true }, { start: false });
+    const result = await termRequest(deps.paths, { op: "read", name: session, scrollback: true, ...(instance ? { instance } : {}) }, { start: false });
     return result.daemon ? readLines(result.data) : [];
   } catch (error) {
-    if (error instanceof TermError && error.code === "TERM_NO_SESSION") return [];
+    if (gone(error)) return [];
     throw error;
   }
 }
@@ -627,6 +627,8 @@ async function confirmEnded(deps: PcDeps, group: PcGroup): Promise<void> {
  * 끝난다(매니페스트에서도 빠져 restore 가 되살리지 않는다). {@link PcDeps.stopDeadlineMs} 를 넘으면 term kill.
  */
 export async function stopPc(deps: PcDeps, pc: RunningPc): Promise<string> {
+  // ★본 그 세션(uuid)만 겨눈다(설계 4절 규칙 5) — 그 사이 같은 이름으로 다시 만든 세션이면 데몬이 SESSION_REPLACED 로 거절한다.
+  const target = { name: pc.session, ...(pc.instance ? { instance: pc.instance } : {}) };
   const client = await openTermClient(deps.paths, { start: false });
   if (!client) {
     return `Session ${pc.session} is already gone.`;
@@ -637,15 +639,15 @@ export async function stopPc(deps: PcDeps, pc: RunningPc): Promise<string> {
     //   재부팅 뒤 restore 가 되살린다. 그래서 바로 kill(명시 kill 은 매니페스트에서 빠진다).
     let ready: boolean;
     try {
-      ready = pcOutcome(readLines(await client.request({ op: "read", name: pc.session, scrollback: true })))?.kind === "connected";
+      ready = pcOutcome(readLines(await client.request({ op: "read", ...target, scrollback: true })))?.kind === "connected";
     } catch (error) {
-      if (error instanceof TermError && error.code === "TERM_NO_SESSION") {
+      if (gone(error)) {
         return `Session ${pc.session} is already gone.`;
       }
       throw error;
     }
     if (!ready) {
-      await client.request({ op: "kill", name: pc.session });
+      await client.request({ op: "kill", ...target });
       return `Session ${pc.session} was still starting — ended it.`;
     }
     const ended = new Promise<"ended">((resolve) => {
@@ -657,10 +659,10 @@ export async function stopPc(deps: PcDeps, pc: RunningPc): Promise<string> {
       client.onClose(() => resolve("ended"));
     });
     try {
-      await client.request({ op: "watch", name: pc.session });
-      await client.request({ op: "key", name: pc.session, key: "ctrl-c" });
+      await client.request({ op: "watch", ...target });
+      await client.request({ op: "key", ...target, key: "ctrl-c" });
     } catch (error) {
-      if (error instanceof TermError && error.code === "TERM_NO_SESSION") {
+      if (gone(error)) {
         return `Session ${pc.session} is already gone.`;
       }
       throw error;
@@ -671,12 +673,17 @@ export async function stopPc(deps: PcDeps, pc: RunningPc): Promise<string> {
     if (outcome === "ended") {
       return `Disconnected this PC (session ${pc.session}).`;
     }
-    await termRequest(deps.paths, { op: "kill", name: pc.session }, { start: false });
+    await termRequest(deps.paths, { op: "kill", ...target }, { start: false });
     return `Session ${pc.session} did not stop within ${deps.stopDeadlineMs / 1000} s after Ctrl+C — ended it. See ${deps.agentLog}.`;
   } finally {
     clearTimeout(timer);
     client.close();
   }
+}
+
+/** 끄려던 세션이 이미 없다 — 끝났거나, 같은 이름의 다른 세션으로 바뀌었다(그 세션은 끄지 않는다). */
+function gone(error: unknown): boolean {
+  return error instanceof TermError && (error.code === "TERM_NO_SESSION" || error.code === "SESSION_REPLACED");
 }
 
 /** 관리 명령을 한 번 돌려 본다(--version) — npx 첫 설치·네트워크 실패를 세션 밖에서 보인다. */
