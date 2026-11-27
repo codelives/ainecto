@@ -25,8 +25,7 @@ import {
 import { assertSessionName } from "./sessionName";
 import { TermSession, type SessionSink } from "./session";
 
-/** 데몬을 띄운 클라이언트에게 «준비됨/이미 있음/실패»를 알리는 한 줄(설계 2-1 «뜨는 때»). */
-export type DaemonReadiness = { status: "ready" } | { status: "locked" } | { status: "error"; message: string };
+import type { DaemonReadiness } from "./holder";
 
 export interface DaemonOptions {
   paths: TermPaths;
@@ -173,7 +172,7 @@ class TermDaemon {
 
   async listen(): Promise<void> {
     // ★잠금을 쥔 프로세스만 여기 온다 — 옛 주소를 치워도 살아 있는 데몬의 주소일 수 없다.
-    const ipc = await prepareListen(this.paths);
+    const ipc = await prepareListen(this.paths.socket);
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
       this.server.listen(ipc.address, () => {
@@ -182,7 +181,7 @@ class TermDaemon {
       });
     });
     this.ipc = ipc;
-    await afterListen(this.paths);
+    await afterListen(this.paths.socket);
   }
 
   /** 끝낸다 — 세션·매니페스트는 건드리지 않는다(SIGTERM·세션 0). 세션까지 끝내는 kill-server 는 handle 이 먼저 정리한다. */
@@ -415,6 +414,11 @@ class TermDaemon {
         const { cols, rows } = session.info();
         return { data: { name: request.name, instance: session.instance, cols, rows } };
       }
+      case "caps":
+      case "lease":
+      case "via":
+      case "handover":
+        throw new TermError("TERM_BAD_REQUEST", `${request.op} is not part of this daemon.`);
     }
   }
 

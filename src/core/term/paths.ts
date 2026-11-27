@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { isAbsolute, join, posix, win32 } from "node:path";
+import { extname, isAbsolute, join, posix, win32 } from "node:path";
 import { TermError } from "./errors";
 
 /**
@@ -33,6 +33,26 @@ export interface TermPaths {
   /** 원격 터미널 다리 로그(PC 연결 안의 다리) — JSON 한 줄씩, 데몬 로그와 같은 쓰기·회전. */
   remoteLog: string;
   previousRemoteLog: string;
+  /**
+   * holder 주소 파일(세션 유지 구조 설계 3-1) — 세션·PTY 를 쥔 holder 하나가 듣는다. 모양은 {@link socket} 과 같다(Unix 소켓 · Windows 주소 파일).
+   * 바깥(`term daemon`)만 붙는다. holder 는 옛 데몬 잠금({@link lockFile})을 평생 쥔다.
+   */
+  holderSocket: string;
+  /** holder 의 pid·판·uuid — 안내용(판정은 살아 있는 holder 에 묻는다 · caps). ★daemon.json 이 아니다 — 구판 CLI 가 이 파일을 판으로 읽지 않게. */
+  holderInfo: string;
+  holderLog: string;
+  previousHolderLog: string;
+  /** 바깥이 뜨는 동안 쥐는 잠금 — 바깥 시작·넘기기를 한 줄로 세운다(두 바깥이 동시에 포인터를 바꾸지 않게). */
+  outerLockFile: string;
+  outerAbstractLockName: string;
+}
+
+/**
+ * 바깥 하나의 주소 파일(설계 3-4 «바깥마다 자기 주소, 공용 주소는 포인터»). 이름에는 uuid 앞 8글자만 쓴다 —
+ * macOS Unix 소켓 경로 상한(104바이트) 안에 들게. 같은 앞글자의 파일이 이미 있으면 바깥이 uuid 를 다시 뽑는다(daemon.ts).
+ */
+export function outerSocketPath(paths: Pick<TermPaths, "dir" | "socket">, outer: string): string {
+  return join(paths.dir, `outer-${outer.slice(0, 8)}${extname(paths.socket)}`);
 }
 
 /**
@@ -85,5 +105,11 @@ export function termPaths(home: string = homedir(), platform: NodeJS.Platform = 
     previousLog: join(dir, "daemon.log.1"),
     remoteLog: join(dir, "remote.log"),
     previousRemoteLog: join(dir, "remote.log.1"),
+    holderSocket: join(dir, platform === "win32" ? "holder.pipe" : "holder.sock"),
+    holderInfo: join(dir, "holder.json"),
+    holderLog: join(dir, "holder.log"),
+    previousHolderLog: join(dir, "holder.log.1"),
+    outerLockFile: join(dir, "outer.lock"),
+    outerAbstractLockName: `\0ainecto-term-${process.getuid?.() ?? "na"}-${createHash("sha256").update(dir).digest("hex")}-outer.lock`,
   };
 }

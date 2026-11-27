@@ -15,3 +15,18 @@ export class TermError extends Error {
 export function noSession(name: string): TermError {
   return new TermError("TERM_NO_SESSION", `No session named "${name}" (no term sessions are running).`);
 }
+
+/** 오류의 코드 — TermError·Node 오류(code) 그대로, 그 밖은 TERM_INTERNAL. 응답 줄·로그가 이것 하나로 코드를 낸다. */
+export function errorCode(error: unknown): string {
+  if (error instanceof TermError) {
+    return error.code;
+  }
+  if (error instanceof Error && "code" in error && typeof error.code === "string") {
+    return error.code;
+  }
+  return "TERM_INTERNAL";
+}
+
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

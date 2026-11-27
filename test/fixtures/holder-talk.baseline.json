@@ -1,0 +1,90 @@
+{
+  "//": "holder 말 기준 — 덧붙이기만(설계 3-1). 지우거나 바꾸지 않는다. 0.16.7 첫 holder 판.",
+  "talk": {
+    "hello": [
+      "nonce"
+    ],
+    "caps": [],
+    "lease": [
+      "outer",
+      "version"
+    ],
+    "via": [
+      "outer"
+    ],
+    "new": [
+      "name",
+      "cwd",
+      "command",
+      "env",
+      "cols",
+      "rows",
+      "project",
+      "input",
+      "kind"
+    ],
+    "ls": [],
+    "ended-ack": [
+      "instances"
+    ],
+    "listed-to": [
+      "to",
+      "instances"
+    ],
+    "send": [
+      "name",
+      "text",
+      "paste",
+      "instance"
+    ],
+    "key": [
+      "name",
+      "key",
+      "instance"
+    ],
+    "read": [
+      "name",
+      "scrollback",
+      "lines",
+      "styles"
+    ],
+    "kill": [
+      "name",
+      "instance"
+    ],
+    "kill-server": [
+      "holder"
+    ],
+    "restore": [
+      "env"
+    ],
+    "attach": [
+      "name",
+      "cols",
+      "rows"
+    ],
+    "detach": [],
+    "watch": [
+      "name"
+    ],
+    "watch-sessions": [],
+    "set-size": [
+      "name",
+      "cols",
+      "rows",
+      "instance"
+    ],
+    "label": [
+      "name",
+      "label",
+      "instance"
+    ],
+    "in": [
+      "d"
+    ],
+    "resize": [
+      "cols",
+      "rows"
+    ]
+  }
+}

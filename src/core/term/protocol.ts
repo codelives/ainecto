@@ -62,7 +62,11 @@ export type TermRequestBody =
   /** styles = 글자 속성·커서까지(원격 화면) — 옛 데몬은 버리고 글자만 준다. */
   | { op: "read"; name: string; scrollback: boolean; lines?: number; styles?: boolean }
   | { op: "kill"; name: string; instance?: string }
-  | { op: "kill-server" }
+  /**
+   * 세션을 모두 끝내고 holder 를 끈다. ★holder = 끌 holder 의 uuid(기능 묻기 caps 로 받은 값) — 없거나 다르면 거절한다(설계 3-4 · G4).
+   * 구판 CLI(0.16.x)의 kill-server 는 이 칸이 없어 «최신 CLI 로 다시»로 거절된다 — 남은 daemon.json 으로 새 구조 세션을 닫지 못한다.
+   */
+  | { op: "kill-server"; holder?: string }
   | { op: "restore"; env: Record<string, string> }
   | { op: "attach"; name: string; cols: number; rows: number }
   | { op: "detach" }
@@ -77,7 +81,21 @@ export type TermRequestBody =
   /** 이 연결에 세션 목록 변화(생김·끝·label)를 {@code sessions} 이벤트로 알린다 — 원격 다리가 목록을 올릴 때를 안다. */
   | { op: "watch-sessions" }
   /** Windows 만 — 데몬 증명. 답은 `{proof}`(ipc.ts helloProof). 클라이언트는 이 답을 확인하기 전에 다른 요청을 보내지 않는다. */
-  | { op: "hello"; nonce: string };
+  | { op: "hello"; nonce: string }
+  /**
+   * 기능 묻기(설계 3-1·3-4 · G4) — 판·구조는 남은 파일이 아니라 살아 있는 상대에게 묻는다. holder 는 {@link HolderCaps}, 바깥은 거기에 바깥 uuid·판을 더한다.
+   * ★옛 구조 데몬(0.16.x)은 모르는 op 에 연결을 끊는다 — 그것이 «옛 구조»의 표지다.
+   */
+  | { op: "caps" }
+  /**
+   * holder 쓰기 임대(바깥 → holder · 설계 3-4) — 임대를 쥔 바깥과 그 바깥이 이은 연결({@link via})의 요청만 holder 가 적용한다.
+   * 비어 있으면 이 연결이 쥔다. 다른 바깥이 쥐고 있으면 그 바깥의 uuid·판을 답한다(넘기기는 판이 더 높은 쪽이 당긴다). 연결이 끊기면 풀린다.
+   */
+  | { op: "lease"; outer: string; version: string }
+  /** 이 연결은 그 바깥이 CLI 연결 하나를 이은 것이다(바깥 → holder). 그 바깥이 임대를 쥔 동안만 요청이 적용된다. */
+  | { op: "via"; outer: string }
+  /** 바깥 넘기기(새 바깥 → 옛 바깥의 자기 주소 · 설계 3-4) — 옛 바깥은 새 요청을 받지 않고, 처리 중인 것을 마친 뒤 답하고 임대를 놓고 끝난다. */
+  | { op: "handover"; to: string };
 
 export type TermRequest = TermRequestBody & { id: string };
 
@@ -183,10 +201,18 @@ export function parseClientMessage(line: string): TermClientMessage {
       return { id, op, to, instances: stringListField(record, "instances") };
     }
     case "ls":
-    case "kill-server":
     case "detach":
     case "watch-sessions":
+    case "caps":
       return { id, op };
+    case "kill-server":
+      return record.holder === undefined ? { id, op } : { id, op, holder: uuidField(record, "holder") };
+    case "lease":
+      return { id, op, outer: uuidField(record, "outer"), version: stringField(record, "version") };
+    case "via":
+      return { id, op, outer: uuidField(record, "outer") };
+    case "handover":
+      return { id, op, to: uuidField(record, "to") };
     case "label": {
       const label = stringField(record, "label");
       if (label.length === 0) {
@@ -403,6 +429,14 @@ function sizeField(record: Record<string, unknown>, key: string): number {
 }
 
 function projectField(record: Record<string, unknown>, key: string): string {
+  const value = stringField(record, key);
+  if (!isUuid(value)) {
+    throw new TermProtocolError(`"${key}" must be a lowercase UUID.`);
+  }
+  return value;
+}
+
+function uuidField(record: Record<string, unknown>, key: string): string {
   const value = stringField(record, key);
   if (!isUuid(value)) {
     throw new TermProtocolError(`"${key}" must be a lowercase UUID.`);

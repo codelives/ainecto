@@ -1,7 +1,8 @@
 import { closeSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { openTermClient, termRequest } from "../../core/term/client";
-import { runDaemon, type DaemonReadiness } from "../../core/term/daemon";
+import { runDaemon } from "../../core/term/daemon";
+import { runHolder, type DaemonReadiness } from "../../core/term/holder";
 import { DETACH_HINT, DetachKeyScanner } from "../../core/term/detachKey";
 import { FULL_TERMINAL_RESET } from "../../core/term/screen";
 import { noSession, TermError } from "../../core/term/errors";
@@ -89,7 +90,10 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
     case "attach":
       return await attach(paths, singleName(parseArgs(rest, {}).positionals, "term attach <name>"), input.io);
     case "daemon":
-      return await daemonCommand(paths, rest);
+      return await residentCommand(paths, rest, runDaemon);
+    case "holder":
+      // 숨은 명령(세션 유지 구조 설계 8절) — 바깥(term daemon)이 띄운다. 세션·PTY 를 쥔 holder 한 벌.
+      return await residentCommand(paths, rest, runHolder);
     case "remote":
       // ★두 방식 금지 — 다리는 이 PC 연결(`ainecto`) 안에서 PC 당 하나다. 따로 띄우면 같은 PC 의 다리끼리 서로 밀어낸다.
       throw new CliCommandError("MOVED", "`ainecto term remote` is now part of the PC connection: run `ainecto` (it lists every term session "
@@ -248,8 +252,9 @@ async function attach(paths: TermPaths, name: string, io: CliIO): Promise<number
   return await done;
 }
 
-/** 내부 명령 — 클라이언트가 detached 로 띄운다. `--ready-fd` 로 준비 한 줄을 돌려준다. */
-async function daemonCommand(paths: TermPaths, argv: string[]): Promise<number> {
+/** 내부 명령(term daemon · term holder) — 띄운 쪽이 detached 로 띄운다. `--ready-fd` 로 준비 한 줄을 돌려준다. */
+async function residentCommand(paths: TermPaths, argv: string[],
+  run: (options: { paths: TermPaths; version: string; ready: (readiness: DaemonReadiness) => void }) => Promise<number>): Promise<number> {
   const args = parseArgs(argv, { "ready-fd": "count" });
   const readyFd = countFlag(args.flags["ready-fd"]);
   let channelOpen = readyFd !== undefined;
@@ -271,7 +276,7 @@ async function daemonCommand(paths: TermPaths, argv: string[]): Promise<number> 
   };
   let code: number;
   try {
-    code = await runDaemon({ paths, version: CLI_VERSION, ready });
+    code = await run({ paths, version: CLI_VERSION, ready });
   } catch (error) {
     try {
       ready({ status: "error", message: error instanceof Error ? error.message : String(error) });

@@ -86,11 +86,11 @@ export async function screen(name: string): Promise<string[]> {
   return (result.data as { lines: string[] }).lines;
 }
 
-/** 이 시험의 데몬 pid — 실행 인자에 표지와 `term daemon` 이 있는 프로세스. */
+/** 이 시험의 데몬 pid — 실행 인자에 표지와 `term daemon`(바깥) 또는 `term holder` 가 있는 프로세스. */
 export function daemonPids(): number[] {
   const table = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
   return table.split("\n")
-    .filter((line) => line.includes(rig.marker) && line.includes("term daemon"))
+    .filter((line) => line.includes(rig.marker) && (line.includes("term daemon") || line.includes("term holder")))
     .map((line) => Number(line.trim().split(/\s+/)[0]));
 }
 

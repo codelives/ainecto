@@ -5,7 +5,7 @@ import { connect, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
 import { spawnDetached, stuckProcessHint } from "../os/launch";
-import type { DaemonReadiness } from "./daemon";
+import type { DaemonReadiness } from "./holder";
 import { assertTermRuntime } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
@@ -55,11 +55,11 @@ export class TermClient {
   }
 
   /**
-   * 주소에 붙는다(ipc.ts). Windows 는 ★증명부터 — hello 의 답이 주소 파일의 비밀값과 맞기 전에는 다른 요청을 보내지 않는다.
+   * 주소에 붙는다(ipc.ts) — 기본은 공용 주소(paths.socket), 바깥은 holder 주소·옛 바깥 주소를 준다. Windows 는 ★증명부터 — hello 의 답이 주소 파일의 비밀값과 맞기 전에는 다른 요청을 보내지 않는다.
    * 맞지 않거나 답이 없으면 연결을 끊고 {@link IMPOSTOR_CODE}.
    */
-  static async connect(paths: TermPaths): Promise<TermClient> {
-    const target = await connectAddress(paths);
+  static async connect(paths: TermPaths, file: string = paths.socket): Promise<TermClient> {
+    const target = await connectAddress(file);
     const client = await new Promise<TermClient>((resolve, reject) => {
       const socket = connect(target.address);
       socket.once("connect", () => {

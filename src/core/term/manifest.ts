@@ -21,6 +21,8 @@ export interface ManifestEntry {
   input?: "none";
   /** 만들 때 받은 종류 — restore 가 그대로 되살린다. 없이 만든 줄(옛 CLI·옛 파일)은 칸 없음. */
   kind?: SessionKind;
+  /** 그 줄을 만든 세션의 uuid — 지우기·label 은 이 열쇠로 맞춘다(세션 유지 구조 G6). 옛 파일은 칸 없음 · restore 가 새 uuid 를 단다. */
+  instance?: string;
 }
 
 interface ManifestFile {
@@ -64,5 +66,6 @@ function isEntry(value: unknown): value is ManifestEntry {
     && (entry.project === undefined || typeof entry.project === "string")
     && (entry.input === undefined || entry.input === "none")
     && (entry.kind === undefined || entry.kind === "user" || entry.kind === "pc-bridge")
+    && (entry.instance === undefined || typeof entry.instance === "string")
     && (entry.command === null || (Array.isArray(entry.command) && entry.command.every((item) => typeof item === "string")));
 }

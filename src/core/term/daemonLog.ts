@@ -14,6 +14,10 @@ import { DAEMON_LOG_MAX_BYTES } from "./limits";
 export type DaemonLogRecord =
   | { event: "daemon_start"; pid: number; version: string; socket: string }
   | { event: "daemon_locked"; pid: number }
+  /** holder 시작(holder.log) — holder uuid 는 kill-server 가 실어야 하는 값. */
+  | { event: "holder_start"; pid: number; version: string; holder: string; socket: string }
+  | { event: "lease_granted"; conn: number; outer: string; version: string }
+  | { event: "lease_released"; conn: number; outer: string }
   /** 준비 한 줄을 띄운 쪽에 못 전했다 — 띄운 쪽이 이미 떠났다(리뷰 #82 S1). 데몬은 계속 산다. */
   | { event: "ready_unread"; pid: number; status: string; message: string }
   | { event: "daemon_stop"; pid: number; reason: string }

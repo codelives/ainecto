@@ -34,31 +34,31 @@ describe("주소 — Unix 는 소켓 파일 그대로, Windows 는 주소 파일
 
   it("Unix: 붙을 주소 = 소켓 경로, 비밀값 없음(hello 를 보내지 않는다)", async () => {
     const paths = termPaths(home, "darwin");
-    expect(await connectAddress(paths, "darwin")).toEqual({ address: paths.socket });
+    expect(await connectAddress(paths.socket, "darwin")).toEqual({ address: paths.socket });
   });
 
   it("Windows: 데몬이 쓴 주소 파일을 클라이언트가 그대로 읽는다 — 무작위 pipe 이름 · 32바이트 비밀값 · 0600", async () => {
     const paths = termPaths(home, "win32");
     await mkdir(paths.dir, { recursive: true });
-    const first = await prepareListen(paths, "win32");
+    const first = await prepareListen(paths.socket, "win32");
     expect(first.address).toMatch(/^\\\\\.\\pipe\\ainecto-term-[0-9a-f]{32}$/);
     expect(first.key?.length).toBe(IPC_KEY_BYTES);
-    expect(await connectAddress(paths, "win32")).toEqual(first);
+    expect(await connectAddress(paths.socket, "win32")).toEqual(first);
     // 데몬마다 새로 — 옛 이름·옛 비밀값을 다시 쓰지 않는다.
-    const second = await prepareListen(paths, "win32");
+    const second = await prepareListen(paths.socket, "win32");
     expect(second.address).not.toBe(first.address);
     expect(second.key?.equals(first.key ?? Buffer.alloc(0))).toBe(false);
-    expect(await connectAddress(paths, "win32")).toEqual(second);
+    expect(await connectAddress(paths.socket, "win32")).toEqual(second);
     expect(JSON.parse(await readFile(paths.socket, "utf8"))).toEqual({ pipe: second.address, key: second.key?.toString("base64") });
   });
 
   it("Windows: 주소 파일 없음·깨짐 → NO_ADDRESS(«데몬 없음»과 같게 — 다음 데몬이 덮어쓴다)", async () => {
     const paths = termPaths(home, "win32");
-    await expect(connectAddress(paths, "win32")).rejects.toMatchObject({ code: NO_ADDRESS_CODE });
+    await expect(connectAddress(paths.socket, "win32")).rejects.toMatchObject({ code: NO_ADDRESS_CODE });
     await mkdir(paths.dir, { recursive: true });
     for (const bad of ["", "{", "{}", '{"pipe":"\\\\\\\\.\\\\pipe\\\\other","key":"AAAA"}', JSON.stringify({ pipe: "\\\\.\\pipe\\ainecto-term-ab", key: "c2hvcnQ=" })]) {
       await writeFile(paths.socket, bad);
-      await expect(connectAddress(paths, "win32"), bad).rejects.toMatchObject({ code: NO_ADDRESS_CODE });
+      await expect(connectAddress(paths.socket, "win32"), bad).rejects.toMatchObject({ code: NO_ADDRESS_CODE });
     }
     expect(parseAddressFile(JSON.stringify({ pipe: "\\\\.\\pipe\\ainecto-term-ab", key: Buffer.alloc(IPC_KEY_BYTES, 1).toString("base64") }))).toBeDefined();
   });
