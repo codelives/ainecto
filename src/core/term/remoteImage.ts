@@ -11,7 +11,9 @@ import { IMAGE_KEEP_MS, IMAGE_MAX_BYTES } from "./remoteLimits";
  * <pre>
  * 검사   종류 6가지(mime → 확장자) · opId 는 소문자 UUID · 0 바이트·8 MiB 초과 거절 · 맨 앞 magic bytes 가 그 종류여야
  * 저장   폴더(TermPaths.images) 0700 · `<opId>.<ext>` 새 파일만(wx) 0600 — 같은 opId 두 번이면 거절(덮지 않는다)
- * 정리   24시간 지난 파일 — 저장할 때 + 원격 다리가 켜질 때. 하위 폴더·링크는 손대지 않는다
+ * 정리   24시간 지난 «저장 이름»(소문자 UUID.허용 확장자) 일반 파일만 — 저장할 때 + 원격 다리가 켜질 때.
+ *        두 길 모두 저장과 같은 폴더 검사(ensurePrivateDir — 링크·폴더 아님·남의 것이면 거절)를 먼저 거친다.
+ *        규칙 밖 이름·하위 폴더·링크는 손대지 않는다
  * </pre>
  * Windows 는 0600·0700 이 뜻이 없다(읽기 전용 표시만) — 그대로 두고 실패하지 않는다.
  */
@@ -65,18 +67,23 @@ export interface ImagePrune {
   failed: number;
 }
 
-/** {@code now} 기준 24시간 지난 파일을 지운다. 폴더가 없으면 0. 하위 폴더·링크는 남긴다. */
+/** 이 모듈이 저장했을 이름인가(순수) — `<소문자 UUID>.<허용 확장자>` 만. */
+export function isSavedImageName(name: string): boolean {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && isUuid(name.slice(0, dot)) && Object.values(IMAGE_EXTENSIONS).includes(name.slice(dot + 1));
+}
+
+/**
+ * {@code now} 기준 24시간 지난 저장 이름의 일반 파일을 지운다. 폴더는 저장과 같은 검사를 먼저 거친다(없으면 0700 으로 만든다 ·
+ * 링크·폴더 아님·남의 것이면 던진다 — 정리하지 않는다). 규칙 밖 이름·하위 폴더·링크는 남긴다.
+ */
 export async function pruneImages(dir: string, now: number = Date.now()): Promise<ImagePrune> {
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) return { removed: 0, failed: 0 };
-    throw error;
-  }
+  await ensurePrivateDir(dir);
+  const names = await readdir(dir);
   const cutoff = now - IMAGE_KEEP_MS;
   const outcome = { removed: 0, failed: 0 };
   for (const name of names) {
+    if (!isSavedImageName(name)) continue;
     const path = join(dir, name);
     try {
       const info = await lstat(path);
@@ -98,8 +105,7 @@ export async function saveImage(input: { dir: string; opId: string; mime: string
   : Promise<{ path: string; pruned: ImagePrune }> {
   const problem = imageProblem(input.opId, input.mime, input.bytes);
   if (problem) throw new TermError("TERM_BAD_REQUEST", problem);
-  await ensurePrivateDir(input.dir);
-  const pruned = await pruneImages(input.dir, input.now);
+  const pruned = await pruneImages(input.dir, input.now);   // 폴더 검사(ensurePrivateDir)도 여기서
   const path = join(input.dir, `${input.opId}.${IMAGE_EXTENSIONS[input.mime]}`);
   try {
     await writeFile(path, input.bytes, { flag: "wx", mode: PRIVATE_FILE_MODE });

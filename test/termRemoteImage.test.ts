@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { termPaths } from "../src/core/term/paths";
@@ -26,8 +26,8 @@ describe("이미지 붙여넣기 저장 — 모양·크기·magic · 새 파일�
   });
 
   it("저장 폴더 — term 폴더 아래 images(OS 공통 · ~/.ainecto/term/images)", () => {
-    expect(termPaths("/Users/r", "darwin").images).toBe("/Users/r/.ainecto/term/images");
-    expect(termPaths("/home/r", "linux").images).toBe("/home/r/.ainecto/term/images");
+    expect(termPaths("/Users/r", "darwin").images).toBe(join("/Users/r", ".ainecto", "term", "images"));
+    expect(termPaths("/home/r", "linux").images).toBe(join("/home/r", ".ainecto", "term", "images"));
   });
 
   it("6종 magic 이 맞으면 통과 · 종류·magic·opId 모양·0 바이트·8 MiB 초과는 거절 사유(순수)", () => {
@@ -70,7 +70,7 @@ describe("이미지 붙여넣기 저장 — 모양·크기·magic · 새 파일�
     expect(readFileSync(join(images, `${OP}.png`))).toEqual(PNG);
   });
 
-  it("24시간 지난 파일만 정리 — 저장할 때 · 따로 부를 때(폴더 없으면 0) · 하위 폴더는 손대지 않는다", async () => {
+  it("24시간 지난 저장 이름(소문자 UUID.허용 확장자)만 정리 — 저장할 때 · 따로 부를 때(폴더 없으면 0) · 규칙 밖 이름·하위 폴더는 손대지 않는다", async () => {
     const images = dir();
     expect(await pruneImages(images, Date.now())).toEqual({ removed: 0, failed: 0 });
     await saveImage({ dir: images, opId: OP, mime: "image/png", bytes: PNG });
@@ -78,14 +78,40 @@ describe("이미지 붙여넣기 저장 — 모양·크기·magic · 새 파일�
     const now = Date.now();
     const stale = new Date(now - IMAGE_KEEP_MS - 60_000);
     utimesSync(old, stale, stale);
-    writeFileSync(join(images, "fresh.png"), PNG);
+    // 규칙 밖 이름 — 오래돼도 남는다(사용자가 넣은 파일·대문자 UUID·모르는 확장자·꼬리 붙은 이름).
+    // 대소문자 변형은 저장 이름과 겹치지 않는 UUID 로(macOS·Windows 는 대소문자를 가리지 않아 같은 파일이 된다)
+    const other = (digit: number): string => `${digit}c2c3d4e-5f60-4718-8293-a4b5c6d7e8f9`;
+    const outsiders = ["fresh.png", `${other(3).toUpperCase()}.png`, `${other(4)}.PNG`, `${other(5)}.txt`, `${other(6)}.png.bak`];
+    for (const name of outsiders) {
+      writeFileSync(join(images, name), PNG);
+      utimesSync(join(images, name), stale, stale);
+    }
     mkdirSync(join(images, "sub"));
     utimesSync(join(images, "sub"), stale, stale);
     const saved = await saveImage({ dir: images, opId: OP2, mime: "image/gif", bytes: GIF, now });
     expect(saved.pruned).toEqual({ removed: 1, failed: 0 });
-    expect(readdirSync(images).sort()).toEqual([`${OP2}.gif`, "fresh.png", "sub"].sort());
+    expect(readdirSync(images).sort()).toEqual([`${OP2}.gif`, ...outsiders, "sub"].sort());
     const later = now + IMAGE_KEEP_MS + 60_000;
-    expect(await pruneImages(images, later)).toEqual({ removed: 2, failed: 0 });
-    expect(readdirSync(images)).toEqual(["sub"]);
+    expect(await pruneImages(images, later)).toEqual({ removed: 1, failed: 0 });
+    expect(readdirSync(images).sort()).toEqual([...outsiders, "sub"].sort());
+  });
+
+  it.skipIf(process.platform === "win32")("images 가 링크·파일이면 정리도 저장도 하지 않는다 — 링크 너머 파일은 그대로(두 길 모두 같은 폴더 검사)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ainecto-img-"));
+    const target = join(root, "elsewhere");
+    mkdirSync(target);
+    const victim = join(target, `${OP}.png`);
+    writeFileSync(victim, PNG);
+    const stale = new Date(Date.now() - IMAGE_KEEP_MS - 60_000);
+    utimesSync(victim, stale, stale);
+    const linked = join(root, "images");
+    symlinkSync(target, linked);
+    await expect(pruneImages(linked)).rejects.toThrow(/real directory/);
+    await expect(saveImage({ dir: linked, opId: OP2, mime: "image/png", bytes: PNG })).rejects.toThrow(/real directory/);
+    expect(existsSync(victim)).toBe(true);
+    expect(readdirSync(target)).toEqual([`${OP}.png`]);
+    const file = join(root, "plain");
+    writeFileSync(file, "x");
+    await expect(pruneImages(file)).rejects.toThrow();
   });
 });

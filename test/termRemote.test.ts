@@ -1028,6 +1028,23 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
       expectLogPairs();
     }, LONG);
 
+    it.skipIf(process.platform === "win32")("다리 시작 때 정리도 저장과 같은 폴더 검사 — images 가 링크면 정리하지 않는다(링크 너머 파일 그대로 · 한 줄 남기고 다리는 연다)", async () => {
+      const target = join(rig.home, "elsewhere");
+      mkdirSync(target, { recursive: true });
+      const victim = join(target, `${randomUUID()}.png`);
+      writeFileSync(victim, PNG);
+      const stale = new Date(Date.now() - IMAGE_KEEP_MS - 60_000);
+      utimesSync(victim, stale, stale);
+      mkdirSync(termPaths(rig.home).dir, { recursive: true, mode: 0o700 });
+      symlinkSync(target, images());
+      const run = start();
+      await until(() => fake.ops().includes("poll"), "poll");
+      expect(existsSync(victim)).toBe(true);
+      expect(remoteLog()).toContainEqual(expect.objectContaining({ event: "remote_images_pruned", when: "start", removed: 0, failed: 1 }));
+      run.stop.abort();
+      expect((await run.done).exitCode).toBe(0);
+    }, LONG);
+
     it("거절 답 — magic 틀림 TERM_BAD_REQUEST · 모르는 세션·instance 불일치·PC 연결 세션 TERM_NO_SESSION · 파일 없음 · 채널은 계속", async () => {
       await ok("term", "new", "a", "--", "cat");
       await pcBridgeSession();   // PC 연결 세션(종류 pc-bridge — 0.16.8 합본: holder 는 종류 없는 PC 연결을 거절)
