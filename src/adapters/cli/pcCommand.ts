@@ -322,9 +322,47 @@ async function launchPc(deps: PcDeps): Promise<number> {
 
 /**
  * 띄운 pc 세션의 결과 — 연결됨(다리만이면 agentMissing) · 기한 안에 아직(connecting). 끝남·오류 줄이면 PC_START_FAILED 로 던진다.
- * agentLines = pc 세션이 이번 시작에 찍은 Agent 마다 한 줄(serve_start — 못 찾음·준비 안 됨의 이유) — 이 터미널에도 옮긴다(KAN-1613 리뷰 r1 P0-1).
+ * agents = pc 세션이 이번 시작에 찍은 Agent 마다의 줄(serve_start — 못 찾음·준비 안 됨의 이유) — 이 터미널에도 옮긴다(KAN-1613 리뷰 r1 P0-1).
  */
-export type PcStartOutcome = { kind: "connected"; agentMissing: boolean; agentLines: string[] } | { kind: "connecting"; agentLines: string[] };
+export type PcStartOutcome = { kind: "connected"; agentMissing: boolean; agents: AgentDiagnostics } | { kind: "connecting"; agents: AgentDiagnostics };
+
+/**
+ * 이번 시작의 Agent 진단(agent.log 의 serve_start 줄). ★진단일 뿐이다 — 읽지 못하면(EACCES 등) unreadable 로만 알리고,
+ * 연결 판정·종료 코드·교체 여부는 PTY 로 확인한 결과를 따른다(리뷰 r2 P0-1: 읽기 오류가 성공한 start·업그레이드를 실패로 바꿨다).
+ * ⚠한계(리뷰 r2 P0-2, 루트 판정 «한계»): 홈 공용 로그에서 시작 시각 뒤의 마지막 serve_start 를 고른다 — 같은 홈에서 두 시작이 겹치거나
+ *   시계가 뒤로 가면 다른 실행의 진단 줄이 보일 수 있다(드묾 · 진단 표시뿐). 자식 PID 로 거르지 않는 까닭: 세션 프로세스는 npx·셸이라
+ *   serve 의 PID 를 호출자가 모른다.
+ */
+export type AgentDiagnostics = { lines: string[]; unreadable?: string };
+
+async function agentDiagnosticsSince(path: string, since: string): Promise<AgentDiagnostics> {
+  try {
+    return { lines: serveStartLines(await readFile(path, "utf8"), since) };
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return { lines: [] };
+    const code = (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
+    return { lines: [], unreadable: code };
+  }
+}
+
+/** 사람에게 보일 진단 줄 — 읽지 못했으면 그 사실 한 줄. */
+function agentDiagnosticLines(deps: PcDeps, agents: AgentDiagnostics): string[] {
+  return agents.unreadable === undefined ? agents.lines
+    : [`Agent details could not be read from ${deps.agentLog} (${agents.unreadable}).`];
+}
+
+/** JSON 칸 — 성공 결과와 실패 오류의 details 가 같은 모양. */
+function agentDiagnosticData(agents: AgentDiagnostics): Record<string, unknown> {
+  return { agents: agents.lines, ...(agents.unreadable === undefined ? {} : { agentsUnreadable: agents.unreadable }) };
+}
+
+/**
+ * 실패로 끝날 때 — 사람용이면 Agent 줄을 오류 줄보다 먼저(stderr), --json 이면 오류 JSON 의 details 에만(리뷰 r2 P1-1).
+ */
+function startFailed(deps: PcDeps, agents: AgentDiagnostics, message: string): CliCommandError {
+  if (!deps.json) for (const line of agentDiagnosticLines(deps, agents)) deps.io.stderr.write(`${line}\n`);
+  return new CliCommandError("PC_START_FAILED", message, agentDiagnosticData(agents));
+}
 
 /**
  * pc 세션을 띄우고 «연결됨»을 기다린다(★틀린 «Connected» 를 찍지 않으려고) — start·갈아끼우기·원격 설정 반영·자동 업그레이드가 같은 길.
@@ -350,42 +388,26 @@ export async function startPcSession(deps: PcDeps): Promise<PcStartOutcome> {
     line = (await waitForMatch(deps.paths, PC_SESSION_NAME, PC_OUTCOME_PATTERN, { scrollback: true }, deps.readyDeadlineMs, instance)).line;
   } catch (error) {
     if (error instanceof TermError && error.code === "TERM_WAIT_TIMEOUT") {
-      return { kind: "connecting", agentLines: await agentLinesSince(deps.agentLog, startedAt) };
+      return { kind: "connecting", agents: await agentDiagnosticsSince(deps.agentLog, startedAt) };
     }
     // 끝남 — 기다리는 동안(SESSION_ENDED) 또는 기다리기 전에 이미(NO_SESSION: 바로 끝나 데몬 표에서 빠졌다) · 같은 이름의 다른 세션으로 바뀜(SESSION_REPLACED).
     if (error instanceof TermError && (error.code === "TERM_SESSION_ENDED" || error.code === "TERM_NO_SESSION" || error.code === "SESSION_REPLACED")) {
-      writeAgentLines(deps, await agentLinesSince(deps.agentLog, startedAt));
+      const agents = await agentDiagnosticsSince(deps.agentLog, startedAt);
       const last = await lastLogLineSince(deps.agentLog, startedAt);
-      throw new CliCommandError("PC_START_FAILED", `The PC connection stopped right after it started (${error.message})`
+      throw startFailed(deps, agents, `The PC connection stopped right after it started (${error.message})`
         + `${last ? ` Last log line: ${last}` : ""} Log: ${deps.agentLog}`);
     }
     throw error;
   }
   const outcome = pcOutcome([line]);
-  const agentLines = await agentLinesSince(deps.agentLog, startedAt);
+  const agents = await agentDiagnosticsSince(deps.agentLog, startedAt);
   if (outcome?.kind === "failed") {
-    // 아무 Agent 도 없고 원격도 꺼져 끝남 — 왜 Agent 가 없는지(종류마다)를 먼저 찍는다.
-    writeAgentLines(deps, agentLines);
-    throw new CliCommandError("PC_START_FAILED", `The PC connection could not start — ${outcome.line} Log: ${deps.agentLog}`);
+    // 아무 Agent 도 없고 원격도 꺼져 끝남 — 왜 Agent 가 없는지(종류마다)를 먼저 알린다.
+    throw startFailed(deps, agents, `The PC connection could not start — ${outcome.line} Log: ${deps.agentLog}`);
   }
   // 무엇이 붙었는지 그대로 — 화면 전체로 본다(Agent 없음 줄은 다리 연결 줄보다 앞에 찍힌다).
   const screen = pcOutcome(await screenLines(deps, PC_SESSION_NAME));
-  return { kind: "connected", agentMissing: screen?.kind === "connected" && screen.agentMissing === true, agentLines };
-}
-
-/** 이번 시작 뒤 agent.log 의 serve_start Agent 줄 — 파일이 없으면 빈 목록. */
-async function agentLinesSince(path: string, since: string): Promise<string[]> {
-  try {
-    return serveStartLines(await readFile(path, "utf8"), since);
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) return [];
-    throw error;
-  }
-}
-
-/** 실패로 끝날 때 Agent 줄 — 오류 줄보다 먼저(stderr). */
-function writeAgentLines(deps: PcDeps, lines: readonly string[]): void {
-  for (const line of lines) deps.io.stderr.write(`${line}\n`);
+  return { kind: "connected", agentMissing: screen?.kind === "connected" && screen.agentMissing === true, agents };
 }
 
 /** pc 세션 화면(스크롤백 포함) — 없으면 빈 목록. */
@@ -406,8 +428,8 @@ async function screenLines(deps: PcDeps, session: string): Promise<string[]> {
 /** 띄운 결과를 사람에게 — 무엇이 붙었는지 그대로. */
 function reportOutcome(deps: PcDeps, outcome: PcStartOutcome): number {
   // Agent 마다 한 줄(pc 세션 화면과 같은 글)은 결과 단락 바로 뒤에 — 이 터미널에서 왜 Agent 가 안 붙었는지 보인다.
-  const base = { session: PC_SESSION_NAME, folder: deps.cwd, log: deps.agentLog, agents: outcome.agentLines };
-  const human = (result: string) => [result, ...outcome.agentLines].join("\n");
+  const base = { session: PC_SESSION_NAME, folder: deps.cwd, log: deps.agentLog, ...agentDiagnosticData(outcome.agents) };
+  const human = (result: string) => [result, ...agentDiagnosticLines(deps, outcome.agents)].join("\n");
   if (outcome.kind === "connecting") {
     return print(deps, { ...base, connected: false, connecting: true }, human(pcResultText({ kind: "connecting", log: deps.agentLog })));
   }
@@ -424,9 +446,9 @@ async function lastLogLineSince(path: string, since: string): Promise<string | u
   let text: string;
   try {
     text = await readFile(path, "utf8");
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) return undefined;
-    throw error;
+  } catch {
+    // 없거나 읽지 못함(EACCES 등) — 사유를 꾸밀 줄이 없을 뿐, 실패 판정은 PTY 결과 그대로(리뷰 r2 P0-1 과 같은 원칙).
+    return undefined;
   }
   const last = lastLine(text);
   if (!last) return undefined;

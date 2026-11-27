@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { executePair } from "../src/adapters/cli/pairCommand";
+import { CliCommandError } from "../src/adapters/cli/errors";
 import { executePcStart, executePcStop, executeRemoteSetting, runningPcGroups, turnOffPcs, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { accountKey } from "../src/core/pc/pcSettings";
 import { generateSigningJwk, publicJwkOf } from "../src/core/term/e2e";
@@ -393,6 +394,52 @@ describe("이 PC 연결 — 실 데몬", () => {
     const nothing = harness({ runner: noRunner, script: `${startRecord} console.error('Error: None of Claude Code is on PATH.'); setTimeout(() => process.exit(1), 300);` });
     await expect(executePcStart(nothing.deps)).rejects.toThrow("The PC connection could not start — Error: None of Claude Code is on PATH.");
     for (const line of lines) expect(nothing.err(), "아무것도 없음 — 오류 앞에 이유").toContain(line);
+  }, LONG);
+
+  /** 자식이 남기는 serve_start(이유 한 줄) — 리뷰 r2 반례 둘이 같이 쓴다. */
+  const r2Log = () => join(rig.home, ".ainecto/agent/agent.log");
+  const r2Lines = ["Claude Code was not found on this PC, or did not run (spawn claude ENOENT). reason-cc"];
+  const r2Record = () => "require('node:fs').mkdirSync(require('node:path').dirname(" + JSON.stringify(r2Log()) + "), { recursive: true });"
+    + "require('node:fs').appendFileSync(" + JSON.stringify(r2Log()) + ", JSON.stringify({ ts: new Date().toISOString(), event: 'serve_start',"
+    + ` agents: ${JSON.stringify(r2Lines.map((line) => ({ id: "claude-code", installed: false, ready: false, line })))} }) + '\\n');`;
+
+  it("KAN-1613 리뷰 r2 P0-1 — 진단 로그를 못 읽어도(쓰기만 됨) PTY 로 확인된 연결 성공은 성공 · 진단만 «읽지 못함»", async () => {
+    const log = r2Log();
+    const record = r2Record();
+    mkdirSync(dirname(log), { recursive: true });
+    writeFileSync(log, "");
+    chmodSync(log, 0o200);   // 쓰기만 — 자식은 기록을 남기지만 호출자는 읽지 못한다(EACCES)
+    try {
+      const start = harness({ script: "if (process.argv.includes('--version')) process.exit(0);"
+        + `process.on('SIGINT', () => process.exit(0)); ${record} ${CONNECTED} setInterval(() => undefined, 1000);` });
+      const done = executePcStart(start.deps);
+      await start.answer("Connect this PC?", "y");
+      await start.answer("Also allow terminals", "n");
+      expect(await done, "PTY 로 연결이 확인됐으면 성공").toBe(0);
+      expect(start.out()).toContain("This PC is now connected to AiNecto.");
+      expect(start.out()).toContain(`Agent details could not be read from ${log} (EACCES).`);
+      await executePcStop(harness().deps, []);
+    } finally {
+      chmodSync(log, 0o600);
+    }
+  }, LONG);
+
+  it("KAN-1613 리뷰 r2 P1-1 — start --json 실패는 Agent 이유를 오류 JSON details 에만(사람용 줄은 따로 안 찍음)", async () => {
+    const approve = harness();
+    const first = executePcStart(approve.deps);
+    await approve.answer("Connect this PC?", "y");
+    await approve.answer("Also allow terminals", "n");
+    await first;
+    await executePcStop(harness().deps, []);
+    const lines = r2Lines;
+    const record = r2Record();
+    const noRunner = async () => ({ exitCode: 0, stdout: "", stderr: "", missing: false });
+    const failed = harness({ json: true, runner: noRunner,
+      script: `${record} console.error('Error: None of Claude Code is on PATH.'); setTimeout(() => process.exit(1), 300);` });
+    const error = await executePcStart(failed.deps).then(() => undefined, (e: unknown) => e);
+    expect(error).toBeInstanceOf(CliCommandError);
+    expect((error as CliCommandError).details, "이유는 오류 JSON 안에").toEqual({ agents: lines });
+    for (const line of lines) expect(failed.err(), "--json 이면 사람용 줄을 따로 찍지 않는다").not.toContain(line);
   }, LONG);
 
   it("ainecto 재실행 — 원격이 웹에서 꺼진 pc 는(같은 판이어도) «Already» 대신 다시 띄워 원격을 켠다", async () => {
