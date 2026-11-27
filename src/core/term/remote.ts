@@ -98,6 +98,8 @@ export type RemoteLogRecord =
       executedThrough?: number }
   /** 화면 루프의 데몬 연결이 끊겨(바깥이 갈림) 같은 세션에 다시 붙는다 — 세션 끝이 아니다(설계 4절 규칙 2). */
   | { event: "remote_viewer_reconnect"; channelId: string; session: string }
+  /** `pc run` 시작이 바깥 넘기기를 당겼다(살아 있는 바깥보다 이 판이 새로움) — 띄운 결과. */
+  | { event: "remote_outer_handover"; status: string; message?: string }
   /** 목록 변화 알림 연결이 끊겨 다시 붙는다(바깥이 갈림). */
   | { event: "remote_list_watch_reconnect" }
   /** 서버 frame 상한에 맞추려고 위 줄을 덜어 낸 수가 바뀌었다. */

@@ -12,7 +12,9 @@ import { appHome, termPaths, type TermPaths } from "../../core/term/paths";
 import { createRemoteHttp, openRemoteLog, runRemoteBridge, type BridgeTrust, type RemoteLogRecord, type RemoteResult } from "../../core/term/remote";
 import type { DaemonLog } from "../../core/term/daemonLog";
 import type { CliTags } from "../../core/pc/pcUpgrade";
-import { CLI_VERSION_LABEL } from "../../core/version";
+import { CLI_VERSION, CLI_VERSION_LABEL } from "../../core/version";
+import { daemonCaps, spawnResident, type SpawnOutcome } from "../../core/term/client";
+import { daemonPlan } from "../../core/pc/pcSession";
 import type { CliIO } from "./ainectoCli";
 import { stringEnv } from "./termCommand";
 
@@ -122,6 +124,19 @@ export async function pcRemoteSetup(input: {
   };
 }
 
+/**
+ * ★`pc run` 시작이 바깥 넘기기를 당긴다(자동 업그레이드는 새 판의 `pc run` 을 띄울 뿐이다 — 그 `pc run` 이 바깥도 이 판으로).
+ *   판·구조는 살아 있는 바깥에게 묻는다(G4). 터미널 세션 안이라 옛 구조는 그대로(첫 전환은 사람의 «예» 한 번뿐 — 설계 5절) · holder 갈기(retire) 없음.
+ *   넘기기가 안 되면 옛 바깥이 그대로 받는다(세션 그대로). 띄운 결과를 돌려준다 — 넘길 일이 없으면 undefined.
+ */
+export async function pullOuterHandover(paths: TermPaths, cliVersion: string = CLI_VERSION,
+  spawn: (paths: TermPaths, role: "daemon") => Promise<SpawnOutcome> = spawnResident): Promise<SpawnOutcome | undefined> {
+  const found = await daemonCaps(paths);
+  if (!found.daemon) return undefined;
+  const plan = daemonPlan({ structure: found.caps ?? "old", cliVersion, sessions: [], insideTermSession: true });
+  return plan.kind === "handover" ? await spawn(paths, "daemon") : undefined;
+}
+
 /** 다리를 돌린다 — 자기 pc 세션은 목록에서 뺀다. 다리가 던지면 한 줄 남기고 1 로 끝낸다(Agent 는 계속). */
 export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
   onAnswer?: (answer: { tags: CliTags | undefined; watching: number }) => void): Promise<RemoteResult> {
@@ -138,6 +153,14 @@ export async function runPcRemote(setup: PcRemoteSetup, signal: AbortSignal,
   }
   let result: RemoteResult;
   try {
+    try {
+      const handover = await pullOuterHandover(setup.paths);
+      if (handover) log.write({ event: "remote_outer_handover", status: handover.status, ...("message" in handover ? { message: handover.message } : {}) });
+    } catch (error) {
+      // 넘기기를 못 물었다 — 옛 바깥 그대로 다리를 돌린다(세션 그대로). 삼키지 않고 남긴다.
+      log.write({ event: "remote_daemon_error", op: "caps", code: error instanceof Error && "code" in error ? String(error.code) : "UNKNOWN",
+        message: error instanceof Error ? error.message : String(error) });
+    }
     result = await runRemoteBridge({
       paths: setup.paths,
       http: createRemoteHttp({ endpoint: setup.endpoint, tokenProvider: setup.auth, log }),
