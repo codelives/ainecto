@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, renameSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "../src/core/term/limits";
+import { RETRY_CODE } from "../src/core/term/protocol";
 import {
   assertLogPairs,
   attachInPty,
@@ -129,20 +131,50 @@ describe("ainecto term — real daemon and PTY", () => {
     expect((await sessions()).map((session) => session.name)).toEqual(["c"]);
   }, LONG);
 
-  it("while the holder can't be reached, a command gives up after the daemon asks to retry DAEMON_START_ATTEMPTS times — with the holder pid (Ryan 11-27)", async () => {
-    await ok("term", "new", "h", "--", "/bin/sh");
-    const [holder] = holderPids();
-    // holder 는 살아 있고 바깥의 임대 연결도 그대로 — 새 연결만 못 붙는다. 바깥은 요청 줄을 보내기 전이라 RETRY 로 답한다.
-    const address = join(rig.home, ".ainecto/term/holder.sock");
-    renameSync(address, `${address}.away`);
+  it("a daemon that only ever answers retry — the command gives up after DAEMON_START_ATTEMPTS times (Ryan 11-27 · was an endless loop)", async () => {
+    // Unix 에는 hello 가 없다 — 공용 주소에 «언제나 RETRY» 대역을 두면 CLI 의 다시 보내기 고리만 남는다.
+    const dir = join(rig.home, ".ainecto/term");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    let requests = 0;
+    const fake = createServer((socket) => {
+      let buffered = "";
+      socket.on("data", (chunk: Buffer) => {
+        buffered += chunk.toString("utf8");
+        for (let at = buffered.indexOf("\n"); at >= 0; at = buffered.indexOf("\n")) {
+          const line = buffered.slice(0, at);
+          buffered = buffered.slice(at + 1);
+          requests += 1;
+          const { id } = JSON.parse(line) as { id: string };
+          socket.write(`${JSON.stringify({ id, ok: false, error: { code: RETRY_CODE, message: "fake: retry" } })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => fake.listen(join(dir, "ctl.sock"), resolve));
     try {
       const run = await Promise.race([cli("term", "ls", "--json"), sleep(2 * DAEMON_RESPONSE_TIMEOUT_MS).then(() => undefined)]);
       expect(run, "term ls still retrying").toBeDefined();
       expect(run?.code).toBe(1);
       const error = (JSON.parse(run?.stderr ?? "{}") as { error: { code: string; message: string } }).error;
       expect(error.code).toBe("TERM_DAEMON_NO_RESPONSE");
-      expect(error.message).toContain(`holder pid ${holder}`);
       expect(error.message).toContain(`${DAEMON_START_ATTEMPTS} times`);
+      expect(requests).toBe(DAEMON_START_ATTEMPTS);
+    } finally {
+      await new Promise<void>((resolve) => fake.close(() => resolve()));
+    }
+  }, LONG);
+
+  it("an outer that can't reach the live holder steps aside before answering retry — the sessions stay in the holder", async () => {
+    await ok("term", "new", "h", "--", "/bin/sh");
+    const [holder] = holderPids();
+    const [outer] = daemonPids();
+    const address = join(rig.home, ".ainecto/term/holder.sock");
+    renameSync(address, `${address}.away`);
+    try {
+      // 공용 주소를 거두지 않고 RETRY 만 주면 다시 보낸 요청이 같은 바깥에 와 RETRY 를 또 받는다(마지막 kill 과 new 의 경합에서 상한 3 을 다 씀).
+      const run = await Promise.race([cli("term", "ls", "--json"), sleep(2 * DAEMON_RESPONSE_TIMEOUT_MS).then(() => undefined)]);
+      expect(run, "term ls still retrying").toBeDefined();
+      expect(run?.stderr ?? "").not.toContain("times in a row");
+      await until(() => !daemonPids().includes(outer ?? 0), "the outer stepped aside");
       expect(holderPids()).toEqual([holder]);
     } finally {
       renameSync(`${address}.away`, address);

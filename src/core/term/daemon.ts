@@ -328,6 +328,12 @@ class Outer {
     void this.shutdown("handover");
   }
 
+  /** holder 에 못 붙었다 — 끝나기 시작하고 공용 주소를 거둘 때까지 기다린다(그 뒤의 RETRY 는 다음 바깥으로 간다 · 세션은 holder 에 그대로). */
+  async holderUnreachable(): Promise<void> {
+    void this.shutdown("holder unreachable");
+    await this.listenerClosed;
+  }
+
   async shutdown(reason: string): Promise<void> {
     if (this.stopping) {
       return;
@@ -521,13 +527,18 @@ class CliLink {
     }
   }
 
-  /** 줄을 holder 로 — 연결은 처음 보낼 때 잇는다(임대를 쥔 뒤). 잇지 못하면 보내지 않은 요청이라 RETRY 로 답한다(다음 바깥에서 다시). */
+  /**
+   * 줄을 holder 로 — 연결은 처음 보낼 때 잇는다(임대를 쥔 뒤). 잇지 못하면 보내지 않은 요청이라 RETRY 로 답한다(다음 바깥에서 다시).
+   * ★holder 에 못 붙는 바깥은 쓸모가 없다 — 끝나기 시작해 공용 주소부터 거둔 뒤에 RETRY 를 준다. 안 그러면 다시 보낸 요청이 같은 바깥에
+   *   와서 RETRY 를 또 받는다(holder 가 막 끝나 이 바깥이 아직 임대 끊김을 못 본 사이 — 마지막 kill 과 new 의 경합 · CLI RETRY 상한 3).
+   */
   private forward(line: string): void {
     this.chain = this.chain
       .then(async () => {
         (await this.holderSocket()).write(`${line}\n`);
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
+        await this.outer.holderUnreachable();
         this.failPending(RETRY_CODE, `The term holder could not be reached (${errorMessage(error)}); retry.`);
         this.socket.end();
       });
