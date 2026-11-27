@@ -189,6 +189,8 @@ class Outer {
   private ipc: IpcAddress | undefined;
   readonly ownFile: string;
   private shuttingDown = false;
+  /** 듣기를 닫았다(stopAccepting 이 한 바퀴 뒤에 닫는다). */
+  private listenerClosed: Promise<void> = Promise.resolve();
   private stopping = false;
   /** holder 로 보낸 뒤 답을 기다리는 요청 수 — 넘겨줄 때·끝날 때 0 이 될 때까지 기다린다. */
   private inflight = 0;
@@ -332,7 +334,9 @@ class Outer {
     }
     this.stopping = true;
     this.stopAccepting();
+    await this.listenerClosed;
     await this.inflightAtMost(0);
+    await this.untouchedLinksClosed();
     for (const link of this.links) {
       link.close();
     }
@@ -358,7 +362,13 @@ class Outer {
   private stopAccepting(): void {
     if (!this.shuttingDown) {
       this.shuttingDown = true;
-      this.server.close();
+      // ★듣기는 이벤트 고리를 한 바퀴(poll) 돈 뒤에 닫는다 — 커널 대기열에 이미 들어온 연결(RETRY 를 받고 곧장 다시 붙은 CLI)을 받아
+      //   RETRY 로 답하게. 바로 닫으면 그 연결은 받지도 않은 채 버려져 CLI 는 «답 없는 끊김»(TERM_DAEMON_GONE)을 본다.
+      //   close 의 콜백은 기다리지 않는다(남은 연결이 다 끝나야 온다).
+      this.listenerClosed = new Promise((resolve) => setImmediate(() => setImmediate(() => {
+        this.server.close();
+        resolve();
+      })));
     }
   }
 
@@ -366,6 +376,25 @@ class Outer {
     while (this.inflight > remaining) {
       await new Promise<void>((resolve) => this.inflightWaiters.push(resolve));
     }
+  }
+
+  /**
+   * ★아직 아무 요청도 보내지 않은 연결을 답 없이 끊지 않는다 — 붙자마자 holder 가 끝나 이 바깥도 끝나는 사이(마지막 kill 과 new 의 경합)
+   *   그 첫 요청은 오는 중이다. 답 없이 끊으면 CLI 는 «결과 모름»(TERM_DAEMON_GONE)으로 멈추지만, 바깥은 그 요청을 읽지도 않았다.
+   *   그래서 그 요청에 RETRY 로 답하고 끊기를(CliLink.receive) 기다린다 — CLI 가 답을 기다리는 상한({@link DAEMON_RESPONSE_TIMEOUT_MS})까지만.
+   *   그 뒤엔 CLI 도 이미 포기했다.
+   */
+  private async untouchedLinksClosed(): Promise<void> {
+    const waiting = [...this.links].filter((link) => link.untouched).map((link) => link.closed);
+    if (waiting.length === 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(waiting),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, DAEMON_RESPONSE_TIMEOUT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
   }
 
   private accept(socket: Socket): void {
@@ -387,6 +416,8 @@ class CliLink {
   private chain: Promise<void> = Promise.resolve();
   /** holder 에 보낸 뒤 답을 기다리는 요청 — id → (op·보낸 시각). */
   private readonly pending = new Map<string, { op: string; startedAt: number }>();
+  /** CLI 연결이 끊겼다 — 끝나는 바깥이 아직 아무 요청도 보내지 않은 연결을 기다린다(Outer.untouchedLinksClosed). */
+  readonly closed: Promise<void>;
 
   constructor(
     private readonly id: number,
@@ -399,6 +430,7 @@ class CliLink {
       }
     });
     socket.on("error", (error) => outer.log.write({ event: "bad_message", conn: id, code: errorCode(error), message: errorMessage(error) }));
+    this.closed = new Promise((resolve) => socket.once("close", () => resolve()));
     socket.on("close", () => {
       // CLI 가 떠났다 — 답을 기다리던 요청은 holder 가 마저 처리한다(이미 임대 확인을 지났다). 그 결과는 받을 쪽이 없다.
       this.outer.ended(this.pending.size);
@@ -409,6 +441,11 @@ class CliLink {
 
   close(): void {
     this.socket.end();
+  }
+
+  /** 아직 holder 로 아무것도 보내지 않았고 답할 요청도 없다 — 붙은 뒤 첫 요청이 오는 중일 수 있는 연결. */
+  get untouched(): boolean {
+    return this.holder === undefined && this.pending.size === 0;
   }
 
   /** 응답 한 줄을 CLI 에 쓰고 로그에 남긴다. */
@@ -444,8 +481,10 @@ class CliLink {
     this.outer.log.write({ event: "request", id: request.id, conn: this.id, op: request.op, ...requestMeta(request) });
     const fail = (code: string, text: string): void => this.reply(request, { id: request.id, ok: false, error: { code, message: text } }, startedAt);
     if (!this.outer.accepting) {
+      // 받지 않은 요청 — 답한 뒤 끊는다(끝나는 바깥이 이 연결을 기다리지 않게 · Outer.shutdown).
       fail(RETRY_CODE, "The term daemon is stopping; retry with the next one.");
-      return true;
+      this.socket.end();
+      return false;
     }
     switch (request.op) {
       case "hello":
