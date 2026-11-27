@@ -3,7 +3,7 @@ import type { TokenProvider } from "../auth/oauth";
 import { sleep } from "../async/sleep";
 import { createPcHttp, PcCallError, type PcHttp } from "../http/pcHttp";
 import { loadPcKeys } from "../pc/pcKeys";
-import { openTermClient, termRequest, type TermClient } from "./client";
+import { openTermClient, resultUnknown, termRequest, type TermClient } from "./client";
 import { DaemonLog } from "./daemonLog";
 import { transcriptUserId } from "./e2e";
 import { TermError } from "./errors";
@@ -96,6 +96,10 @@ export type RemoteLogRecord =
   | { event: "remote_command"; type: string; channelId: string; n: number; session?: string; opId?: string; requestId?: string; bytes?: number }
   | { event: "remote_command_result"; type: string; channelId: string; n: number; session?: string; requestId?: string; ok: boolean; code?: string;
       executedThrough?: number }
+  /** 화면 루프의 데몬 연결이 끊겨(바깥이 갈림) 같은 세션에 다시 붙는다 — 세션 끝이 아니다(설계 4절 규칙 2). */
+  | { event: "remote_viewer_reconnect"; channelId: string; session: string }
+  /** 목록 변화 알림 연결이 끊겨 다시 붙는다(바깥이 갈림). */
+  | { event: "remote_list_watch_reconnect" }
   /** 서버 frame 상한에 맞추려고 위 줄을 덜어 낸 수가 바뀌었다. */
   | { event: "remote_frame_trimmed"; channelId: string; session: string; dropped: number }
   /** 데몬 요청 실패 — 삼키지 않는다. 웹 명령의 실패는 코드만(§11-5), 화면 루프의 실패는 사유까지(내용이 아니다). */
@@ -243,13 +247,16 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
   let listWatch: TermClient | undefined;
   /** 지금 PC 연결(pc-bridge) 세션 이름 — 마지막 ls 의 것. 웹 명령이 그 세션을 겨누면 거절한다. */
   let bridges: readonly string[] = [];
-  const list = async (): Promise<Listing> => {
+  const list = async (): Promise<Listing | undefined> => {
     const current = await currentListing(deps);
-    bridges = current.bridges;
+    if (current) bridges = current.bridges;
     return current;
   };
   try {
-    const first = await list();
+    // 열 때 답한 데몬이 없으면 빈 목록으로 연다(올릴 세션을 모른다 — 서버 장부는 목록에 없는 세션을 «미확인»으로 둔다 · 4-1).
+    //   그때는 «올린 목록» 표를 두지 않는다 — 데몬이 답하면 다음 견주기가 진짜 목록을 올린다.
+    const firstAnswer = await list();
+    const first = firstAnswer ?? noListing(deps);
     if (ending) return { exitCode: ending.exitCode, reason: ending.reason };
     let link: Link;
     try {
@@ -261,7 +268,7 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
     let bodyMax = link.bodyMaxBytes;
     let remote = startState(deps.remoteEnabled);
     /** 서버에 마지막으로 올린 목록 — 바뀐 때만 올린다(끝 기록이 남아 있으면 같아도 올린다). */
-    let uploaded = deps.remoteEnabled ? sessionsKey(first.sessions) : undefined;
+    let uploaded = deps.remoteEnabled && firstAnswer ? sessionsKey(first.sessions) : undefined;
     /** 서버가 마지막으로 알려 준 보기 목록(A1 — 가장 최근 watch 가 전체). 활성 채널만 화면을 받는다. */
     let watchList: Watch[] = [];
     deps.log.write({ event: "remote_opened", linkId: link.linkId, sessions: deps.remoteEnabled ? first.sessions.length : 0, ended: first.ended.length, remote,
@@ -278,13 +285,14 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
     const syncList = (): Promise<void> => {
       syncing = syncing.then(async () => {
         if (ending || remote !== "on") return;
-        let current: Listing;
+        let current: Listing | undefined;
         try {
           current = await list();
         } catch (error) {
           daemonFailed(deps, "ls", undefined, error);
           return;
         }
+        if (!current) return;   // 답한 데몬 없음 — 직전에 올린 목록 그대로(다음 poll·알림 때 다시 본다)
         const key = sessionsKey(current.sessions);
         const base = { linkId: link.linkId, sessions: current.sessions };
         // 상한 안에 들어가는 앞쪽 끝 기록만 — 나머지는 책에 남아 다음 poll 에 이어서(리뷰 0.16.6 P1-1).
@@ -311,18 +319,43 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
       return syncing;
     };
 
-    // 목록 변화 알림 — 따로 연 연결(옛 데몬은 모르는 op 에 연결을 끊는다: 한 줄 남기고 poll 때 견주기로만).
-    listWatch = await openTermClient(deps.paths, { start: false });
-    if (listWatch) {
-      listWatch.onEvent((event) => {
+    /**
+     * 목록 변화 알림 — 따로 연 연결(옛 데몬은 모르는 op 에 연결을 끊는다: 한 줄 남기고 poll 때 견주기로만).
+     * ★받아 준 연결이 끊기면(바깥이 갈림) 다시 붙고 한 번 견준다 — 받아 주지 않은 연결(옛 데몬)은 다시 붙지 않는다(끊고 다시 붙기를 되풀이하지 않게).
+     */
+    const watchSessions = async (): Promise<void> => {
+      let client: TermClient | undefined;
+      try {
+        client = await openTermClient(deps.paths, { start: false });
+      } catch (error) {
+        daemonFailed(deps, "watch-sessions", undefined, error);
+        return;
+      }
+      if (!client) return;
+      if (ending) {
+        client.close();
+        return;
+      }
+      const opened = client;
+      listWatch = opened;
+      let accepted = false;
+      opened.onEvent((event) => {
         if (event.event === "sessions") void syncList();
       });
+      opened.onClose(() => {
+        if (!accepted || ending || listWatch !== opened) return;
+        listWatch = undefined;
+        deps.log.write({ event: "remote_list_watch_reconnect" });
+        void watchSessions().then(() => syncList());
+      });
       try {
-        await listWatch.request({ op: "watch-sessions" });
+        await opened.request({ op: "watch-sessions" });
+        accepted = true;
       } catch (error) {
         daemonFailed(deps, "watch-sessions", undefined, error);
       }
-    }
+    };
+    await watchSessions();
 
     /** 그 채널의 화면 루프를 모두 멈춘다. */
     const stopViewers = (channelId: string): void => {
@@ -526,11 +559,12 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
           try {
             // 웹에서 끈 원격은 이 프로세스가 사는 동안 꺼진 채다(R2) — 서버가 잊었어도 다시 켜서 열지 않는다.
             const enabled = deps.remoteEnabled && remote !== "off-by-web";
-            const current = await list();
+            const answered = await list();
+            const current = answered ?? noListing(deps);
             link = await openLink(deps, previous.generation + 1, enabled, current, stopper.signal, bodyMax);
             bodyMax = link.bodyMaxBytes ?? bodyMax;
             if (enabled) remote = "on";
-            uploaded = enabled ? sessionsKey(current.sessions) : undefined;
+            uploaded = enabled && answered ? sessionsKey(current.sessions) : undefined;
           } catch (reopenError) {
             if (ending) break;
             if (reopenError instanceof PcCallError && reopenError.retryable) continue;
@@ -620,7 +654,9 @@ export async function runRemoteBridge(deps: BridgeDeps): Promise<RemoteResult> {
     stopper.abort();
     for (const { viewer } of viewers.values()) viewer.stop();
     deps.signal.removeEventListener("abort", onUserStop);
-    listWatch?.close();
+    const watching = listWatch;
+    listWatch = undefined;   // 끝 — 다시 붙지 않는다
+    watching?.close();
     control.close();
   }
 }
@@ -674,11 +710,18 @@ async function openLink(deps: BridgeDeps, generation: number, remoteEnabled: boo
   return { linkId: opened.linkId, generation, ...limits };
 }
 
-/** 지금 데몬의 세션 목록·끝 기록(ls 한 번 — PC 연결 세션은 뺌). 데몬이 없으면 빈 목록. */
-async function currentListing(deps: BridgeDeps): Promise<Listing> {
+/** 답한 데몬이 없을 때 여는 목록 — 세션도 끝 기록도 모른다(known: false — 끝 기록은 다루지 않는다). */
+function noListing(deps: BridgeDeps): Listing {
+  return listing([], undefined, deps.destination);
+}
+
+/**
+ * 지금 데몬의 세션 목록·끝 기록(ls 한 번 — PC 연결 세션은 뺌). ★답한 데몬이 없으면 undefined — «세션 0개»가 아니다
+ * (설계 4절 규칙 2: 바깥이 잠깐 없음 ≠ 세션 0 — 다시 붙어 정상 목록을 받은 뒤에만 올린다).
+ */
+async function currentListing(deps: BridgeDeps): Promise<Listing | undefined> {
   const result = await termRequest(deps.paths, { op: "ls" }, { start: false });
-  const data = result.daemon ? result.data : undefined;
-  return listing(listedSessions(data), listedEnded(data), deps.destination);
+  return result.daemon ? listing(listedSessions(result.data), listedEnded(result.data), deps.destination) : undefined;
 }
 
 /**
@@ -928,8 +971,10 @@ class CommandRunner {
       }
     }
     const crud = command.kind === "create" || command.kind === "kill" || command.kind === "label";
-    if (!crud && failure) {
+    if (failure && (!crud || resultUnknown(failure.code))) {
       // 답 없는 명령이 거절됐다 — 실행 확인 지점을 올리지 않고 채널을 닫는다(결번과 같은 처리 — A6).
+      // ★만들기·끄기·label 도 결과를 모르면(데몬이 답 전에 끊김·시간 초과) 거절로 답하지 않는다 — 웹이 다시 보내 두 번 실행되지 않게
+      //   (설계 4절 규칙 3 · 실제 거절 답만 확정 거절). 웹은 답 기한으로 «결과 미확정»을 본다.
       this.logResult(wire, command.kind, session, false, failure.code);
       await this.hooks.closeChannel(wire.channelId, failure.code === "SESSION_REPLACED" ? "SESSION_REPLACED"
         : failure.code === "REMOTE_OFF" ? "REMOTE_OFF" : "COMMAND_FAILED", browser);
@@ -1043,7 +1088,8 @@ class CommandRunner {
             kind: "user",   // 웹이 만드는 세션도 사람의 세션(리뷰 0.16.6 P1-4)
           });
         } catch (error) {
-          if (made) await this.dropSessionFolder(command.opId, made);
+          // 결과를 모르면 지우지 않는다 — 그 폴더에서 세션이 이미 돌고 있을 수 있다(설계 4절 규칙 3).
+          if (made && !(error instanceof TermError && resultUnknown(error.code))) await this.dropSessionFolder(command.opId, made);
           throw error;
         }
         if (project !== undefined && createdProject(created) !== project) {

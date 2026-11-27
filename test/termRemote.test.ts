@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, symlinkSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { termRequest } from "../src/core/term/client";
 import { accountKey } from "../src/core/pc/pcSettings";
@@ -30,7 +31,7 @@ import {
   signBytes,
   verifyBytes,
 } from "../src/core/term/e2e";
-import { cli, json, LONG, ok, pcBridgeSession, rig, screen, sessions, sleep, until, useTermRig } from "./termRig";
+import { cli, daemonPids, holderPids, json, LONG, ok, pcBridgeSession, rig, screen, sessions, sleep, startOuterAt, until, useTermRig } from "./termRig";
 
 const PROJECT = "0b9a8c7d-1111-4222-8333-444455556666";
 const USER_ID = "5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10";
@@ -817,6 +818,86 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
     } finally {
       await stopped(run);
     }
+  }, LONG);
+
+  it("U6 경우 1 — 바깥만 갈림(넘기기 0.16.7 → 0.16.8 · holder·PTY 그대로): 화면 루프는 지우지 않고 같은 채널·같은 uuid 로 다시 watch · 화면·입력이 이어진다", async () => {
+    // 다리는 이 시험 프로세스 안에서 돈다 — 바깥은 진짜 CLI 로 띄우고 넘긴다(다리가 띄우면 vitest 를 띄운다).
+    expect((await startOuterAt("0.16.7")).status).toBe("ready");
+    await ok("term", "new", "a", "--", "cat");
+    const browser = await web();
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    channel.watch("a");
+    const first = await frameWhere(channel, "a", () => true, "first frame of a");
+    const watching = () => remoteLog().filter((r) => r.event === "remote_watching").length;
+    const before = watching();
+    const holders = holderPids();
+    const [oldOuter] = daemonPids();
+
+    expect((await startOuterAt("0.16.8")).status).toBe("ready");
+    await until(() => !daemonPids().includes(oldOuter as number), "old outer ended");
+    await until(() => remoteLog().some((r) => r.event === "remote_viewer_reconnect" && r.channelId === channel.id && r.session === "a"), "viewer reconnects");
+    expect(holderPids()).toEqual(holders);
+
+    const marker = `AFTER-${randomUUID()}`;
+    await channel.input("a", first.instance, `${marker}\r`);
+    const shown = await frameWhere(channel, "a", (frame) => lines(frame.text).includes(marker), "a shows the marker after the handover");
+    expect(shown.instance).toBe(first.instance);
+    expect(channel.closedReason()).toBeUndefined();
+    // ★화면 루프가 지워졌다가 poll 의 보기 목록으로 다시 만들어지지 않았다(그러면 remote_watching 이 다시 찍힌다).
+    expect(watching()).toBe(before);
+    run.stop.abort();
+    expect((await run.done).exitCode).toBe(0);
+  }, LONG);
+
+  it("U6 규칙 2 — 답하는 데몬이 없으면(바깥·holder 둘 다 끝) «세션 0개»를 올리지 않는다 · 직전 목록 그대로", async () => {
+    await ok("term", "new", "a", "--", "cat");
+    const run = start();
+    await until(() => fake.listedNames().includes("a"), "a listed");
+    const uploads = () => fake.calls.filter((call) => call.op === "sessions" || call.op === "open");
+    for (const pid of [...daemonPids(), ...holderPids()]) process.kill(pid, "SIGKILL");
+    await until(() => daemonPids().length + holderPids().length === 0, "daemons gone");
+    const polls = fake.ops().filter((op) => op === "poll").length;
+    // poll 이 돌아올 때마다 목록을 견준다(붙잡기 1초) — 세 번 견줄 동안.
+    await until(() => fake.ops().filter((op) => op === "poll").length >= polls + 3, "three more polls");
+    expect(uploads().filter((call) => Array.isArray(call.body.sessions) && call.body.sessions.length === 0)).toEqual([]);
+    expect(fake.listedNames()).toEqual(["a"]);
+    run.stop.abort();
+    await run.done;
+  }, LONG);
+
+  it("U6 규칙 3 — 웹 만들기의 결과를 모르면(데몬이 답하기 전에 끊음) 거절로 답하지 않는다 · 실행 확인 지점 그대로 · 채널을 닫는다 · 세션 폴더를 지우지 않는다", async () => {
+    await ok("term", "new", "base", "--", "cat");
+    const browser = await web();
+    const run = start();
+    await until(() => fake.ops().includes("open"), "open");
+    const channel = await browser.connect();
+    // 공용 주소를 «요청을 읽고 답 없이 끊는» 상대로 바꾼다 — 보낸 요청의 결과를 모른다(TERM_DAEMON_GONE).
+    const paths = termPaths(rig.home);
+    const real = readlinkSync(paths.socket);
+    const silent = createServer((socket) => socket.once("data", () => socket.destroy()));
+    await new Promise<void>((resolve) => silent.listen(join(paths.dir, "silent.sock"), resolve));
+    const point = (target: string): void => {
+      symlinkSync(target, `${paths.socket}.t`);
+      renameSync(`${paths.socket}.t`, paths.socket);
+    };
+    point("silent.sock");
+    try {
+      const made = await channel.create({ name: "made" });
+      await until(() => channel.closedReason() !== undefined, "channel closed");
+      expect(channel.closedReason()).toBe("COMMAND_FAILED");
+      expect(await channel.answer(made)).toBeUndefined();
+      const results = remoteLog().filter((r) => r.event === "remote_command_result" && r.type === "create");
+      expect(results).toEqual([expect.objectContaining({ ok: false, code: "TERM_DAEMON_GONE" })]);
+      expect(results[0]).not.toHaveProperty("executedThrough");
+      expect(existsSync(join(rig.home, "app", "sessions", made.opId))).toBe(true);
+    } finally {
+      point(real);
+      await new Promise((resolve) => silent.close(resolve));
+    }
+    run.stop.abort();
+    await run.done;
   }, LONG);
 
   it("PC 연결 세션 이름 — 웹이 그 이름으로 만들지 못한다(PC 연결이 못 뜨게 되므로) · 이름만 같은 사용자 셸(옛 줄·pc run 아님)은 목록에 오르고 입력도 간다", async () => {

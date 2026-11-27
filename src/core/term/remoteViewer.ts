@@ -68,6 +68,9 @@ export class RemoteViewer {
   private wakeUp: (() => void) | undefined;
   private size: { cols: number; rows: number };
   private client: TermClient | undefined;
+  /** 마지막으로 읽은 화면의 세션 uuid — 다시 붙을 때 그 세션만 watch 한다. */
+  private instance: string | undefined;
+  private reconnecting: Promise<boolean> | undefined;
 
   constructor(private readonly deps: ViewerDeps) {
     this.size = deps.size;
@@ -97,15 +100,34 @@ export class RemoteViewer {
   }
 
   async run(): Promise<void> {
+    if (await this.connect()) await this.loop();
+  }
+
+  /**
+   * 데몬에 붙어 이 세션을 watch 한다 — 처음과, 바깥이 갈린 뒤(설계 4절 규칙 2 · 경우 1 — 바깥 끊김은 세션 끝이 아니다:
+   * 같은 채널·같은 uuid 로 다시 watch). 다시 붙을 때는 마지막으로 읽은 uuid 를 싣는다 — 그 사이 같은 이름으로 다시 만든 세션이면
+   * 데몬이 SESSION_REPLACED 로 거절해 멈춘다. 못 붙으면 멈추고 다리에 알린다(true = 붙었다).
+   */
+  private async connect(): Promise<boolean> {
     const name = this.deps.session;
-    const client = await openTermClient(this.deps.paths, { start: false });
+    let client: TermClient | undefined;
+    try {
+      client = await openTermClient(this.deps.paths, { start: false });
+    } catch (error) {
+      this.daemonFailed("watch", error);
+      return false;
+    }
     if (!client || this.stopped) {
       client?.close();
-      if (!client) this.deps.onGone("the term daemon is not running");
-      return;
+      if (!client) {
+        this.stop();
+        this.deps.onGone("the term daemon is not running");
+      }
+      return false;
     }
-    this.client = client;
-    client.onEvent((event) => {
+    const opened = client;
+    this.client = opened;
+    opened.onEvent((event) => {
       if (event.event === "changed") {
         this.refresh();
       } else if (event.event === "exit") {
@@ -113,25 +135,34 @@ export class RemoteViewer {
         this.deps.onGone(`session ${name} exited`);
       }
     });
-    client.onClose(() => {
-      if (!this.stopped) {
-        this.stop();
-        this.deps.onGone("lost the connection to the term daemon");
-      }
+    opened.onClose(() => {
+      if (this.client === opened && !this.stopped) void this.reconnect();
     });
     try {
-      await client.request({ op: "watch", name });
+      await opened.request({ op: "watch", name, ...(this.instance ? { instance: this.instance } : {}) });
     } catch (error) {
       this.daemonFailed("watch", error);
-      return;
+      return false;
     }
-    await this.loop();
+    return true;
+  }
+
+  /** 데몬 연결이 끊겼다(바깥이 갈림 등) — 한 번 다시 붙는다. 읽기 실패와 연결 끊김이 겹쳐도 하나로. */
+  private reconnect(): Promise<boolean> {
+    this.reconnecting ??= (async () => {
+      this.client = undefined;
+      this.deps.log.write({ event: "remote_viewer_reconnect", channelId: this.deps.channelId, session: this.deps.session });
+      const connected = await this.connect();
+      if (connected) this.refresh();
+      return connected;
+    })().finally(() => {
+      this.reconnecting = undefined;
+    });
+    return this.reconnecting;
   }
 
   private async loop(): Promise<void> {
     const name = this.deps.session;
-    const client = this.client;
-    if (!client) return;
     let sentKey: string | undefined;
     let sentGeneration = 0;
     let parkedGeneration = 0;
@@ -166,8 +197,14 @@ export class RemoteViewer {
       }
       let data: unknown;
       try {
-        data = await client.request({ op: "read", name, scrollback: true, lines: FRAME_SCROLLBACK_LINES + rows, styles: true });
+        if (!this.client) throw new TermError("TERM_DAEMON_GONE", "The term daemon connection is being opened again.");
+        data = await this.client.request({ op: "read", name, scrollback: true, lines: FRAME_SCROLLBACK_LINES + rows, styles: true });
       } catch (error) {
+        // ★바깥이 갈려 끊겼다 — 세션 끝이 아니다. 읽기는 다시 해도 같은 결과라(상태를 바꾸지 않는다) 다시 붙어 다시 읽는다.
+        if (error instanceof TermError && error.code === "TERM_DAEMON_GONE" && !this.stopped) {
+          if (await this.reconnect()) continue;
+          return;
+        }
         this.daemonFailed("read", error);
         return;
       }
@@ -178,6 +215,7 @@ export class RemoteViewer {
           "The term daemon is older than this CLI (no session instance) — restart it with `ainecto term kill-server`."));
         return;
       }
+      this.instance = instance;
       const modes = readModes(data);
       const lines = readLines(data);
       const attributes = readStyles(data, lines.length);

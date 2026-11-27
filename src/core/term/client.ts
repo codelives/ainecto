@@ -234,6 +234,14 @@ async function holderAnswers(paths: TermPaths): Promise<boolean> {
   }
 }
 
+/**
+ * 보낸 요청의 결과를 모른다 — 데몬이 답하기 전에 연결이 끊겼거나(TERM_DAEMON_GONE) 기한 안에 답이 없었다(TERM_DAEMON_NO_RESPONSE).
+ * ★이런 요청은 다시 실행하지 않고 «거절»로도 확정하지 않는다(설계 4절 규칙 3).
+ */
+export function resultUnknown(code: string): boolean {
+  return code === "TERM_DAEMON_GONE" || code === "TERM_DAEMON_NO_RESPONSE";
+}
+
 /** 요청 하나를 보내고 답을 받는다. 데몬이 끝나는 중이라 RETRY 를 답하면 다음 데몬에 다시 보낸다. */
 export async function termRequest(
   paths: TermPaths,
