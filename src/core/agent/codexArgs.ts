@@ -1,11 +1,11 @@
-import { AINECTO_MCP_SERVER, type AgentAuthStatus, type AgentTurnResult, type AinectoBridge } from "./agents";
+import { AINECTO_CODEX_MCP_SERVER, type AgentAuthStatus, type AgentTurnResult, type AinectoBridge } from "./agents";
 
 /**
  * ★Codex app-server 고정 설정 — 한 곳(순수 함수). 실측(2026-11-12, 증적 `.role/claude-dev/evidence/kan1075/three-agents/`
  * {@code run_three.py} CODEX_CFG · {@code summary.md})에서 문서 조회·생성·수정·카드 생성·변경·{@code thread/resume} 이 된 그대로다.
  *
  * <ul>
- *   <li>AiNecto MCP = 이 CLI 브리지({@code -c mcp_servers.ainecto.*}).</li>
+ *   <li>AiNecto MCP = 이 CLI 브리지({@code -c mcp_servers.ainecto_cli.*} — {@link AINECTO_CODEX_MCP_SERVER}, 사용자 {@code ainecto} 와 겹치지 않게).</li>
  *   <li>{@code approval_policy="never"} — 묻지 않는다. 승인이 필요한 일은 묻지 않고 거절된다(실측: 쓰기 도구도 거절 → 아래 도구별 승인).</li>
  *   <li>{@code sandbox_mode="read-only"} — 명령 실행은 읽기만(파일 쓰기·네트워크 막힘).</li>
  *   <li>쓰기 도구마다 {@code tools.<이름>.approval_mode="approve"} — 서버 readOnlyHint 가 진실원({@code writeToolNames}).</li>
@@ -31,7 +31,7 @@ const CONFIG_KEY_PART = /^[A-Za-z0-9_-]+$/;
 const FEATURES_OFF = ["shell_tool", "plugins", "apps", "computer_use", "browser_use", "image_generation"] as const;
 
 export function codexAppServerArgs(bridge: AinectoBridge, writeTools: Iterable<string>): string[] {
-  const server = `mcp_servers.${AINECTO_MCP_SERVER}`;
+  const server = `mcp_servers.${AINECTO_CODEX_MCP_SERVER}`;
   const config = [
     `${server}.command=${tomlString(bridge.command)}`,
     `${server}.args=[${bridge.args.map(tomlString).join(",")}]`,
@@ -54,13 +54,13 @@ export function codexInitializeParams(clientVersion: string): Record<string, unk
 }
 
 /**
- * {@code config/read} 결과의 {@code config} → AiNecto 말고 사용자 설정에 있는 MCP 서버를 모두 끄는 덮어쓰기(순수 함수).
+ * {@code config/read} 결과의 {@code config} → 이 CLI 브리지 말고 사용자 설정에 있는 MCP 서버(setup 이 넣은 {@code ainecto} 포함)를 모두 끄는 덮어쓰기(순수 함수).
  * 점 표기 키({@code mcp_servers.<이름>.enabled})만 듣는다(실측: 중첩 표기는 AiNecto 까지 안 떴다).
  * ★설정 키로 못 쓰는 이름(점·따옴표 등)이 있으면 그 서버를 끌 수 없으므로 오류 — 세션을 시작하지 않는다.
  */
 export function codexOtherMcpServersOff(config: unknown): { names: string[]; config: Record<string, boolean> } {
   const servers = config && typeof config === "object" ? (config as { mcp_servers?: unknown }).mcp_servers : undefined;
-  const names = servers && typeof servers === "object" ? Object.keys(servers).filter((name) => name !== AINECTO_MCP_SERVER).sort() : [];
+  const names = servers && typeof servers === "object" ? Object.keys(servers).filter((name) => name !== AINECTO_CODEX_MCP_SERVER).sort() : [];
   const bad = names.filter((name) => !CONFIG_KEY_PART.test(name));
   if (bad.length > 0) throw new Error(`cannot turn off Codex MCP server(s) ${bad.map((name) => JSON.stringify(name)).join(", ")}`);
   return { names, config: Object.fromEntries(names.map((name) => [`mcp_servers.${name}.enabled`, false] as const)) };

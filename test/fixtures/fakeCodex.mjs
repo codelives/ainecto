@@ -1,6 +1,7 @@
 // 시험용 «codex app-server» — 진짜 자식 프로세스, 줄 하나 = JSON-RPC 메시지 하나(실측 모양: jsonrpc 칸 없음).
 // 받은 인자를 FAKE_CODEX_ARGS_LOG 에 한 줄씩 남긴다. `--version` 은 한 줄 출력하고 끝난다.
-// account/read 는 FAKE_CODEX_ACCOUNT=none 이면 로그인 안 됨. config/read 는 사용자 설정의 MCP 서버 셋(ainecto·node_repl·openaiDeveloperDocs)을 돌려주고,
+// account/read 는 FAKE_CODEX_ACCOUNT=none 이면 로그인 안 됨. config/read 는 사용자 설정의 MCP 서버 셋(ainecto(url)·node_repl·openaiDeveloperDocs)에
+// 인자의 브리지(`-c mcp_servers.<이름>.command`)를 진짜 Codex 처럼 깊게 합쳐 돌려준다 — 같은 이름에 url·command 가 겹치면 진짜처럼 거절(KAN-1617 실측).
 // FAKE_CODEX_RESUME_AS 가 있으면 thread/resume 이 그 id 를 돌려준다(다른 thread 로 이어짐). thread/start·resume 은 config 칸에서 `mcp_servers.<이름>.enabled=false` 로 끄지 않은 서버만 띄운다(startupStatus). thread/resume 의 threadId 가 "thr-gone" 이면 오류.
 // turn/start 의 글로 동작을 고른다:
 //   "write-card" → 읽기 하나 · 만들기(created) · 고치기 · 칸반 카드 · 다른 MCP 서버 도구 결과 뒤 답
@@ -24,6 +25,13 @@ if (args[0] === "--version") {
   process.exit(0);
 }
 
+/** 이 CLI 브리지 이름 — 프로세스 인자 `-c mcp_servers.<이름>.command=…` 에서. */
+const BRIDGE = args.map((arg) => /^mcp_servers\.([^.=]+)\.command=/.exec(arg)?.[1]).find(Boolean);
+/** 사용자 Codex 설정 — setup 의 `codex mcp add ainecto --url` 그대로(KAN-1617). */
+const USER_SERVERS = { ainecto: { url: "https://dev.ainecto.com/mcp" }, node_repl: { command: "node" }, openaiDeveloperDocs: { url: "https://x" } };
+/** 진짜 Codex 0.171.0 실측: `-c` 는 사용자 표와 깊게 합쳐져 같은 항목에 url·command → 설정 읽기·thread 시작 모두 거절. */
+const CONFLICT = BRIDGE && USER_SERVERS[BRIDGE]?.url ? `url is not supported for stdio\nin \`mcp_servers.${BRIDGE}\`\n` : null;
+
 const out = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
 let thread;
 let turns = 0;
@@ -42,7 +50,7 @@ const complete = (turnId, status, text, error = null) => {
 const reply = (text, openDocumentUuids = [], openCardUuids = []) => JSON.stringify({ reply: text, openDocumentUuids, openCardUuids });
 
 function startServers(config = {}) {
-  for (const name of ["ainecto", "node_repl", "openaiDeveloperDocs"]) {
+  for (const name of [...new Set([BRIDGE, ...Object.keys(USER_SERVERS)])].filter(Boolean)) {
     if (config?.[`mcp_servers.${name}.enabled`] === false) continue;
     out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name, status: "starting", error: null } });
     out({ method: "mcpServer/startupStatus/updated", params: { threadId: thread, name, status: "ready", error: null } });
@@ -77,24 +85,24 @@ function act(turnId, raw) {
   if (command === "approval") {
     answerWaiter = (answer) => complete(turnId, "completed", reply(`answer ${JSON.stringify(answer)}`));
     out({ id: 900, method: "mcpServer/elicitation/request",
-      params: { threadId: thread, turnId, serverName: "ainecto", message: "Allow create_documents?" } });
+      params: { threadId: thread, turnId, serverName: BRIDGE, message: "Allow create_documents?" } });
     return;
   }
   if (command === "write-card") {
-    toolCall(turnId, "ainecto", "list_documents", ['{"documents":[]}', doc("a")]);
-    toolCall(turnId, "ainecto", "create_documents", [`{"count":1,"created":[{"uuid":"${"c".repeat(32)}","type":"markdown","title":"새 문서"}]}`, doc("c")]);
-    toolCall(turnId, "ainecto", "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
-    toolCall(turnId, "ainecto", "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")]);
+    toolCall(turnId, BRIDGE, "list_documents", ['{"documents":[]}', doc("a")]);
+    toolCall(turnId, BRIDGE, "create_documents", [`{"count":1,"created":[{"uuid":"${"c".repeat(32)}","type":"markdown","title":"새 문서"}]}`, doc("c")]);
+    toolCall(turnId, BRIDGE, "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
+    toolCall(turnId, BRIDGE, "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")]);
     toolCall(turnId, "other", "create_documents", [`{"created":[{"uuid":"${"9".repeat(32)}","type":"x","title":"y"}]}`, doc("9")]);
   }
   if (command === "write-failed") {
-    toolCall(turnId, "ainecto", "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")], "failed");
-    toolCall(turnId, "ainecto", "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
+    toolCall(turnId, BRIDGE, "kanban_apply_changes", [`{"documentUuid":"${"e".repeat(32)}","results":[{"index":0,"op":"create","cardUuid":"${"f".repeat(32)}"}]}`, doc("e")], "failed");
+    toolCall(turnId, BRIDGE, "update_documents", [`{"updated":[{"uuid":"${"d".repeat(32)}","type":"markdown","title":"고친 문서"}]}`, doc("d")]);
   }
   if (command === "find-open") {
-    toolCall(turnId, "ainecto", "search_documents", [`{"documents":[{"uuid":"${"a".repeat(32)}","title":"찾은 문서"}]}`, doc("a")]);
-    toolCall(turnId, "ainecto", "kanban_list_cards", [`{"cards":[{"card":{"uuid":"${"f".repeat(32)}","key":"KAN-1"}}]}`]);
-    toolCall(turnId, "ainecto", "get_document", [`{"uuid":"${"b".repeat(32)}"}`, doc("b")], "failed");
+    toolCall(turnId, BRIDGE, "search_documents", [`{"documents":[{"uuid":"${"a".repeat(32)}","title":"찾은 문서"}]}`, doc("a")]);
+    toolCall(turnId, BRIDGE, "kanban_list_cards", [`{"cards":[{"card":{"uuid":"${"f".repeat(32)}","key":"KAN-1"}}]}`]);
+    toolCall(turnId, BRIDGE, "get_document", [`{"uuid":"${"b".repeat(32)}"}`, doc("b")], "failed");
     toolCall(turnId, "other", "search", [`{"uuid":"${"9".repeat(32)}"}`]);
     complete(turnId, "completed", reply(`ruled=${raw.startsWith("[AiNecto rule]")}`,
       ["a".repeat(32), "b".repeat(32), "9".repeat(32)], ["f".repeat(32), "1".repeat(32)]));
@@ -131,16 +139,28 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         out({ id, error: { code: -32603, message: process.env.FAKE_CODEX_CONFIG_ERROR } });
         return;
       }
-      out({ id, result: { config: { mcp_servers: { ainecto: { command: "node" }, node_repl: { command: "node" }, openaiDeveloperDocs: { url: "https://x" } } } } });
+      if (CONFLICT) {
+        out({ id, error: { code: -32603, message: `invalid configuration: ${CONFLICT}` } });
+        return;
+      }
+      out({ id, result: { config: { mcp_servers: { ...USER_SERVERS, ...(BRIDGE ? { [BRIDGE]: { command: "node" } } : {}) } } } });
       return;
     case "thread/start":
       if (holdThread()) return;
+      if (CONFLICT) {
+        out({ id, error: { code: -32600, message: `failed to load configuration: ${CONFLICT}` } });
+        return;
+      }
       thread = `thr-${process.pid}`;
       startServers(params.config);
       out({ id, result: { thread: { id: thread }, approvalPolicy: params.approvalPolicy, sandbox: params.sandbox } });
       return;
     case "thread/resume":
       if (holdThread()) return;
+      if (CONFLICT) {
+        out({ id, error: { code: -32600, message: `failed to load configuration: ${CONFLICT}` } });
+        return;
+      }
       if (params.threadId === "thr-gone") {
         out({ id, error: { code: -32600, message: "thread not found: thr-gone" } });
         return;

@@ -1,5 +1,5 @@
 import type { DaemonLog } from "../term/daemonLog";
-import { agentReplySchema, AINECTO_MCP_SERVER, type AgentAdapter, type AgentSession, type TurnOutcome } from "./agents";
+import { agentReplySchema, AINECTO_CODEX_MCP_SERVER, type AgentAdapter, type AgentSession, type TurnOutcome } from "./agents";
 import { AgentChild, detectByVersion, withDeadline, type AgentSpawn, type ChildExit } from "./child";
 import {
   CODEX,
@@ -354,7 +354,7 @@ class CodexSession implements AgentSession {
     const item = params.item && typeof params.item === "object" ? (params.item as Record<string, unknown>) : {};
     if (item.type === "agentMessage" && typeof item.text === "string") {
       turn.lastMessage = item.text;
-    } else if (item.type === "mcpToolCall" && item.server === AINECTO_MCP_SERVER && typeof item.tool === "string"
+    } else if (item.type === "mcpToolCall" && item.server === AINECTO_CODEX_MCP_SERVER && typeof item.tool === "string"
         && item.status !== "failed") {   // 실패한 도구는 싣지 않는다(KAN-1229 ⑧)
       turn.facts.add((item.result as { content?: unknown } | null | undefined)?.content, this.deps.writeTools.has(item.tool));
     }

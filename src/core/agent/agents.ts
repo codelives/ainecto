@@ -136,8 +136,16 @@ export function agentReplySchema(textMaxCharacters: number, documentsMax: number
 }
 
 
-/** Agent 가 쓰는 MCP 서버 이름 — Claude 도구 이름 앞머리({@code mcp__ainecto__})와 Codex {@code mcp_servers.ainecto} 가 이것에서 나온다. */
+/** Claude Code 가 쓰는 MCP 서버 이름 — 도구 이름 앞머리({@code mcp__ainecto__})가 이것에서 나온다. */
 export const AINECTO_MCP_SERVER = "ainecto";
+
+/**
+ * Codex 브리지의 MCP 서버 이름({@code mcp_servers.ainecto_cli}) — Ryan 결재 11-27 A(KAN-1617). setup 이 사용자 Codex 설정에 넣은
+ * {@code [mcp_servers.ainecto] url} 과 같은 이름이면 Codex 가 {@code -c} 를 깊게 합쳐 url·command 가 한 항목에 생기고
+ * «url is not supported for stdio» 로 거절한다(표 통째로 줘도 같음 — 실측 codex 0.171.0, 증적 .role/claude-dev/evidence/kan1617/).
+ * 사용자 {@code ainecto} 는 대화 안에서 다른 서버처럼 끈다({@link ./codexArgs codexOtherMcpServersOff}).
+ */
+export const AINECTO_CODEX_MCP_SERVER = "ainecto_cli";
 
 /** Agent 에 붙이는 AiNecto MCP 서버 = 지금 돌고 있는 이 CLI 의 브리지(같은 node · 같은 스크립트 · 같은 서버 주소 · 같은 로그인). */
 export interface AinectoBridge {

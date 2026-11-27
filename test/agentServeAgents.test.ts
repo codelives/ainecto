@@ -31,7 +31,8 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     expect(String(claude.reply)).toMatch(/^got hello #1 in sess-/);
     expect(codex).toMatchObject({ status: "DONE", documentUuids: [] });
     expect(String(codex.reply)).toMatch(/^got hello #1 in thr-\d+$/);
-    expect(codexSpawned(w)).toEqual([["app-server"]]);
+    expect(codexSpawned(w).map((args) => args[0])).toEqual(["app-server"]);
+    expect(codexSpawned(w)[0], "브리지는 ainecto_cli 이름으로(KAN-1617)").toContain('mcp_servers.ainecto_cli.command="node"');
     const records = logRecords(w);
     expect(records.filter((r) => r.event === "agent_request").map((r) => r.agent)).toEqual(["claude-code", "codex"]);
     expect(records.filter((r) => r.event === "agent_rpc").map((r) => r.method))
@@ -39,7 +40,7 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     expectPairedLines(w);
   });
 
-  it("Codex: 사용자 설정의 다른 MCP 서버는 끄고 AiNecto 만 띄운다(thread/start·resume 모두) · 끈 이름을 남긴다", async () => {
+  it("Codex: 사용자 설정에 url 로 된 ainecto 가 있어도(setup 그대로) 시작된다 — 브리지는 ainecto_cli 하나만 뜨고 사용자 ainecto·다른 서버는 끈다(thread/start·resume 모두 · KAN-1617)", async () => {
     const w = startServe({ installed: ["codex"] });
     w.server.offer("t1", "conv-a", "one", undefined, "codex");
     await until(() => w.server.replies()[0]);
@@ -50,9 +51,10 @@ describe("ainecto agent serve — Claude Code · Codex 를 offer.agent 로 고�
     await finish(w);
 
     const records = logRecords(w);
-    expect(records.filter((r) => r.event === "agent_mcp_server").map((r) => r.name)).toEqual(["ainecto", "ainecto", "ainecto"]);
-    expect(records.filter((r) => r.event === "agent_mcp_servers_off").map((r) => r.names))
-      .toEqual([["node_repl", "openaiDeveloperDocs"], ["node_repl", "openaiDeveloperDocs"], ["node_repl", "openaiDeveloperDocs"]]);
+    expect(w.server.replies().map((r) => r.status), "url 항목과 겹치지 않아 세 차례 모두 답한다").toEqual(["DONE", "DONE", "DONE"]);
+    expect(records.filter((r) => r.event === "agent_mcp_server").map((r) => r.name)).toEqual(["ainecto_cli", "ainecto_cli", "ainecto_cli"]);
+    const off = ["ainecto", "node_repl", "openaiDeveloperDocs"];
+    expect(records.filter((r) => r.event === "agent_mcp_servers_off").map((r) => r.names)).toEqual([off, off, off]);
     expectPairedLines(w);
   });
 

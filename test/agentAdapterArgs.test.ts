@@ -17,8 +17,8 @@ describe("Codex app-server 고정 설정(실측 그대로)", () => {
   it("AiNecto 브리지 · never · read-only · 내장 셸·플러그인·앱·컴퓨터/브라우저 조작·이미지 끔 · 쓰기 도구마다 approve", () => {
     expect(codexAppServerArgs(bridge, new Set(["kanban_apply_changes", "create_documents", "bad.name"]))).toEqual([
       "app-server",
-      "-c", 'mcp_servers.ainecto.command="/usr/bin/node"',
-      "-c", 'mcp_servers.ainecto.args=["/opt/ainecto/dist/bin/ainecto.js","--endpoint","https://dev.ainecto.com/mcp","mcp"]',
+      "-c", 'mcp_servers.ainecto_cli.command="/usr/bin/node"',
+      "-c", 'mcp_servers.ainecto_cli.args=["/opt/ainecto/dist/bin/ainecto.js","--endpoint","https://dev.ainecto.com/mcp","mcp"]',
       "-c", 'approval_policy="never"',
       "-c", 'sandbox_mode="read-only"',
       "-c", "features.shell_tool=false",
@@ -27,8 +27,8 @@ describe("Codex app-server 고정 설정(실측 그대로)", () => {
       "-c", "features.computer_use=false",
       "-c", "features.browser_use=false",
       "-c", "features.image_generation=false",
-      "-c", 'mcp_servers.ainecto.tools.create_documents.approval_mode="approve"',
-      "-c", 'mcp_servers.ainecto.tools.kanban_apply_changes.approval_mode="approve"',
+      "-c", 'mcp_servers.ainecto_cli.tools.create_documents.approval_mode="approve"',
+      "-c", 'mcp_servers.ainecto_cli.tools.kanban_apply_changes.approval_mode="approve"',
     ]);
   });
 
@@ -40,9 +40,10 @@ describe("Codex app-server 고정 설정(실측 그대로)", () => {
   });
 
   it("사용자 설정의 다른 MCP 서버는 AiNecto 만 빼고 전부 끈다 — 설정 키로 못 쓰는 이름이면 시작하지 않는다", () => {
-    expect(codexOtherMcpServersOff({ mcp_servers: { ainecto: {}, "dev-ainecto": { url: "x" }, node_repl: {} } }))
-      .toEqual({ names: ["dev-ainecto", "node_repl"],
-        config: { "mcp_servers.dev-ainecto.enabled": false, "mcp_servers.node_repl.enabled": false } });
+    // KAN-1617 — 브리지(ainecto_cli)만 남기고 setup 이 넣은 사용자 ainecto(url)도 끈다.
+    expect(codexOtherMcpServersOff({ mcp_servers: { ainecto_cli: {}, ainecto: { url: "https://ainecto.com/mcp" }, "dev-ainecto": { url: "x" }, node_repl: {} } }))
+      .toEqual({ names: ["ainecto", "dev-ainecto", "node_repl"],
+        config: { "mcp_servers.ainecto.enabled": false, "mcp_servers.dev-ainecto.enabled": false, "mcp_servers.node_repl.enabled": false } });
     expect(codexOtherMcpServersOff({})).toEqual({ names: [], config: {} });
     expect(codexOtherMcpServersOff(undefined)).toEqual({ names: [], config: {} });
     expect(() => codexOtherMcpServersOff({ mcp_servers: { "a.b": {} } })).toThrow(/a\.b/);
