@@ -35,8 +35,11 @@ describe("term line protocol", () => {
     }
   });
 
-  it("세션을 겨누는 op 의 instance(§14-6 4) — 있으면 빈 글이 아닌 문자열 · 없으면 칸 없음(로컬 term 그대로) · read·attach 는 받지 않는다", () => {
+  it("세션을 겨누는 op 의 instance(§14-6 4 · 세션 유지 구조 G7 — read·attach·watch 도) — 있으면 빈 글이 아닌 문자열 · 없으면 칸 없음(로컬 term 그대로)", () => {
     for (const body of [
+      { op: "read", id: "1", name: "s", scrollback: false },
+      { op: "attach", id: "1", name: "s", cols: 80, rows: 24 },
+      { op: "watch", id: "1", name: "s" },
       { op: "send", id: "1", name: "s", text: "x", paste: false },
       { op: "key", id: "1", name: "s", key: "enter" },
       { op: "kill", id: "1", name: "s" },
@@ -49,6 +52,5 @@ describe("term line protocol", () => {
         expect(() => parseClientMessage(JSON.stringify({ ...body, instance: bad }))).toThrow(TermProtocolError);
       }
     }
-    expect(parseClientMessage(JSON.stringify({ op: "read", id: "1", name: "s", instance: "i-1" }))).not.toHaveProperty("instance");
   });
 });
