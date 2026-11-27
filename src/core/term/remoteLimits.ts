@@ -20,3 +20,12 @@ export const RETRY_MAX_MS = 10_000;
 export function retryWait(attempt: number, random: number): number {
   return Math.min(RETRY_MIN_MS * 2 ** attempt, RETRY_MAX_MS) + Math.floor(random * RETRY_MIN_MS);
 }
+
+/**
+ * 웹 터미널 이미지 붙여넣기 — 원본 이미지 한 장의 상한. 사용자 결재 2026-11-27 «8MB + nginx 한 경로»(web-cmux 와 같은 8 MiB).
+ * 웹도 같은 값으로 먼저 검사한다(계약 §3) — 여기는 PC 의 다시 검사.
+ */
+export const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+
+/** 붙여넣은 이미지를 PC 에 두는 시간 — 지나면 저장할 때·원격 다리가 켜질 때 지운다(계약 §3 · web-cmux 와 같은 24시간). */
+export const IMAGE_KEEP_MS = 24 * 60 * 60 * 1000;

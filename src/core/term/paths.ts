@@ -49,6 +49,8 @@ export interface TermPaths {
   holderImages: string;
   /** holder 가 불러온 계산 모듈 사본 `<computeDir>/<내용 지문>/compute.mjs`(세션 유지 구조 3-2) — holder 가 뜰 때 비운다. */
   computeDir: string;
+  /** 웹 터미널에 붙여넣은 이미지(0700 · 파일 0600) — 원격 다리가 쓰고 24시간 지나면 지운다(remoteImage.ts). */
+  images: string;
 }
 
 /**
@@ -125,5 +127,6 @@ export function termPaths(home: string = homedir(), platform: NodeJS.Platform = 
     holderImages: join(dir, "holder"),
     computeDir: join(dir, "compute"),
     outerAbstractLockName: `\0ainecto-term-${process.getuid?.() ?? "na"}-${createHash("sha256").update(dir).digest("hex")}-outer.lock`,
+    images: join(dir, "images"),
   };
 }
