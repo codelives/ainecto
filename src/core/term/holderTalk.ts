@@ -62,3 +62,28 @@ export function holderCaps(data: unknown): HolderCaps | undefined {
     lease: lease as HolderCaps["lease"],
   };
 }
+
+/** 바깥(`term daemon`)의 기능 묻기 답 — CLI 가 본다. 판·구조·holder uuid 는 살아 있는 바깥에게서(설계 G4 — 남은 파일로 짐작하지 않는다). */
+export interface OuterCaps {
+  outer: string;
+  /** 바깥의 판 — 이보다 높은 CLI 가 넘기기를 당긴다. */
+  version: string;
+  /** holder uuid — kill-server 가 싣는다. */
+  holder: string;
+  holderVersion: string;
+  holderPid: number;
+  talk: Record<string, string[]>;
+}
+
+/** caps 답 → 바깥 기능. 모양이 틀리면 undefined. 순수 함수. */
+export function outerCaps(data: unknown): OuterCaps | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const value = data as Record<string, unknown>;
+  const talk = value.talk;
+  const talkOk = !!talk && typeof talk === "object" && !Array.isArray(talk);
+  return typeof value.outer === "string" && typeof value.version === "string" && typeof value.holder === "string"
+    && typeof value.holderVersion === "string" && typeof value.holderPid === "number" && talkOk
+    ? { outer: value.outer, version: value.version, holder: value.holder, holderVersion: value.holderVersion, holderPid: value.holderPid,
+      talk: talk as Record<string, string[]> }
+    : undefined;
+}

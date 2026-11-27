@@ -96,6 +96,20 @@ export async function acquirePcBridgeLock(paths: TermPaths): Promise<{ release()
 }
 
 /**
+ * 바깥 시작 잠금(세션 유지 구조 설계 3-4) — 바깥 시작·넘기기를 한 줄로 세운다(두 바깥이 동시에 임대를 다투거나 포인터를 바꾸지 않게).
+ * 쥘 때까지 기다린다(최대 ms) — 못 쥐면 undefined. 바깥은 준비를 알리기 전에 놓는다. 데몬 잠금과 같은 수단 · 다른 이름.
+ */
+export async function acquireOuterStartLock(paths: TermPaths, ms: number): Promise<{ release(): void } | undefined> {
+  const until = Date.now() + ms;
+  for (;;) {
+    const lock = await acquireProcessLock({ lockFile: paths.outerLockFile, abstractLockName: paths.outerAbstractLockName });
+    if (lock) return lock;
+    if (Date.now() >= until) return undefined;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/**
  * 데몬 잠금이 풀릴 때까지 기다린다(최대 ms) — 풀렸으면 true. 잡아 보고 바로 놓는다(데몬 자리를 차지하지 않는다).
  * ★옛 데몬이 «끝났나»는 이 잠금으로만 본다 — daemon.json 의 pid 는 데몬이 끝나도 남고, Windows 는 pid 를 금방 다른 프로세스에
  *   다시 준다(KAN-1375 · 그 pid 가 살아 있다고 보고 매번 «did not stop» 으로 멈췄다).

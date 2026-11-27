@@ -1,6 +1,6 @@
 import { closeSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
-import { openTermClient, termRequest } from "../../core/term/client";
+import { daemonCaps, openTermClient, termRequest } from "../../core/term/client";
 import { runDaemon } from "../../core/term/daemon";
 import { runHolder, type DaemonReadiness } from "../../core/term/holder";
 import { DETACH_HINT, DetachKeyScanner } from "../../core/term/detachKey";
@@ -79,7 +79,10 @@ export async function executeTermCommand(input: TermCommandInput): Promise<numbe
       return print(input, data, `Killed ${name}.`);
     }
     case "kill-server": {
-      const result = await termRequest(paths, { op: "kill-server" }, { start: false });
+      // ★끌 holder 의 uuid 를 기능 묻기로 받아 싣는다(설계 3-4) — 옛 구조 데몬(첫 전환 전)은 칸 없이 그대로.
+      const found = await daemonCaps(paths);
+      const body: TermRequestBody = found.daemon && found.caps ? { op: "kill-server", holder: found.caps.holder } : { op: "kill-server" };
+      const result = found.daemon ? await termRequest(paths, body, { start: false }) : { daemon: false as const };
       const data = result.daemon ? result.data : { killed: [] };
       return print(input, data, result.daemon ? "Stopped the term daemon and its sessions." : "No term daemon is running.");
     }

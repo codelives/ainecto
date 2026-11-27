@@ -1,31 +1,30 @@
-import { stat, writeFile } from "node:fs/promises";
-import { unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { ensurePrivateDir, isNodeError, PRIVATE_FILE_MODE } from "../fs/privateFiles";
-import { endedFromOutside } from "../os/launch";
-import { acquireDaemonLock } from "./daemonLock";
+import { ensurePrivateDir, isNodeError } from "../fs/privateFiles";
+import { spawnResident, TermClient } from "./client";
+import { acquireOuterStartLock } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
-import { TermError } from "./errors";
-import { afterListen, helloProof, prepareListen, type IpcAddress } from "./ipc";
-import { mergeEnded, readEndedBook, removeEndedBook, withEnded, withListedTo, withoutAcked, writeEndedBook } from "./endedBook";
-import { readManifest, writeManifest, type ManifestEntry } from "./manifest";
-import type { TermPaths } from "./paths";
+import { errorCode, errorMessage, TermError } from "./errors";
+import { NO_LEASE_CODE, requestMeta, type DaemonReadiness } from "./holder";
+import { holderCaps, type HolderCaps, type OuterCaps } from "./holderTalk";
 import {
-  encodeLine,
-  LineDecoder,
-  parseClientMessage,
-  RETRY_CODE,
-  type EndedRecord,
-  type EndReason,
-  type TermClientMessage,
-  type TermEvent,
-  type TermRequest,
-  type TermResponse,
-} from "./protocol";
-import { assertSessionName } from "./sessionName";
-import { TermSession, type SessionSink } from "./session";
+  afterListen,
+  connectAddress,
+  helloProof,
+  IMPOSTOR_CODE,
+  NO_ADDRESS_CODE,
+  pointsTo,
+  pointTo,
+  prepareListen,
+  unlinkIfPresent,
+  type IpcAddress,
+} from "./ipc";
+import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "./limits";
+import { outerSocketPath, type TermPaths } from "./paths";
+import { encodeLine, LineDecoder, parseClientMessage, parseDaemonMessage, RETRY_CODE, type TermRequest, type TermResponse } from "./protocol";
 
-import type { DaemonReadiness } from "./holder";
+export type { DaemonReadiness } from "./holder";
 
 export interface DaemonOptions {
   paths: TermPaths;
@@ -33,21 +32,25 @@ export interface DaemonOptions {
   ready: (readiness: DaemonReadiness) => void;
 }
 
+/** 데몬 잠금을 holder 가 아닌 누군가가 쥐고 있다 — 옛 구조 데몬(0.16.x 이하)이 살아 있다(첫 전환 전 · 설계 5절). */
+export const OLD_DAEMON_CODE = "TERM_OLD_DAEMON";
+
 /**
- * 상주 프로세스 `ainecto term daemon`(설계 2-1). 반환값은 끝날 때의 종료 코드.
+ * 상주 프로세스 `ainecto term daemon` = 바깥(세션 유지 구조 설계 3-4) — CLI 연결을 받아 holder 로 잇는 대리. 세션은 holder 가 쥔다.
+ * 판마다 프로세스째 갈린다: 새 판의 바깥이 뜨면 옛 바깥에게서 넘겨받고, 그동안 PTY·화면·uuid 는 holder 안에 그대로 있다.
  *
- *   시작: ① 잠금을 비차단으로 잡는다 — 못 잡으면 다른 데몬이 살아 있으니 바로 끝낸다
- *         ② 잡은 쪽만 pid 를 daemon.json 에(안내용 — 판정에 쓰지 않는다) ③ 옛 주소를 치우고 bind(ipc.ts — Windows 는 새 pipe 이름·비밀값).
- *         ★②를 bind «전에» 쓴다 — 잠금을 쥔 채 bind 전에 멈춘 데몬이 있으면 클라이언트가 그 pid 를 알려 줄 수 있다.
- *   끝: 세션 0개 + 연결 0개가 되면, 또는 kill-server·SIGTERM 이면. 리스너를 먼저 닫고, 그 뒤에 온 요청에는
- *       RETRY 를 답하고, 처리 중인 요청을 마친 뒤 자기 소켓을 지우고 끝난다. 잠금은 프로세스가 끝날 때 OS 가 푼다.
+ *   시작(바깥 시작 잠금 안에서 — 두 바깥이 겹치지 않게):
+ *     ① holder 에 붙는다(없으면 `term holder` 를 띄운다) ② 쓰기 임대를 청한다
+ *        · 비었으면 쥔다 → 자기 주소(outer-<uuid>)에 bind → 공용 주소(ctl.sock)를 자기에게 바꿔 단다
+ *        · 다른 바깥이 쥐었고 이 판이 더 높으면 넘겨받는다(자기 주소 → 포인터 → 옛 바깥에 handover → 임대가 풀리면 쥔다)
+ *        · 그 밖(같은 판·낮은 판)은 «이미 있음»(locked) — 띄운 CLI 는 공용 주소로 다시 붙는다
+ *   끝: holder 가 끝나면(세션 0 · kill-server) · 넘겨줌 · SIGTERM. 처리 중인 요청을 마친 뒤 자기 주소를 지우고,
+ *       공용 주소는 «자기를 가리킬 때만» 지운다.
  */
 export async function runDaemon(options: DaemonOptions): Promise<number> {
   const { paths } = options;
   await ensurePrivateDir(paths.dir);
   const log = new DaemonLog(paths.log, paths.previousLog);
-  // 준비 통보 — 띄운 쪽이 이미 떠났으면(준비 대기 10초가 지난 뒤 다시 움직인 경우 — 리뷰 #82 S1) 통보 실패를
-  // 남기고 데몬의 보통 수명을 그대로 산다. 통보 실패가 데몬을 반쯤 뜬 채로 두지 않는다.
   const notify = (readiness: DaemonReadiness): boolean => {
     try {
       options.ready(readiness);
@@ -57,122 +60,151 @@ export async function runDaemon(options: DaemonOptions): Promise<number> {
       return false;
     }
   };
-  if (!(await claimDaemon(paths, options.version))) {
+  const startLock = await acquireOuterStartLock(paths, DAEMON_RESPONSE_TIMEOUT_MS);
+  if (!startLock) {
+    // 다른 바깥이 그동안 뜨는 중이었다 — 그 바깥이 공용 주소를 연다. 띄운 CLI 는 다시 붙는다.
+    log.write({ event: "daemon_locked", pid: process.pid });
+    notify({ status: "locked" });
+    return 1;
+  }
+  let outer: Outer | undefined;
+  try {
+    outer = await startOuter(paths, options.version, log);
+  } finally {
+    startLock.release();
+  }
+  if (!outer) {
     log.write({ event: "daemon_locked", pid: process.pid });
     notify({ status: "locked" });
     return 1;
   }
   log.enableRotation();
-  let manifest: ManifestEntry[];
-  try {
-    manifest = await readManifest(paths.manifest);
-  } catch (error) {
-    // 깨진 매니페스트가 데몬을 막지 않게 — 빈 목록으로 시작하고, 다음 쓰기가 덮는다. 이유는 남긴다.
-    log.write({ event: "manifest_error", message: errorMessage(error) });
-    manifest = [];
-  }
-  let ended: EndedRecord[] = [];
-  let endedUnread = false;
-  let pending: EndedRecord[] = [];
-  try {
-    // 앞 데몬이 원본을 못 읽는 동안 생긴 끝 기록(리뷰 r2 P1-2) — 원본 위에 얹는다(같은 이름은 이것).
-    pending = await readEndedBook(paths.endedPending);
-  } catch (error) {
-    log.write({ event: "ended_book_error", message: `${paths.endedPending}: ${errorMessage(error)}` });
-  }
-  try {
-    ended = await readEndedBook(paths.ended);
-  } catch (error) {
-    // ★못 읽은 책은 덮지 않는다(리뷰 0.16.6 P1-2) — 빈 책으로 시작하되, 다시 읽어 합칠 때까지 파일에 쓰지 않는다(원본 보존).
-    log.write({ event: "ended_book_error", message: errorMessage(error) });
-    endedUnread = true;
-  }
-  ended = mergeEnded(ended, pending, new Set());
-  const daemon = new TermDaemon(paths, log, manifest, ended, endedUnread, pending.length > 0);
-  await daemon.listen();
-  log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: daemon.address });
-  process.on("SIGTERM", () => void daemon.shutdown("SIGTERM"));
-  process.on("SIGINT", () => void daemon.shutdown("SIGINT"));
+  log.write({ event: "daemon_start", pid: process.pid, version: options.version, socket: outer.address, outer: outer.uuid, holder: outer.holder.holder });
+  const running = outer;
+  process.on("SIGTERM", () => void running.shutdown("SIGTERM"));
+  process.on("SIGINT", () => void running.shutdown("SIGINT"));
   process.on("uncaughtException", (error) => {
     log.write({ event: "daemon_crash", pid: process.pid, error: error.stack ?? error.message });
     process.exit(1);
   });
-  if (!notify({ status: "ready" })) {
-    // 붙으러 올 쪽이 없다 — 세션·연결이 없으면 보통의 유휴 종료로 끝난다(잠금은 프로세스가 끝날 때 OS 가 푼다).
-    daemon.stopIfIdle();
+  notify({ status: "ready" });
+  return await running.finished;
+}
+
+/** 이 판(a)이 다른 판(b)보다 높은가 — `x.y.z` 셋을 숫자로 견준다. 어느 쪽이든 그 모양이 아니면(로컬 «dev») 거짓 — 넘기지 않는다. 순수 함수. */
+export function newerVersion(a: string, b: string): boolean {
+  const parse = (value: string): number[] | undefined => {
+    const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value);
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
+  };
+  const [left, right] = [parse(a), parse(b)];
+  if (!left || !right) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index]! > right[index]!;
   }
-  return await daemon.finished;
+  return false;
 }
 
-/**
- * 데몬 자리를 차지한다 — 잠금을 잡고, 잡았으면 pid 를 daemon.json 에 쓴다. 못 잡으면 false.
- * 데몬 시작의 ①②이고, 시험이 «잠금을 쥔 채 bind 전에 멈춘 데몬»을 같은 코드로 만든다.
- */
-export async function claimDaemon(paths: TermPaths, version: string): Promise<boolean> {
-  const lock = await acquireDaemonLock(paths);
-  if (!lock.held) {
-    return false;
+/** ①② — 임대를 쥐거나 넘겨받은 바깥, 또는 undefined(다른 바깥이 이미 이 판 이상). 실패는 던진다(띄운 CLI 에 오류 한 줄). */
+async function startOuter(paths: TermPaths, version: string, log: DaemonLog): Promise<Outer | undefined> {
+  const control = await connectHolder(paths);
+  const holder = holderCaps(await control.request({ op: "caps" }));
+  if (!holder) {
+    control.close();
+    throw new TermError("TERM_DAEMON_START", `The term holder did not describe itself — see ${paths.holderLog}.`);
   }
-  await writeFile(paths.daemonInfo, `${JSON.stringify({ pid: process.pid, version, startedAt: new Date().toISOString() })}\n`, {
-    mode: PRIVATE_FILE_MODE,
-  });
-  return true;
+  const uuid = freshOuterUuid(paths);
+  const lease = await control.request({ op: "lease", outer: uuid, version }) as { granted: boolean; outer?: string; version?: string };
+  const previous = lease.granted ? undefined : { outer: String(lease.outer), version: String(lease.version) };
+  if (previous && !newerVersion(version, previous.version)) {
+    control.close();
+    return undefined;
+  }
+  const outer = new Outer(paths, log, uuid, version, control, holder);
+  try {
+    await outer.listen();
+    if (previous) await outer.takeOver(previous);
+    else await outer.publish();
+  } catch (error) {
+    await outer.shutdown("start failed");
+    throw error;
+  }
+  return outer;
 }
 
-interface Handled {
-  data: unknown;
-  /** 응답 줄을 쓴 «뒤에» 할 일(attach 의 첫 화면, kill-server 의 종료). */
-  after?: () => void;
+/** holder 에 붙는다 — 없으면 띄운다. 잠금은 쥐었는데 답이 없으면(옛 구조 데몬이 잠금을 쥠) {@link OLD_DAEMON_CODE}. */
+async function connectHolder(paths: TermPaths): Promise<TermClient> {
+  for (let started = 0; ; started += 1) {
+    try {
+      return await TermClient.connect(paths, paths.holderSocket);
+    } catch (error) {
+      const code = error instanceof TermError ? error.code : undefined;
+      if (code !== IMPOSTOR_CODE && code !== NO_ADDRESS_CODE && !isNodeError(error, "ENOENT") && !isNodeError(error, "ECONNREFUSED")) {
+        throw error;
+      }
+    }
+    if (started === DAEMON_START_ATTEMPTS) {
+      throw new TermError(OLD_DAEMON_CODE, "Another process holds the term daemon lock but no term holder answers — an older term daemon "
+        + "(ainecto 0.16.x or earlier) is probably still running. Run `npx -y ainecto@latest` once in a terminal to switch to the new "
+        + `terminal structure. See ${paths.holderLog}.`);
+    }
+    const readiness = await spawnResident(paths, "holder");
+    if (readiness.status === "error") {
+      throw new TermError("TERM_DAEMON_START", `The term holder did not start: ${readiness.message}`);
+    }
+  }
 }
 
-class TermDaemon {
-  private readonly sessions = new Map<string, TermSession>();
-  private readonly connections = new Set<Connection>();
-  /** watch-sessions 를 건 연결 — 세션 목록 변화(생김·끝·label)를 알린다. */
-  private readonly listWatchers = new Set<Connection>();
+/** 자기 주소 파일이 아직 없는 uuid — 주소 이름에는 앞 8글자만 쓰므로(paths.ts) 겹치면 다시 뽑는다. */
+function freshOuterUuid(paths: TermPaths): string {
+  for (;;) {
+    const uuid = randomUUID();
+    if (!existsSync(outerSocketPath(paths, uuid))) return uuid;
+  }
+}
+
+class Outer {
   private readonly server: Server;
+  private readonly links = new Set<CliLink>();
   private nextConnection = 1;
-  /** 띄우는 중인 이름 — new·restore 가 같은 이름을 겹쳐 띄우지 않게(리뷰 #81 T1). */
-  private readonly starting = new Set<string>();
-  private inflight = 0;
-  /** 처리 중인 요청 수가 줄 때마다 깨운다. */
-  private inflightWaiters: (() => void)[] = [];
-  /** 새 요청을 받지 않는다 — 이후 요청은 RETRY. */
+  private ipc: IpcAddress | undefined;
+  readonly ownFile: string;
   private shuttingDown = false;
   private stopping = false;
-  private manifestWrite: Promise<void> = Promise.resolve();
-  private endedWrite: Promise<void> = Promise.resolve();
-  /** 책을 못 읽은 동안 ack 한 instance — 다시 읽은 파일에서 되살리지 않는다. */
-  private readonly endedAcked = new Set<string>();
+  /** holder 로 보낸 뒤 답을 기다리는 요청 수 — 넘겨줄 때·끝날 때 0 이 될 때까지 기다린다. */
+  private inflight = 0;
+  private inflightWaiters: (() => void)[] = [];
+  /** 쓰기 임대를 쥐었다 — 그 전에 온 CLI 요청은 holder 로 보내지 않고 기다린다(설계 3-4 «그 전 쓰기는 적용하지 않음»). */
+  readonly leaseReady: Promise<void>;
+  private resolveLease: () => void = () => undefined;
   private resolveFinished: (code: number) => void = () => undefined;
-  /** 이번 주소 — listen 뒤에 정해진다(Windows 는 증명 비밀값 포함). */
-  private ipc: IpcAddress | undefined;
   readonly finished = new Promise<number>((resolve) => {
     this.resolveFinished = resolve;
   });
 
   constructor(
-    private readonly paths: TermPaths,
-    private readonly log: DaemonLog,
-    private manifest: ManifestEntry[],
-    /** 끝 기록 책(endedBook.ts) — 서버가 받았다고 다리가 ended-ack 하기 전까지. */
-    private ended: EndedRecord[],
-    /** 시작 때 책 파일을 못 읽었다(ENOENT 말고) — 다시 읽어 합칠 때까지 파일에 쓰지 않는다. */
-    private endedUnread: boolean,
-    /** 병합 대기 파일(paths.endedPending)이 있다 — 원본에 합쳐 쓴 뒤 지운다. */
-    private endedPendingFile: boolean,
+    readonly paths: TermPaths,
+    readonly log: DaemonLog,
+    readonly uuid: string,
+    private readonly version: string,
+    /** holder 에 낸 임대 연결 — 끊기면(holder 끝) 바깥도 끝난다. */
+    private readonly control: TermClient,
+    readonly holder: HolderCaps,
   ) {
+    this.ownFile = outerSocketPath(paths, uuid);
+    this.leaseReady = new Promise((resolve) => {
+      this.resolveLease = resolve;
+    });
     this.server = createServer((socket) => this.accept(socket));
+    control.onClose(() => void this.shutdown("holder gone"));
   }
 
-  /** 이번 주소(로그용) — 소켓 경로 또는 pipe 이름. 비밀값은 내보내지 않는다. */
   get address(): string {
-    return this.ipc?.address ?? this.paths.socket;
+    return this.ipc?.address ?? this.ownFile;
   }
 
   async listen(): Promise<void> {
-    // ★잠금을 쥔 프로세스만 여기 온다 — 옛 주소를 치워도 살아 있는 데몬의 주소일 수 없다.
-    const ipc = await prepareListen(this.paths.socket);
+    const ipc = await prepareListen(this.ownFile);
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
       this.server.listen(ipc.address, () => {
@@ -181,10 +213,88 @@ class TermDaemon {
       });
     });
     this.ipc = ipc;
-    await afterListen(this.paths.socket);
+    await afterListen(this.ownFile);
   }
 
-  /** 끝낸다 — 세션·매니페스트는 건드리지 않는다(SIGTERM·세션 0). 세션까지 끝내는 kill-server 는 handle 이 먼저 정리한다. */
+  /** 임대를 처음부터 쥐었다 — 공용 주소를 이 바깥으로. */
+  async publish(): Promise<void> {
+    await pointTo(this.paths.socket, this.ownAddress(), this.ownFile);
+    this.resolveLease();
+  }
+
+  /**
+   * 넘겨받기(설계 3-4 순서) — 포인터를 바꿔 단다 → 옛 바깥에 «넘겨라»(옛 바깥의 자기 주소로) → 옛 바깥이 처리 중인 것을 마치고 임대를 놓으면 쥔다.
+   * 기한 안에 못 쥐면 포인터를 옛 바깥으로 되돌리고 실패한다(옛 주소는 그대로 살아 있다).
+   */
+  async takeOver(previous: { outer: string; version: string }): Promise<void> {
+    const previousFile = outerSocketPath(this.paths, previous.outer);
+    const previousAddress = await connectAddress(previousFile).catch(() => undefined);
+    this.log.write({ event: "handover_start", from: previous.outer, fromVersion: previous.version, to: this.uuid, version: this.version });
+    await pointTo(this.paths.socket, this.ownAddress(), this.ownFile);
+    try {
+      const old = await TermClient.connect(this.paths, previousFile);
+      try {
+        await old.request({ op: "handover", to: this.uuid });
+      } finally {
+        old.close();
+      }
+    } catch (error) {
+      // 옛 바깥에 못 닿았다(이미 끝남 · 응답 없음) — 임대가 풀렸는지로만 판정한다.
+      this.log.write({ event: "handover_unanswered", from: previous.outer, code: errorCode(error), message: errorMessage(error) });
+    }
+    const until = Date.now() + DAEMON_RESPONSE_TIMEOUT_MS;
+    for (;;) {
+      const lease = await this.control.request({ op: "lease", outer: this.uuid, version: this.version }) as { granted: boolean };
+      if (lease.granted) break;
+      if (Date.now() >= until) {
+        if (previousAddress) await pointTo(this.paths.socket, previousAddress, previousFile);
+        this.log.write({ event: "handover_failed", from: previous.outer, to: this.uuid });
+        throw new TermError("TERM_HANDOVER_FAILED", `The running term daemon (${previous.version}) did not hand over within `
+          + `${DAEMON_RESPONSE_TIMEOUT_MS / 1000} s; it keeps serving. See ${this.paths.log}.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    this.log.write({ event: "handover_done", from: previous.outer, to: this.uuid });
+    this.resolveLease();
+  }
+
+  /** CLI 의 기능 묻기 답 — 이 바깥 + holder(설계 G4: 판·구조는 살아 있는 상대에게). */
+  caps(): OuterCaps {
+    return { outer: this.uuid, version: this.version, holder: this.holder.holder, holderVersion: this.holder.version, holderPid: this.holder.pid,
+      talk: this.holder.talk };
+  }
+
+  helloProof(nonce: string): string {
+    if (!this.ipc?.key) {
+      throw new TermError("TERM_BAD_REQUEST", "hello is only for a named-pipe daemon (Windows).");
+    }
+    return helloProof(this.ipc.key, this.ipc.address, nonce);
+  }
+
+  get accepting(): boolean {
+    return !this.shuttingDown;
+  }
+
+  began(): void {
+    this.inflight += 1;
+  }
+
+  ended(count = 1): void {
+    this.inflight -= count;
+    for (const wake of this.inflightWaiters.splice(0)) {
+      wake();
+    }
+  }
+
+  /** 넘겨주기(옛 바깥 쪽) — 새 요청은 RETRY(공용 주소는 이미 새 바깥) · 처리 중인 것을 마친 뒤 답하고 끝난다(임대는 끝나며 풀린다). */
+  async handOver(link: CliLink, request: TermRequest & { op: "handover" }, startedAt: number): Promise<void> {
+    this.stopAccepting();
+    await this.inflightAtMost(0);
+    this.log.write({ event: "handed_over", to: request.to });
+    link.reply(request, { id: request.id, ok: true, data: { handedOver: true, to: request.to } }, startedAt);
+    void this.shutdown("handover");
+  }
+
   async shutdown(reason: string): Promise<void> {
     if (this.stopping) {
       return;
@@ -192,27 +302,28 @@ class TermDaemon {
     this.stopping = true;
     this.stopAccepting();
     await this.inflightAtMost(0);
-    // 데몬과 함께 끝나는 세션(SIGTERM·SIGINT — PTY 가 같이 닫힌다)도 끝 기록에. restore 는 매니페스트로 새 인스턴스를 띄운다.
-    for (const session of this.sessions.values()) {
-      this.recordEnd(session, "exited");
+    for (const link of this.links) {
+      link.close();
     }
-    await this.manifestWrite;
-    await this.endedWrite;
-    for (const connection of this.connections) {
-      connection.end();
-    }
+    this.control.close();
     try {
-      unlinkSync(this.paths.socket);
-    } catch (error) {
-      if (!isNodeError(error, "ENOENT")) {
-        this.log.write({ event: "daemon_crash", pid: process.pid, error: `could not remove ${this.paths.socket}: ${errorMessage(error)}` });
+      // ★공용 주소는 이 바깥을 가리킬 때만 지운다 — 넘겨준 뒤라면 새 바깥의 포인터다(설계 3-4).
+      if (this.ipc && await pointsTo(this.paths.socket, this.ipc, this.ownFile)) {
+        await unlinkIfPresent(this.paths.socket);
       }
+      await unlinkIfPresent(this.ownFile);
+    } catch (error) {
+      this.log.write({ event: "daemon_crash", pid: process.pid, error: `could not remove ${this.ownFile}: ${errorMessage(error)}` });
     }
     this.log.write({ event: "daemon_stop", pid: process.pid, reason });
     this.resolveFinished(0);
   }
 
-  /** 리스너를 닫고 이후 요청에 RETRY 를 답한다. 여러 번 불러도 한 번. */
+  private ownAddress(): IpcAddress {
+    if (!this.ipc) throw new TermError("TERM_INTERNAL", "The term daemon is not listening yet.");
+    return this.ipc;
+  }
+
   private stopAccepting(): void {
     if (!this.shuttingDown) {
       this.shuttingDown = true;
@@ -220,7 +331,6 @@ class TermDaemon {
     }
   }
 
-  /** 처리 중인 요청이 `remaining` 개 이하가 될 때까지 기다린다. */
   private async inflightAtMost(remaining: number): Promise<void> {
     while (this.inflight > remaining) {
       await new Promise<void>((resolve) => this.inflightWaiters.push(resolve));
@@ -228,391 +338,177 @@ class TermDaemon {
   }
 
   private accept(socket: Socket): void {
-    const connection = new Connection(this.nextConnection++, socket, (message) => this.receive(connection, message), (code, message) => {
-      this.log.write({ event: "bad_message", conn: connection.id, code, message });
+    const link = new CliLink(this.nextConnection++, socket, this);
+    this.links.add(link);
+    socket.on("close", () => this.links.delete(link));
+  }
+}
+
+/**
+ * CLI 연결 하나 ↔ holder 연결 하나(그 바깥이 이은 것 — via). 들어온 줄은 모양을 검사하고 바깥이 답할 것(증명·기능 묻기·넘기기)은 여기서,
+ * 나머지는 줄 그대로 holder 로. holder 의 답·이벤트는 줄 그대로 CLI 로. 요청 1줄 + 응답 1줄을 바깥 로그(daemon.log)에도 남긴다.
+ */
+class CliLink {
+  private readonly decoder = new LineDecoder();
+  private readonly holderDecoder = new LineDecoder();
+  private holder: Promise<Socket> | undefined;
+  /** holder 로 보낸 줄의 차례 — CLI 가 보낸 순서 그대로 간다. */
+  private chain: Promise<void> = Promise.resolve();
+  /** holder 에 보낸 뒤 답을 기다리는 요청 — id → (op·보낸 시각). */
+  private readonly pending = new Map<string, { op: string; startedAt: number }>();
+
+  constructor(
+    private readonly id: number,
+    private readonly socket: Socket,
+    private readonly outer: Outer,
+  ) {
+    socket.on("data", (chunk: Buffer) => {
+      for (const line of this.decoder.push(chunk)) {
+        if (!this.receive(line)) return;
+      }
     });
-    this.connections.add(connection);
+    socket.on("error", (error) => outer.log.write({ event: "bad_message", conn: id, code: errorCode(error), message: errorMessage(error) }));
     socket.on("close", () => {
-      this.connections.delete(connection);
-      this.listWatchers.delete(connection);
-      for (const session of this.sessions.values()) {
-        session.forget(connection);
-      }
-      if (connection.attachedTo) {
-        this.log.write({ event: "detach", conn: connection.id, name: connection.attachedTo.name, reason: "connection closed" });
-      }
-      this.stopIfIdle();
+      // CLI 가 떠났다 — 답을 기다리던 요청은 holder 가 마저 처리한다(이미 임대 확인을 지났다). 그 결과는 받을 쪽이 없다.
+      this.outer.ended(this.pending.size);
+      this.pending.clear();
+      void this.holder?.then((holderSocket) => holderSocket.destroy(), () => undefined);
     });
   }
 
-  private receive(connection: Connection, message: TermClientMessage): void {
-    if (message.op === "in") {
-      connection.attachedTo?.input(connection, Buffer.from(message.d, "base64"));
-      return;
-    }
-    if (message.op === "resize") {
-      connection.attachedTo?.resizeFrom(connection, message.cols, message.rows);
-      return;
-    }
-    void this.request(connection, message);
+  close(): void {
+    this.socket.end();
   }
 
-  /** 요청 1줄 + 응답 1줄 — 응답 줄은 성공·실패·RETRY 어느 경우에도 반드시 남는다(실행 원칙 3). */
-  private async request(connection: Connection, request: TermRequest): Promise<void> {
-    const startedAt = Date.now();
-    this.log.write({ event: "request", id: request.id, conn: connection.id, op: request.op, ...requestMeta(request) });
-    let response: TermResponse;
-    let after: (() => void) | undefined;
-    if (this.shuttingDown) {
-      response = { id: request.id, ok: false, error: { code: RETRY_CODE, message: "The term daemon is stopping; retry with the next one." } };
-    } else {
-      this.inflight += 1;
-      try {
-        const handled = await this.handle(connection, request);
-        response = { id: request.id, ok: true, data: handled.data };
-        after = handled.after;
-      } catch (error) {
-        response = { id: request.id, ok: false, error: { code: errorCode(error), message: errorMessage(error) } };
-      } finally {
-        this.inflight -= 1;
-        for (const wake of this.inflightWaiters.splice(0)) {
-          wake();
-        }
-      }
-    }
-    connection.respond(response);
-    this.log.write({
+  /** 응답 한 줄을 CLI 에 쓰고 로그에 남긴다. */
+  reply(request: { id: string; op: string }, response: TermResponse, startedAt: number): void {
+    this.write(encodeLine(response));
+    this.outer.log.write({
       event: "response",
       id: request.id,
-      conn: connection.id,
+      conn: this.id,
       op: request.op,
       ok: response.ok,
       ...(response.ok ? {} : { code: response.error.code, message: response.error.message }),
       ms: Date.now() - startedAt,
     });
-    after?.();
   }
 
-  private async handle(connection: Connection, request: TermRequest): Promise<Handled> {
+  /** CLI 의 한 줄 — 모양이 틀리면 연결을 끊고 false. */
+  private receive(line: string): boolean {
+    let message;
+    try {
+      message = parseClientMessage(line);
+    } catch (error) {
+      this.outer.log.write({ event: "bad_message", conn: this.id, code: errorCode(error), message: errorMessage(error) });
+      this.socket.destroy();
+      return false;
+    }
+    if (message.op === "in" || message.op === "resize") {
+      this.forward(line);
+      return true;
+    }
+    const request = message;
+    const startedAt = Date.now();
+    this.outer.log.write({ event: "request", id: request.id, conn: this.id, op: request.op, ...requestMeta(request) });
+    const fail = (code: string, text: string): void => this.reply(request, { id: request.id, ok: false, error: { code, message: text } }, startedAt);
+    if (!this.outer.accepting) {
+      fail(RETRY_CODE, "The term daemon is stopping; retry with the next one.");
+      return true;
+    }
     switch (request.op) {
-      case "hello": {
-        if (!this.ipc?.key) {
-          throw new TermError("TERM_BAD_REQUEST", "hello is only for a named-pipe daemon (Windows).");
+      case "hello":
+        try {
+          this.reply(request, { id: request.id, ok: true, data: { proof: this.outer.helloProof(request.nonce) } }, startedAt);
+        } catch (error) {
+          fail(errorCode(error), errorMessage(error));
         }
-        return { data: { proof: helloProof(this.ipc.key, this.ipc.address, request.nonce) } };
-      }
-      case "new": {
-        assertSessionName(request.name);
-        const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString(),
-          ...(request.project !== undefined ? { project: request.project } : {}),
-          ...(request.input !== undefined ? { input: request.input } : {}),
-          ...(request.kind !== undefined ? { kind: request.kind } : {}) };
-        const session = await this.startSession(entry, request.env, request.cols, request.rows);
-        this.updateManifest((entries) => [...entries.filter((item) => item.name !== entry.name), entry]);
-        return { data: session.info() };
-      }
-      case "ls":
-        return { data: { sessions: [...this.sessions.values()].map((session) => session.info()), ended: this.ended } };
-      case "listed-to": {
-        const wanted = new Set(request.instances);
-        let marked = 0;
-        for (const session of this.sessions.values()) {
-          if (!wanted.has(session.instance)) continue;
-          session.listedTo = request.to;
-          marked += 1;
-        }
-        // 다리가 목록을 읽은 뒤 이 표시 전에 끝난 세션 — 끝 책의 같은 uuid 에(리뷰 r2 P1-1 · endedBook withListedTo).
-        const late = this.ended.filter((record) => record.to === undefined && wanted.has(record.instance)).length;
-        if (late > 0) this.updateEnded((book) => withListedTo(book, wanted, request.to));
-        return { data: { marked: marked + late } };
-      }
-      case "ended-ack": {
-        const before = this.ended.length;
-        if (this.endedUnread) for (const instance of request.instances) this.endedAcked.add(instance);
-        this.updateEnded((book) => withoutAcked(book, request.instances));
-        return { data: { acked: before - this.ended.length } };
-      }
-      case "send": {
-        const session = this.session(request.name, request.instance);
-        await session.send(request.text, request.paste);
-        return { data: { name: request.name, instance: session.instance, sent: request.text.length } };
-      }
-      case "key": {
-        const session = this.session(request.name, request.instance);
-        await session.key(request.key);
-        return { data: { name: request.name, instance: session.instance, key: request.key } };
-      }
-      case "read": {
-        // ★화면과 인스턴스 id 는 같은 세션 객체에서(§14-6 4) — 웹은 이 값으로 다음 명령을 겨눈다.
-        const session = this.session(request.name);
-        const range = { scrollback: request.scrollback, lines: request.lines };
-        if (request.styles) {
-          const screen = await session.readStyled(range, connection);
-          return { data: { name: request.name, instance: session.instance, ...screen, modes: await session.modes() } };
-        }
-        const lines = await session.read(range, connection);
-        return { data: { name: request.name, instance: session.instance, lines, modes: await session.modes() } };
-      }
-      case "kill": {
-        const session = this.session(request.name, request.instance);
-        this.sessions.delete(request.name);
-        // ★표에서 먼저 뺀다 — 뒤따르는 PTY 끝(sessionEnded)은 current 가 아니라 두 번째 기록을 만들지 않는다.
-        this.recordEnd(session, "killed");
-        session.kill();
-        this.updateManifest((entries) => entries.filter((item) => item.name !== request.name));
-        this.notifySessions();
-        return { data: { name: request.name, instance: session.instance, killed: true } };
-      }
-      case "kill-server": {
-        // ★먼저 새 요청을 막고, 이미 받은 생성(new·restore)을 마치게 한 «뒤» 일괄로 끝낸다 — 성공을 답한 생성이
-        //   목록·매니페스트에서 빠지거나 남지 않는다(리뷰 #81 T7). 남은 처리 중 요청은 이 요청 하나다.
-        this.stopAccepting();
-        await this.inflightAtMost(1);
-        const names = [...this.sessions.keys()];
-        for (const session of this.sessions.values()) {
-          // 사람이 세션마다 지운 것이 아니다 — killed(서버가 줄을 숨김)가 아니라 exited(«끝났습니다» + 지우기).
-          this.recordEnd(session, "exited");
-          session.kill();
-        }
-        this.sessions.clear();
-        this.updateManifest(() => []);
-        return { data: { killed: names }, after: () => void this.shutdown("kill-server") };
-      }
-      case "restore":
-        return { data: await this.restore(request.env) };
-      case "attach": {
-        const session = this.session(request.name);
-        connection.attachedTo = session;
-        this.log.write({ event: "attach", conn: connection.id, name: session.name });
-        return { data: { name: session.name }, after: () => session.attach(connection, request.cols, request.rows) };
-      }
-      case "detach": {
-        const session = connection.attachedTo;
-        if (!session) {
-          throw new TermError("TERM_NOT_ATTACHED", "This connection is not attached to a session.");
-        }
-        connection.attachedTo = undefined;
-        this.log.write({ event: "detach", conn: connection.id, name: session.name, reason: "detach key" });
-        return { data: { name: session.name, reset: Buffer.from(session.detach(connection), "utf8").toString("base64") } };
-      }
-      case "watch":
-        this.session(request.name).watch(connection);
-        return { data: { name: request.name } };
-      case "watch-sessions":
-        this.listWatchers.add(connection);
-        return { data: { watching: "sessions" } };
-      case "label": {
-        const session = this.session(request.name, request.instance);
-        session.label = request.label;
-        this.updateManifest((entries) => entries.map((item) => item.name === request.name ? { ...item, label: request.label } : item));
-        this.notifySessions();
-        return { data: { name: request.name, instance: session.instance, label: request.label } };
-      }
-      case "set-size": {
-        const session = this.session(request.name, request.instance);
-        session.resizeTo(request.cols, request.rows);
-        const { cols, rows } = session.info();
-        return { data: { name: request.name, instance: session.instance, cols, rows } };
-      }
+        return true;
       case "caps":
+        this.reply(request, { id: request.id, ok: true, data: this.outer.caps() }, startedAt);
+        return true;
       case "lease":
       case "via":
+        fail("TERM_BAD_REQUEST", `${request.op} is between a term daemon and the holder, not for a CLI.`);
+        return true;
       case "handover":
-        throw new TermError("TERM_BAD_REQUEST", `${request.op} is not part of this daemon.`);
+        void this.outer.handOver(this, request, startedAt);
+        return true;
+      default:
+        this.pending.set(request.id, { op: request.op, startedAt });
+        this.outer.began();
+        this.forward(line);
+        return true;
     }
   }
 
-  /**
-   * 이름으로 세션을 찾는 한 곳. instance 를 주면 ★지금 그 이름의 세션이 그 인스턴스일 때만 — 같은 이름으로 다시 만든 세션이면
-   * SESSION_REPLACED(설계 terminal-e2e §13-1·§14-6 4). 원격 명령의 인스턴스 검사는 다리가 아니라 명령을 적용하는 여기서 한다.
-   */
-  private session(name: string, instance?: string): TermSession {
-    const session = this.sessions.get(name);
-    if (!session) {
-      throw new TermError("TERM_NO_SESSION", `No session named "${name}".`);
-    }
-    if (instance !== undefined && session.instance !== instance) {
-      throw new TermError("SESSION_REPLACED", `The session "${name}" was replaced by a new one with the same name.`);
-    }
-    return session;
-  }
-
-  /**
-   * 세션을 띄우는 곳은 여기 하나(new·restore). ★이름은 첫 await «전에» 확보한다 — 검사와 등록 사이에 같은 이름의
-   * 다른 요청이 끼어 PTY 를 둘 띄우지 못하게(리뷰 #81 T1). 실패하면 확보를 푼다.
-   */
-  private async startSession(entry: ManifestEntry, env: Record<string, string>, cols?: number, rows?: number): Promise<TermSession> {
-    if (this.sessions.has(entry.name) || this.starting.has(entry.name)) {
-      throw new TermError("TERM_SESSION_EXISTS",
-        `A session named "${entry.name}" already exists. Open it with \`ainecto term attach ${entry.name}\`, or choose another name.`);
-    }
-    this.starting.add(entry.name);
-    try {
-      await assertDirectory(entry.cwd);
-      const session = await TermSession.start(
-        { ...entry, env, cols, rows },
-        (ended, exitCode, signal) => this.sessionEnded(ended, exitCode, signal),
-      );
-      this.sessions.set(entry.name, session);
-      this.notifySessions();
-      this.log.write({ event: "session_start", name: entry.name, pid: session.info().pid, cwd: entry.cwd, shell: entry.command === null });
-      return session;
-    } finally {
-      this.starting.delete(entry.name);
-    }
-  }
-
-  /**
-   * 세션이 스스로 끝났다. ★매니페스트에서 지우는 것은 «바깥 사정 없이» 끝났을 때만이다 — 신호로 끝난 세션(재부팅·로그아웃 때
-   * 시스템이 보낸 SIGTERM·SIGHUP 포함 · Windows 는 콘솔 닫힘 끝 코드 — launch.endedFromOutside)은 `restore` 가 다시 띄울 수 있게
-   * 남긴다. kill 로 지운 세션은 이미 표에 없다.
-   */
-  private sessionEnded(session: TermSession, exitCode: number, signal: number): void {
-    const current = this.sessions.get(session.name) === session;
-    const kept = current && endedFromOutside(exitCode, signal);
-    if (current) {
-      this.sessions.delete(session.name);
-      this.recordEnd(session, "exited", exitCode, signal);
-      if (!kept) {
-        this.updateManifest((entries) => entries.filter((item) => item.name !== session.name));
-      }
-    }
-    this.log.write({ event: "session_exit", name: session.name, pid: session.info().pid, exitCode, signal, kept });
-    if (current) this.notifySessions();
-    this.stopIfIdle();
-  }
-
-  private async restore(env: Record<string, string>): Promise<{ restored: string[]; running: string[]; failed: { name: string; code: string; message: string }[] }> {
-    const restored: string[] = [];
-    const running: string[] = [];
-    const failed: { name: string; code: string; message: string }[] = [];
-    for (const entry of this.manifest) {
-      if (this.sessions.has(entry.name) || this.starting.has(entry.name)) {
-        running.push(entry.name);
-        continue;
-      }
-      try {
-        await this.startSession(entry, env);
-        restored.push(entry.name);
-      } catch (error) {
-        failed.push({ name: entry.name, code: errorCode(error), message: errorMessage(error) });
-      }
-    }
-    return { restored, running, failed };
-  }
-
-  /** 세션 목록이 바뀌었다 — watch-sessions 를 건 연결에 알린다(무엇이 바뀌었는지는 ls 로). */
-  private notifySessions(): void {
-    for (const connection of this.listWatchers) {
-      connection.send({ event: "sessions" });
-    }
-  }
-
-  /**
-   * 끝 기록 한 줄 — 세션이 끝나는 세 곳(스스로 끝남·kill·kill-server)과 데몬 종료가 여기 하나로 온다.
-   * signal 이 있으면 그 번호를 글로(코드는 뜻이 없다) · 없으면 exitCode(준 때만).
-   */
-  private recordEnd(session: TermSession, reason: EndReason, exitCode?: number, signal?: number): void {
-    const info = session.info();
-    const record: EndedRecord = {
-      instance: session.instance,
-      name: session.name,
-      ...(info.kind !== undefined ? { kind: info.kind } : {}),
-      command: info.command,
-      endedAt: new Date().toISOString(),
-      reason,
-      ...(signal ? { signal: String(signal) } : exitCode !== undefined ? { exitCode } : {}),
-      ...(session.listedTo !== undefined ? { to: session.listedTo } : {}),
-    };
-    this.updateEnded((book) => withEnded(book, record));
-  }
-
-  /**
-   * 끝 기록 책도 데몬 하나만 쓴다 — 매니페스트와 같은 한 줄 쓰기. 시작 때 못 읽었으면(endedUnread) 쓰기 전에 다시 읽어 합친다:
-   * 파일의 줄 위에 그동안 메모리에 생긴 줄을 얹는다(같은 이름은 메모리 것 · ack 한 instance 는 파일 것에서도 뺀다). 또 못 읽으면 원본은 그대로 두고
-   * 메모리의 줄을 병합 대기 파일에 쓴다 — 이대로 데몬이 끝나도 다음 데몬이 원본에 합친다(리뷰 r2 P1-2). 원본에 쓴 뒤 그 파일을 지운다.
-   * ★그동안 ack 한 instance 는 다음 데몬이 모른다 — 원본에 남아 있던 것은 한 번 더 올라간다(서버는 같은 기록 두 번을 한 번으로 본다).
-   */
-  private updateEnded(change: (book: EndedRecord[]) => EndedRecord[]): void {
-    this.ended = change(this.ended);
-    this.endedWrite = this.endedWrite
+  /** 줄을 holder 로 — 연결은 처음 보낼 때 잇는다(임대를 쥔 뒤). 잇지 못하면 보내지 않은 요청이라 RETRY 로 답한다(다음 바깥에서 다시). */
+  private forward(line: string): void {
+    this.chain = this.chain
       .then(async () => {
-        if (this.endedUnread) {
-          let stored: EndedRecord[];
-          try {
-            stored = await readEndedBook(this.paths.ended);
-          } catch (error) {
-            await writeEndedBook(this.paths.endedPending, this.ended);
-            this.endedPendingFile = true;
-            throw error;
-          }
-          this.ended = mergeEnded(stored, this.ended, this.endedAcked);
-          this.endedUnread = false;
-          this.log.write({ event: "ended_book_recovered", records: this.ended.length });
-        }
-        await writeEndedBook(this.paths.ended, this.ended);
-        if (this.endedPendingFile) {
-          await removeEndedBook(this.paths.endedPending);
-          this.endedPendingFile = false;
-        }
+        (await this.holderSocket()).write(`${line}\n`);
       })
-      .catch((error) => this.log.write({ event: "ended_book_error", message: errorMessage(error) }));
+      .catch((error: unknown) => {
+        this.failPending(RETRY_CODE, `The term holder could not be reached (${errorMessage(error)}); retry.`);
+        this.socket.end();
+      });
   }
 
-  /** 매니페스트는 데몬 하나만 쓴다 — 쓰기를 한 줄로 세운다. */
-  private updateManifest(change: (entries: ManifestEntry[]) => ManifestEntry[]): void {
-    this.manifest = change(this.manifest);
-    const snapshot = this.manifest;
-    this.manifestWrite = this.manifestWrite
-      .then(() => writeManifest(this.paths.manifest, snapshot))
-      .catch((error) => this.log.write({ event: "manifest_error", message: errorMessage(error) }));
+  private holderSocket(): Promise<Socket> {
+    this.holder ??= (async () => {
+      await this.outer.leaseReady;
+      const client = await TermClient.connect(this.outer.paths, this.outer.paths.holderSocket);
+      await client.request({ op: "via", outer: this.outer.uuid });
+      const holderSocket = client.release();
+      holderSocket.on("data", (chunk: Buffer) => {
+        for (const line of this.holderDecoder.push(chunk)) this.fromHolder(line);
+      });
+      holderSocket.on("close", () => {
+        // ★보낸 뒤 답이 없는 요청은 결과를 모른다 — RETRY 가 아니라 «끊김»(다시 실행하지 않는다 · 설계 4절 규칙 3).
+        this.failPending("TERM_DAEMON_GONE", `The term holder closed the connection before answering — see ${this.outer.paths.holderLog}.`);
+        this.socket.end();
+      });
+      return holderSocket;
+    })();
+    return this.holder;
   }
 
-  /** 세션 0개·연결 0개면 끝낸다. */
-  stopIfIdle(): void {
-    if (!this.shuttingDown && this.sessions.size === 0 && this.connections.size === 0) {
-      void this.shutdown("no sessions");
+  /** holder 의 한 줄 — 응답이면 기다리던 요청을 풀고(임대 없음 → RETRY), 이벤트는 그대로 CLI 로. */
+  private fromHolder(line: string): void {
+    let message;
+    try {
+      message = parseDaemonMessage(line);
+    } catch {
+      this.write(`${line}\n`);
+      return;
+    }
+    const waiting = "event" in message ? undefined : this.pending.get(message.id);
+    if ("event" in message || !waiting) {
+      this.write(`${line}\n`);
+      return;
+    }
+    this.pending.delete(message.id);
+    this.outer.ended();
+    // 임대 없이 holder 가 받지 않은 요청 — 적용되지 않았으니 다음 바깥에서 다시 보내도 된다.
+    const response: TermResponse = !message.ok && message.error.code === NO_LEASE_CODE
+      ? { id: message.id, ok: false, error: { code: RETRY_CODE, message: message.error.message } }
+      : message;
+    if (response === message) {
+      this.write(`${line}\n`);
+      this.outer.log.write({ event: "response", id: message.id, conn: this.id, op: waiting.op, ok: message.ok,
+        ...(message.ok ? {} : { code: message.error.code, message: message.error.message }), ms: Date.now() - waiting.startedAt });
+    } else {
+      this.reply({ id: message.id, op: waiting.op }, response, waiting.startedAt);
     }
   }
-}
 
-/** 소켓 하나. 들어오는 줄을 메시지로, 나가는 응답·이벤트를 줄로. */
-class Connection implements SessionSink {
-  attachedTo: TermSession | undefined;
-  private readonly decoder = new LineDecoder();
-
-  constructor(
-    readonly id: number,
-    private readonly socket: Socket,
-    onMessage: (message: TermClientMessage) => void,
-    onBadMessage: (code: string, message: string) => void,
-  ) {
-    socket.on("data", (chunk: Buffer) => {
-      for (const line of this.decoder.push(chunk)) {
-        try {
-          onMessage(parseClientMessage(line));
-        } catch (error) {
-          // 모양이 틀린 줄 — 누가 보냈는지 모르는 연결이라 끊는다. 이유는 남긴다.
-          onBadMessage(errorCode(error), errorMessage(error));
-          socket.destroy();
-          return;
-        }
-      }
-    });
-    // 끊긴 상대에게 쓰다 난 오류(EPIPE 등)가 데몬을 죽이지 않게 — 닫힘은 close 에서 정리한다.
-    socket.on("error", (error) => onBadMessage(errorCode(error), errorMessage(error)));
-  }
-
-  send(event: TermEvent): void {
-    this.write(encodeLine(event));
-  }
-
-  respond(response: TermResponse): void {
-    this.write(encodeLine(response));
-  }
-
-  end(): void {
-    this.socket.end();
+  private failPending(code: string, text: string): void {
+    const waiting = [...this.pending];
+    this.pending.clear();
+    for (const [id, { op, startedAt }] of waiting) {
+      this.reply({ id, op }, { id, ok: false, error: { code, message: text } }, startedAt);
+    }
+    this.outer.ended(waiting.length);
   }
 
   private write(line: string): void {
@@ -620,52 +516,4 @@ class Connection implements SessionSink {
       this.socket.write(line);
     }
   }
-}
-
-async function assertDirectory(path: string): Promise<void> {
-  try {
-    if ((await stat(path)).isDirectory()) {
-      return;
-    }
-  } catch (error) {
-    if (!isNodeError(error, "ENOENT")) {
-      throw error;
-    }
-  }
-  throw new TermError("TERM_BAD_CWD", `${path} is not a directory.`);
-}
-
-/** 로그에 실을 요청 메타 — ★글·키 내용·환경변수는 싣지 않는다(키 이름은 싣는다). */
-function requestMeta(request: TermRequest): { name?: string; textLength?: number; key?: string } {
-  switch (request.op) {
-    case "send":
-      return { name: request.name, textLength: request.text.length };
-    case "key":
-      return { name: request.name, key: request.key };
-    case "new":
-    case "read":
-    case "kill":
-    case "attach":
-    case "watch":
-    case "set-size":
-      return { name: request.name };
-    case "label":
-      return { name: request.name, textLength: request.label.length };
-    default:
-      return {};
-  }
-}
-
-function errorCode(error: unknown): string {
-  if (error instanceof TermError) {
-    return error.code;
-  }
-  if (error instanceof Error && "code" in error && typeof error.code === "string") {
-    return error.code;
-  }
-  return "TERM_INTERNAL";
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

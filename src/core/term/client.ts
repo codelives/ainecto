@@ -9,6 +9,7 @@ import type { DaemonReadiness } from "./holder";
 import { assertTermRuntime } from "./daemonLock";
 import { DaemonLog } from "./daemonLog";
 import { TermError } from "./errors";
+import { outerCaps, type OuterCaps } from "./holderTalk";
 import { connectAddress, IMPOSTOR_CODE, newNonce, NO_ADDRESS_CODE, proofMatches, type IpcAddress } from "./ipc";
 import { DAEMON_RESPONSE_TIMEOUT_MS, DAEMON_START_ATTEMPTS } from "./limits";
 import type { TermPaths } from "./paths";
@@ -34,24 +35,38 @@ export class TermClient {
   private eventHandler: (event: TermEvent) => void = () => undefined;
   private closeHandler: () => void = () => undefined;
 
+  private readonly onData = (chunk: Buffer): void => {
+    for (const line of this.decoder.push(chunk)) {
+      this.receive(line);
+    }
+  };
+
+  private readonly onSocketClose = (): void => {
+    for (const { reject } of this.pending.values()) {
+      reject(new TermError("TERM_DAEMON_GONE", `The term daemon closed the connection before answering — see ${this.paths.log}.`));
+    }
+    this.pending.clear();
+    this.closeHandler();
+  };
+
   private constructor(
     private readonly socket: Socket,
     private readonly paths: TermPaths,
   ) {
-    socket.on("data", (chunk: Buffer) => {
-      for (const line of this.decoder.push(chunk)) {
-        this.receive(line);
-      }
-    });
-    socket.on("close", () => {
-      for (const { reject } of this.pending.values()) {
-        reject(new TermError("TERM_DAEMON_GONE", `The term daemon closed the connection before answering — see ${paths.log}.`));
-      }
-      this.pending.clear();
-      this.closeHandler();
-    });
+    socket.on("data", this.onData);
+    socket.on("close", this.onSocketClose);
     // 오류 뒤에는 close 가 온다 — 거기서 정리한다.
     socket.on("error", () => undefined);
+  }
+
+  /**
+   * 증명까지 마친 연결의 소켓을 넘겨준다 — 이 객체는 더 듣지 않는다(바깥이 CLI 줄을 holder 로 그대로 잇는 데 쓴다).
+   * 답을 기다리는 요청이 없을 때만 부른다.
+   */
+  release(): Socket {
+    this.socket.off("data", this.onData);
+    this.socket.off("close", this.onSocketClose);
+    return this.socket;
   }
 
   /**
@@ -195,7 +210,7 @@ export async function openTermClient(paths: TermPaths, options: TermConnectOptio
     // 띄우기 «전에» 런타임을 본다 — 못 쓰는 런타임에서 데몬을 띄워 알 수 없는 오류를 받지 않게(리뷰 #81 T6).
     assertTermRuntime();
     await ensurePrivateDir(paths.dir);
-    const readiness = await spawnDaemon(paths);
+    const readiness = await spawnResident(paths, "daemon");
     if (readiness.status === "error") {
       throw new TermError("TERM_DAEMON_START", `The term daemon did not start: ${readiness.message}`);
     }
@@ -227,6 +242,20 @@ export async function termRequest(
 }
 
 /**
+ * 지금 공용 주소의 바깥에게 기능을 묻는다(세션 유지 구조 G4 — 판·구조·holder uuid 는 남은 파일이 아니라 살아 있는 상대에게).
+ *   데몬 없음 → {daemon:false} · 옛 구조 데몬(0.16.x — 모르는 op 에 연결을 끊는다) → {daemon:true, caps: undefined} · 새 구조 → caps.
+ */
+export async function daemonCaps(paths: TermPaths): Promise<{ daemon: false } | { daemon: true; caps: OuterCaps | undefined }> {
+  try {
+    const result = await termRequest(paths, { op: "caps" }, { start: false });
+    return result.daemon ? { daemon: true, caps: outerCaps(result.data) } : { daemon: false };
+  } catch (error) {
+    if (error instanceof TermError && error.code === "TERM_DAEMON_GONE") return { daemon: true, caps: undefined };
+    throw error;
+  }
+}
+
+/**
  * 자기 자신을 `term daemon --ready-fd 3` 으로 detached 로 띄우고 준비 한 줄을 기다린다.
  * ★지금 실행 중인 같은 CLI(같은 node·같은 실행 인자)로 띄운다 — 판이 다른 데몬이 섞이지 않게.
  */
@@ -236,18 +265,22 @@ export async function termRequest(
  *   기다림을 멈추고 한 번의 시도로 센다. 그 자식이 잠금을 쥐고 멈췄다면 다음 시도들이 «locked» 를 받고,
  *   마지막 오류가 daemon.json 의 pid 를 알려 준다.
  */
-type SpawnOutcome = DaemonReadiness | { status: "silent" };
+export type SpawnOutcome = DaemonReadiness | { status: "silent" };
 
-async function spawnDaemon(paths: TermPaths): Promise<SpawnOutcome> {
+/**
+ * 상주 프로세스 하나를 띄운다 — CLI 가 바깥(`term daemon`)을, 바깥이 holder(`term holder`)를. 같은 node·같은 실행 인자·같은 진입 파일.
+ */
+export async function spawnResident(paths: TermPaths, role: "daemon" | "holder"): Promise<SpawnOutcome> {
   const entry = process.argv[1];
   if (!entry) {
-    throw new TermError("TERM_DAEMON_START", "Cannot find the ainecto entry script to start the term daemon.");
+    throw new TermError("TERM_DAEMON_START", `Cannot find the ainecto entry script to start the term ${role}.`);
   }
-  // ★데몬의 stderr 는 daemon.log 로 — 우리 코드가 돌기 전에 죽는 경우(모듈을 못 찾음 등)의 이유도 남는다.
-  const stderrFd = openSync(paths.log, "a", PRIVATE_FILE_MODE);
+  const logFile = role === "daemon" ? paths.log : paths.holderLog;
+  // ★stderr 는 그 로그로 — 우리 코드가 돌기 전에 죽는 경우(모듈을 못 찾음 등)의 이유도 남는다.
+  const stderrFd = openSync(logFile, "a", PRIVATE_FILE_MODE);
   let child: ChildProcess;
   try {
-    child = spawnDetached(process.execPath, [...process.execArgv, entry, "term", "daemon", "--ready-fd", "3"], {
+    child = spawnDetached(process.execPath, [...process.execArgv, entry, "term", role, "--ready-fd", "3"], {
       cwd: paths.dir,
       stdio: ["ignore", "ignore", stderrFd, "pipe"],
       env: process.env,
@@ -258,7 +291,7 @@ async function spawnDaemon(paths: TermPaths): Promise<SpawnOutcome> {
   const channel = child.stdio[3];
   if (!(channel instanceof Readable)) {
     child.kill();
-    throw new TermError("TERM_DAEMON_START", "Could not open the readiness pipe to the term daemon.");
+    throw new TermError("TERM_DAEMON_START", `Could not open the readiness pipe to the term ${role}.`);
   }
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -273,7 +306,7 @@ async function spawnDaemon(paths: TermPaths): Promise<SpawnOutcome> {
       });
       child.once("error", reject);
       child.once("exit", (code, signal) => {
-        resolve({ status: "error", message: `daemon exited (${signal ?? code}) before it was ready — see ${paths.log}` });
+        resolve({ status: "error", message: `${role} exited (${signal ?? code}) before it was ready — see ${logFile}` });
       });
     });
   } finally {

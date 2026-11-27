@@ -12,7 +12,15 @@ import { DAEMON_LOG_MAX_BYTES } from "./limits";
  * 하나뿐이다({@link DaemonLog.enableRotation}) — 잠금에 진 데몬이 «locked» 한 줄을 쓰다 함께 돌려 .1 을 날리지 않게.
  */
 export type DaemonLogRecord =
-  | { event: "daemon_start"; pid: number; version: string; socket: string }
+  /** 바깥 시작 — outer = 이 바깥 uuid · holder = 붙은 holder uuid. */
+  | { event: "daemon_start"; pid: number; version: string; socket: string; outer?: string; holder?: string }
+  /** 바깥 넘기기(새 바깥 쪽) — 시작·옛 바깥 무응답·끝·실패(포인터를 옛 바깥으로 되돌림). */
+  | { event: "handover_start"; from: string; fromVersion: string; to: string; version: string }
+  | { event: "handover_unanswered"; from: string; code: string; message: string }
+  | { event: "handover_done"; from: string; to: string }
+  | { event: "handover_failed"; from: string; to: string }
+  /** 넘겨줌(옛 바깥 쪽) — 처리 중인 요청을 마치고 답한 뒤 끝난다. */
+  | { event: "handed_over"; to: string }
   | { event: "daemon_locked"; pid: number }
   /** holder 시작(holder.log) — holder uuid 는 kill-server 가 실어야 하는 값. */
   | { event: "holder_start"; pid: number; version: string; holder: string; socket: string }
