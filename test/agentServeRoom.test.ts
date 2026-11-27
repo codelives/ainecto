@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AINECTO_CODEX_MCP_SERVER } from "../src/core/agent/agents";
 import { AGENT_OPEN_RULE, agentRoomRule, unreadLine } from "../src/core/agent/prompt";
 import { codexSpawned, finish, logRecords, spawned, startServe, until } from "./support/agentServeWorld";
 import { FakeTools } from "./support/fakeTools";
@@ -69,7 +70,13 @@ describe("ainecto agent serve — Room 차례(R2-b)", () => {
     w.server.offer("c1", "conv-a", "만들어", undefined, "codex");
     await until(() => w.server.replies()[1]);
     await finish(w);
-    expect(codexSpawned(w)).toEqual([["app-server", "--read-only"], ["app-server"]]);
+    // 읽기만은 브리지 인자 안 «--read-only»(운영 ainectoBridge 와 같다 · 이름은 ainecto_cli — KAN-1617) — Codex 명령 끝에는 붙이지 않는다.
+    const bridgeArgs = (args: string[]) => JSON.parse(args.find((a) => a.startsWith(`mcp_servers.${AINECTO_CODEX_MCP_SERVER}.args=`))!
+      .split("=").slice(1).join("=")) as string[];
+    const runs = codexSpawned(w);
+    expect(runs.map((args) => args[0])).toEqual(["app-server", "app-server"]);
+    expect(runs.map((args) => bridgeArgs(args).includes("--read-only"))).toEqual([true, false]);
+    expect(runs.map((args) => args.includes("--read-only"))).toEqual([false, false]);
   });
 
   it("Antigravity — Room 차례는 쓰기 도구마다 거절 규칙 + 쓰기 도구 정의를 싣지 않는다 · Connect 는 예전대로", async () => {

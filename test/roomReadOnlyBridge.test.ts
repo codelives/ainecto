@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ainectoBridge, AINECTO_MCP_SERVER, type AinectoBridge } from "../src/core/agent/agents";
+import { ainectoBridge, AINECTO_CODEX_MCP_SERVER, AINECTO_MCP_SERVER, type AinectoBridge } from "../src/core/agent/agents";
 import { ANTIGRAVITY_MCP_SERVER, antigravityMcpConfig } from "../src/core/agent/antigravityArgs";
 import { claudeAgentArgs, claudeMcpConfig } from "../src/core/agent/claudeArgs";
 import { codexAppServerArgs } from "../src/core/agent/codexArgs";
@@ -66,9 +66,10 @@ const ENGINES: Record<string, (bridge: AinectoBridge, readOnly: boolean) => Aine
     const config = JSON.parse(args[args.indexOf("--mcp-config") + 1]!) as { mcpServers: Record<string, AinectoBridge> };
     return config.mcpServers[AINECTO_MCP_SERVER]!;
   },
+  // Codex 브리지 이름은 Claude 와 다르다(ainecto_cli — KAN-1617).
   codex: (bridge, readOnly) => {
     const args = codexAppServerArgs(bridge, readOnly ? [] : ["execute_edit"]);
-    const value = (key: string) => args.find((a) => a.startsWith(`mcp_servers.${AINECTO_MCP_SERVER}.${key}=`))!.split("=").slice(1).join("=");
+    const value = (key: string) => args.find((a) => a.startsWith(`mcp_servers.${AINECTO_CODEX_MCP_SERVER}.${key}=`))!.split("=").slice(1).join("=");
     return { command: JSON.parse(value("command")) as string, args: JSON.parse(value("args")) as string[] };
   },
   antigravity: (bridge) => (antigravityMcpConfig(bridge) as { mcpServers: Record<string, AinectoBridge> }).mcpServers[ANTIGRAVITY_MCP_SERVER]!,
