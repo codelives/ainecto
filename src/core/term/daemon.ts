@@ -342,10 +342,6 @@ class Outer {
     }
     this.control.close();
     try {
-      // ★공용 주소는 이 바깥을 가리킬 때만 지운다 — 넘겨준 뒤라면 새 바깥의 포인터다(설계 3-4).
-      if (this.ipc && await pointsTo(this.paths.socket, this.ipc, this.ownFile)) {
-        await unlinkIfPresent(this.paths.socket);
-      }
       await unlinkIfPresent(this.ownFile);
     } catch (error) {
       this.log.write({ event: "daemon_crash", pid: process.pid, error: `could not remove ${this.ownFile}: ${errorMessage(error)}` });
@@ -362,13 +358,26 @@ class Outer {
   private stopAccepting(): void {
     if (!this.shuttingDown) {
       this.shuttingDown = true;
-      // ★듣기는 이벤트 고리를 한 바퀴(poll) 돈 뒤에 닫는다 — 커널 대기열에 이미 들어온 연결(RETRY 를 받고 곧장 다시 붙은 CLI)을 받아
-      //   RETRY 로 답하게. 바로 닫으면 그 연결은 받지도 않은 채 버려져 CLI 는 «답 없는 끊김»(TERM_DAEMON_GONE)을 본다.
+      // ★듣기를 닫는 순간 커널 대기열에 들어와 있던 연결은 받지도 않은 채 버려진다 — CLI 는 «답 없는 끊김»(TERM_DAEMON_GONE)을 본다.
+      //   그래서 ① 공용 주소부터 거둔다(그 뒤 붙는 CLI 는 «데몬 없음»을 보고 다음 바깥으로 간다 — 듣기가 닫힌 뒤의 ECONNREFUSED 와 같은 길)
+      //   ② 이벤트 고리를 한 바퀴(poll) 돌아 그 전에 들어온 연결을 받고(RETRY 로 답한다) ③ 닫는다.
       //   close 의 콜백은 기다리지 않는다(남은 연결이 다 끝나야 온다).
-      this.listenerClosed = new Promise((resolve) => setImmediate(() => setImmediate(() => {
+      this.listenerClosed = (async () => {
+        await this.withdrawAddress();
+        await new Promise<void>((resolve) => setImmediate(() => setImmediate(resolve)));
         this.server.close();
-        resolve();
-      })));
+      })();
+    }
+  }
+
+  /** ★공용 주소는 이 바깥을 가리킬 때만 지운다 — 넘겨준 뒤라면 새 바깥의 포인터다(설계 3-4). */
+  private async withdrawAddress(): Promise<void> {
+    try {
+      if (this.ipc && await pointsTo(this.paths.socket, this.ipc, this.ownFile)) {
+        await unlinkIfPresent(this.paths.socket);
+      }
+    } catch (error) {
+      this.log.write({ event: "daemon_crash", pid: process.pid, error: `could not remove ${this.paths.socket}: ${errorMessage(error)}` });
     }
   }
 
