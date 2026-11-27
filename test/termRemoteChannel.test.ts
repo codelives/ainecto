@@ -173,7 +173,7 @@ describe("E2E 채널 장부 — hello·confirm·순서·봉인", () => {
     expect(sealedCommand({ channelId: "c", n: 0, c: "x", kind: "confirm" }, new Uint8Array([0xff]))).toBeUndefined();
   });
 
-  it("이미지 붙여넣기(계약 §1) — 선 위 session·opId 가 본문과 같아야(kill 규칙) · instance·mime·d 를 읽는다 · 어긋나면 거절 · 봉인 왕복", async () => {
+  it("이미지 붙여넣기(계약 §1) — 선 위 session·opId 가 본문과 같아야(kill 규칙) · instance·mime·d 를 읽는다 · 칸이 어긋나면 거절(내용 오류는 빈 값) · 봉인 왕복", async () => {
     const plain = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value));
     const image = (meta: Partial<WireCommand>) => ({ channelId: "c", n: 1, c: "x", kind: "image" as const, session: "w", opId: OP, ...meta });
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -184,9 +184,11 @@ describe("E2E 채널 장부 — hello·confirm·순서·봉인", () => {
     expect(sealedCommand(image({ opId: undefined }), plain(body))).toBeUndefined();
     expect(sealedCommand(image({ projectUuid: OP }), plain(body))).toBeUndefined();
     expect(sealedCommand(image({}), plain({ ...body, instance: undefined }))).toBeUndefined();
-    expect(sealedCommand(image({}), plain({ ...body, mime: undefined }))).toBeUndefined();
-    expect(sealedCommand(image({}), plain({ ...body, d: "!!" }))).toBeUndefined();
-    expect(sealedCommand(image({}), plain({ ...body, d: 1 }))).toBeUndefined();
+    // 이미지 내용 오류(mime 없음·d 형식)는 채널을 닫지 않는다 — 빈 값으로 넘겨 저장 검사가 그 요청만 TERM_BAD_REQUEST 로 거절
+    const empty = { kind: "image", opId: OP, session: "w", instance: INSTANCE };
+    expect(sealedCommand(image({}), plain({ ...body, mime: undefined }))).toEqual({ ...empty, mime: "", bytes });
+    expect(sealedCommand(image({}), plain({ ...body, d: "!!" }))).toEqual({ ...empty, mime: "image/png", bytes: Buffer.alloc(0) });
+    expect(sealedCommand(image({}), plain({ ...body, d: 1 }))).toEqual({ ...empty, mime: "image/png", bytes: Buffer.alloc(0) });
     expect(wireCommand({ type: "cmd", channelId: "c", n: 3, c: "AA", kind: "image", session: "w", opId: OP, requestId: "r" }))
       .toEqual({ channelId: "c", n: 3, c: "AA", kind: "image", session: "w", opId: OP, requestId: "r" });
 
