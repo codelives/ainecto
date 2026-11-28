@@ -269,22 +269,24 @@ function sameSession(a: ListedSession, b: ListedSession): boolean {
 }
 
 /**
- * 옛 구조 데몬(0.16.x)을 끝낸다 — 끝 기록 → kill-server(칸 없이 — 옛 데몬은 holder uuid 를 모른다) → 잠금이 풀릴 때까지 → daemon.json 을 지운다.
- * ★끝 기록(KAN-1616 — 새 holder 가 원본 위에 얹고 다리가 그 수신처로 올린다)은 끄기 «전»에 병합 대기 책에 쓴다 — 옛 데몬이 잠금을 쥔 동안이라
- *   새 holder 가 아직 뜨지 못한다. 끈 뒤에 쓰면 그 사이 다른 명령이 잠금을 먼저 잡을 때 기록이 사라졌다(리뷰 r1 P1-8).
+ * 옛 구조 데몬(0.16.x)을 끝낸다 — kill-server(칸 없이 — 옛 데몬은 holder uuid 를 모른다) → 잠금이 풀릴 때까지 → (잠금을 쥔 채) 끝 기록 → daemon.json 을 지운다.
+ * ★끝 기록(KAN-1616 — 새 holder 가 원본 위에 얹고 다리가 그 수신처로 올린다)은 옛 데몬이 끝난 «뒤», 그 데몬이 확정한 원본(수신처·사유·시각)을
+ *   읽고 빈 수신처만 채운다. 끄기 전에 미리 쓰면 옛 데몬의 확정 기록을 덮었다 — 다른 계정이 받던 세션이 이 계정으로 · 멈춘 전환이 산 세션을
+ *   exited 로 · 옛 데몬이 대기 책을 정리하며 그 쓰기를 지움(리뷰 r2 P0-1·2·3).
+ * [한계] 잠금이 풀린 틈에 다른 명령이 새 holder 를 먼저 띄우면 이 명령은 책을 쓰지 못한다(쓰는 것은 잠금을 쥔 쪽 하나) — 전환은 끝난 것으로 보고
+ *   잇되, 수신처 없는 끝(0.16.5 이하 옛 데몬은 수신처 표시가 없거나 끝 기록 자체가 없다)은 이 계정으로 채우지 못해 웹에 «확인 안 됨»으로 남는다(리뷰 r1 P1-8).
  */
 async function endOldDaemon(deps: PcDeps, note: (line: string) => void, consented: readonly ListedSession[], destination: string | undefined): Promise<void> {
   const info = readDaemonInfo(deps.paths);
   note("Switching the AiNecto terminal service on this PC to the new structure…");
-  await recordSwitchedOff(deps, note, consented, destination);
   // 이미 끝난 데몬이면 받을 쪽이 없다 — 그래도 판정은 아래 잠금 하나로 한다.
   const result = await termRequest(deps.paths, { op: "kill-server" }, { start: false });
   // 마지막 목록과 kill-server 사이(밀리초)에 생긴 세션 — 옛 데몬은 막을 수 없다. 숨기지 않고 알린다.
   const killed = result.daemon ? (result.data as { killed?: unknown }).killed : undefined;
   const unasked = Array.isArray(killed) ? killed.filter((name): name is string => typeof name === "string" && !consented.some((s) => s.name === name)) : [];
   if (unasked.length > 0) note(`Also closed ${unasked.length} terminal session(s) that opened just as the switch started: ${unasked.join(", ")}.`);
-  if (!(await waitForDaemonLockFree(deps.paths, deps.stopDeadlineMs))) {
-    // 그 사이 다른 명령이 이미 새 구조를 띄웠으면(잠금을 쥔 것은 새 holder) 전환은 끝났다(리뷰 r1 P1-8).
+  if (!(await waitForDaemonLockFree(deps.paths, deps.stopDeadlineMs, () => recordSwitchedOff(deps, note, consented, destination)))) {
+    // 그 사이 다른 명령이 이미 새 구조를 띄웠으면(잠금을 쥔 것은 새 holder) 전환은 끝났다(리뷰 r1 P1-8 · 끝 기록은 위 [한계]).
     const now = await daemonCaps(deps.paths);
     if (!(now.daemon && now.caps)) {
       const pid = info ? ` (${info.version ?? "unknown version"}, started as pid ${info.pid})` : "";
@@ -298,7 +300,10 @@ async function endOldDaemon(deps: PcDeps, note: (line: string) => void, consente
   if (readDaemonInfo(deps.paths)?.pid === info?.pid) await unlinkIfPresent(deps.paths.daemonInfo);
 }
 
-/** 첫 전환으로 닫을 세션들의 끝 기록 → 병합 대기 책. 원본 책은 읽기만(못 읽으면 없는 셈) · 병합 대기 책을 못 읽으면 덮지 않는다(알리고 넘어간다). */
+/**
+ * 첫 전환으로 닫힌 세션들의 끝 기록 → 병합 대기 책 — ★옛 데몬이 끝나 잠금을 쥔 동안에만 부른다(그 데몬이 원본·대기 책 쓰기를 마쳤다).
+ * 원본 책은 읽기만(못 읽으면 없는 셈) · 병합 대기 책을 못 읽으면 덮지 않는다(알리고 넘어간다).
+ */
 async function recordSwitchedOff(deps: PcDeps, note: (line: string) => void, consented: readonly ListedSession[], destination: string | undefined): Promise<void> {
   try {
     const stored = await readEndedBook(deps.paths.ended).catch(() => []);

@@ -1,11 +1,12 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
-import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { executePcStart, type PcDeps } from "../src/adapters/cli/pcCommand";
 import { SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
 import type { MachineStatus } from "../src/core/setup/machineStatus";
@@ -14,6 +15,16 @@ import { accountKey, loadPcSettings, savePcSettings, withConsent } from "../src/
 import { daemonCaps, termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
 import { daemonPids, holderPids, json, LONG, ok, rig, ROOT, sessions, startOuterAt, TERM_AT, TSX, until, useTermRig } from "./termRig";
+
+/** 넣는 고장 하나 — 연결 명령의 kill-server 요청만 옛 데몬에 닿지 않게(리뷰 r2 P0-2 «종료 요청 직전 연결 실패»). 나머지 요청은 진짜. */
+const fault = vi.hoisted(() => ({ dropKillServer: false }));
+vi.mock("../src/core/term/client", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/core/term/client")>();
+  const termRequest: typeof real.termRequest = async (paths, body, options) => (fault.dropKillServer && body.op === "kill-server"
+    ? { daemon: false } as Awaited<ReturnType<typeof real.termRequest>>
+    : await real.termRequest(paths, body, options));
+  return { ...real, termRequest };
+});
 
 /**
  * term 데몬을 이 판으로 맞추기(upgradeDaemon — 연결 명령·자동 업데이트의 앞단계 · 세션 유지 구조 3-4·5절) — 실물.
@@ -90,7 +101,7 @@ const GRACEFUL = "if (process.argv.includes('--version')) process.exit(0);"
   + `process.on('SIGINT', () => process.exit(0)); ${CONNECTED} setInterval(() => undefined, 1000);`;
 
 /** 연결 명령(executePcStart) 하나 — 이 PC 는 이미 동의했다(묻는 것은 첫 전환뿐). pc 세션 명령은 대역(Ctrl+C 에 0 으로 끝남). */
-async function pcStart(interactive: boolean, answer?: string): Promise<{ code: number; out: string; err: string }> {
+async function pcStart(interactive: boolean, answer?: string, stopDeadlineMs = 10_000): Promise<{ code: number; out: string; err: string }> {
   const settingsPath = join(rig.home, ".ainecto", "pc.json");
   await savePcSettings(settingsPath, withConsent(await loadPcSettings(settingsPath, "test-host"), KEY, true, new Date()));
   const stdin = new PassThrough();
@@ -111,7 +122,7 @@ async function pcStart(interactive: boolean, answer?: string): Promise<{ code: n
     hostName: "test-host", endpoint: ENDPOINT, cwd: rig.home, sessionEnv: env, flags: { env: "dev" }, cliVersion: "0.16.8",
     managedCommand: (args) => [process.execPath, "-e", GRACEFUL, "--", "--package", "@ainecto/mcp@0.16.8", "ainecto", ...args],
     runner: systemCommandRunner({ cwd: rig.home, env: rig.env }), termProblem: undefined,
-    agentLog: join(rig.home, ".ainecto/agent/agent.log"), stopDeadlineMs: 10_000, readyDeadlineMs: 10_000,
+    agentLog: join(rig.home, ".ainecto/agent/agent.log"), stopDeadlineMs, readyDeadlineMs: 10_000,
     machine: async () => signedIn, account: async () => ({ userId: "u1", displayName: "Ryan" }), setup: async () => 0,
   };
   const done = executePcStart(deps);
@@ -255,5 +266,75 @@ describe("term 데몬을 이 판으로(upgradeDaemon) — 실물", () => {
     await ok("term", "new", "fresh", "--", "/bin/sh");
     const ended = ((await json("term", "ls")).data as { ended?: Array<Record<string, unknown>> }).ended ?? [];
     expect(ended).toEqual([expect.objectContaining({ instance: seen?.instance, name: "legacy", reason: "exited", to: "https://example.test/mcp#u1" })]);
+  }, LONG);
+  /** 새 holder 를 띄워(다음 명령) 그 책의 끝 기록 — 이름순. */
+  async function endedAfterSwitch(): Promise<Array<Record<string, unknown>>> {
+    await ok("term", "new", "fresh", "--", "/bin/sh");
+    const ended = ((await json("term", "ls")).data as { ended?: Array<Record<string, unknown>> }).ended ?? [];
+    return [...ended].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  it("★리뷰 r2 P0-1 — 다른 계정(A)이 받던 세션의 끝 기록은 A 것 그대로 · 전환한 계정(B)은 수신처 없는 기록만 채운다", async () => {
+    const A = "https://example.test/mcp#a";
+    const B = "https://example.test/mcp#b";
+    expect((await oldCli("term", "new", "seen-by-a", "--", "/bin/sh")).code).toBe(0);
+    expect((await oldCli("term", "new", "unseen", "--", "/bin/sh")).code).toBe(0);
+    const before = (await sessions()) as Array<{ name: string; instance?: string }>;
+    const seenByA = before.find((session) => session.name === "seen-by-a")?.instance;
+    const unseen = before.find((session) => session.name === "unseen")?.instance;
+    // 0.16.6 다리가 목록을 올리기 전에 하는 표시 그대로(진짜 옛 데몬의 listed-to)
+    await termRequest(termPaths(rig.home), { op: "listed-to", to: A, instances: [seenByA!] }, { start: false });
+    const [oldDaemon] = daemonPids();
+    writeFileSync(join(rig.home, "term-destination"), `${B}\n`);
+
+    await upgradeAt("0.16.8", "y");
+    await until(() => !alive(oldDaemon!), "old daemon gone");
+    expect(await endedAfterSwitch()).toEqual([
+      expect.objectContaining({ instance: seenByA, name: "seen-by-a", to: A }),
+      expect.objectContaining({ instance: unseen, name: "unseen", to: B }),
+    ]);
+  }, LONG);
+
+  it("★리뷰 r2 P0-2 — 끄기 요청이 옛 데몬에 닿지 않아 전환이 멈추면 끝 기록을 미리 남기지 않는다 · 나중에 실제로 끝난 사유(killed)가 그대로", async () => {
+    expect((await oldCli("term", "new", "work", "--", "/bin/sh")).code).toBe(0);
+    const instance = ((await sessions()) as Array<{ name: string; instance?: string }>).find((session) => session.name === "work")?.instance;
+    const [oldDaemon] = daemonPids();
+    const paths = termPaths(rig.home);
+
+    fault.dropKillServer = true;
+    try {
+      await expect(pcStart(true, "y", 1_500)).rejects.toThrow(/is still running and did not stop/);
+    } finally {
+      fault.dropKillServer = false;
+    }
+    expect(alive(oldDaemon!)).toBe(true);
+    expect((await sessions()).map((session) => session.name)).toEqual(["work"]);
+    expect(existsSync(paths.endedPending)).toBe(false);
+
+    // 그 뒤 사람이 옛 CLI 로 그 세션을 지웠다 — 옛 데몬이 확정한 사유는 killed
+    expect((await oldCli("term", "kill", "work")).code).toBe(0);
+    await until(() => !alive(oldDaemon!), "old daemon gone (no sessions left)");
+    expect(await endedAfterSwitch()).toEqual([expect.objectContaining({ instance, name: "work", reason: "killed" })]);
+  }, LONG);
+
+  it("★리뷰 r2 P0-3 — 옛 데몬이 대기 책(ended.pending.json)을 복구해 둔 채 전환해도 방금 닫은 세션의 수신처가 남는다", async () => {
+    const A = "https://example.test/mcp#a";
+    const B = "https://example.test/mcp#b";
+    const paths = termPaths(rig.home);
+    const prev = randomUUID();
+    mkdirSync(dirname(paths.endedPending), { recursive: true });
+    writeFileSync(paths.endedPending, `${JSON.stringify({ ended: [{ instance: prev, name: "prev", kind: "user", command: ["/bin/sh"],
+      endedAt: new Date().toISOString(), reason: "exited", to: A }] })}\n`);
+    expect((await oldCli("term", "new", "work", "--", "/bin/sh")).code).toBe(0);
+    const work = ((await sessions()) as Array<{ name: string; instance?: string }>).find((session) => session.name === "work")?.instance;
+    const [oldDaemon] = daemonPids();
+    writeFileSync(join(rig.home, "term-destination"), `${B}\n`);
+
+    await upgradeAt("0.16.8", "y");
+    await until(() => !alive(oldDaemon!), "old daemon gone");
+    expect(await endedAfterSwitch()).toEqual([
+      expect.objectContaining({ instance: prev, name: "prev", to: A }),
+      expect.objectContaining({ instance: work, name: "work", to: B }),
+    ]);
   }, LONG);
 });
