@@ -40,12 +40,19 @@ export function preflightNotes(checks: readonly DoctorCheck[]): string[] {
 export type PcResult =
   | { kind: "connected"; agentMissing: boolean; log: string }
   | { kind: "connecting"; log: string }
-  | { kind: "already"; folder: string; version: string; log: string };
+  | { kind: "already"; folder: string; version: string; log: string }
+  /** 옛 구조 데몬을 그대로 뒀다(첫 전환 «아니오» · 비대화 · 터미널 세션 안) — 세션도 PC 연결도 손대지 않았다(리뷰 r1 P0-2). */
+  | { kind: "kept-old" };
 
 /** 결과 한 단락 — 맨 위에 찍는다. */
 export function pcResultText(result: PcResult): string {
   if (result.kind === "connecting") {
     return `Still connecting this PC to AiNecto — run \`ainecto status\` to see when it is up. Log: ${result.log}`;
+  }
+  if (result.kind === "kept-old") {
+    return "Nothing was changed — the AiNecto terminal service on this PC keeps its old structure, and its terminal sessions and "
+      + "PC connection stay as they are. To switch, run `npx -y ainecto@latest` in a terminal on this PC (not inside an AiNecto "
+      + "terminal session) and answer y.";
   }
   if (result.kind === "already") {
     return `This PC is already connected to AiNecto (folder ${result.folder}, version ${result.version}). ${STOP} Log: ${result.log}`;

@@ -9,7 +9,7 @@ import { termPaths } from "../../src/core/term/paths";
 /**
  * 시험용 진입 — 판을 `$HOME/term-version` 파일에서 읽는다(같은 소스로 «판 N»·«판 N+1» 을 띄워 넘기기를 시험한다 — 환경변수 안 씀).
  *   `termAt.ts term daemon|holder --ready-fd 3` — 그 판의 바깥·holder. 바깥이 holder 를 띄울 때도 이 진입(process.argv[1])으로 띄운다.
- *   `termAt.ts upgrade [--interactive]` — 그 판 CLI 의 upgradeDaemon(연결 명령의 앞단계) 하나. 안내 줄을 JSON 한 줄로 stdout 에.
+ *   `termAt.ts upgrade [--interactive]` — 그 판 CLI 의 upgradeDaemon(연결 명령의 앞단계) 하나. 안내 줄·결과를 JSON 한 줄로 stdout 에(안내 줄은 stderr 에도 바로).
  *     넘기기에서 띄우는 바깥도 이 진입이라 같은 판이다. --interactive 면 stdin 에서 답을 읽는다.
  *   `$HOME/term-compute` 가 있으면 그 줄 = 이 판 «설치본»의 계산 모듈 파일(바깥이 holder 에 알린다 · 배포물의 installedComputeFile 자리).
  */
@@ -28,8 +28,12 @@ if (process.argv[2] === "upgrade") {
   // 끝 기록의 수신처(연결 명령에서는 서버·계정 열쇠) — 있으면 $HOME/term-destination.
   const destinationFile = join(homedir(), "term-destination");
   const destination = existsSync(destinationFile) ? readFileSync(destinationFile, "utf8").trim() : undefined;
-  await upgradeDaemon(deps, (line) => notes.push(line), destination);
-  process.stdout.write(`${JSON.stringify({ notes })}\n`);
+  // 안내 줄은 stderr 에도 바로 — 시험이 묻는 중인지 보고 그 사이에 세션을 연다(리뷰 r1 P0-3).
+  const outcome = await upgradeDaemon(deps, (line) => {
+    notes.push(line);
+    process.stderr.write(`${line}\n`);
+  }, destination);
+  process.stdout.write(`${JSON.stringify({ notes, outcome })}\n`);
   process.exit(0);
 }
 const role = process.argv[3];

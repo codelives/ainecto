@@ -166,7 +166,12 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
     await savePcSettings(deps.settingsPath, settings);
   }
 
-  await upgradeDaemon(deps, note, key);
+  if ((await upgradeDaemon(deps, note, key)) === "kept-old") {
+    // ★옛 구조를 그대로 뒀으면 PC 연결도 그대로 — 갈아끼우면(stopPc) N 을 답한 사람의 연결이 바뀐다(리뷰 r1 P0-2).
+    const [pc] = runningPcs(await listed(deps));
+    return withNotes(deps, later, print(deps, { connected: pc !== undefined, switched: false, ...(pc ? pcView(deps, pc) : {}) },
+      pcResultText({ kind: "kept-old" })));
+  }
   const action = pcAction(runningPcs(await listed(deps)), deps.cliVersion);
   if (action.kind === "already") {
     // ★웹 «원격 터미널 끊기» 뒤 원격은 그 pc 프로세스가 사는 동안 꺼진 채다 — 같은 판이어도 다시 띄워야 원격이 켜진다(R3).
@@ -188,16 +193,20 @@ export async function executePcStart(deps: PcDeps): Promise<number> {
   return await withRegistration(deps, key, userId, withNotes(deps, later, await launchPc(deps)));
 }
 
+/** {@link upgradeDaemon} 결과 — ready: 이어서 연결 · kept-old: 옛 구조 데몬을 그대로 뒀다(세션·PC 연결 모두 손대지 않는다). */
+export type DaemonUpgrade = "ready" | "kept-old";
+
 /**
  * term 데몬을 이 판으로 맞춘다({@link daemonPlan} — 세션 유지 구조 3-4·3-6·5절). 판·구조는 살아 있는 바깥에게 묻는다(G4).
  *   handover — 이 판의 바깥을 띄우면 옛 바깥에게서 넘겨받는다. 세션은 닫히지 않아 묻지 않는다.
  *   retire   — holder 말이 모자라고 사용자 세션 0: PC 연결 세션째 holder 를 끝낸다. 뒤의 pcAction 이 새 판으로 다시 띄운다.
- *   switch   — 옛 구조 첫 전환: 열린 세션이 모두 한 번 닫힌다. 세션이 있으면 사람에게 한 번 묻고(기본 N) 비대화면 그대로 둔다.
- *              세션이 0 이면 닫힐 것이 없어 묻지 않는다. 옛 데몬이 끝나고 잠금이 풀린 뒤 daemon.json 을 지운다.
+ *   switch   — 옛 구조 첫 전환: 열린 세션이 모두 한 번 닫힌다. ★대화형 «예» 한 번으로만(세션 0 이어도 — 설계 5절 · 리뷰 r1 P0-2).
+ *              비대화·«아니오»면 kept-old. 묻는 동안 새 세션이 생겼으면 그것까지 보여 다시 묻는다(리뷰 r1 P0-3).
+ *   옛 구조인데 터미널 세션 안(keep)도 kept-old — 첫 전환을 하지 않으니 연결도 갈지 않는다.
  */
-export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void, destination: string | undefined): Promise<void> {
+export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void, destination: string | undefined): Promise<DaemonUpgrade> {
   const found = await daemonCaps(deps.paths);
-  if (!found.daemon) return;
+  if (!found.daemon) return "ready";
   const sessions = await listed(deps);
   const plan = daemonPlan({
     structure: found.caps ?? "old",
@@ -207,64 +216,99 @@ export async function upgradeDaemon(deps: PcDeps, note: (line: string) => void, 
   });
   switch (plan.kind) {
     case "keep":
-      return;
+      return found.caps ? "ready" : "kept-old";
     case "handover": {
       // 새 바깥이 넘겨받고 준비를 알린 뒤에 돌아온다 — 넘기기가 안 끝나면 옛 바깥이 그대로 받는다(세션 그대로). 연결은 그대로 이어 간다.
       const readiness = await spawnResident(deps.paths, "daemon");
       if (readiness.status === "ready") note(`Updated the AiNecto terminal service on this PC to ${deps.cliVersion} — open sessions stay open.`);
       // 넘기기가 안 됐다 — 옛 바깥이 그대로 받는다(세션 그대로). 이유는 daemon.log 에 있고, 여기서는 한 줄만.
       if (readiness.status === "error") note(`The AiNecto terminal service was not updated this time (sessions are unchanged): ${readiness.message}`);
-      return;
+      return "ready";
     }
     case "retire": {
       const result = await termRequest(deps.paths, { op: "retire", holder: plan.holder }, { start: false });
       const retired = result.daemon && (result.data as { retired?: unknown }).retired === true;
       if (retired) note("Updating the AiNecto terminal service on this PC (no open terminal sessions)…");
-      return;
+      return "ready";
     }
     case "switch": {
-      if (plan.sessions.length > 0) {
-        if (!deps.interactive) return;
-        const names = plan.sessions.map((session) => (session.kind === "pc-bridge" ? `${session.name} (PC connection)` : session.name));
-        note(`The terminal structure on this PC changed, so this one time the ${plan.sessions.length} open terminal session(s) will close: `
-          + `${names.join(", ")}. From the next update on they stay open.`);
-        if (!yes(await promptLine(deps.io, "Switch now? [y/N]: "), false)) return;
+      if (!deps.interactive) return "kept-old";
+      let shown: ReadonlyArray<Pick<ListedSession, "name" | "kind">> = plan.sessions;
+      let before: readonly ListedSession[] = sessions;
+      for (;;) {
+        note(switchQuestion(shown));
+        if (!yes(await promptLine(deps.io, "Switch now? [y/N]: "), false)) return "kept-old";
+        // ★동의한 것과 닫는 것이 같아야 한다 — 묻는 동안 생긴 세션은 보여 주고 다시 묻는다(옛 데몬은 생성을 막을 수 없다).
+        const now = await listed(deps);
+        const late = now.filter((session) => !before.some((seen) => sameSession(seen, session)));
+        if (late.length === 0) {
+          await endOldDaemon(deps, note, now, destination);
+          return "ready";
+        }
+        note(`While you were answering, ${late.length} more terminal session(s) opened: ${late.map((session) => session.name).join(", ")}.`);
+        shown = now;
+        before = now;
       }
-      await endOldDaemon(deps, note, sessions, destination);
-      return;
     }
   }
 }
 
+/** 첫 전환 질문 — 닫힐 세션 이름(PC 연결은 표시) · 0 이면 닫힐 것이 없다고. */
+function switchQuestion(sessions: ReadonlyArray<Pick<ListedSession, "name" | "kind">>): string {
+  if (sessions.length === 0) {
+    return "The terminal structure on this PC changed. No terminal sessions are open, so none will close. From the next update on they stay open.";
+  }
+  const names = sessions.map((session) => (session.kind === "pc-bridge" ? `${session.name} (PC connection)` : session.name));
+  return `The terminal structure on this PC changed, so this one time the ${sessions.length} open terminal session(s) will close: `
+    + `${names.join(", ")}. From the next update on they stay open.`;
+}
+
+/** 같은 세션인가 — uuid 가 있으면 그것으로, 없으면(uuid 전 옛 데몬) 이름·pid 로. */
+function sameSession(a: ListedSession, b: ListedSession): boolean {
+  return a.instance !== undefined && b.instance !== undefined ? a.instance === b.instance : a.name === b.name && a.pid === b.pid;
+}
+
 /**
- * 옛 구조 데몬(0.16.x)을 끝낸다 — kill-server(칸 없이 — 옛 데몬은 holder uuid 를 모른다) → 잠금이 풀릴 때까지 → daemon.json 을 지운다.
- * 잠금을 쥔 동안 방금 본 세션들의 끝 기록을 병합 대기 책에 남긴다(KAN-1616 — 새 holder 가 원본 위에 얹고 다리가 그 수신처로 올린다).
+ * 옛 구조 데몬(0.16.x)을 끝낸다 — 끝 기록 → kill-server(칸 없이 — 옛 데몬은 holder uuid 를 모른다) → 잠금이 풀릴 때까지 → daemon.json 을 지운다.
+ * ★끝 기록(KAN-1616 — 새 holder 가 원본 위에 얹고 다리가 그 수신처로 올린다)은 끄기 «전»에 병합 대기 책에 쓴다 — 옛 데몬이 잠금을 쥔 동안이라
+ *   새 holder 가 아직 뜨지 못한다. 끈 뒤에 쓰면 그 사이 다른 명령이 잠금을 먼저 잡을 때 기록이 사라졌다(리뷰 r1 P1-8).
  */
-async function endOldDaemon(deps: PcDeps, note: (line: string) => void, seen: readonly ListedSession[], destination: string | undefined): Promise<void> {
+async function endOldDaemon(deps: PcDeps, note: (line: string) => void, consented: readonly ListedSession[], destination: string | undefined): Promise<void> {
   const info = readDaemonInfo(deps.paths);
   note("Switching the AiNecto terminal service on this PC to the new structure…");
+  await recordSwitchedOff(deps, note, consented, destination);
   // 이미 끝난 데몬이면 받을 쪽이 없다 — 그래도 판정은 아래 잠금 하나로 한다.
-  await termRequest(deps.paths, { op: "kill-server" }, { start: false });
-  const recordEnds = async (): Promise<void> => {
-    try {
-      // 원본 책은 읽기만 한다(못 읽으면 없는 셈) — 쓰는 곳은 병합 대기 책(못 읽으면 덮지 않는다 — 던진다).
-      const stored = await readEndedBook(deps.paths.ended).catch(() => []);
-      const pending = await readEndedBook(deps.paths.endedPending);
-      const records = switchedOffRecords(seen, mergeEnded(stored, pending, new Set()), new Date().toISOString(), destination);
-      if (records.length > 0) await writeEndedBook(deps.paths.endedPending, records.reduce((book, record) => withEnded(book, record), pending));
-    } catch (error) {
-      note(`Could not record that the closed sessions ended (${error instanceof Error ? error.message : String(error)}) — `
-        + "AiNecto on the web may show them as not confirmed.");
+  const result = await termRequest(deps.paths, { op: "kill-server" }, { start: false });
+  // 마지막 목록과 kill-server 사이(밀리초)에 생긴 세션 — 옛 데몬은 막을 수 없다. 숨기지 않고 알린다.
+  const killed = result.daemon ? (result.data as { killed?: unknown }).killed : undefined;
+  const unasked = Array.isArray(killed) ? killed.filter((name): name is string => typeof name === "string" && !consented.some((s) => s.name === name)) : [];
+  if (unasked.length > 0) note(`Also closed ${unasked.length} terminal session(s) that opened just as the switch started: ${unasked.join(", ")}.`);
+  if (!(await waitForDaemonLockFree(deps.paths, deps.stopDeadlineMs))) {
+    // 그 사이 다른 명령이 이미 새 구조를 띄웠으면(잠금을 쥔 것은 새 holder) 전환은 끝났다(리뷰 r1 P1-8).
+    const now = await daemonCaps(deps.paths);
+    if (!(now.daemon && now.caps)) {
+      const pid = info ? ` (${info.version ?? "unknown version"}, started as pid ${info.pid})` : "";
+      throw new CliCommandError("PC_START_FAILED", `The old AiNecto terminal service${pid} is still running and did not stop `
+        + `within ${Math.round(deps.stopDeadlineMs / 1000)} s. End it — on Windows: Task Manager › Details › the node.exe whose command line has `
+        + `"term daemon"; on macOS/Linux: \`kill ${info?.pid ?? "<pid>"}\` if that pid is still the daemon — or restart this PC, then run \`npx -y ainecto@latest\` again.`);
     }
-  };
-  if (!(await waitForDaemonLockFree(deps.paths, deps.stopDeadlineMs, recordEnds))) {
-    const pid = info ? ` (${info.version ?? "unknown version"}, started as pid ${info.pid})` : "";
-    throw new CliCommandError("PC_START_FAILED", `The old AiNecto terminal service${pid} is still running and did not stop `
-      + `within ${Math.round(deps.stopDeadlineMs / 1000)} s. End it — on Windows: Task Manager › Details › the node.exe whose command line has `
-      + `"term daemon"; on macOS/Linux: \`kill ${info?.pid ?? "<pid>"}\` if that pid is still the daemon — or restart this PC, then run \`npx -y ainecto@latest\` again.`);
   }
-  // ★옛 데몬이 끝나고 잠금이 풀린 «뒤»에만 — 구판 CLI 가 남은 파일의 판으로 업데이트 길에 들어가지 않게(설계 3-4).
-  await unlinkIfPresent(deps.paths.daemonInfo);
+  // ★옛 데몬이 끝난 «뒤»에만, 그리고 끝낸 그 데몬의 파일일 때만 — 구판 CLI 가 남은 파일의 판으로 업데이트 길에 들어가지 않게(설계 3-4).
+  //   그 사이 구판 CLI 가 옛 데몬을 새로 띄웠으면(다른 pid) 그 파일은 그 데몬의 것이라 남긴다(리뷰 r1 P1-8).
+  if (readDaemonInfo(deps.paths)?.pid === info?.pid) await unlinkIfPresent(deps.paths.daemonInfo);
+}
+
+/** 첫 전환으로 닫을 세션들의 끝 기록 → 병합 대기 책. 원본 책은 읽기만(못 읽으면 없는 셈) · 병합 대기 책을 못 읽으면 덮지 않는다(알리고 넘어간다). */
+async function recordSwitchedOff(deps: PcDeps, note: (line: string) => void, consented: readonly ListedSession[], destination: string | undefined): Promise<void> {
+  try {
+    const stored = await readEndedBook(deps.paths.ended).catch(() => []);
+    const pending = await readEndedBook(deps.paths.endedPending);
+    const records = switchedOffRecords(consented, mergeEnded(stored, pending, new Set()), new Date().toISOString(), destination);
+    if (records.length > 0) await writeEndedBook(deps.paths.endedPending, records.reduce((book, record) => withEnded(book, record), pending));
+  } catch (error) {
+    note(`Could not record that the closed sessions ended (${error instanceof Error ? error.message : String(error)}) — `
+      + "AiNecto on the web may show them as not confirmed.");
+  }
 }
 
 /** 연결 결과를 찍은 «뒤» 브라우저 자동 등록 — 종료 코드는 그대로(등록이 안 돼도 연결은 이미 됐다). */

@@ -1,10 +1,17 @@
-import { execFile, execFileSync } from "node:child_process";
-import { existsSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { PassThrough } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createConnection } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { daemonCaps } from "../src/core/term/client";
+import { executePcStart, type PcDeps } from "../src/adapters/cli/pcCommand";
+import { SERVE_CONNECTED_PREFIX } from "../src/core/agent/serve";
+import type { MachineStatus } from "../src/core/setup/machineStatus";
+import { systemCommandRunner } from "../src/core/setup/commandRunner";
+import { accountKey, loadPcSettings, savePcSettings, withConsent } from "../src/core/pc/pcSettings";
+import { daemonCaps, termRequest } from "../src/core/term/client";
 import { termPaths } from "../src/core/term/paths";
 import { daemonPids, holderPids, json, LONG, ok, rig, ROOT, sessions, startOuterAt, TERM_AT, TSX, until, useTermRig } from "./termRig";
 
@@ -51,6 +58,78 @@ function upgradeAt(version: string, answer?: string): Promise<string[]> {
       });
     child.stdin?.end(answer !== undefined ? `${answer}\n` : "");
   });
+}
+
+/** 대화형 upgradeDaemon 을 띄워 둔다 — 안내 줄(stderr)을 보며 답을 하나씩 준다(묻는 동안 세션을 여는 시험). */
+function upgradeLive(version: string) {
+  writeFileSync(join(rig.home, "term-version"), `${version}\n`);
+  const child = spawn(process.execPath, ["--import", TSX, `--conditions=${rig.marker}`, TERM_AT, "upgrade", "--interactive"], { env: rig.env, cwd: rig.home });
+  let err = "";
+  let out = "";
+  child.stderr.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+  child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+  const done = new Promise<{ notes: string[]; outcome: string }>((resolve, reject) => child.on("exit", (code) => (code === 0
+    ? resolve(JSON.parse(out.trim().split("\n").pop()!) as { notes: string[]; outcome: string })
+    : reject(new Error(`upgrade failed: ${err}`)))));
+  return {
+    done,
+    /** `text` 가 n 번 보일 때까지(묻는 중). */
+    seen: async (text: string, nth: number) => {
+      await until(() => err.split(text).length - 1 >= nth, `«${text}» ×${nth}\n--- stderr ---\n${err}`);
+    },
+    say: (line: string) => {
+      child.stdin.write(`${line}\n`);
+    },
+  };
+}
+
+const ENDPOINT = "https://example.test/mcp";
+const KEY = accountKey(ENDPOINT, "u1");
+const CONNECTED = `console.log(${JSON.stringify(`${SERVE_CONNECTED_PREFIX}test-host.`)});`;
+const GRACEFUL = "if (process.argv.includes('--version')) process.exit(0);"
+  + `process.on('SIGINT', () => process.exit(0)); ${CONNECTED} setInterval(() => undefined, 1000);`;
+
+/** 연결 명령(executePcStart) 하나 — 이 PC 는 이미 동의했다(묻는 것은 첫 전환뿐). pc 세션 명령은 대역(Ctrl+C 에 0 으로 끝남). */
+async function pcStart(interactive: boolean, answer?: string): Promise<{ code: number; out: string; err: string }> {
+  const settingsPath = join(rig.home, ".ainecto", "pc.json");
+  await savePcSettings(settingsPath, withConsent(await loadPcSettings(settingsPath, "test-host"), KEY, true, new Date()));
+  const stdin = new PassThrough();
+  let out = "";
+  let err = "";
+  const env = Object.fromEntries(Object.entries(rig.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  const signedIn: MachineStatus = {
+    cliVersion: "0.16.8", endpoint: ENDPOINT, env: "dev", token: { state: "signed-in" },
+    account: { userId: "u1", displayName: "Ryan", projectCount: 1 }, agents: [], legacyEnv: [], legacyCodexProfiles: [],
+  };
+  const deps: PcDeps = {
+    io: {
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: { write: (text: string) => { out += text; return true; } } as unknown as NodeJS.WriteStream,
+      stderr: { write: (text: string) => { err += text; return true; } } as unknown as NodeJS.WriteStream,
+    },
+    json: false, interactive, paths: termPaths(rig.home), settingsPath, keysPath: join(rig.home, ".ainecto", "pc-keys.json"),
+    hostName: "test-host", endpoint: ENDPOINT, cwd: rig.home, sessionEnv: env, flags: { env: "dev" }, cliVersion: "0.16.8",
+    managedCommand: (args) => [process.execPath, "-e", GRACEFUL, "--", "--package", "@ainecto/mcp@0.16.8", "ainecto", ...args],
+    runner: systemCommandRunner({ cwd: rig.home, env: rig.env }), termProblem: undefined,
+    agentLog: join(rig.home, ".ainecto/agent/agent.log"), stopDeadlineMs: 10_000, readyDeadlineMs: 10_000,
+    machine: async () => signedIn, account: async () => ({ userId: "u1", displayName: "Ryan" }), setup: async () => 0,
+  };
+  const done = executePcStart(deps);
+  if (answer !== undefined) {
+    await until(() => err.includes("Switch now? [y/N]"), `switch question\n--- stderr ---\n${err}`);
+    stdin.write(`${answer}\n`);
+  }
+  return { code: await done, out, err };
+}
+
+/** 옛 구조 데몬(진짜 0.16.6)에 사용자 세션 keep + 옛 판 PC 연결(종류 pc-bridge · @ainecto/mcp@0.16.6) — 그 PC 연결의 pid·uuid. */
+async function oldDaemonWithPc(): Promise<{ pid: number; instance: string }> {
+  expect((await oldCli("term", "new", "keep", "--", "/bin/sh")).code).toBe(0);
+  await termRequest(termPaths(rig.home), { op: "new", name: "ainecto-pc", cwd: rig.home, kind: "pc-bridge", env: {},
+    command: [process.execPath, "-e", GRACEFUL, "--", "--package", "@ainecto/mcp@0.16.6", "ainecto", "pc", "run"] }, { start: false });
+  const pc = (await sessions()).find((session) => session.name === "ainecto-pc") as { pid: number; instance?: string } | undefined;
+  expect(pc?.instance).toMatch(/^[0-9a-f-]{36}$/);
+  return { pid: pc!.pid, instance: pc!.instance! };
 }
 
 const alive = (pid: number): boolean => {
@@ -101,6 +180,67 @@ describe("term 데몬을 이 판으로(upgradeDaemon) — 실물", () => {
     expect(holderPids()).toHaveLength(1);
     const listed = (await json("term", "ls")).data as { sessions: Array<{ name: string; instance?: string; kind?: string }> };
     expect(listed.sessions).toEqual([expect.objectContaining({ name: "fresh", kind: "user", instance: expect.stringMatching(/^[0-9a-f-]{36}$/) })]);
+  }, LONG);
+
+  it("★리뷰 r1 P0-2 — 연결 명령에서 첫 전환에 «아니오» · 비대화면 옛 데몬도 옛 PC 연결(pid·uuid)도 그대로 · «바뀐 것 없음»을 알린다", async () => {
+    const before = await oldDaemonWithPc();
+    const [oldDaemon] = daemonPids();
+
+    const declined = await pcStart(true, "n");
+    expect(declined.code).toBe(0);
+    expect(declined.out).toContain("Nothing was changed — the AiNecto terminal service on this PC keeps its old structure");
+    expect(declined.err).not.toContain("Replacing the PC connection");
+    const quiet = await pcStart(false);
+    expect(quiet.code).toBe(0);
+    expect(quiet.err).not.toContain("Switch now?");
+    expect(quiet.out).toContain("Nothing was changed");
+
+    expect(alive(oldDaemon!)).toBe(true);
+    const pc = (await sessions()).find((session) => session.name === "ainecto-pc") as { pid: number; instance?: string } | undefined;
+    expect({ pid: pc?.pid, instance: pc?.instance }).toEqual(before);
+    expect((await sessions()).map((session) => session.name).sort()).toEqual(["ainecto-pc", "keep"]);
+  }, LONG);
+
+  it("★리뷰 r1 P0-2 — 세션 0 인 옛 데몬(연결 하나가 붙잡고 있음)도 비대화면 그대로 · 대화형이면 묻는다", async () => {
+    expect((await oldCli("term", "new", "gone", "--", "/bin/sh")).code).toBe(0);
+    const [oldDaemon] = daemonPids();
+    // 옛 데몬은 세션 0 · 연결 0 이면 스스로 끝난다 — 맨 연결 하나로 붙잡아 둔다(옛 데몬의 주소는 ctl.sock 하나).
+    const holdOpen = createConnection(join(rig.home, ".ainecto/term/ctl.sock"));
+    await new Promise<void>((resolve, reject) => holdOpen.once("connect", resolve).once("error", reject));
+    try {
+      await ok("term", "kill", "gone");
+      expect(await sessions()).toEqual([]);
+      expect(await upgradeAt("0.16.8")).toEqual([]);
+      expect(alive(oldDaemon!)).toBe(true);
+      expect(await upgradeAt("0.16.8", "n")).toEqual(["The terminal structure on this PC changed. No terminal sessions are open, so none will close. From the next update on they stay open."]);
+      expect(alive(oldDaemon!)).toBe(true);
+    } finally {
+      holdOpen.destroy();
+    }
+  }, LONG);
+
+  it("★리뷰 r1 P0-3 — 묻는 동안 생긴 세션은 이름을 보이고 다시 묻는다 · «예»면 동의한 둘 다 끝 기록(새 holder 의 책)", async () => {
+    expect((await oldCli("term", "new", "early", "--", "/bin/sh")).code).toBe(0);
+    const [oldDaemon] = daemonPids();
+    writeFileSync(join(rig.home, "term-destination"), "https://example.test/mcp#u1\n");
+    const run = upgradeLive("0.16.8");
+    await run.seen("Switch now? [y/N]", 1);
+    expect((await oldCli("term", "new", "late", "--", "/bin/sh")).code).toBe(0);
+    run.say("y");
+    await run.seen("Switch now? [y/N]", 2);
+    run.say("y");
+    const result = await run.done;
+    expect(result.outcome).toBe("ready");
+    expect(result.notes).toEqual([
+      "The terminal structure on this PC changed, so this one time the 1 open terminal session(s) will close: early. From the next update on they stay open.",
+      "While you were answering, 1 more terminal session(s) opened: late.",
+      "The terminal structure on this PC changed, so this one time the 2 open terminal session(s) will close: early, late. From the next update on they stay open.",
+      "Switching the AiNecto terminal service on this PC to the new structure…",
+    ]);
+    await until(() => !alive(oldDaemon!), "old daemon gone");
+    const pending = JSON.parse(readFileSync(termPaths(rig.home).endedPending, "utf8")) as { ended: Array<{ name: string; to?: string }> };
+    expect(pending.ended.map((record) => record.name).sort()).toEqual(["early", "late"]);
+    expect(pending.ended.every((record) => record.to === "https://example.test/mcp#u1")).toBe(true);
   }, LONG);
 
   it("KAN-1616 — 첫 전환으로 닫힌 세션은 끝 기록을 남긴다(옛 데몬은 남기지 않는다) · 방금 본 uuid · exited · 지금 계정 수신처 → 새 holder 의 책", async () => {
