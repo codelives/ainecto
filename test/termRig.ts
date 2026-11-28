@@ -105,6 +105,23 @@ function markedPids(role: string): number[] {
     .map((line) => Number(line.trim().split(/\s+/)[0]));
 }
 
+/**
+ * ps 표(`pid args`) 중 이 시험이 띄운 상주 프로세스(`term daemon`·`term holder`)의 pid — 순수 함수.
+ * ★빈 폴더 이름은 버린다 — 준비(빌드·복사)가 폴더를 정하기 전에 끊기면 빈 문자열이 모든 줄에 맞아 남의 프로세스까지 죽였다(리뷰 r1 P0-1).
+ */
+export function ownResidents(table: string, roots: readonly string[], self: number): number[] {
+  const mine = roots.filter((root) => root.length > 0);
+  if (mine.length === 0) return [];
+  return table.split("\n").flatMap((line) => {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!match) return [];
+    const pid = Number(match[1]);
+    const args = match[2]!;
+    const resident = args.includes(" term daemon") || args.includes(" term holder");
+    return resident && pid !== self && mine.some((root) => args.includes(root)) ? [pid] : [];
+  });
+}
+
 export async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if (await check()) {

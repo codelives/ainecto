@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { termPaths } from "../src/core/term/paths";
-import { LONG, ROOT, until } from "./termRig";
+import { LONG, ownResidents, ROOT, until } from "./termRig";
 
 /**
  * holder 자기 사본(세션 유지 구조 3-1) — 실물: 이 저장소를 tsup 으로 빌드한 배포물 두 벌(«npx 캐시»)과 임시 HOME.
@@ -32,15 +32,12 @@ beforeAll(() => {
 }, LONG);
 
 afterAll(async () => {
-  // 이 시험이 띄운 상주 프로세스 — 실행 인자에 이 시험 폴더가 있는 것(바깥 = 설치본 A · holder = HOME 아래 사본).
-  for (const line of execFileSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }).split("\n")) {
-    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (match && (match[2]!.includes(out) || match[2]!.includes(home)) && Number(match[1]) !== process.pid) {
-      try {
-        process.kill(Number(match[1]), "SIGKILL");
-      } catch {
-        // 이미 끝났다.
-      }
+  // 이 시험이 띄운 상주 프로세스만 — 실행 인자에 이 시험 폴더가 있는 바깥·holder(리뷰 r1 P0-1 · 준비가 중간에 끊겨 폴더가 비면 0개).
+  for (const pid of ownResidents(execFileSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }), [out, home], process.pid)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // 이미 끝났다.
     }
   }
   for (const dir of [out, home]) if (dir) await rm(dir, { recursive: true, force: true });
