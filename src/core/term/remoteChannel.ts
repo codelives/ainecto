@@ -33,9 +33,12 @@ type CryptoKey = Awaited<ReturnType<typeof importMessageKey>>;
  *          핀 없음·서명 틀림·모양 틀림 = PAIRING_REQUIRED · 미확정 후보 PC·계정당 4(C-E8) 넘으면 HANDSHAKE_LIMIT · 같은 channelId 는 무시(교체 없음)
  * confirm  웹→PC 의 n=0 · 복호돼야만 채널 활성(§11-2) · 30초(C-E8) 지나 온 것은 HANDSHAKE_EXPIRED · 활성 8(C-E5) 넘으면 CHANNEL_LIMIT
  * cmd      n 이 정확히 직전 + 1 일 때만(결번·되감기 = CHANNEL_OUT_OF_ORDER) · 직전에 실행한 n 과 같은 암호문 재도착은 «확인만»(실행 없음)
+ *          입력 줄 n 이 이미지 하한 이상이어도 CHANNEL_OUT_OF_ORDER(두 번호가 만나면 웹이 새 hello)
+ * image    입력 줄 밖 번호 — 웹은 2^32−1 부터 내려간다. 활성 채널 · 입력 다음 번호 ≤ n < 이미지 하한 · 복호 성공일 때만 받고 하한 = n
+ *          그 밖(재생·범위 밖·열기 실패)은 버린다(skipped) — 채널을 닫지 않고 답도 없다
  *          AAD = 선 위 kind·session·opId·projectUuid(A3) · 복호한 본문의 값과 다시 대조 — 어긋나거나 태그가 틀리면 DECRYPT_FAILED
  * 봉인     PC→웹(frame·answer) 번호는 채널마다 하나 — 봉인 «전에» 동기로 배정(같은 번호 두 번 없음) · 2^32(C-E4)에 닿으면 MESSAGE_LIMIT
- * 실행 확인  executedThrough = 이 연결에서 데몬 실행이 연속으로 확인된 마지막 웹→PC 번호(confirm 0 · 성공한 input·key·resize · 답한 CRUD — A6)
+ * 실행 확인  executedThrough = 이 연결에서 데몬 실행이 연속으로 확인된 마지막 웹→PC 번호(confirm 0 · 성공한 input·key·resize · 답한 CRUD — A6 · 이미지 제외)
  * </pre>
  */
 
@@ -127,7 +130,11 @@ export type ReceiveOutcome =
   /** 채널을 닫는다 — 장부에서는 이미 지웠다. 다리가 서버에 알린다. */
   | { type: "close"; reason: CloseReason }
   /** 모르는 채널(이미 닫음·만료 뒤 정리됨) — 실행하지 않는다. */
-  | { type: "unknown" };
+  | { type: "unknown" }
+  /** 받지 않는 이미지 — 버린다(채널은 그대로 · 답 없음). inactive 미활성 · number 범위 밖·재생 · open 복호·칸 대조 실패. */
+  | { type: "skipped"; why: ImageSkip };
+
+export type ImageSkip = "image-inactive" | "image-number" | "image-open";
 
 /** 봉인 실패 — 그 채널을 이 사유로 닫는다. */
 export class ChannelSealError extends Error {
@@ -152,6 +159,8 @@ interface ChannelState {
   executedThrough: number;
   /** 마지막으로 받아들인 웹→PC 번호와 그 암호문의 SHA-256 — 같은 번호·같은 암호문 재도착 판정. */
   last: { n: number; digest: string } | undefined;
+  /** 이미지 하한 — 받은 가장 작은 이미지 번호(처음 2^32 = 아직 없음). 이미지는 이보다 작아야, 입력 줄은 이보다 작아야 받는다. */
+  imageBelow: number;
 }
 
 export class ChannelBook {
@@ -263,6 +272,7 @@ export class ChannelBook {
       expiresAt: now + HANDSHAKE_TTL_MS,
       executedThrough: -1,
       last: undefined,
+      imageBelow: MAX_MESSAGES_PER_KEY,
     });
     return { type: "welcome", welcome: { eP: b64u(ephemeral.publicRaw), nP: b64u(nP), sig: b64u(sig) }, browser: channelBrowser };
   }
@@ -271,6 +281,7 @@ export class ChannelBook {
   async receive(wire: WireCommand): Promise<ReceiveOutcome> {
     const channel = this.channels.get(wire.channelId);
     if (!channel) return { type: "unknown" };
+    if (wire.kind === "image") return await this.receiveImage(channel, wire);
     const close = (reason: CloseReason): ReceiveOutcome => {
       this.channels.delete(wire.channelId);
       return { type: "close", reason };
@@ -279,7 +290,7 @@ export class ChannelBook {
     const digest = createHash("sha256").update(wire.c, "utf8").digest("hex");
     if (channel.last && wire.n === channel.last.n && digest === channel.last.digest) return { type: "duplicate" };
     if (wire.n >= MAX_MESSAGES_PER_KEY) return close("MESSAGE_LIMIT");
-    if (wire.n !== channel.receive.next) return close("CHANNEL_OUT_OF_ORDER");
+    if (wire.n >= channel.imageBelow || wire.n !== channel.receive.next) return close("CHANNEL_OUT_OF_ORDER");
     // n=0 은 confirm 이고 confirm 은 n=0 뿐이다.
     if ((wire.kind === "confirm") !== (wire.n === 0)) return close("CHANNEL_OUT_OF_ORDER");
     const ciphertext = fromB64u(wire.c);
@@ -307,6 +318,33 @@ export class ChannelBook {
     channel.active = true;
     channel.executedThrough = 0;
     return { type: "confirmed", browser: channel.browser };
+  }
+
+  /** 이미지 하나 — 입력 줄 번호(receive)·재도착 판정(last)은 건드리지 않는다. 받으면 하한만 내린다(같은 n 재생 차단). */
+  private async receiveImage(channel: ChannelState, wire: WireCommand): Promise<ReceiveOutcome> {
+    if (!channel.active) return { type: "skipped", why: "image-inactive" };
+    if (wire.n < channel.receive.next || wire.n >= channel.imageBelow) return { type: "skipped", why: "image-number" };
+    const ciphertext = fromB64u(wire.c);
+    if (!ciphertext) return { type: "skipped", why: "image-open" };
+    let plaintext: Uint8Array;
+    try {
+      ({ plaintext } = await openMessage(channel.b2p, {
+        type: "image",
+        connId: channel.connId,
+        pcId: this.pcId,
+        session: wire.session ?? "",
+        operationId: wire.opId ?? "",
+        projectUuid: wire.projectUuid ?? "",
+        counter: wire.n,
+      }, ciphertext, { order: "increasing", next: channel.receive.next }));
+    } catch {
+      return { type: "skipped", why: "image-open" };
+    }
+    // 복호가 됐다 = 웹이 이 번호를 썼다 — 칸 대조가 틀려도 이 번호는 다시 받지 않는다.
+    channel.imageBelow = wire.n;
+    const command = sealedCommand(wire, plaintext);
+    if (command?.kind !== "image") return { type: "skipped", why: "image-open" };
+    return { type: "command", command, browser: channel.browser };
   }
 
   /**

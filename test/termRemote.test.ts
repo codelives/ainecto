@@ -1048,6 +1048,38 @@ describe("원격 다리 E2E — 실 데몬 + 서버 대역 + 시험 브라우저
       expectLogPairs();
     }, LONG);
 
+    it("이미지는 입력 줄 밖 번호(2^32−1) — 앞뒤 입력 n=1,2 는 그대로 실행 · 실행 확인 지점은 이미지로 오르지 않는다 · 재생은 로그 1줄 후 버림(답·파일 없음) · 채널은 계속", async () => {
+      await ok("term", "new", "a", "--", "cat");
+      const browser = await web();
+      const run = start();
+      await until(() => fake.ops().includes("open"), "open");
+      const channel = await browser.connect();
+      channel.watch("a");
+      const { instance } = await frameWhere(channel, "a", () => true, "frame of a");
+      await channel.input("a", instance, "one\r");
+      await frameWhere(channel, "a", (frame) => frame.executedThrough === 1 && frame.text.includes("one"), "input 1 ran");
+      const crud = await channel.image("a", instance, "image/png", PNG);
+      expect(crud.sealed.n).toBe(2 ** 32 - 1);
+      const answered = await sent(channel, crud);
+      expect(answered.sealed).toEqual({ opId: crud.opId, kind: "image", session: "a", ok: true, result: { path: join(images(), `${crud.opId}.png`) } });
+      const replay = randomUUID();
+      channel.push(crud.sealed, replay);
+      await until(() => remoteLog().some((r) => r.event === "remote_command_skipped" && r.why === "image-number" && r.n === 2 ** 32 - 1),
+        "replayed image skipped");
+      await channel.input("a", instance, "two\r");
+      await frameWhere(channel, "a", (frame) => frame.executedThrough === 2 && frame.text.includes("two"), "input 2 ran");
+      expect(fake.answerFor(replay)).toBeUndefined();
+      expect(readdirSync(images())).toEqual([`${crud.opId}.png`]);
+      expect(Math.max(...(await channel.frames()).map((frame) => frame.executedThrough))).toBe(2);
+      const imageResult = remoteLog().find((r) => r.event === "remote_command_result" && r.type === "image");
+      expect(imageResult).toMatchObject({ ok: true });
+      expect(imageResult).not.toHaveProperty("executedThrough");
+      expect(channel.closedReason()).toBeUndefined();
+      run.stop.abort();
+      await run.done;
+      expectLogPairs();
+    }, LONG);
+
     it.skipIf(process.platform === "win32")("다리 시작 때 정리도 저장과 같은 폴더 검사 — images 가 링크면 정리하지 않는다(링크 너머 파일 그대로 · 한 줄 남기고 다리는 연다)", async () => {
       const target = join(rig.home, "elsewhere");
       mkdirSync(target, { recursive: true });

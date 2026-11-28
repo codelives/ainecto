@@ -17,6 +17,8 @@ const USER_ID = "5b1f2c9e-0a7d-4e63-8f41-9c2d7b6a3e10";
 const PC_ID = "6f2c1d3e-0000-4000-8000-000000000003";
 const OP = "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9";
 const INSTANCE = "inst-1";
+/** 이미지 번호의 맨 위(계약 B-1) — 2^32−1 부터 내려간다. */
+const TOP = 2 ** 32 - 1;
 
 /**
  * PC 쪽 채널 장부(remoteChannel.ts) — 진짜 암호로 행동하는 시험 브라우저(support/e2eBrowser)와 맞물린다. 서버·데몬 없음.
@@ -194,8 +196,67 @@ describe("E2E 채널 장부 — hello·confirm·순서·봉인", () => {
 
     const { book, browser, trust } = await world();
     const channel = await open(book, browser, trust, "c1");
-    expect(await book.receive(wire("c1", await channel.seal("image", body, { session: "w", opId: OP }))))
+    expect(await book.receive(wire("c1", await channel.seal("image", body, { session: "w", opId: OP }, { n: TOP }))))
       .toMatchObject({ type: "command", command: { kind: "image", opId: OP, session: "w", instance: INSTANCE, mime: "image/png", bytes } });
+  });
+
+  describe("이미지 번호(계약 B-3) — 입력 줄 밖 · 2^32−1 부터 내려감 · 하한보다 작을 때만 · 틀리면 버리고 채널은 그대로", () => {
+    const body = { opId: OP, session: "w", instance: INSTANCE, mime: "image/png", d: "iVBORw==" };
+    const imageAt = async (channel: BrowserChannel, n: number): Promise<SealedCmd> =>
+      await channel.seal("image", body, { session: "w", opId: OP }, { n });
+    const input = async (channel: BrowserChannel): Promise<SealedCmd> =>
+      await channel.seal("input", { session: "w", instance: INSTANCE, d: "eA==" }, { session: "w" });
+
+    it("맨 위 번호 이미지는 받는다 · 그 앞뒤로 입력 줄 n=1,2 는 그대로 흐른다 · 실행 확인 지점은 이미지로 오르지 않는다", async () => {
+      const { book, browser, trust } = await world();
+      const channel = await open(book, browser, trust, "c1");
+      expect(await book.receive(wire("c1", await input(channel)))).toMatchObject({ type: "command", command: { kind: "input" } });
+      expect(await book.receive(wire("c1", await imageAt(channel, TOP)))).toMatchObject({ type: "command", command: { kind: "image" } });
+      expect(book.executedThrough("c1")).toBe(0);
+      expect(await book.receive(wire("c1", await input(channel)))).toMatchObject({ type: "command", command: { kind: "input" } });
+      expect(await book.receive(wire("c1", await imageAt(channel, TOP - 1)))).toMatchObject({ type: "command", command: { kind: "image" } });
+      expect(await book.receive(wire("c1", await input(channel)))).toMatchObject({ type: "command", command: { kind: "input" } });
+      expect(book.isActive("c1")).toBe(true);
+    });
+
+    it("재생(같은 n) · n < 입력 다음 번호 · n ≥ 하한(2^32 포함) · 미활성 채널 → skipped(답 없음) · 채널은 열린 채 다음 입력이 된다", async () => {
+      const { book, browser, trust } = await world();
+      const channel = await open(book, browser, trust, "c1");
+      const first = await imageAt(channel, TOP - 5);
+      expect(await book.receive(wire("c1", first))).toMatchObject({ type: "command" });
+      expect(await book.receive(wire("c1", first))).toEqual({ type: "skipped", why: "image-number" });
+      expect(await book.receive(wire("c1", await imageAt(channel, TOP)))).toEqual({ type: "skipped", why: "image-number" });
+      expect(await book.receive({ channelId: "c1", n: 2 ** 32, c: "AA", kind: "image", session: "w", opId: OP }))
+        .toEqual({ type: "skipped", why: "image-number" });
+      expect(await book.receive(wire("c1", await input(channel)))).toMatchObject({ type: "command" });   // 입력 다음 번호 = 2
+      expect(await book.receive(wire("c1", await imageAt(channel, 1)))).toEqual({ type: "skipped", why: "image-number" });
+      expect(await book.receive(wire("c1", await input(channel)))).toMatchObject({ type: "command" });
+      const pending = await open(book, browser, trust, "c2", false);
+      expect(await book.receive(wire("c2", await imageAt(pending, TOP)))).toEqual({ type: "skipped", why: "image-inactive" });
+      expect(book.has("c2")).toBe(true);
+      expect(book.isActive("c1")).toBe(true);
+    });
+
+    it("암호문 변조·AAD 다름·base64url 아님 → skipped(image-open) · 하한은 그대로(같은 번호의 진짜 이미지는 받는다) · 채널은 열려 있다", async () => {
+      const { book, browser, trust } = await world();
+      const channel = await open(book, browser, trust, "c1");
+      const real = await imageAt(channel, TOP);
+      const flipped = Buffer.from(real.c, "base64url");
+      flipped[0] = flipped[0]! ^ 1;
+      expect(await book.receive(wire("c1", { ...real, c: flipped.toString("base64url") }))).toEqual({ type: "skipped", why: "image-open" });
+      expect(await book.receive(wire("c1", real, { session: "other" }))).toEqual({ type: "skipped", why: "image-open" });
+      expect(await book.receive(wire("c1", { ...real, c: "!!" }))).toEqual({ type: "skipped", why: "image-open" });
+      expect(await book.receive(wire("c1", real))).toMatchObject({ type: "command", command: { kind: "image" } });
+      expect(await book.receive(wire("c1", await input(channel)))).toMatchObject({ type: "command" });
+    });
+
+    it("입력 줄 n 이 이미지 하한 이상이면(두 번호가 만남 — 웹 버그) CHANNEL_OUT_OF_ORDER 로 닫는다", async () => {
+      const { book, browser, trust } = await world();
+      const channel = await open(book, browser, trust, "c1");
+      expect(await book.receive(wire("c1", await imageAt(channel, 1)))).toMatchObject({ type: "command" });
+      expect(await book.receive(wire("c1", await input(channel)))).toEqual({ type: "close", reason: "CHANNEL_OUT_OF_ORDER" });
+      expect(book.has("c1")).toBe(false);
+    });
   });
 
   it("선 위 cmd 모양(순수) · CRUD 바깥 코드는 허용 목록만(A7)", () => {

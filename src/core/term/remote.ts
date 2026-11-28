@@ -18,6 +18,7 @@ import {
   type ChannelCommand,
   type CloseReason,
   type HelloTrust,
+  type ImageSkip,
   type WireCommand,
 } from "./remoteChannel";
 import { pruneImages, saveImage, type ImagePrune } from "./remoteImage";
@@ -92,8 +93,8 @@ export type RemoteLogRecord =
   | { event: "remote_hello"; channelId: string; result: "welcome" | "refused" | "closed" | "ignored"; browserKeyId?: string; reason?: string }
   /** 채널이 활성됐다(confirm 복호) 또는 닫혔다(by = pc 면 PC 가 닫고 서버에 알림 · web 이면 웹이 닫음 · local 이면 다리 안에서만). */
   | { event: "remote_channel"; channelId: string; state: "active" | "closed"; by?: "pc" | "web" | "local"; reason?: string; browserKeyId?: string }
-  /** 같은 번호·같은 암호문 재도착(확인만) · 모르는 채널의 명령(실행 안 함). */
-  | { event: "remote_command_skipped"; channelId: string; n: number; why: "duplicate" | "unknown-channel" | "malformed" }
+  /** 같은 번호·같은 암호문 재도착(확인만) · 모르는 채널의 명령(실행 안 함) · 받지 않는 이미지(버림 — 채널은 그대로). */
+  | { event: "remote_command_skipped"; channelId: string; n: number; why: "duplicate" | "unknown-channel" | "malformed" | ImageSkip }
   | { event: "remote_command"; type: string; channelId: string; n: number; session?: string; opId?: string; requestId?: string; bytes?: number;
       mime?: string }
   | { event: "remote_command_result"; type: string; channelId: string; n: number; session?: string; requestId?: string; ok: boolean; code?: string;
@@ -919,6 +920,9 @@ class CommandRunner {
       case "duplicate":
         this.deps.log.write({ event: "remote_command_skipped", channelId: wire.channelId, n: wire.n, why: "duplicate" });
         return;
+      case "skipped":
+        this.deps.log.write({ event: "remote_command_skipped", channelId: wire.channelId, n: wire.n, why: outcome.why });
+        return;
       case "close":
         await this.hooks.closeChannel(wire.channelId, outcome.reason);
         return;
@@ -990,7 +994,7 @@ class CommandRunner {
 
   /**
    * 결과 있는 답(device·image) — 봉인 본문 {opId, kind, session?, ok, detail?, result} · AAD {answer, session, opId} · 바깥 code 는 허용 목록만(A7).
-   * 답을 보낸 뒤 실행 확인 지점을 올린다.
+   * device 는 답을 보낸 뒤 실행 확인 지점을 올린다 — 이미지는 입력 줄 밖 번호라 올리지 않는다.
    */
   private async reply(wire: WireCommand, kind: "device" | "image", session: string, opId: string,
     failure: { code: string; message: string } | undefined, result: Record<string, unknown>): Promise<void> {
@@ -1021,7 +1025,7 @@ class CommandRunner {
         // 응답 줄은 공용 입구가 남겼다 — 웹은 기한이면 «결과 미확정».
       }
     }
-    const raised = this.book.executed(wire.channelId, wire.n);
+    const raised = kind === "device" && this.book.executed(wire.channelId, wire.n);
     this.logResult(wire, kind, session, failure === undefined, failure?.code, raised ? wire.n : undefined);
     if (raised) this.hooks.refreshChannel(wire.channelId);
   }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { loadPcKeys, updatePcKeys, withBrowser } from "../../src/core/pc/pcKeys";
-import { generateSigningJwk, publicJwkOf } from "../../src/core/term/e2e";
+import { generateSigningJwk, MAX_MESSAGES_PER_KEY, publicJwkOf } from "../../src/core/term/e2e";
 import { TestBrowser, type BrowserChannel, type CmdMeta, type SealedCmd } from "./e2eBrowser";
 import type { FakeRemoteServer } from "./fakeRemoteServer";
 
@@ -76,6 +76,8 @@ export class FakeWeb {
 
 export class WebChannel {
   private readonly opened = new Map<number, OpenedFrame>();
+  /** 이미지 번호 하한(웹 ChannelCipher 와 같다) — 처음 2^32(아직 안 씀) · 이미지마다 하나씩 내려간다. */
+  private imageLowest = MAX_MESSAGES_PER_KEY;
 
   constructor(
     readonly fake: FakeRemoteServer,
@@ -138,16 +140,22 @@ export class WebChannel {
   }
 
   /** 이미지 붙여넣기(계약 §1) — kill 과 같은 선 위 칸 · 봉인 본문 {opId, session, instance, mime, d}. */
-  async image(session: string, instance: string, mime: string, bytes: Uint8Array): Promise<Crud> {
+  async image(session: string, instance: string, mime: string, bytes: Uint8Array): Promise<ImageCrud> {
     return await this.imageFields(session, instance, { mime, d: Buffer.from(bytes).toString("base64") });
   }
 
-  /** 봉인 본문의 이미지 칸(mime·d)을 그대로 — 모양이 틀린 본문 시험용. */
-  async imageFields(session: string, instance: string, fields: Record<string, unknown>): Promise<Crud> {
+  /** 봉인 본문의 이미지 칸(mime·d)을 그대로 — 모양이 틀린 본문 시험용. sealed 는 다시 넣기(재생) 시험용. */
+  async imageFields(session: string, instance: string, fields: Record<string, unknown>): Promise<ImageCrud> {
     const opId = randomUUID();
     const requestId = randomUUID();
-    await this.send("image", { opId, session, instance, ...fields }, { session, opId }, requestId);
-    return { opId, requestId, meta: { session, opId } };
+    const sealed = await this.sealImage({ opId, session, instance, ...fields }, { session, opId });
+    this.push(sealed, requestId);
+    return { opId, requestId, meta: { session, opId }, sealed };
+  }
+
+  /** 이미지 봉인(계약 B-1) — 입력 줄 밖 번호: 2^32−1 부터 하나씩 내려간다(같은 번호 두 번 없음). n 을 주면 그 번호로. */
+  async sealImage(body: unknown, meta: CmdMeta, n?: number): Promise<SealedCmd> {
+    return await this.channel.seal("image", body, meta, { n: n ?? --this.imageLowest });
   }
 
   /** 기기 관리(approve-new-device §3-4) — 세션 없음 · 봉인 안 action. */
@@ -198,4 +206,8 @@ export interface Crud {
   opId: string;
   requestId: string;
   meta: CmdMeta;
+}
+
+export interface ImageCrud extends Crud {
+  sealed: SealedCmd;
 }
