@@ -16,6 +16,7 @@ import {
   encodeLine,
   LineDecoder,
   parseClientMessage,
+  PC_SESSION_NAME,
   RETRY_CODE,
   type EndedRecord,
   type EndReason,
@@ -28,6 +29,10 @@ import { assertSessionName } from "./sessionName";
 import { ComputeSlot } from "./computeSlot";
 import { runningImage, sweepHolderImages } from "./holderImage";
 import { TermSession, type SessionCompute, type SessionSink } from "./session";
+
+/** 종류 칸 전 CLI 가 PC 연결을 만들려 할 때 — 그 CLI 가 이 문장을 그대로 보인다. */
+const LEGACY_PC_CREATE = "This AiNecto CLI is too old to connect this PC to the updated AiNecto terminal service — "
+  + "run `npx -y ainecto@latest` in a terminal on this PC instead.";
 
 /** 띄운 쪽(바깥)에게 «준비됨/이미 있음/실패»를 알리는 한 줄 — 바깥·holder 가 같은 모양을 쓴다. */
 export type DaemonReadiness = { status: "ready" } | { status: "locked" } | { status: "error"; message: string };
@@ -439,6 +444,9 @@ class Holder {
         assertSessionName(request.name);
         // ★종류는 만드는 요청이 정하고 holder 가 그대로 적는다 — 비었으면(구판 CLI) user(설계 원칙 1 «출처를 확인하지 못한 세션은 사용자 세션으로»).
         //   이름·명령으로 짐작하지 않는다(원칙 2). holder 가 만든 세션은 모두 종류를 가진다.
+        //   단 PC 연결 이름으로 종류 없이 오면(종류 칸 전 CLI 0.16.5 이하의 PC 연결) 만들지 않는다 — user 로 적으면 새 CLI 는 그 연결을
+        //   못 찾고(끄기·상태) 웹 사용자 목록에 PC 연결이 섞인다(리뷰 r1 P0-4). 사람이 이 이름을 쓰면 새 CLI 는 종류 user 를 싣는다.
+        if (request.kind === undefined && request.name === PC_SESSION_NAME) throw new TermError("TERM_BAD_REQUEST", LEGACY_PC_CREATE);
         const entry: ManifestEntry = { name: request.name, cwd: request.cwd, command: request.command, createdAt: new Date().toISOString(),
           ...(request.project !== undefined ? { project: request.project } : {}),
           ...(request.input !== undefined ? { input: request.input } : {}),

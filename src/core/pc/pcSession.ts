@@ -10,7 +10,7 @@ import { bridgePackageSpec, CLI_VERSION, PACKAGE_NAME } from "../version";
 import { bridgeKind } from "./bridgeKind";
 
 /**
- * «이 PC 연결» — 기존 term 데몬의 세션 하나(bridgeKind.PC_SESSION_NAME)가 내부 명령 `ainecto pc run` 을 돈다(KAN-738, root REQ d37a6dc2).
+ * «이 PC 연결» — 기존 term 데몬의 세션 하나(protocol.PC_SESSION_NAME)가 내부 명령 `ainecto pc run` 을 돈다(KAN-738, root REQ d37a6dc2).
  * 새 데몬 0. 여기는 순수 함수: 세션 명령 만들기 · 도는 것 찾기(★종류로 — bridgeKind 한 곳) · 시작/이미/갈아끼우기 판정 · 끄기 기다림.
  */
 

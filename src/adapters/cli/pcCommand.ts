@@ -7,7 +7,7 @@ import {
   withoutEndpoint,
   withRemoteTerminal,
 } from "../../core/pc/pcSettings";
-import { PC_SESSION_NAME } from "../../core/pc/bridgeKind";
+import { PC_SESSION_NAME } from "../../core/term/protocol";
 import {
   PC_OUTCOME_PATTERN,
   daemonPlan,

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { stopPc, type PcDeps } from "../src/adapters/cli/pcCommand";
-import { PC_SESSION_NAME } from "../src/core/pc/bridgeKind";
+import { PC_SESSION_NAME } from "../src/core/term/protocol";
 import { termPaths } from "../src/core/term/paths";
 import { json, LONG, ok, rig, useTermRig } from "./termRig";
 

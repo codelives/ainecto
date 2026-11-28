@@ -80,9 +80,15 @@ describe("term 끝 기록 책 — 세션이 끝나는 네 곳이 한 줄씩", ()
 
   it("종류 — new 의 kind 를 ls·매니페스트·끝 기록이 그대로 · 없이 만든 세션(옛 CLI)도 holder 가 정해 적음 · 로컬 term new 는 user 를 찍는다(리뷰 P1-4) · 모르는 값은 요청 거절", async () => {
     await ok("term", "new", "plain", "--", "cat");
-    // 이름·인자가 옛 판별식(ainecto-pc + pc run)에 걸려도 사람이 만든 세션은 user
-    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600", "pc", "run");
     const paths = termPaths(rig.home);
+    // ★종류 칸 전 CLI(0.16.5 이하)의 PC 연결 — 종류 없이 PC 연결 이름으로 오면 만들지 않는다(리뷰 r1 P0-4 · user 로 적으면
+    //   새 CLI 가 그 연결을 못 찾고 웹 사용자 목록에 섞인다). 짐작하지 않고 거절 — 그 CLI 는 이 문장을 보인다.
+    await expect(termRequest(paths, { op: "new", name: "ainecto-pc", cwd: rig.home,
+      command: ["npx", "-y", "--package", "@ainecto/mcp@0.16.2", "ainecto", "pc", "run"], env: {} }, { start: false }))
+      .rejects.toThrow(/too old to connect this PC .*npx -y ainecto@latest/);
+    expect((await listed()).sessions.map((s) => s.name)).toEqual(["plain"]);
+    // 이름·인자가 옛 판별식(ainecto-pc + pc run)에 걸려도 사람이 만든 세션은 user(새 CLI 는 종류 user 를 싣는다)
+    await ok("term", "new", "ainecto-pc", "--", "/bin/sh", "-c", "sleep 600", "pc", "run");
     await termRequest(paths, { op: "new", name: "bridge", cwd: rig.home, command: ["cat"], env: {}, kind: "pc-bridge" }, { start: false });
     await termRequest(paths, { op: "new", name: "old-cli", cwd: rig.home, command: ["cat"], env: {} }, { start: false });
     const sessions = (await listed()).sessions;

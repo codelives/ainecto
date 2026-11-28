@@ -1,7 +1,4 @@
-import type { SessionKind } from "../term/protocol";
-
-/** «이 PC 연결» 세션 이름 — 브리지를 띄우는 곳(pcCommand.startPcSession)은 늘 이 이름으로 만든다. */
-export const PC_SESSION_NAME = "ainecto-pc";
+import { PC_SESSION_NAME, type SessionKind } from "../term/protocol";
 
 /**
  * 세션 종류 판정 ★한 곳(설계 term-ledger-cli-unit-prep 2-1 · G1) — 업로드 필터·runningPcs·daemonUpgrade 사용자 세션 수가 모두 이것을 본다.

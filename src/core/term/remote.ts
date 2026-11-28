@@ -22,7 +22,7 @@ import {
 } from "./remoteChannel";
 import { CALL_TIMEOUT_MS, retryWait } from "./remoteLimits";
 import { endedThatFit, listing, sessionsKey, type Listing, type WireEnded } from "./remoteSessions";
-import { PC_SESSION_NAME } from "../pc/bridgeKind";
+import { PC_SESSION_NAME } from "./protocol";
 import { RemoteViewer, type ViewerLink } from "./remoteViewer";
 import { shellLineCommand } from "../os/launch";
 import { ensurePrivateDir } from "../fs/privateFiles";

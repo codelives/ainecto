@@ -15,6 +15,12 @@ import type { CellStyle, ScreenCursor } from "./screen";
  */
 export type SessionKind = "user" | "pc-bridge";
 
+/**
+ * «이 PC 연결» 세션 이름 — 브리지를 띄우는 곳(pcCommand.startPcSession)은 늘 이 이름으로 만든다.
+ * holder 는 이 이름으로 종류 없이 오는 생성(종류 칸 전 CLI 의 PC 연결)을 받지 않는다 — 종류를 짐작하지 않고 거절한다(리뷰 r1 P0-4).
+ */
+export const PC_SESSION_NAME = "ainecto-pc";
+
 /** 끝 사유 — exited(스스로 끝남·데몬과 함께 끝남) · killed(사람이 세션을 지움). api 장부 end_reason 과 같은 두 값. */
 export type EndReason = "exited" | "killed";
 
